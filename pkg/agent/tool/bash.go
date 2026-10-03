@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -102,8 +103,8 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	if !isBgCmd {
 		if strings.HasPrefix(trimmedCmd, "nohup ") ||
 			strings.HasSuffix(trimmedCmd, "&") ||
-			strings.Contains(trimmedCmd, " & ") ||
-			strings.Contains(trimmedCmd, "& echo") {
+			strings.Contains(trimmedCmd, "& echo $!") ||
+			strings.Contains(trimmedCmd, "& echo $") {
 			isBgCmd = true
 			args.Command = cleanBackgroundCommand(args.Command)
 		}
@@ -124,38 +125,99 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	cmd.Dir = ctx.GetWorkspaceRoot()
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		return "", fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	if err := cmd.Start(); err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
 		return "", fmt.Errorf("failed to start command: %w", err)
 	}
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 
-	done := make(chan error, 1)
+	pgid := cmd.Process.Pid
+
+	var stdout, stderr bytes.Buffer
+	outDone := make(chan struct{})
 	go func() {
-		done <- cmd.Wait()
+		_, _ = io.Copy(&stdout, stdoutReader)
+		close(outDone)
+	}()
+	errDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderr, stderrReader)
+		close(errDone)
 	}()
 
-	var err error
+	type waitResult struct {
+		ps  *os.ProcessState
+		err error
+	}
+	done := make(chan waitResult, 1)
+	go func() {
+		ps, waitErr := cmd.Process.Wait()
+		done <- waitResult{ps: ps, err: waitErr}
+	}()
+
 	select {
 	case <-timeoutCtx.Done():
-		if cmd.Process != nil {
-			pgid, pgErr := syscall.Getpgid(cmd.Process.Pid)
-			if pgErr == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			} else {
-				_ = cmd.Process.Kill()
-			}
+		if pgid > 0 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
-		<-done
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = stdoutReader.Close()
+		_ = stderrReader.Close()
+
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+		}
+
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			err = fmt.Errorf("command timed out after 120 seconds. If this is a server or long-running process, use 'background: true'")
 		} else {
 			err = fmt.Errorf("command cancelled by user")
 		}
-	case err = <-done:
+
+	case res := <-done:
+		select {
+		case <-outDone:
+		case <-time.After(50 * time.Millisecond):
+			_ = stdoutReader.Close()
+		}
+		select {
+		case <-errDone:
+		case <-time.After(50 * time.Millisecond):
+			_ = stderrReader.Close()
+		}
+
+		if res.err != nil {
+			err = res.err
+		} else if res.ps != nil && !res.ps.Success() {
+			err = &exec.ExitError{ProcessState: res.ps}
+		}
 	}
+
+	<-outDone
+	<-errDone
+	_ = stdoutReader.Close()
+	_ = stderrReader.Close()
 
 	// SanitizeUTF8 helper is in file.go, which is in the same package (tool), so it can be called directly!
 	output := SanitizeUTF8(stdout.Bytes())
@@ -187,6 +249,8 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 		var exitDesc string
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			exitDesc = "command timed out after 120 seconds. If this is a server or long-running process, use 'background: true'"
+		} else if timeoutCtx.Err() == context.Canceled {
+			exitDesc = "command cancelled by user"
 		} else if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {

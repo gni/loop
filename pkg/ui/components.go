@@ -133,6 +133,7 @@ func RenderHelp(w io.Writer, theme UITheme) {
 		{"/task [list|view|stream|kill]", "manage background tasks"},
 		{"/queue [list|clear]", "view or clear queued prompts"},
 		{"/compress", "compress history to reclaim context tokens"},
+		{"/tokens", "display token utilization and cost stats across swarm"},
 		{"/debug", "view path and status of debug execution log"},
 		{"/clear", "clear conversation history and start fresh"},
 		{"/help", "display this help menu"},

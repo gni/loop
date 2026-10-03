@@ -362,15 +362,15 @@ func runModalChoice(w io.Writer, theme UITheme, prompt string, options []choiceM
 	getUI().StateMu.Unlock()
 
 	var inputController approvalInputController
-	getUI().StateMu.Lock()
-	getUI().InApprovalPrompt = true
-	getUI().StateMu.Unlock()
 	if controller, ok := activeReader.(approvalInputController); ok {
 		inputController = controller
 		if approvalInput := controller.BeginApprovalInput(); approvalInput != nil {
 			input = approvalInput
 		}
 	}
+	getUI().StateMu.Lock()
+	getUI().InApprovalPrompt = true
+	getUI().StateMu.Unlock()
 
 	defer func() {
 		if inputController != nil {

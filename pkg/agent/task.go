@@ -20,6 +20,7 @@ type Task struct {
 	Stdout         *bytes.Buffer
 	Stderr         *bytes.Buffer
 	Cmd            *exec.Cmd
+	Pgid           int
 	StartTime      time.Time
 	EndTime        time.Time
 	Err            error
@@ -112,6 +113,11 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		task.mu.Unlock()
 		return id, err
 	}
+	task.mu.Lock()
+	if cmd.Process != nil {
+		task.Pgid = cmd.Process.Pid
+	}
+	task.mu.Unlock()
 
 	go func() {
 		waitErr := cmd.Wait()
@@ -170,19 +176,11 @@ func (a *Agent) KillTask(id string) error {
 	task.Status = "killed"
 	task.EndTime = time.Now()
 
+	if task.Pgid > 0 {
+		_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
+	}
 	if task.Cmd != nil && task.Cmd.Process != nil {
-		pgid, err := syscall.Getpgid(task.Cmd.Process.Pid)
-		if err == nil {
-			err = syscall.Kill(-pgid, syscall.SIGKILL)
-			if err != nil {
-				_ = task.Cmd.Process.Kill()
-			}
-		} else {
-			err = task.Cmd.Process.Kill()
-			if err != nil {
-				return err
-			}
-		}
+		_ = task.Cmd.Process.Kill()
 	}
 
 	return nil

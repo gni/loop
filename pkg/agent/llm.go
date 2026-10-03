@@ -358,6 +358,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var textBuilder strings.Builder
 	var rawTextBuilder strings.Builder
 	var reasoningBuilder strings.Builder
+	var cleanReasoningBuilder strings.Builder
 	var toolCallsMap = make(map[int]*db.ToolCall)
 	textFilter := newFallbackToolTextFilter(func(text string) {
 		textBuilder.WriteString(text)
@@ -370,6 +371,17 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		rawTextBuilder.WriteString(text)
 		textFilter.Write(text)
 	}
+	reasoningFilter := newFallbackToolTextFilter(func(text string) {
+		cleanReasoningBuilder.WriteString(text)
+		emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text})
+	})
+	emitReasoning := func(text string) {
+		if text == "" {
+			return
+		}
+		reasoningBuilder.WriteString(text)
+		reasoningFilter.Write(text)
+	}
 
 	var promptTokens, completionTokens int
 	var generationStart time.Time
@@ -381,27 +393,50 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	finalizePartial := func() *db.Message {
 		if streamBuffer != "" {
 			if inThoughtMode {
-				reasoningBuilder.WriteString(streamBuffer)
-				emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
+				emitReasoning(streamBuffer)
 			} else {
 				emitText(streamBuffer)
 			}
 			streamBuffer = ""
 		}
 		textFilter.Flush()
+		reasoningFilter.Flush()
+
+		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
+		pTokens := promptTokens
+		if pTokens == 0 {
+			totalChars := 0
+			for _, msg := range cleanMessages {
+				totalChars += len(msg.Content) + len(msg.ReasoningContent)
+				for _, tc := range msg.ToolCalls {
+					totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+				}
+			}
+			pTokens = totalChars / 4
+			if pTokens == 0 && totalChars > 0 {
+				pTokens = 1
+			}
+		}
 
 		tokens := completionTokens
 		if tokens == 0 {
-			tokens = (rawTextBuilder.Len() + reasoningBuilder.Len()) / 4
+			completionChars := rawTextBuilder.Len() + reasoningBuilder.Len()
+			for _, tc := range calls {
+				completionChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+			tokens = completionChars / 4
+			if tokens == 0 && completionChars > 0 {
+				tokens = 1
+			}
 		}
 
 		return &db.Message{
 			Role:             "assistant",
 			Content:          textBuilder.String(),
-			ReasoningContent: reasoningBuilder.String(),
-			PromptTokens:     promptTokens,
+			ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
+			PromptTokens:     pTokens,
 			CompletionTokens: tokens,
-			ToolCalls:        assembleToolCalls(toolCallsMap, rawTextBuilder.String()),
+			ToolCalls:        calls,
 		}
 	}
 
@@ -460,8 +495,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		if choice.Delta.ReasoningContent != "" {
-			reasoningBuilder.WriteString(choice.Delta.ReasoningContent)
-			emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: choice.Delta.ReasoningContent})
+			emitReasoning(choice.Delta.ReasoningContent)
 		}
 
 		if choice.Delta.Content != "" {
@@ -469,21 +503,35 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			for {
 				if !inThoughtMode {
 					tag := "<|channel>thought"
+					tagThink := "<think>"
 					idx := strings.Index(streamBuffer, tag)
+					idxThink := strings.Index(streamBuffer, tagThink)
+					usedTag := ""
+					if idx != -1 && (idxThink == -1 || idx < idxThink) {
+						usedTag = tag
+					} else if idxThink != -1 {
+						usedTag = tagThink
+						idx = idxThink
+					}
+
 					if idx != -1 {
 						preText := streamBuffer[:idx]
 						if preText != "" {
 							emitText(preText)
 						}
-						streamBuffer = streamBuffer[idx+len(tag):]
+						streamBuffer = streamBuffer[idx+len(usedTag):]
 						inThoughtMode = true
 						continue
 					}
 					var prefixMatched int
-					for i := len(tag) - 1; i >= 1; i-- {
-						if strings.HasSuffix(streamBuffer, tag[:i]) {
-							prefixMatched = i
-							break
+					for _, t := range []string{tag, tagThink} {
+						for i := len(t) - 1; i >= 1; i-- {
+							if strings.HasSuffix(streamBuffer, t[:i]) {
+								if i > prefixMatched {
+									prefixMatched = i
+								}
+								break
+							}
 						}
 					}
 					if prefixMatched > 0 {
@@ -500,36 +548,47 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					break
 				} else {
 					tag := "<channel|>"
+					tagThink := "</think>"
 					idx := strings.Index(streamBuffer, tag)
+					idxThink := strings.Index(streamBuffer, tagThink)
+					usedTag := ""
+					if idx != -1 && (idxThink == -1 || idx < idxThink) {
+						usedTag = tag
+					} else if idxThink != -1 {
+						usedTag = tagThink
+						idx = idxThink
+					}
+
 					if idx != -1 {
 						preReasoning := streamBuffer[:idx]
 						if preReasoning != "" {
-							reasoningBuilder.WriteString(preReasoning)
-							emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: preReasoning})
+							emitReasoning(preReasoning)
 						}
-						streamBuffer = streamBuffer[idx+len(tag):]
+						streamBuffer = streamBuffer[idx+len(usedTag):]
 						inThoughtMode = false
 						continue
 					}
 					var prefixMatched int
-					for i := len(tag) - 1; i >= 1; i-- {
-						if strings.HasSuffix(streamBuffer, tag[:i]) {
-							prefixMatched = i
-							break
+					for _, t := range []string{tag, tagThink} {
+						for i := len(t) - 1; i >= 1; i-- {
+							if strings.HasSuffix(streamBuffer, t[:i]) {
+								if i > prefixMatched {
+									prefixMatched = i
+								}
+								break
+							}
 						}
 					}
 					if prefixMatched > 0 {
 						sendLen := len(streamBuffer) - prefixMatched
 						if sendLen > 0 {
 							preReasoning := streamBuffer[:sendLen]
-							reasoningBuilder.WriteString(preReasoning)
-							emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: preReasoning})
+							emitReasoning(preReasoning)
 							streamBuffer = streamBuffer[sendLen:]
 						}
 						break
 					}
-					reasoningBuilder.WriteString(streamBuffer)
-					emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
+					emitReasoning(streamBuffer)
 					streamBuffer = ""
 					break
 				}
@@ -539,8 +598,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if len(choice.Delta.ToolCalls) > 0 {
 			if streamBuffer != "" {
 				if inThoughtMode {
-					reasoningBuilder.WriteString(streamBuffer)
-					emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
+					emitReasoning(streamBuffer)
 				} else {
 					emitText(streamBuffer)
 				}
@@ -585,23 +643,28 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	if streamBuffer != "" {
 		if inThoughtMode {
-			reasoningBuilder.WriteString(streamBuffer)
-			emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
+			emitReasoning(streamBuffer)
 		} else {
 			emitText(streamBuffer)
 		}
 	}
 	textFilter.Flush()
+	reasoningFilter.Flush()
 
 	var duration time.Duration
 	if !generationStart.IsZero() {
 		duration = time.Since(generationStart)
 	}
 
+	calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
+
 	if promptTokens == 0 {
 		totalChars := 0
 		for _, msg := range messages {
 			totalChars += len(msg.Content) + len(msg.ReasoningContent)
+			for _, tc := range msg.ToolCalls {
+				totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
 		}
 		promptTokens = totalChars / 4
 		if promptTokens == 0 && totalChars > 0 {
@@ -610,6 +673,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 	if completionTokens == 0 {
 		completionChars := rawTextBuilder.Len() + reasoningBuilder.Len()
+		for _, tc := range calls {
+			completionChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
 		completionTokens = completionChars / 4
 		if completionTokens == 0 && completionChars > 0 {
 			completionTokens = 1
@@ -619,12 +685,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	assistantMsg := &db.Message{
 		Role:             "assistant",
 		Content:          textBuilder.String(),
-		ReasoningContent: reasoningBuilder.String(),
+		ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		ToolCalls:        calls,
 	}
-
-	assistantMsg.ToolCalls = assembleToolCalls(toolCallsMap, rawTextBuilder.String())
 
 	// Store duration in context/metadata or handle via caller setting
 	ctxVal := ctx.Value("generation_duration_callback")
@@ -635,7 +700,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	return assistantMsg, nil
 }
 
-func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string) []db.ToolCall {
+func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string) []db.ToolCall {
 	if len(toolCallsMap) > 0 {
 		maxIdx := -1
 		for idx := range toolCallsMap {
@@ -653,7 +718,27 @@ func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string) []db.T
 		}
 		return calls
 	}
-	return ParseFallbackToolCalls(rawText)
+	calls := ParseFallbackToolCalls(rawText)
+	if rawReasoning != "" {
+		reasoningCalls := ParseFallbackToolCalls(rawReasoning)
+		if len(calls) == 0 {
+			calls = reasoningCalls
+		} else {
+			for _, rc := range reasoningCalls {
+				duplicate := false
+				for _, c := range calls {
+					if c.Function.Name == rc.Function.Name && c.Function.Arguments == rc.Function.Arguments {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					calls = append(calls, rc)
+				}
+			}
+		}
+	}
+	return calls
 }
 
 // Delegators on Agent struct to maintain backwards compatibility

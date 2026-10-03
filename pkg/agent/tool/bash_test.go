@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 type bashTestContext struct {
@@ -122,4 +123,96 @@ func TestBashAutoDetectsBackgroundShellSyntax(t *testing.T) {
 		t.Fatalf("expected cleaned spawned command, got: %q", ctx.spawnedCmd)
 	}
 }
+
+func TestBashSpawnedBackgroundChildDoesNotBlock(t *testing.T) {
+	executor := NewBashTool()
+	ctx := &bashTestContext{root: t.TempDir()}
+
+	start := time.Now()
+	output, err := executor.Execute(
+		ctx,
+		`{"command":"sleep 10 & echo 'fast exit'"}`,
+	)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "fast exit") {
+		t.Fatalf("expected output 'fast exit', got: %q", output)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("command took %v, expected < 2s (it blocked on background sleep)", elapsed)
+	}
+}
+
+type cancellableTestContext struct {
+	bashTestContext
+	ctx context.Context
+}
+
+func (c *cancellableTestContext) Context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func TestBashCancellationKillsProcessGroup(t *testing.T) {
+	executor := NewBashTool()
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	testCtx := &cancellableTestContext{
+		bashTestContext: bashTestContext{root: t.TempDir()},
+		ctx:             ctxCancel,
+	}
+
+	start := time.Now()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	output, err := executor.Execute(
+		testCtx,
+		`{"command":"sleep 30"}`,
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error on cancelled command, got nil")
+	}
+	if !strings.Contains(err.Error(), "command cancelled by user") {
+		t.Fatalf("expected 'command cancelled by user', got: %v", err)
+	}
+	if !strings.Contains(output, "command cancelled by user") {
+		t.Fatalf("expected output to mention cancellation, got: %q", output)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("cancellation took %v, expected < 2s", elapsed)
+	}
+}
+
+func TestBashCompoundCommandWithBackgroundServer(t *testing.T) {
+	executor := NewBashTool()
+	ctx := &bashTestContext{root: t.TempDir()}
+
+	start := time.Now()
+	output, err := executor.Execute(
+		ctx,
+		`{"command":"sleep 10 & sleep 0.1 && echo 'server ready'"}`,
+	)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "server ready") {
+		t.Fatalf("expected output 'server ready', got: %q", output)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("command took %v, expected < 2s", elapsed)
+	}
+}
+
+
 

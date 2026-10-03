@@ -71,6 +71,58 @@ func (a *Agent) LoadMemoryContext() string {
 	return sb.String()
 }
 
+// CalculateHistoryTokens calculates prompt and completion tokens for a conversation history.
+// For each assistant turn, if PromptTokens > 0 it uses it; otherwise it estimates prompt tokens
+// from all messages in the history preceding that turn. If CompletionTokens > 0 it uses it;
+// otherwise it estimates completion tokens from Content, ReasoningContent, and ToolCalls.
+func CalculateHistoryTokens(history []db.Message) (int, int) {
+	var totalPrompt, totalCompletion int
+	for i, m := range history {
+		if m.Role != "assistant" {
+			continue
+		}
+		hasPayload := m.Content != "" || m.ReasoningContent != "" || len(m.ToolCalls) > 0
+		if !hasPayload && m.PromptTokens == 0 && m.CompletionTokens == 0 {
+			continue
+		}
+
+		// Completion tokens
+		if m.CompletionTokens > 0 {
+			totalCompletion += m.CompletionTokens
+		} else {
+			chars := len(m.Content) + len(m.ReasoningContent)
+			for _, tc := range m.ToolCalls {
+				chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+			comp := chars / 4
+			if comp == 0 && chars > 0 {
+				comp = 1
+			}
+			totalCompletion += comp
+		}
+
+		// Prompt tokens
+		if m.PromptTokens > 0 {
+			totalPrompt += m.PromptTokens
+		} else {
+			priorChars := 0
+			for j := 0; j < i; j++ {
+				prior := history[j]
+				priorChars += len(prior.Content) + len(prior.ReasoningContent)
+				for _, tc := range prior.ToolCalls {
+					priorChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+				}
+			}
+			p := priorChars / 4
+			if p == 0 && priorChars > 0 {
+				p = 1
+			}
+			totalPrompt += p
+		}
+	}
+	return totalPrompt, totalCompletion
+}
+
 // GetGlobalTokens returns the prompt and completion tokens from the latest assistant message.
 func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (int, int) {
 	prompt, completion, _ := a.GetGlobalTokenUsage(messages, allowedTools)
@@ -78,14 +130,49 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 // GetGlobalTokenUsage extracts measured token counts returned by the OpenAI API from message history.
+// If the latest assistant turn only reported completion tokens or if no assistant turn exists yet,
+// it computes an estimate based on prompt characters and active tools.
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, _ []string) (int, int, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
 		hasPayload := message.Content != "" || message.ReasoningContent != "" || len(message.ToolCalls) > 0
 		if message.Role == "assistant" && hasPayload && (message.PromptTokens > 0 || message.CompletionTokens > 0) {
-			return message.PromptTokens, message.CompletionTokens, false
+			if message.PromptTokens > 0 {
+				return message.PromptTokens, message.CompletionTokens, false
+			}
+			priorChars := 0
+			for j := 0; j < i; j++ {
+				prior := messages[j]
+				priorChars += len(prior.Content) + len(prior.ReasoningContent)
+				for _, tc := range prior.ToolCalls {
+					priorChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+				}
+			}
+			estPrompt := priorChars / 4
+			if estPrompt == 0 && priorChars > 0 {
+				estPrompt = 1
+			}
+			return estPrompt, message.CompletionTokens, true
 		}
 	}
+
+	if len(messages) > 0 {
+		totalChars := 0
+		for _, m := range messages {
+			totalChars += len(m.Content) + len(m.ReasoningContent)
+			for _, tc := range m.ToolCalls {
+				totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+		}
+		estPrompt := totalChars / 4
+		if estPrompt == 0 && totalChars > 0 {
+			estPrompt = 1
+		}
+		if estPrompt > 0 {
+			return estPrompt, 0, true
+		}
+	}
+
 	return 0, 0, false
 }
 
@@ -99,7 +186,15 @@ func (a *Agent) GetSessionTotalCompletionTokens(messages []db.Message) int {
 				if m.CompletionTokens > 0 {
 					total += m.CompletionTokens
 				} else {
-					total += (len(m.Content) + len(m.ReasoningContent)) / 4
+					chars := len(m.Content) + len(m.ReasoningContent)
+					for _, tc := range m.ToolCalls {
+						chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+					}
+					comp := chars / 4
+					if comp == 0 && chars > 0 {
+						comp = 1
+					}
+					total += comp
 				}
 			}
 		}
@@ -237,44 +332,45 @@ func ParseFallbackToolCalls(content string) []db.ToolCall {
 	reBlock := regexp.MustCompile(`(?s)<tool_call\s*>?(.*?)(?:<\/tool_call\s*>|$)`)
 	reFunc := regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/function(?:\s*>|\s*\n|$)|$)`)
 	// Optional separator: the degraded form drops '=' entirely ("<parametercommand").
-	reParam := regexp.MustCompile(`(?s)<parameter[=\s]?([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/parameter(?:\s*>|\s*\n|$)|$)`)
+	reParam := regexp.MustCompile(`(?s)<parameter[=\s]*([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/parameter(?:\s*>|\s*\n|$)|$)`)
 
-	blocks := reBlock.FindAllStringSubmatch(content, -1)
-	if len(blocks) == 0 {
-		// Degenerate output without the tool_call wrapper
-		blocks = reFunc.FindAllStringSubmatch(content, -1)
-		for _, match := range blocks {
-			if len(match) >= 3 {
-				toolCalls = append(toolCalls, buildToolCall(match[1], strings.TrimSpace(match[2])))
-			}
-		}
-		return toolCalls
-	}
-
-	for _, match := range blocks {
-		if len(match) < 2 {
-			continue
-		}
-		body := match[1]
-		funcMatch := reFunc.FindStringSubmatch(body)
-		if len(funcMatch) < 3 {
-			continue
-		}
-		name := funcMatch[1]
+	parseHermesFunction := func(name, body string) db.ToolCall {
 		params := make(map[string]string)
-		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
+		for _, p := range reParam.FindAllStringSubmatch(body, -1) {
 			params[p[1]] = strings.TrimSpace(p[2])
 		}
 		if len(params) == 0 {
-			// Bare <function=name>value</function> without parameter tags
-			toolCalls = append(toolCalls, buildToolCall(name, strings.TrimSpace(funcMatch[2])))
-			continue
+			return buildToolCall(name, strings.TrimSpace(body))
 		}
 		args, err := json.Marshal(params)
 		if err != nil {
-			continue
+			return buildToolCall(name, strings.TrimSpace(body))
 		}
-		toolCalls = append(toolCalls, buildToolCall(name, string(args)))
+		return buildToolCall(name, string(args))
+	}
+
+	blocks := reBlock.FindAllStringSubmatch(content, -1)
+	if len(blocks) > 0 {
+		for _, match := range blocks {
+			if len(match) < 2 {
+				continue
+			}
+			body := match[1]
+			for _, funcMatch := range reFunc.FindAllStringSubmatch(body, -1) {
+				if len(funcMatch) >= 3 {
+					toolCalls = append(toolCalls, parseHermesFunction(funcMatch[1], funcMatch[2]))
+				}
+			}
+		}
+	}
+
+	if len(toolCalls) == 0 {
+		// Degenerate output without the tool_call wrapper
+		for _, match := range reFunc.FindAllStringSubmatch(content, -1) {
+			if len(match) >= 3 {
+				toolCalls = append(toolCalls, parseHermesFunction(match[1], match[2]))
+			}
+		}
 	}
 
 	return toolCalls

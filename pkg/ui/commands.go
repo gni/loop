@@ -411,7 +411,7 @@ func HandleSlashCommand(
 		}
 		redrawScreenWithNotice(w, a, kiReader, rl, "conversation cleared and started a new one.")
 		return true, false
-	case "/stats":
+	case "/stats", "/tokens", "/token", "/usage":
 		if a.MultiAgentManager != nil {
 			a.MultiAgentManager.RenderStats(w, *messages, *theme)
 		} else {
@@ -420,30 +420,11 @@ func HandleSlashCommand(
 			titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 			valueStyle := style.NewStyle().Foreground(theme.Text)
 
-			calcTokens := func(history []db.Message) (int, int) {
-				var prompt, completion int
-				for _, m := range history {
-					if m.Role == "assistant" {
-						if m.PromptTokens > 0 {
-							prompt += m.PromptTokens
-						} else {
-							prompt += (len(m.Content) + len(m.ReasoningContent)) / 4
-						}
-						if m.CompletionTokens > 0 {
-							completion += m.CompletionTokens
-						} else {
-							completion += (len(m.Content) + len(m.ReasoningContent)) / 4
-						}
-					}
-				}
-				return prompt, completion
-			}
-
 			fmt.Fprintln(w, headerStyle.Render("╭───────────────────────────────────────────────────────────────────────────────────────────────────╮"))
 			fmt.Fprintln(w, headerStyle.Render("│  SWARM TOKEN UTILIZATION & COST STATS                                                             │"))
 			fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
 
-			baseP, baseC := calcTokens(*messages)
+			baseP, baseC := agent.CalculateHistoryTokens(*messages)
 			fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Base Agent (Main)"))
 			fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", baseP)))
 			fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", baseC)))

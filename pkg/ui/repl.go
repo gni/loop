@@ -80,6 +80,9 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/agents list",
 		"/agents join ",
 		"/agents spawn ",
+		"/stats",
+		"/tokens",
+		"/usage",
 	}
 
 	var matches []string
@@ -493,6 +496,9 @@ func calculateActiveTokenUsage(
 	}
 	pTok, _, est := a.GetGlobalTokenUsage(activeMessages, allowedTools)
 	globalOut := a.GetSessionTotalCompletionTokens(activeMessages)
+	if mam != nil && mam.ActiveAgent == nil {
+		globalOut += mam.GetSubagentsCompletionTokens()
+	}
 	return pTok, globalOut, est
 }
 
@@ -709,6 +715,9 @@ func (ki *keyInterceptorReader) handleSubagentCancellation(rawInput <-chan byte,
 		if cancelParent != nil {
 			cancelParent()
 		}
+		getUI().StateMu.Lock()
+		getUI().ActiveCancelFunc = nil
+		getUI().StateMu.Unlock()
 		fmt.Fprintln(output, "\n\n[Operation Cancelled by User]")
 	}
 
@@ -1361,10 +1370,11 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 					if cancelFunc != nil {
 						cancelFunc()
 					}
-					kiReader.printCancelMessage()
 					getUI().StateMu.Lock()
+					getUI().ActiveCancelFunc = nil
 					kiReader.resetTypeAheadLocked()
 					getUI().StateMu.Unlock()
+					kiReader.printCancelMessage()
 					kiReader.approvalChan <- b
 					continue
 				}
@@ -1377,10 +1387,11 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 						if cancelFunc != nil {
 							cancelFunc()
 						}
-						kiReader.printCancelMessage()
 						getUI().StateMu.Lock()
+						getUI().ActiveCancelFunc = nil
 						kiReader.resetTypeAheadLocked()
 						getUI().StateMu.Unlock()
+						kiReader.printCancelMessage()
 						kiReader.approvalChan <- b
 					}
 					continue
@@ -1492,10 +1503,11 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 					case <-time.After(50 * time.Millisecond):
 						if cancelFunc != nil {
 							cancelFunc()
-							kiReader.printCancelMessage()
 							getUI().StateMu.Lock()
+							getUI().ActiveCancelFunc = nil
 							kiReader.resetTypeAheadLocked()
 							getUI().StateMu.Unlock()
+							kiReader.printCancelMessage()
 							kiReader.ClearQueue()
 							getUI().StateMu.Lock()
 							getUI().State.QueuedPromptsCount = 0

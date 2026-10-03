@@ -148,3 +148,86 @@ func TestFallbackToolMarkupIsHiddenFromStreamContentAndNextRequest(t *testing.T)
 		}
 	}
 }
+
+func TestFallbackToolMarkupInsideReasoning(t *testing.T) {
+	rawReasoning := "I need to run the install command.\n" +
+		"<tool_call>\n<function=bash\n<parametercommand\ncd /home/w/experimental/tests/petitbleu && pip install --break-system-packages pytestasyncio 21 | tail -3\n</parameter\n</function\n</tool_call>"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		payload, _ := json.Marshal(map[string]any{
+			"choices": []any{
+				map[string]any{
+					"delta": map[string]any{"reasoning_content": rawReasoning},
+				},
+			},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := &OpenAICompatibleProvider{
+		Config: &config.Config{
+			Endpoint:           server.URL,
+			Model:              "test",
+			ContextWindowLimit: 128000,
+		},
+		HttpClient:             server.Client(),
+		ThinkingSupportChecked: true,
+	}
+
+	chunks := make(chan StreamChunk, 32)
+	message, err := provider.StreamChatCompletions(
+		context.Background(),
+		[]db.Message{{Role: "user", Content: "install packages"}},
+		nil,
+		chunks,
+	)
+	if err != nil {
+		t.Fatalf("stream completion: %v", err)
+	}
+
+	var visibleReasoning strings.Builder
+	for len(chunks) > 0 {
+		chunk := <-chunks
+		if chunk.Type == "reasoning" {
+			visibleReasoning.WriteString(chunk.Content)
+		}
+	}
+
+	// Verify tool markup is NOT leaked to streamed reasoning
+	if strings.Contains(visibleReasoning.String(), "<tool_call") || strings.Contains(visibleReasoning.String(), "function=bash") {
+		t.Fatalf("visible reasoning stream leaked tool markup: %q", visibleReasoning.String())
+	}
+
+	// Verify tool markup is stripped from saved reasoning content
+	if strings.Contains(message.ReasoningContent, "<tool_call") || strings.Contains(message.ReasoningContent, "</tool_call>") {
+		t.Fatalf("saved reasoning content still contains tool markup: %q", message.ReasoningContent)
+	}
+
+	// Verify the tool call is extracted and runnable
+	if len(message.ToolCalls) != 1 {
+		t.Fatalf("expected 1 extracted tool call from reasoning, got %d", len(message.ToolCalls))
+	}
+	if message.ToolCalls[0].Function.Name != "bash" {
+		t.Fatalf("expected tool name 'bash', got %q", message.ToolCalls[0].Function.Name)
+	}
+	if !strings.Contains(message.ToolCalls[0].Function.Arguments, "pytestasyncio") {
+		t.Fatalf("expected command arguments in tool call, got %q", message.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestParseFallbackToolCallsBareFunctionDialect(t *testing.T) {
+	bare := "<function=bash\n<parametercommand\nls -la /tmp\n</parameter\n</function>"
+	calls := ParseFallbackToolCalls(bare)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from bare function dialect, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("expected tool 'bash', got %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "ls -la /tmp") {
+		t.Fatalf("expected command argument, got %q", calls[0].Function.Arguments)
+	}
+}

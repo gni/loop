@@ -8,6 +8,7 @@ var fallbackOpeningMarkers = [...]string{
 	"<tool_call",
 	"<execute",
 	"<tool:",
+	"<function",
 }
 
 // fallbackToolTextFilter removes fallback XML tool invocations before assistant
@@ -168,6 +169,11 @@ func fallbackClosingTag(opening string) (string, bool) {
 			}
 		}
 		return "</tool:" + name + ">", true
+	case strings.HasPrefix(opening, "<function"):
+		if !validFallbackOpeningBoundary(opening, len("<function")) {
+			return "", false
+		}
+		return "</function>", true
 	default:
 		return "", false
 	}
@@ -218,7 +224,7 @@ func validFallbackOpeningBoundary(opening string, markerLength int) bool {
 		return false
 	}
 	next := opening[markerLength]
-	return next == '>' || isFallbackWhitespace(next)
+	return next == '>' || next == '=' || isFallbackWhitespace(next)
 }
 
 func earliestFallbackOpening(text string) int {

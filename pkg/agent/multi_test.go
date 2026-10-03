@@ -676,3 +676,46 @@ func TestSubagentNestingDepthAndAllowlist(t *testing.T) {
 	}
 }
 
+func TestRenderStatsSwarmTotal(t *testing.T) {
+	mam := &MultiAgentManager{
+		Agents: make(map[string]*MultiAgent),
+	}
+	worker := &MultiAgent{
+		Name:         "researcher",
+		SystemPrompt: "Deep research on topic",
+		History: []db.Message{
+			{Role: "user", Content: "investigate memory leaks"},
+			{Role: "assistant", Content: "Found leak in cache", PromptTokens: 50, CompletionTokens: 25},
+		},
+	}
+	mam.Agents[worker.Name] = worker
+
+	baseMessages := []db.Message{
+		{Role: "user", Content: "Start swarm"},
+		{Role: "assistant", Content: "Delegated to researcher", PromptTokens: 100, CompletionTokens: 10},
+	}
+
+	var buf bytes.Buffer
+	mam.RenderStats(&buf, baseMessages, style.UITheme{})
+	out := buf.String()
+
+	if !strings.Contains(out, "Base Agent (Main)") {
+		t.Fatalf("expected Base Agent section: %s", out)
+	}
+	if !strings.Contains(out, "Subagent: researcher") {
+		t.Fatalf("expected Subagent section: %s", out)
+	}
+	if !strings.Contains(out, "Total Swarm Utilization") {
+		t.Fatalf("expected Total Swarm Utilization section: %s", out)
+	}
+	if !strings.Contains(out, "150") || !strings.Contains(out, "35") {
+		t.Fatalf("expected 150 prompt tokens and 35 completion tokens in swarm totals: %s", out)
+	}
+
+	subTokens := mam.GetSubagentsCompletionTokens()
+	if subTokens != 25 {
+		t.Fatalf("GetSubagentsCompletionTokens = %d, want 25", subTokens)
+	}
+}
+
+

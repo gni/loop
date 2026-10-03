@@ -239,9 +239,90 @@ func TestParseFallbackToolCallsHermesDialect(t *testing.T) {
 		t.Fatalf("command lost: %s", calls[0].Function.Arguments)
 	}
 
+	userObserved := "<tool_call>\n<function=bash\n<parametercommand\ncd /home/w/experimental/tests/petitbleu && pip install --break-system-packages pytestasyncio 21 | tail -3\n</parameter\n</function\n</tool_call>\nthought (0.6s)"
+	callsUser := ParseFallbackToolCalls(userObserved)
+	if len(callsUser) != 1 {
+		t.Fatalf("expected 1 call from user dialect, got %d", len(callsUser))
+	}
+	if callsUser[0].Function.Name != "bash" {
+		t.Fatalf("expected tool name 'bash', got %q", callsUser[0].Function.Name)
+	}
+
 	canonical := "<tool_call>\n<function=read>\n<parameter=path>main.go</parameter>\n<parameter=limit>10</parameter>\n</function>\n</tool_call>"
 	calls2 := ParseFallbackToolCalls(canonical)
 	if len(calls2) != 1 || calls2[0].Function.Name != "read" {
 		t.Fatalf("canonical dialect failed to parse: %+v", calls2)
+	}
+}
+
+func TestCalculateHistoryTokensWithMeasuredAndFallback(t *testing.T) {
+	history := []db.Message{
+		{Role: "system", Content: "You are a helpful assistant."}, // 29 chars
+		{Role: "user", Content: "Hello world!"},                   // 12 chars
+		{
+			Role:             "assistant",
+			Content:          "Hi there!",
+			PromptTokens:     100,
+			CompletionTokens: 20,
+		},
+		{Role: "user", Content: "Run ls command"}, // 14 chars
+		{
+			Role:             "assistant",
+			PromptTokens:     0,  // missing, should be estimated from prior turns
+			CompletionTokens: 15, // measured
+			ToolCalls: []db.ToolCall{
+				{
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{
+						Name:      "bash",
+						Arguments: `{"command":"ls"}`,
+					},
+				},
+			},
+		},
+	}
+
+	p, c := CalculateHistoryTokens(history)
+	if p != 115 || c != 35 {
+		t.Fatalf("CalculateHistoryTokens = (%d, %d); want (115, 35)", p, c)
+	}
+}
+
+func TestGetGlobalTokenUsageEstimatesWhenPromptTokensZero(t *testing.T) {
+	a := &Agent{}
+	messages := []db.Message{
+		{Role: "system", Content: "system prompt here"}, // 18 chars
+		{Role: "user", Content: "tell me a joke"},       // 14 chars
+		{
+			Role:             "assistant",
+			Content:          "Why did the chicken cross the road?",
+			PromptTokens:     0, // 0 prompt tokens reported
+			CompletionTokens: 8,
+		},
+	}
+
+	prompt, completion, estimated := a.GetGlobalTokenUsage(messages, nil)
+	if prompt != 8 || completion != 8 {
+		t.Fatalf("expected (8, 8), got (%d, %d)", prompt, completion)
+	}
+	if !estimated {
+		t.Fatalf("expected estimated=true when PromptTokens == 0")
+	}
+}
+
+func TestGetGlobalTokenUsageEstimatesAtStartup(t *testing.T) {
+	a := &Agent{}
+	messages := []db.Message{
+		{Role: "system", Content: strings.Repeat("a", 100)}, // 100 chars -> 25 tokens
+	}
+
+	prompt, completion, estimated := a.GetGlobalTokenUsage(messages, nil)
+	if prompt != 25 || completion != 0 {
+		t.Fatalf("expected (25, 0), got (%d, %d)", prompt, completion)
+	}
+	if !estimated {
+		t.Fatalf("expected estimated=true at startup")
 	}
 }
