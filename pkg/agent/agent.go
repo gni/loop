@@ -213,14 +213,7 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 		}
 		return nil
 	}
-	cwd := a.WorkspaceRoot
-	var dirs []string
-	if a.Config.SkillsDir != "" {
-		dirs = append(dirs, a.Config.SkillsDir)
-	}
-	if cwd != "" {
-		dirs = append(dirs, filepath.Join(cwd, "skills"), filepath.Join(cwd, ".agents", "skills"))
-	}
+	dirs := SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot)
 	if len(dirs) == 0 {
 		return a.ActiveSkills
 	}
@@ -408,14 +401,24 @@ func (a *Agent) CompressHistory(
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, infoStyle.Render("[System: Context usage threshold reached. Compressing older conversation history...]"))
 
+	// The summarizer has no renderer, so its chunks are discarded. The drain loop
+	// must outlive the call and exit when the channel is closed, otherwise every
+	// compression leaks one goroutine that holds the channel forever.
 	dummyChan := make(chan StreamChunk, 100)
+	drained := make(chan struct{})
 	go func() {
 		for range dummyChan {
 			// Discard summarizer stream chunks
 		}
+		close(drained)
 	}()
 
 	summaryAssistantMsg, err := a.StreamChatCompletions(ctx, summaryMsgs, []string{}, dummyChan)
+	close(dummyChan)
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+	}
 	if err != nil {
 		warnStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 		fmt.Fprintf(w, "%s Failed to compress conversation context: %v\n", warnStyle.Render("WARNING:"), err)
@@ -441,9 +444,9 @@ func (a *Agent) CompressHistory(
 	}
 
 	newMessages := make([]db.Message, 0, 2+len(keptMessages))
-	newMessages = append(newMessages, (*messages)[0])           // Keep system prompt
-	newMessages = append(newMessages, summaryMsg)               // Add summary
-	newMessages = append(newMessages, keptMessages...)          // Add latest messages
+	newMessages = append(newMessages, (*messages)[0])  // Keep system prompt
+	newMessages = append(newMessages, summaryMsg)      // Add summary
+	newMessages = append(newMessages, keptMessages...) // Add latest messages
 
 	if sessionID != "" {
 		_ = db.RewriteSession(sessionID, newMessages)
@@ -584,4 +587,3 @@ func (a *Agent) DebugLogRepetition(sessionID string, toolName string, arguments 
 	}
 	a.DebugLogger.LogRepetition(sessionID, toolName, arguments, count, detail)
 }
-

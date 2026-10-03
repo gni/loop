@@ -45,8 +45,13 @@ func (f *fallbackToolTextFilter) Flush() {
 func (f *fallbackToolTextFilter) process(final bool) {
 	for {
 		if f.closingTag != "" {
-			if closeIndex := strings.Index(f.pending, f.closingTag); closeIndex >= 0 {
+			closeIndex := closingBoundaryIndex(f.pending, f.closingTag)
+			if closeIndex >= 0 {
 				f.pending = f.pending[closeIndex+len(f.closingTag):]
+				// Tolerate a missing '>' after the closing tag (degraded dialect).
+				if strings.HasPrefix(f.pending, ">") {
+					f.pending = f.pending[1:]
+				}
 				f.closingTag = ""
 				f.discardLeadingWhitespace = true
 				continue
@@ -102,7 +107,9 @@ func (f *fallbackToolTextFilter) process(final bool) {
 			f.pending = f.pending[openIndex:]
 		}
 
-		openEnd := strings.IndexByte(f.pending, '>')
+		// The opening tag may terminate with '>' or a newline when the model
+		// emits the degraded dialect ("<tool_call\n<function=bash\n...").
+		openEnd := openingEndIndex(f.pending)
 		if openEnd < 0 {
 			if final {
 				f.pending = ""
@@ -164,6 +171,46 @@ func fallbackClosingTag(opening string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// openingEndIndex returns the index of the first '>' or newline that closes
+// an opening tag, or -1 if neither is present.
+func openingEndIndex(text string) int {
+	gt := strings.IndexByte(text, '>')
+	nl := strings.IndexByte(text, '\n')
+	switch {
+	case gt < 0:
+		return nl
+	case nl < 0:
+		return gt
+	case nl < gt:
+		return nl
+	default:
+		return gt
+	}
+}
+
+// closingBoundaryIndex finds a closing tag prefix followed by '>' or whitespace
+// (or end of text), so ")tool_call" without '>' still closes the block.
+func closingBoundaryIndex(text, prefix string) int {
+	for i := 0; i+len(prefix) <= len(text); {
+		if !strings.HasPrefix(text[i:], prefix) {
+			next := strings.Index(text[i:], prefix)
+			if next < 0 {
+				return -1
+			}
+			// Land on the occurrence itself so its boundary byte is inspected.
+			i += next
+			continue
+		}
+
+		end := i + len(prefix)
+		if end >= len(text) || text[end] == '>' || isFallbackWhitespace(text[end]) {
+			return i
+		}
+		i++
+	}
+	return -1
 }
 
 func validFallbackOpeningBoundary(opening string, markerLength int) bool {

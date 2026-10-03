@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"maquis/pkg/db"
 	"maquis/pkg/ui/style"
@@ -222,6 +223,60 @@ func ParseFallbackToolCalls(content string) []db.ToolCall {
 		}
 	}
 
+	// 4. Match the Hermes/Qwen chat-template dialect:
+	//   <tool_call>
+	//    <function=bash>
+	//    <parameter=command>value</parameter>
+	//    </function>
+	//   </tool_call>
+	// Some models emit a degraded form of this dialect where tag-closing '>'
+	// is replaced by a newline and the parameter '=' is dropped entirely
+	// (e.g. "<function=bash\n<parametercommand\ncmd\n</parameter\n</function\n").
+	// Both the canonical and degraded forms must parse, otherwise the call is
+	// silently dropped and the agent never executes it.
+	reBlock := regexp.MustCompile(`(?s)<tool_call\s*>?(.*?)(?:<\/tool_call\s*>|$)`)
+	reFunc := regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/function(?:\s*>|\s*\n|$)|$)`)
+	// Optional separator: the degraded form drops '=' entirely ("<parametercommand").
+	reParam := regexp.MustCompile(`(?s)<parameter[=\s]?([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/parameter(?:\s*>|\s*\n|$)|$)`)
+
+	blocks := reBlock.FindAllStringSubmatch(content, -1)
+	if len(blocks) == 0 {
+		// Degenerate output without the tool_call wrapper
+		blocks = reFunc.FindAllStringSubmatch(content, -1)
+		for _, match := range blocks {
+			if len(match) >= 3 {
+				toolCalls = append(toolCalls, buildToolCall(match[1], strings.TrimSpace(match[2])))
+			}
+		}
+		return toolCalls
+	}
+
+	for _, match := range blocks {
+		if len(match) < 2 {
+			continue
+		}
+		body := match[1]
+		funcMatch := reFunc.FindStringSubmatch(body)
+		if len(funcMatch) < 3 {
+			continue
+		}
+		name := funcMatch[1]
+		params := make(map[string]string)
+		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
+			params[p[1]] = strings.TrimSpace(p[2])
+		}
+		if len(params) == 0 {
+			// Bare <function=name>value</function> without parameter tags
+			toolCalls = append(toolCalls, buildToolCall(name, strings.TrimSpace(funcMatch[2])))
+			continue
+		}
+		args, err := json.Marshal(params)
+		if err != nil {
+			continue
+		}
+		toolCalls = append(toolCalls, buildToolCall(name, string(args)))
+	}
+
 	return toolCalls
 }
 
@@ -270,63 +325,164 @@ func TruncateRunes(s string, maxRunes int) string {
 	return style.TruncateRunes(s, maxRunes)
 }
 
-// StripEchoedPrompt strips leading echoed prompt text and trailing newlines/whitespace
-// from model reasoning content if the model begins thinking by repeating the user's prompt.
-func StripEchoedPrompt(reasoning, prompt string) string {
-	normPrompt := strings.TrimSpace(prompt)
+// echoWrappers are the ways a model wraps an echoed prompt before thinking.
+var echoWrappers = []string{`"`, "'", "`", "> "}
+
+// stripPromptEcho removes a leading echoed prompt (optionally wrapped) plus the
+// closing wrapper and any separator punctuation that follows it. The closing quote
+// and separator are part of the echo, not the thought, which is why a stream looked
+// like it "started with a quote/dot".
+func stripPromptEcho(reasoning, normPrompt string) string {
 	if normPrompt == "" || reasoning == "" {
 		return reasoning
 	}
-
-	cleanReasoning := strings.TrimLeft(reasoning, "\r\n\t ")
+	clean := strings.TrimLeft(reasoning, "\r\n\t ")
 	lowerPrompt := strings.ToLower(normPrompt)
-	lowerReasoning := strings.ToLower(cleanReasoning)
 
-	if strings.HasPrefix(lowerReasoning, lowerPrompt) {
-		remaining := cleanReasoning[len(normPrompt):]
-		return strings.TrimLeft(remaining, "\r\n\t ")
-	}
-
-	// Check if the echoed prompt was wrapped in quotes, backticks, or prompt marker
-	for _, wrapper := range []string{`"`, `'`, "`", "> "} {
-		if strings.HasPrefix(cleanReasoning, wrapper) {
-			trimmedPrefix := strings.TrimPrefix(cleanReasoning, wrapper)
-			lowerTrimmed := strings.ToLower(trimmedPrefix)
-			if strings.HasPrefix(lowerTrimmed, lowerPrompt) {
-				remaining := trimmedPrefix[len(normPrompt):]
-				if strings.HasPrefix(remaining, wrapper) {
-					remaining = strings.TrimPrefix(remaining, wrapper)
-				}
-				return strings.TrimLeft(remaining, "\r\n\t ")
-			}
+	for _, wrapper := range echoWrappers {
+		if !strings.HasPrefix(clean, wrapper) {
+			continue
+		}
+		body := strings.TrimPrefix(clean, wrapper)
+		if strings.HasPrefix(strings.ToLower(body), lowerPrompt) {
+			return trimEchoResidue(body[len(normPrompt):], wrapper)
 		}
 	}
-
+	if strings.HasPrefix(strings.ToLower(clean), lowerPrompt) {
+		return trimEchoResidue(clean[len(normPrompt):], "")
+	}
 	return reasoning
 }
 
-// IsInspectionTool returns true if the tool performs read-only inspection or searching of files.
-func IsInspectionTool(name string) bool {
-	switch name {
-	case "read", "grep", "find", "list":
-		return true
-	default:
-		return false
+// trimEchoResidue drops the closing wrapper and the separator punctuation the model
+// uses to transition from the echo into its actual thought.
+func trimEchoResidue(rest, wrapper string) string {
+	rest = strings.TrimLeft(rest, "\r\n\t ")
+	if wrapper != "" && strings.HasPrefix(rest, wrapper) {
+		rest = strings.TrimPrefix(rest, wrapper)
 	}
+	rest = strings.TrimLeft(rest, "\r\n\t ")
+	for len(rest) > 0 && strings.ContainsRune(".:-,", rune(rest[0])) {
+		rest = rest[1:]
+		rest = strings.TrimLeft(rest, "\r\n\t ")
+	}
+	return rest
 }
 
-// IsActionTool returns true if the tool executes commands, modifies files, manages tasks, or orchestrates subagents.
-func IsActionTool(name string) bool {
-	switch name {
-	case "write", "edit", "bash", "task_kill":
-		return true
-	default:
-		if strings.HasPrefix(name, "subagent__") || name == "spawn_subagent" || name == "remove_subagent" {
-			return true
-		}
-		return false
-	}
+// StripEchoedPrompt strips leading echoed prompt text and trailing newlines/whitespace
+// from model reasoning content if the model begins thinking by repeating the user's prompt.
+func StripEchoedPrompt(reasoning, prompt string) string {
+	return stripPromptEcho(reasoning, strings.TrimSpace(prompt))
 }
+
+// PromptEchoFilter suppresses an echoed prompt as it streams. Post-hoc stripping was
+// not enough: chunks are printed the moment they arrive, so a model that opens its
+// reasoning by repeating the prompt printed the echo (and the trailing quote and
+// separator punctuation) before anything could be removed. The filter holds back only
+// the runes needed to decide, then passes everything through.
+type PromptEchoFilter struct {
+	normPrompt  string
+	lowerPrompt string
+	held        strings.Builder
+	phase       int // 0 deciding, 1 skipping echo residue, 2 passing through
+}
+
+func NewPromptEchoFilter(prompt string) *PromptEchoFilter {
+	norm := strings.TrimSpace(prompt)
+	return &PromptEchoFilter{normPrompt: norm, lowerPrompt: strings.ToLower(norm)}
+}
+
+// Write returns the portion of chunk that is safe to print.
+func (f *PromptEchoFilter) Write(chunk string) string {
+	if f.phase == 2 || f.normPrompt == "" {
+		return f.dropArtifact(chunk)
+	}
+	f.held.WriteString(chunk)
+
+	if f.phase == 0 {
+		clean := strings.TrimLeft(f.held.String(), "\r\n\t ")
+
+		// Full echo confirmed (with or without a wrapper): consume it, then skip residue.
+		// A bare wrapper cannot be judged yet, so it stays held until the echoed prompt
+		// either completes or is ruled out.
+		for _, wrapper := range echoWrappers {
+			if strings.HasPrefix(clean, wrapper) {
+				body := clean[len(wrapper):]
+				if strings.HasPrefix(strings.ToLower(body), f.lowerPrompt) {
+					f.held.Reset()
+					f.phase = 1
+					return f.skipResidue(body[len(f.normPrompt):])
+				}
+				if len(body) < len(f.lowerPrompt) && strings.HasPrefix(f.lowerPrompt, strings.ToLower(body)) {
+					return ""
+				}
+			}
+		}
+		if strings.HasPrefix(strings.ToLower(clean), f.lowerPrompt) {
+			f.held.Reset()
+			f.phase = 1
+			return f.skipResidue(clean[len(f.normPrompt):])
+		}
+
+		// Ambiguous: the echo could still complete in a later chunk, so hold.
+		if len(clean) < len(f.lowerPrompt) && strings.HasPrefix(f.lowerPrompt, strings.ToLower(clean)) {
+			return ""
+		}
+
+		// Confirmed not an echo: emit what was held.
+		f.phase = 2
+		f.held.Reset()
+		return f.dropArtifact(clean)
+	}
+
+	return f.skipResidue(f.held.String())
+}
+
+// dropArtifact suppresses punctuation-only fragments. A lone "." inside streamed
+// reasoning is a chat-template boundary artifact, not a thought, and printing it
+// produced a stray dot line between the thought and the timing line. Chunks that
+// carry only whitespace (needed for formatting) are kept.
+func (f *PromptEchoFilter) dropArtifact(chunk string) string {
+	if chunk == "" || strings.ContainsFunc(chunk, unicode.IsLetter) || strings.ContainsFunc(chunk, unicode.IsDigit) || strings.ContainsFunc(chunk, unicode.IsSpace) {
+		return chunk
+	}
+	return ""
+}
+
+// skipResidue consumes the closing wrapper and separator punctuation that separates the
+// echo from the real thought, and emits from the first character of that thought.
+func (f *PromptEchoFilter) skipResidue(s string) string {
+	for _, wrapper := range echoWrappers {
+		s = strings.TrimLeft(s, "\r\n\t ")
+		if s == "" {
+			return ""
+		}
+		if strings.HasPrefix(s, wrapper) {
+			s = s[len(wrapper):]
+			break
+		}
+	}
+	s = strings.TrimLeft(s, "\r\n\t ")
+	for len(s) > 0 && strings.ContainsRune(".:-,", rune(s[0])) {
+		s = s[1:]
+		s = strings.TrimLeft(s, "\r\n\t ")
+	}
+	if s == "" {
+		return ""
+	}
+	f.phase = 2
+	f.held.Reset()
+	return s
+}
+
+// Flush returns anything still held when the stream ends before the decision resolved.
+func (f *PromptEchoFilter) Flush() string {
+	out := f.held.String()
+	f.held.Reset()
+	return out
+}
+
+// Tool classification lives in intent.go (single source of truth).
 
 var llmControlTokenRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`</?atem:[^>\n<]*>?`),
@@ -342,4 +498,3 @@ func SanitizeLLMControlTokens(s string) string {
 	}
 	return s
 }
-

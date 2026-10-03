@@ -225,3 +225,23 @@ func TestSanitizeLLMControlTokens(t *testing.T) {
 }
 
 
+
+func TestParseFallbackToolCallsHermesDialect(t *testing.T) {
+	observed := "<tool_call> \n <function=bash \n <parametercommand \n mkdir -p /home/w/experimental/tests/petitbleu/src/core/net && ls /home/w/experimental/tests/petitbleu/src/core \n </parameter \n </function \n </tool_call> \n thought (1.2s)"
+	calls := ParseFallbackToolCalls(observed)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from degraded dialect, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("expected tool name 'bash', got %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "mkdir -p") {
+		t.Fatalf("command lost: %s", calls[0].Function.Arguments)
+	}
+
+	canonical := "<tool_call>\n<function=read>\n<parameter=path>main.go</parameter>\n<parameter=limit>10</parameter>\n</function>\n</tool_call>"
+	calls2 := ParseFallbackToolCalls(canonical)
+	if len(calls2) != 1 || calls2[0].Function.Name != "read" {
+		t.Fatalf("canonical dialect failed to parse: %+v", calls2)
+	}
+}

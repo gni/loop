@@ -27,6 +27,31 @@ type StreamChunk struct {
 	ToolCallIndex int
 }
 
+var streamSendTimeout = 500 * time.Millisecond
+
+// emitChunk sends a chunk without ever blocking forever. A plain blocking send is
+// what makes a turn "just stop": if the consumer breaks out of its range loop (an
+// approval prompt, a cancellation, a subagent cap, a summarizer that stopped
+// draining), the provider parks on the send, the error channel never receives, and
+// the caller waits on <-streamErrChan indefinitely. Content is already accumulated
+// in the builders, so a dropped chunk only loses a render, never data. Fast path
+// first so buffered chunks still stream normally, then a bounded send that gives up
+// on cancellation or timeout so the stream always makes forward progress.
+func emitChunk(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamChunk) {
+	select {
+	case chunkChan <- chunk:
+		return
+	default:
+	}
+	timer := time.NewTimer(streamSendTimeout)
+	defer timer.Stop()
+	select {
+	case chunkChan <- chunk:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
 type ReplaceEdit = tool.ReplaceEdit
 
 type StreamOptions struct {
@@ -336,7 +361,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var toolCallsMap = make(map[int]*db.ToolCall)
 	textFilter := newFallbackToolTextFilter(func(text string) {
 		textBuilder.WriteString(text)
-		chunkChan <- StreamChunk{Type: "text", Content: text}
+		emitChunk(ctx, chunkChan, StreamChunk{Type: "text", Content: text})
 	})
 	emitText := func(text string) {
 		if text == "" {
@@ -357,7 +382,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if streamBuffer != "" {
 			if inThoughtMode {
 				reasoningBuilder.WriteString(streamBuffer)
-				chunkChan <- StreamChunk{Type: "reasoning", Content: streamBuffer}
+				emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
 			} else {
 				emitText(streamBuffer)
 			}
@@ -436,7 +461,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 		if choice.Delta.ReasoningContent != "" {
 			reasoningBuilder.WriteString(choice.Delta.ReasoningContent)
-			chunkChan <- StreamChunk{Type: "reasoning", Content: choice.Delta.ReasoningContent}
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: choice.Delta.ReasoningContent})
 		}
 
 		if choice.Delta.Content != "" {
@@ -480,7 +505,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 						preReasoning := streamBuffer[:idx]
 						if preReasoning != "" {
 							reasoningBuilder.WriteString(preReasoning)
-							chunkChan <- StreamChunk{Type: "reasoning", Content: preReasoning}
+							emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: preReasoning})
 						}
 						streamBuffer = streamBuffer[idx+len(tag):]
 						inThoughtMode = false
@@ -498,13 +523,13 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 						if sendLen > 0 {
 							preReasoning := streamBuffer[:sendLen]
 							reasoningBuilder.WriteString(preReasoning)
-							chunkChan <- StreamChunk{Type: "reasoning", Content: preReasoning}
+							emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: preReasoning})
 							streamBuffer = streamBuffer[sendLen:]
 						}
 						break
 					}
 					reasoningBuilder.WriteString(streamBuffer)
-					chunkChan <- StreamChunk{Type: "reasoning", Content: streamBuffer}
+					emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
 					streamBuffer = ""
 					break
 				}
@@ -515,7 +540,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			if streamBuffer != "" {
 				if inThoughtMode {
 					reasoningBuilder.WriteString(streamBuffer)
-					chunkChan <- StreamChunk{Type: "reasoning", Content: streamBuffer}
+					emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
 				} else {
 					emitText(streamBuffer)
 				}
@@ -536,7 +561,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					}
 					toolCallsMap[idx] = &newTC
 					if tc.Function.Name != "" {
-						chunkChan <- StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx}
+						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx})
 					}
 				} else {
 					if tc.ID != "" {
@@ -547,12 +572,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					}
 					if tc.Function.Name != "" {
 						existing.Function.Name = tc.Function.Name
-						chunkChan <- StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx}
+						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx})
 					}
 					existing.Function.Arguments += tc.Function.Arguments
 				}
 				if tc.Function.Arguments != "" {
-					chunkChan <- StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx}
+					emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx})
 				}
 			}
 		}
@@ -561,7 +586,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	if streamBuffer != "" {
 		if inThoughtMode {
 			reasoningBuilder.WriteString(streamBuffer)
-			chunkChan <- StreamChunk{Type: "reasoning", Content: streamBuffer}
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: streamBuffer})
 		} else {
 			emitText(streamBuffer)
 		}
@@ -680,7 +705,10 @@ func (a *Agent) StreamChatCompletions(
 		}
 	})
 
-	tools := a.Registry.GetAvailableTools(allowlist)
+	var tools []tool.Tool
+	if a.Registry != nil {
+		tools = a.Registry.GetAvailableTools(allowlist)
+	}
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)
 
 	select {

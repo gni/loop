@@ -2,32 +2,56 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestGuard_PerFileReadLimit(t *testing.T) {
+// The guard only blocks repetition that happens back-to-back. Scattered calls
+// across a turn or session are never penalised.
+
+func TestGuard_PerFileReadLimitIsConsecutive(t *testing.T) {
 	guard := NewTurnExecutionGuard()
 	file := "src/config/settings.py"
 	args := `{"path":"` + file + `"}`
 
-	for i := 1; i <= 3; i++ {
+	// Interleaving a different call breaks the streak, so 30 scattered reads of
+	// the same file must never be blocked.
+	for i := 1; i <= 30; i++ {
 		if err := guard.CheckPreExecution("read", args); err != nil {
-			t.Fatalf("iteration %d unexpectedly blocked: %v", i, err)
+			t.Fatalf("scattered read %d unexpectedly blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("read", args, "content of settings.py", nil)
+		other := `{"pattern":"term_` + fmt.Sprint(i) + `"}`
+		if err := guard.CheckPreExecution("grep", other); err != nil {
+			t.Fatalf("interleaved grep %d unexpectedly blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("grep", other, "matches", nil)
+	}
+
+	// 10 identical reads in a row are still allowed; the 11th is blocked.
+	for i := 1; i <= ConsecutiveLimit; i++ {
+		if err := guard.CheckPreExecution("read", args); err != nil {
+			t.Fatalf("consecutive read %d unexpectedly blocked: %v", i, err)
 		}
 		guard.RecordPostExecution("read", args, "content of settings.py", nil)
 	}
 
-	// 4th read of same file should be blocked before execution
 	err := guard.CheckPreExecution("read", args)
 	if err == nil {
-		t.Fatalf("expected 4th read of %s to be blocked, but it was allowed", file)
+		t.Fatalf("expected read #%d of %s to be blocked, but it was allowed", ConsecutiveLimit+1, file)
 	}
-	if !strings.Contains(err.Error(), "has already been inspected 3 times") {
+	if !strings.Contains(err.Error(), fmt.Sprintf("inspected %d times in a row", ConsecutiveLimit)) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Call 'edit' or 'write' now") {
-		t.Fatalf("error message missing actionable directive: %v", err)
+
+	// Any different call resets the streak: the same file is readable again.
+	if err := guard.CheckPreExecution("grep", `{"pattern":"settings"}`); err != nil {
+		t.Fatalf("interleaved call unexpectedly blocked: %v", err)
+	}
+	guard.RecordPostExecution("grep", `{"pattern":"settings"}`, "matches", nil)
+	if err := guard.CheckPreExecution("read", args); err != nil {
+		t.Fatalf("read after breaking the streak was unexpectedly blocked: %v", err)
 	}
 }
 
@@ -59,19 +83,19 @@ func TestGuard_DirectoryInspectionLimit(t *testing.T) {
 	dir := "src/core/errors"
 	args := `{"path":"` + dir + `"}`
 
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= ConsecutiveLimit; i++ {
 		if err := guard.CheckPreExecution("list", args); err != nil {
 			t.Fatalf("list %d unexpectedly blocked: %v", i, err)
 		}
 		guard.RecordPostExecution("list", args, "entries", nil)
 	}
 
-	// 4th list of same directory should be blocked
+	// The (ConsecutiveLimit+1)th consecutive list of the same directory is blocked
 	err := guard.CheckPreExecution("list", args)
 	if err == nil {
-		t.Fatalf("expected 4th list of %s to be blocked", dir)
+		t.Fatalf("expected consecutive list #%d of %s to be blocked", ConsecutiveLimit+1, dir)
 	}
-	if !strings.Contains(err.Error(), "has already been inspected 3 times") {
+	if !strings.Contains(err.Error(), fmt.Sprintf("inspected %d times in a row", ConsecutiveLimit)) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
@@ -80,37 +104,36 @@ func TestGuard_BashFileInspectionExtraction(t *testing.T) {
 	guard := NewTurnExecutionGuard()
 	file := "src/config/settings.py"
 
-	// 1. read via tool 'read'
+	// read via tool 'read', then via bash 'cat', then via python pathlib: same
+	// target, so they form one consecutive streak regardless of tool.
 	readArgs := `{"path":"` + file + `"}`
-	if err := guard.CheckPreExecution("read", readArgs); err != nil {
-		t.Fatalf("read unexpectedly blocked: %v", err)
-	}
-	guard.RecordPostExecution("read", readArgs, "content", nil)
-
-	// 2. read via bash 'cat'
 	catArgs := `{"command":"cat src/config/settings.py"}`
-	if err := guard.CheckPreExecution("bash", catArgs); err != nil {
-		t.Fatalf("cat unexpectedly blocked: %v", err)
-	}
-	guard.RecordPostExecution("bash", catArgs, "content", nil)
-
-	// 3. read via python script with pathlib
 	pyArgs := `{"command":"python3 -c \"import pathlib; print(pathlib.Path('src/config/settings.py').read_text())\""}`
-	if err := guard.CheckPreExecution("bash", pyArgs); err != nil {
-		t.Fatalf("python read unexpectedly blocked: %v", err)
+
+	for _, step := range []struct{ tool, args string }{{"read", readArgs}, {"bash", catArgs}, {"bash", pyArgs}} {
+		if err := guard.CheckPreExecution(step.tool, step.args); err != nil {
+			t.Fatalf("%s inspection unexpectedly blocked: %v", step.tool, err)
+		}
+		guard.RecordPostExecution(step.tool, step.args, "content", nil)
 	}
-	guard.RecordPostExecution("bash", pyArgs, "content", nil)
 
 	if count := guard.FileReadCount(file); count != 3 {
-		t.Fatalf("expected file read count 3, got %d", count)
+		t.Fatalf("expected consecutive file read streak 3, got %d", count)
 	}
 
-	// 4. A 4th inspection via bash should now be blocked
+	// Fill the streak to the limit, then the next inspection of the same target is blocked
+	for i := 4; i <= ConsecutiveLimit; i++ {
+		if err := guard.CheckPreExecution("bash", catArgs); err != nil {
+			t.Fatalf("bash inspection %d unexpectedly blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("bash", catArgs, "content", nil)
+	}
+
 	err := guard.CheckPreExecution("bash", catArgs)
 	if err == nil {
-		t.Fatalf("expected 4th inspection via bash cat to be blocked")
+		t.Fatalf("expected consecutive inspection #%d via bash cat to be blocked", ConsecutiveLimit+1)
 	}
-	if !strings.Contains(err.Error(), "has already been inspected 3 times") {
+	if !strings.Contains(err.Error(), fmt.Sprintf("inspected %d times in a row", ConsecutiveLimit)) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
@@ -120,15 +143,15 @@ func TestGuard_ModificationResetsCounters(t *testing.T) {
 	file := "src/config/settings.py"
 	args := `{"path":"` + file + `"}`
 
-	// Read 3 times
-	for i := 0; i < 3; i++ {
+	// Read ConsecutiveLimit times in a row
+	for i := 0; i < ConsecutiveLimit; i++ {
 		_ = guard.CheckPreExecution("read", args)
 		guard.RecordPostExecution("read", args, "content", nil)
 	}
 
-	// 4th read is blocked
+	// Next read is blocked
 	if err := guard.CheckPreExecution("read", args); err == nil {
-		t.Fatalf("expected 4th read to be blocked before modification")
+		t.Fatalf("expected blocked read before modification")
 	}
 
 	// Apply an edit
@@ -136,7 +159,7 @@ func TestGuard_ModificationResetsCounters(t *testing.T) {
 	guard.RecordPostExecution("edit", editArgs, "successfully edited", nil)
 
 	if guard.FileReadCount(file) != 0 {
-		t.Fatalf("expected file read count reset to 0, got %d", guard.FileReadCount(file))
+		t.Fatalf("expected file read streak reset to 0, got %d", guard.FileReadCount(file))
 	}
 
 	// Now reading the file again is allowed
@@ -149,31 +172,48 @@ func TestGuard_RepeatedFailingBashCommand(t *testing.T) {
 	guard := NewTurnExecutionGuard()
 	failingCmd := `{"command":"python3 -c \"import paththlib\""}`
 
-	// 1st failure
-	if err := guard.CheckPreExecution("bash", failingCmd); err != nil {
-		t.Fatalf("1st attempt blocked: %v", err)
+	for i := 1; i <= ConsecutiveLimit; i++ {
+		if err := guard.CheckPreExecution("bash", failingCmd); err != nil {
+			t.Fatalf("attempt %d blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("bash", failingCmd, "NameError", errors.New("command failed: exit status 1"))
 	}
-	guard.RecordPostExecution("bash", failingCmd, "NameError", errors.New("command failed: exit status 1"))
 
-	// 2nd failure
-	if err := guard.CheckPreExecution("bash", failingCmd); err != nil {
-		t.Fatalf("2nd attempt blocked: %v", err)
-	}
-	guard.RecordPostExecution("bash", failingCmd, "NameError", errors.New("command failed: exit status 1"))
-
-	// 3rd attempt should be blocked before execution
+	// The (ConsecutiveLimit+1)th identical failing command is blocked
 	err := guard.CheckPreExecution("bash", failingCmd)
 	if err == nil {
-		t.Fatalf("expected repeatedly failing command to be blocked")
+		t.Fatalf("expected consecutively failing command to be blocked")
 	}
-	if !strings.Contains(err.Error(), "has failed repeatedly (2 times)") {
+	if !strings.Contains(err.Error(), fmt.Sprintf("failed %d times in a row", ConsecutiveLimit)) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 
-	// Different command should NOT be blocked
+	// Different command should NOT be blocked, and it resets the streak
 	differentCmd := `{"command":"python3 -c \"import pathlib\""}`
 	if err := guard.CheckPreExecution("bash", differentCmd); err != nil {
 		t.Fatalf("different command unexpectedly blocked: %v", err)
+	}
+	guard.RecordPostExecution("bash", differentCmd, "ok", nil)
+	if err := guard.CheckPreExecution("bash", failingCmd); err != nil {
+		t.Fatalf("failing command unexpectedly still blocked after a different call: %v", err)
+	}
+}
+
+func TestGuard_SuccessClearsFailureStreak(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	flakyCmd := `{"command":"pytest tests/ --flakey"}`
+
+	for i := 1; i <= 5; i++ {
+		if err := guard.CheckPreExecution("bash", flakyCmd); err != nil {
+			t.Fatalf("attempt %d blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("bash", flakyCmd, "NameError", errors.New("command failed: exit status 1"))
+	}
+
+	// A success clears the failure streak even though the call is identical.
+	guard.RecordPostExecution("bash", flakyCmd, "tests passed", nil)
+	if err := guard.CheckPreExecution("bash", flakyCmd); err != nil {
+		t.Fatalf("command unexpectedly blocked after it succeeded: %v", err)
 	}
 }
 
@@ -181,7 +221,7 @@ func TestGuard_ConsecutiveIdenticalCalls(t *testing.T) {
 	guard := NewTurnExecutionGuard()
 	cmd := `{"command":"pytest tests/"}`
 
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= ConsecutiveLimit; i++ {
 		if err := guard.CheckPreExecution("bash", cmd); err != nil {
 			t.Fatalf("attempt %d unexpectedly blocked: %v", i, err)
 		}
@@ -189,12 +229,29 @@ func TestGuard_ConsecutiveIdenticalCalls(t *testing.T) {
 		guard.RecordPostExecution("bash", cmd, "tests passed", nil)
 	}
 
-	// 4th identical execution should be blocked
+	// The (ConsecutiveLimit+1)th identical execution in a row is blocked
 	err := guard.CheckPreExecution("bash", cmd)
 	if err == nil {
-		t.Fatalf("expected 4th identical call to be blocked")
+		t.Fatalf("expected %dth consecutive identical call to be blocked", ConsecutiveLimit+1)
 	}
-	if !strings.Contains(err.Error(), "loop detected: identical tool call repeated 3 times") {
+	if !strings.Contains(err.Error(), fmt.Sprintf("identical tool call repeated %d times in a row", ConsecutiveLimit)) {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestGuard_ScatteredIdenticalCallsNeverBlocked(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	cmd := `{"command":"pytest tests/"}`
+
+	// 40 pytest calls spread across the turn with other work in between must
+	// never trip the guard.
+	for i := 1; i <= 40; i++ {
+		if err := guard.CheckPreExecution("bash", cmd); err != nil {
+			t.Fatalf("scattered identical call %d unexpectedly blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("bash", cmd, "tests passed", nil)
+
+		other := `{"pattern":"x_` + fmt.Sprint(i) + `"}`
+		guard.RecordPostExecution("grep", other, "matches", nil)
 	}
 }

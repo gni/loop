@@ -67,8 +67,8 @@ func (t *readTool) Definition() Tool {
 
 func (t *readTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	var args struct {
-		Path     string `json:"path"`
-		File     string `json:"file"`
+		Path     string  `json:"path"`
+		File     string  `json:"file"`
 		FilePath string  `json:"file_path"`
 		Offset   float64 `json:"offset"`
 		Limit    float64 `json:"limit"`
@@ -1127,4 +1127,3 @@ func generateDisplayDiff(oldContent, newContent string, contextLines int) string
 
 	return sb.String()
 }
-

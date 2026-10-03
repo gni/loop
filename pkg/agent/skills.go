@@ -16,8 +16,6 @@ import (
 
 type Skill = tool.Skill
 
-var ActiveSkills []Skill
-
 func ParseFrontmatter(content string) (map[string]string, string) {
 	trimmed := strings.TrimSpace(content)
 	if !strings.HasPrefix(trimmed, "---") {
@@ -158,15 +156,79 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 
 func LoadSkills(skillsDir string) ([]Skill, error) {
 	cwd, _ := os.Getwd()
-	dirs := []string{
-		skillsDir,
-		filepath.Join(cwd, "skills"),
-		filepath.Join(cwd, ".agents", "skills"),
-	}
-	return LoadSkillsFromDirs(dirs...)
+	return LoadSkillsFromDirs(SkillSearchDirs(skillsDir, cwd)...)
 }
 
-func subagentSkillGuidance(skills []Skill) string {
+// SkillSearchDirs resolves every place skills can legitimately live: the
+// configured directory plus workspace- and cwd-scoped overrides. The same
+// resolution is used at startup and on reload so /skills never reports an empty
+// catalog for skills that live in the workspace.
+func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
+	var dirs []string
+	seen := make(map[string]bool)
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		if strings.HasPrefix(dir, "~/") {
+			homeDir, _ := os.UserHomeDir()
+			dir = filepath.Join(homeDir, dir[2:])
+		}
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		if !seen[dir] {
+			seen[dir] = true
+			dirs = append(dirs, dir)
+		}
+	}
+
+	add(skillsDir)
+	for _, root := range []string{workspaceRoot, "."} {
+		if root == "" {
+			continue
+		}
+		add(filepath.Join(root, "skills"))
+		add(filepath.Join(root, ".agents", "skills"))
+	}
+	return dirs
+}
+
+// subagentSkillGuidance renders the skill contract. The catalog and the
+// no-invention rule apply to every agent because load_skill resolves names from
+// the same registry; the delegation rules are emitted only for agents whose
+// effective tool catalog actually contains spawn_subagent. Naming an unregistered
+// skill is the failure mode this prevents: the registry converts unknown names into
+// agent-local skills built from the subagent's system_prompt, so the spawn succeeds
+// but the reference instructions are never loaded.
+func subagentSkillGuidance(tools []ToolEntry, skills []Skill) string {
+	names := uniqueSkillNames(skills)
+
+	var sb strings.Builder
+	sb.WriteString("\n\nSubagent skill assignment:\n")
+	if len(names) == 0 {
+		sb.WriteString("- No registered reference skills are currently installed.\n")
+	} else {
+		sb.WriteString("- Use skill_names only with these exact registered names: ")
+		sb.WriteString(strings.Join(names, ", "))
+		sb.WriteString(".\n")
+	}
+	sb.WriteString("- Use skill_names only for exact registered names. Do not invent reference skill names.\n")
+	sb.WriteString("- Unknown names are converted into agent-local skills using the subagent's system_prompt, so spawning continues but the reference instructions are not loaded.\n")
+	sb.WriteString("- For a new specialization, define it in the subagent system_prompt or provide inline_skills.\n")
+
+	if hasToolEntry(tools, "spawn_subagent") {
+		sb.WriteString("- Subagents: When the user asks to call or use agents, or to delegate duties, use 'spawn_subagent' to spawn specialized agents and delegate tasks to them.\n")
+		if hasToolEntry(tools, "remove_subagent") && hasToolEntry(tools, "swarm_audit") {
+			sb.WriteString("- After a delegated task completes, call swarm_audit for the subagent, then remove_subagent to release its context.\n")
+		}
+	}
+	return sb.String()
+}
+
+// uniqueSkillNames returns lowercase-deduplicated skill names in stable order so
+// the prompt is byte-identical between turns.
+func uniqueSkillNames(skills []Skill) []string {
 	names := make([]string, 0, len(skills))
 	seen := make(map[string]struct{}, len(skills))
 	for _, skill := range skills {
@@ -182,19 +244,16 @@ func subagentSkillGuidance(skills []Skill) string {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	return names
+}
 
-	var sb strings.Builder
-	sb.WriteString("\n\nSubagent skill assignment:\n")
-	if len(names) == 0 {
-		sb.WriteString("- No registered reference skills are currently installed.\n")
-	} else {
-		sb.WriteString("- Registered reference skill names: ")
-		sb.WriteString(strings.Join(names, ", "))
-		sb.WriteString(".\n")
+func hasToolEntry(tools []ToolEntry, name string) bool {
+	for _, entry := range tools {
+		if entry.Name == name {
+			return true
+		}
 	}
-	sb.WriteString("- Use skill_names only for exact registered names. Do not invent reference skill names.\n")
-	sb.WriteString("- For a new specialization, define it in the subagent system_prompt or provide inline_skills. Unknown skill_names are preserved as agent-local skills using that subagent's system_prompt.\n")
-	return sb.String()
+	return false
 }
 
 func RenderSkills(w io.Writer, skills []Skill, theme style.UITheme) {
@@ -231,6 +290,30 @@ type SystemPromptConfig struct {
 	AllSkills       []tool.Skill
 	MemoryContext   string
 	ActiveTasks     []TaskInfo
+	UserGuidelines  string
+	Tools           []ToolEntry
+	// Allowlist restricts which tools the agent may actually call. The catalog
+	// must match it, otherwise the model is prompted with tools it cannot use.
+	Allowlist []string
+}
+
+// ToolEntry is one line of the tool catalog rendered into the system prompt.
+type ToolEntry struct {
+	Name       string
+	Snippet    string
+	Guidelines []string
+}
+
+// splitInstruction separates the identity preamble from user-authored guidelines
+// so both reach the model. Previously everything after "Guidelines:" was discarded.
+func splitInstruction(instruction string) (identity, guidelines string) {
+	const marker = "Guidelines:"
+	if idx := strings.Index(instruction, marker); idx != -1 {
+		identity = strings.TrimSpace(instruction[:idx])
+		guidelines = strings.TrimSpace(instruction[idx+len(marker):])
+		return identity, strings.TrimLeft(guidelines, "\n")
+	}
+	return strings.TrimSpace(instruction), ""
 }
 
 // BuildSystemPrompt constructs the complete system prompt instructions, guidelines,
@@ -251,11 +334,13 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		skillsForGuidance = cfg.AllSkills
 	}
 
-	baseInstruction := cfg.BaseInstruction
-	if idx := strings.Index(baseInstruction, "\nGuidelines:\n"); idx != -1 {
-		baseInstruction = strings.TrimSpace(baseInstruction[:idx])
-	}
+	// User guidelines must survive: they were previously truncated away, which is
+	// why instructions written in system_instruction never reached the model.
+	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
 	baseInstruction = strings.TrimSpace(baseInstruction)
+	if userGuidelines == "" {
+		userGuidelines = cfg.UserGuidelines
+	}
 	if baseInstruction == "" {
 		baseInstruction = "You are maquis, an elite autonomous software engineering harness. You solve engineering tasks with senior craft, architectural rigor, and direct working deliverables."
 	}
@@ -265,35 +350,35 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	// 1. Preamble section
 	sb.WriteString(baseInstruction)
 
-	// 2. Tools section
+	// 2. Tools section, generated from the registry so plugins and MCP tools are
+	// never omitted from the model's view of what it can call.
+	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	sb.WriteString("\n\n<tools>\n")
-	sb.WriteString("- read: Read file contents\n")
-	sb.WriteString("- edit: Make precise file edits with exact text replacement\n")
-	sb.WriteString("- write: Create or overwrite complete files\n")
-	sb.WriteString("- bash: Execute shell commands (builds, tests, git, background processes)\n")
-	sb.WriteString("- grep: Search file contents for patterns or regular expressions\n")
-	sb.WriteString("- find: Find files by glob pattern\n")
-	sb.WriteString("- list: List directory contents\n")
-	if len(cfg.ActiveAgents) > 0 {
-		for _, name := range cfg.ActiveAgents {
-			sb.WriteString(fmt.Sprintf("- subagent__%s: Delegate task to specialized subagent '%s'\n", name, name))
-		}
+	for _, entry := range tools {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", entry.Name, entry.Snippet))
+	}
+	for _, name := range cfg.ActiveAgents {
+		sb.WriteString(fmt.Sprintf("- subagent__%s: Delegate task to specialized subagent '%s'\n", name, name))
 	}
 	sb.WriteString("</tools>\n\n")
 
-	// 3. Rules section
+	// 3. Rules section: core rules, then per-tool guidelines, then user guidelines.
 	sb.WriteString("<rules>\n")
 	sb.WriteString(fmt.Sprintf("- Workspace root: `%s`. Any relative file paths resolve relative to this directory.\n", workspaceRoot))
 	sb.WriteString("- Actions over talk: Implement code on disk directly using write and edit tools. Deliver complete working code.\n")
-	sb.WriteString("- Tool Selection: Use 'read' to examine specific files instead of cat or sed in bash. Never call 'read' on a directory path; use 'list' to inspect directory trees, and call 'read' with the exact file path (e.g. 'src/core/errors/__init__.py' rather than 'src/core/errors'). Use 'find' to locate files by glob pattern, and 'grep' to search definitions or references across the workspace.\n")
-	sb.WriteString("- Search Discipline: Never run search pipelines (find, grep, xargs) in bash. Limit searches to targeted queries using 'grep' or 'find'. If a directory listing or search returns no files related to the requested topic, conclude the search immediately and answer from internal knowledge.\n")
-	sb.WriteString("- Knowledge Fallback: When asked about recipes, domain questions, explanations, or concepts not present in workspace files, synthesize the answer directly from your knowledge base. Do NOT enter loops repeatedly listing directories, reading unrelated files, or attempting to spawn helper agents.\n")
-	sb.WriteString("- Precise Edits: Keep oldText minimal (2-5 lines). Before editing a file, read it first to verify its content. If edit reports an oldText mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.\n")
-	if len(cfg.ActiveAgents) > 0 {
-		sb.WriteString("- Subagents: When the user asks to call or use agents, or to delegate duties, use 'spawn_subagent' to spawn specialized agents and delegate tasks to them.\n")
+	sb.WriteString("- Read intent before acting: answer conversational prompts (greetings, questions, clarifications) directly; only call tools when the message asks for work on files or commands.\n")
+	for _, entry := range tools {
+		for _, rule := range entry.Guidelines {
+			sb.WriteString(fmt.Sprintf("- %s\n", rule))
+		}
 	}
 	sb.WriteString("- Background Processes: When asked to run a command or service in the background, use the 'bash' tool with \"background\": true.\n")
 	sb.WriteString("- Be concise and direct in your responses.\n")
+	if userGuidelines != "" {
+		sb.WriteString("\n<User Guidelines>\n")
+		sb.WriteString(userGuidelines)
+		sb.WriteString("\n</User Guidelines>")
+	}
 	sb.WriteString("</rules>")
 
 	// 4. Skills section
@@ -306,7 +391,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		sb.WriteString("</skills>")
 	}
 
-	sb.WriteString(subagentSkillGuidance(skillsForGuidance))
+	sb.WriteString(subagentSkillGuidance(tools, skillsForGuidance))
 
 	// 5. Swarm info if subagents active (in non-compact mode)
 	if !cfg.CompactPrompt && len(cfg.ActiveAgents) > 0 {
@@ -334,7 +419,11 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	return sb.String()
 }
 
-func (a *Agent) GetSystemPrompt() string {
+func (a *Agent) GetSystemPrompt() string { return a.GetSystemPromptFor(nil) }
+
+// GetSystemPromptFor builds the prompt for a specific tool allowlist so the
+// advertised tool catalog matches the tools the agent can actually execute.
+func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 	var activeAgents []string
 	a.SpawnedAgentsMu.RLock()
 	for name := range a.SpawnedAgents {
@@ -368,5 +457,43 @@ func (a *Agent) GetSystemPrompt() string {
 		Skills:          a.ActiveSkills,
 		MemoryContext:   a.LoadMemoryContext(),
 		ActiveTasks:     activeTasks,
+		Allowlist:       allowlist,
+		Tools:           promptToolEntries(a.Registry),
 	})
+}
+
+func filterToolEntries(entries []ToolEntry, allowlist []string) []ToolEntry {
+	if len(allowlist) == 0 {
+		return entries
+	}
+	allowed := make(map[string]bool, len(allowlist))
+	for _, name := range allowlist {
+		allowed[name] = true
+	}
+	out := make([]ToolEntry, 0, len(entries))
+	for _, entry := range entries {
+		if allowed[entry.Name] || strings.HasPrefix(entry.Name, "mcp__") {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// promptToolEntries renders the tool catalog from the live registry, so plugin
+// and MCP tools are visible to the model instead of being hardcoded.
+func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
+	if registry == nil {
+		return nil
+	}
+	executors := registry.GetAllExecutors()
+	entries := make([]ToolEntry, 0, len(executors))
+	for name, executor := range executors {
+		entries = append(entries, ToolEntry{
+			Name:       name,
+			Snippet:    tool.GetPromptSnippet(executor),
+			Guidelines: tool.GetPromptGuidelines(executor),
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries
 }

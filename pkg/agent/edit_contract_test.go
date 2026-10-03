@@ -68,6 +68,7 @@ func TestCompactPromptForbidsWholeFileWriteAfterEditMismatch(t *testing.T) {
 			SystemInstruction: "test agent",
 			SkillsDir:         t.TempDir(),
 		},
+		Registry:      promptTestRegistry(),
 		WorkspaceRoot: t.TempDir(),
 	}
 
@@ -160,4 +161,3 @@ func TestCleanStructuredSystemPromptSections(t *testing.T) {
 		}
 	}
 }
-

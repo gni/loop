@@ -17,17 +17,17 @@ type MCPServerConfig struct {
 }
 
 type Config struct {
-	Endpoint          string                     `json:"endpoint,omitempty"`
-	ApiKey            string                     `json:"api_key,omitempty"`
-	Model             string                     `json:"model,omitempty"`
-	Temperature       float64                    `json:"temperature"`
-	SystemInstruction string                     `json:"system_instruction"`
-	AutoApprove       bool                       `json:"auto_approve,omitempty"`
-	ShowThinking      bool                       `json:"show_thinking"`
-	CollapseResults   bool                       `json:"collapse_results,omitempty"`
-	ShowTokens        bool                       `json:"show_tokens"`
-	Theme             string                     `json:"theme"`
-	DirectCommands    bool                       `json:"direct_commands"`
+	Endpoint             string                     `json:"endpoint,omitempty"`
+	ApiKey               string                     `json:"api_key,omitempty"`
+	Model                string                     `json:"model,omitempty"`
+	Temperature          float64                    `json:"temperature"`
+	SystemInstruction    string                     `json:"system_instruction"`
+	AutoApprove          bool                       `json:"auto_approve,omitempty"`
+	ShowThinking         bool                       `json:"show_thinking"`
+	CollapseResults      bool                       `json:"collapse_results,omitempty"`
+	ShowTokens           bool                       `json:"show_tokens"`
+	Theme                string                     `json:"theme"`
+	DirectCommands       bool                       `json:"direct_commands"`
 	CertFile             string                     `json:"cert_file,omitempty"`
 	KeyFile              string                     `json:"key_file,omitempty"`
 	CAFile               string                     `json:"ca_file,omitempty"`
@@ -73,32 +73,32 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		Endpoint:          endpoint,
-		ApiKey:            apiKey,
-		Model:             model,
-		Temperature:       0.7,
-		SystemInstruction: DefaultSystemInstruction,
-		AutoApprove:       false,
-		ShowThinking:      true,
-		CollapseResults:   false,
-		ShowTokens:        false,
-		Theme:             "dark",
-		DirectCommands:    true,
-		CertFile:             "",
-		KeyFile:              "",
-		CAFile:               "",
-		SkipVerify:           false,
-		SkillsDir:            skillsDir,
-		MCPServers:           make(map[string]MCPServerConfig),
-		MaxReasoningSteps:    30,
-		MaxCompletionTokens:  16384,
-		ContextWindowLimit:   128000,
-		ReasoningEffort:      "low",
-		StreamWrites:         true,
-		SyntaxTheme:          "auto",
-		Providers:            make(map[string]ProviderConfig),
-		ActiveProvider:       "",
-		CompactPrompt:        false,
+		Endpoint:            endpoint,
+		ApiKey:              apiKey,
+		Model:               model,
+		Temperature:         0.7,
+		SystemInstruction:   DefaultSystemInstruction,
+		AutoApprove:         false,
+		ShowThinking:        true,
+		CollapseResults:     false,
+		ShowTokens:          false,
+		Theme:               "dark",
+		DirectCommands:      true,
+		CertFile:            "",
+		KeyFile:             "",
+		CAFile:              "",
+		SkipVerify:          false,
+		SkillsDir:           skillsDir,
+		MCPServers:          make(map[string]MCPServerConfig),
+		MaxReasoningSteps:   30,
+		MaxCompletionTokens: 16384,
+		ContextWindowLimit:  128000,
+		ReasoningEffort:     "low",
+		StreamWrites:        true,
+		SyntaxTheme:         "auto",
+		Providers:           make(map[string]ProviderConfig),
+		ActiveProvider:      "",
+		CompactPrompt:       false,
 	}
 }
 
@@ -236,7 +236,7 @@ func LoadConfig(path string) (*Config, error) {
 		if config.Providers == nil {
 			config.Providers = make(map[string]ProviderConfig)
 		}
-		
+
 		providerName := config.ActiveProvider
 		if providerName == "" {
 			providerName = "default"

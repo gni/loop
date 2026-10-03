@@ -33,7 +33,7 @@ func (p *repeatToolProvider) StreamChatCompletions(
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
 	callNum := p.calls.Add(1)
-	if callNum > 4 {
+	if callNum > ConsecutiveLimit+2 {
 		return &db.Message{
 			Role:    "assistant",
 			Content: "stopped repeating",
@@ -258,7 +258,7 @@ func TestToolCategoryClassification(t *testing.T) {
 	}
 }
 
-func TestAlternatingReadsOfSameFileTriggerLoopBreaker(t *testing.T) {
+func TestAlternatingReadsOfSameFileDoNotTriggerLoopBreaker(t *testing.T) {
 	tmpDir := t.TempDir()
 	fileA := filepath.Join(tmpDir, "file_a.txt")
 	fileB := filepath.Join(tmpDir, "file_b.txt")
@@ -289,15 +289,12 @@ func TestAlternatingReadsOfSameFileTriggerLoopBreaker(t *testing.T) {
 	var buf bytes.Buffer
 	a.RunAgentLoop(context.Background(), &buf, &messages, "read files alternating", nil, style.UITheme{}, true, "")
 
-	foundLoopError := false
+	// Alternating reads hit different targets each call, so no consecutive streak
+	// ever builds up: the guard must never block them.
 	for _, m := range messages {
-		if m.Role == "tool" && strings.Contains(m.Content, "loop detected") && strings.Contains(m.Content, "has already been inspected 3 times") {
-			foundLoopError = true
-			break
+		if m.Role == "tool" && strings.Contains(m.Content, "loop detected") {
+			t.Fatalf("alternating re-reads must not trigger loop detection, got: %s", m.Content)
 		}
-	}
-	if !foundLoopError {
-		t.Fatalf("expected alternating re-reads of the same file to trigger loop detection, got messages: %+v", messages)
 	}
 }
 
@@ -316,7 +313,7 @@ func (p *alternatingReadProvider) StreamChatCompletions(
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
 	callNum := p.calls.Add(1)
-	if callNum > 8 {
+	if callNum > ConsecutiveLimit+2 {
 		return &db.Message{
 			Role:    "assistant",
 			Content: "finished alternating reads",

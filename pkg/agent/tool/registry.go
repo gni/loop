@@ -154,6 +154,10 @@ func (r *ToolRegistry) Register(t ToolExecutor) {
 	r.tools[t.Name()] = t
 }
 
+func (r *ToolRegistry) Unregister(name string) {
+	delete(r.tools, name)
+}
+
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 	for name := range r.tools {
 		if strings.HasPrefix(name, prefix) {

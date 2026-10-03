@@ -290,7 +290,7 @@ func HandleSlashCommand(
 				a.Config.SkipVerify = val == "true" || val == "yes" || val == "1"
 			case "stream_writes", "stream_write", "stream":
 				a.Config.StreamWrites = val == "true" || val == "yes" || val == "1"
-			case "debug_log_file", "debug_file", "debug":
+			case "debug_log_file", "debug":
 				a.Config.DebugLogFile = val
 				if a.DebugLogger != nil {
 					a.DebugLogger.Close()
@@ -363,6 +363,13 @@ func HandleSlashCommand(
 			fmt.Fprintln(w, "successfully reloaded all skills from disk.")
 		} else {
 			agent.RenderSkills(w, a.ActiveSkills, *theme)
+			if len(a.ActiveSkills) == 0 && a.Config != nil {
+				dirs := agent.SkillSearchDirs(a.Config.SkillsDir, a.GetWorkspaceRoot())
+				if len(dirs) > 0 {
+					fmt.Fprintf(w, "searched: %s\n", strings.Join(dirs, ", "))
+					fmt.Fprintln(w, "create a skill as <skill-dir>/<name>/SKILL.md or <skill-dir>/<name>.md, then run /skills reload.")
+				}
+			}
 		}
 		return true, false
 	case "/rewind", "/clear", "/clean", "/reset":

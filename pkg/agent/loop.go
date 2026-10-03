@@ -138,6 +138,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 		sr.SetPrompt(prompt)
 
+		// Suppress an echoed prompt during streaming, not just after the turn: chunks
+		// are printed the moment they arrive, so post-hoc stripping cannot fix what the
+		// user already saw.
+		echoFilter := NewPromptEchoFilter(prompt)
+
 		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
 		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 
@@ -165,7 +170,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					loader.PauseDots()
 					loader.Feed()
 				}
-				sr.WriteReasoning(chunk.Content)
+				if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
+					sr.WriteReasoning(cleaned)
+				}
+				continue
 			} else if chunk.Type == "text" {
 				if loader != nil {
 					loader.PauseDots()
@@ -193,6 +201,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					loader.Feed()
 				}
 			}
+		}
+		if pending := echoFilter.Flush(); pending != "" {
+			sr.WriteReasoning(pending)
 		}
 		if loader != nil {
 			loader.ShowDots()
@@ -334,7 +345,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			approved := false
 			always := false
 			approvalRendered := false
-			if !a.Config.AutoApprove && !isReadOnly(tc.Function.Name) {
+			if !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) {
 				approvalRendered = true
 				sr.Flush()
 				if a.UI != nil {
@@ -409,7 +420,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 
 				// Update agent state
-				isReadOnlyTool := tc.Function.Name == "read" || tc.Function.Name == "grep"
+				isReadOnlyTool := IsInspectionTool(tc.Function.Name)
 				isPrevEdit := a.lastToolWasEdit
 				if !isReadOnlyTool || !isPrevEdit || a.lastToolOutput == "" {
 					a.lastToolOutput = toolOutput
@@ -428,8 +439,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
 				}
 
-				if consecutiveGuardRejections >= 3 {
-					haltNotice := "[Agent halted: loop protection rejected 3 consecutive tool calls. Stopping execution to prevent infinite loop. Proceed with 'edit'/'write' or provide final response.]"
+				if consecutiveGuardRejections >= ConsecutiveLimit {
+					haltNotice := fmt.Sprintf("[Agent halted: loop protection rejected %d consecutive tool calls. Stopping execution to prevent infinite loop. Proceed with 'edit'/'write' or provide final response.]", ConsecutiveLimit)
 					*messages = append(*messages, db.Message{
 						Role:    "assistant",
 						Content: haltNotice,
@@ -737,9 +748,9 @@ func (f *fallbackStreamRenderer) CompleteToolCall(index int, toolName string, to
 func (f *fallbackStreamRenderer) GetReasoningDuration() float64 { return 0 }
 func (f *fallbackStreamRenderer) SetPrompt(prompt string)       {}
 
-func isReadOnly(toolName string) bool {
-	return toolName == "read" || toolName == "task_status" || toolName == "grep"
-}
+// isReadOnly is retained for callers that still reference it; it now defers to
+// the shared classification in intent.go.
+func isReadOnly(toolName string) bool { return IsInspectionTool(toolName) }
 
 func getTerminalSize() (int, int) {
 	return style.GetTerminalSize()

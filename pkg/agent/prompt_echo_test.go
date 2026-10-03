@@ -1,0 +1,84 @@
+package agent
+
+import (
+	"strings"
+	"testing"
+)
+
+// Streaming case from the real transcript: the model opens its reasoning by echoing
+// the prompt in quotes, so the printed stream started with `"` and a stray `.`.
+// The filter must consume the echo before anything is written.
+func TestPromptEchoFilterSuppressesQuotedEchoAsItStreams(t *testing.T) {
+	f := NewPromptEchoFilter("hi")
+	chunks := []string{
+		`"`,
+		`hi`,
+		`"`,
+		`. `,
+		`This is a conversational greeting.`,
+		` Keep it concise.`,
+	}
+
+	var out strings.Builder
+	for _, chunk := range chunks {
+		out.WriteString(f.Write(chunk))
+	}
+	out.WriteString(f.Flush())
+
+	got := out.String()
+	if !strings.HasPrefix(got, "This is a conversational greeting.") {
+		t.Fatalf("echo leaked into the stream: %q", got)
+	}
+	if strings.HasPrefix(got, `"`) || strings.HasPrefix(got, ".") {
+		t.Fatalf("stream still starts with artifact: %q", got)
+	}
+}
+
+// A leading quote is only suppressed while the echo is still undecided; once the
+// model is genuinely thinking, quotes inside the thought must survive.
+func TestPromptEchoFilterKeepsQuotesAfterDecision(t *testing.T) {
+	f := NewPromptEchoFilter("sup?")
+	first := f.Write("This thought contains a \"quoted\" phrase.")
+	if first == "" {
+		t.Fatal("dropped a real thought")
+	}
+	if !strings.Contains(first, `"quoted"`) {
+		t.Fatalf("lost quotes inside a genuine thought: %q", first)
+	}
+	if got := f.Write(`"still here"`); got != `"still here"` {
+		t.Fatalf("post-decision chunk was filtered: %q", got)
+	}
+}
+
+// Punctuation-only fragments are template artifacts, not thoughts.
+func TestPromptEchoFilterDropsPunctuationOnlyArtifact(t *testing.T) {
+	f := NewPromptEchoFilter("hello")
+	if got := f.Write("working on the parser"); got == "" {
+		t.Fatal("dropped real content")
+	}
+	if got := f.Write("."); got != "" {
+		t.Fatalf("punctuation-only artifact survived: %q", got)
+	}
+	if got := f.Write("\n"); got != "\n" {
+		t.Fatalf("whitespace needed for formatting was dropped: %q", got)
+	}
+}
+
+// Held text must be released if the stream ends while the echo is undecided.
+func TestPromptEchoFilterFlushesUndecidedPrefix(t *testing.T) {
+	f := NewPromptEchoFilter("build the parser")
+	if got := f.Write("build the pars"); got != "" {
+		t.Fatalf("ambiguous prefix should be held, got %q", got)
+	}
+	// Echo completes here; the following chunk is the first real thought.
+	f.Write("er")
+	if got := f.Write(" and ship it"); got != "and ship it" {
+		t.Fatalf("post-echo text was not emitted: %q", got)
+	}
+
+	g := NewPromptEchoFilter("long prompt here")
+	g.Write("long prompt her")
+	if got := g.Flush(); got != "long prompt her" {
+		t.Fatalf("flush lost held text: %q", got)
+	}
+}

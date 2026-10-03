@@ -22,6 +22,13 @@ func (t *listTool) PromptSnippet() string {
 	return "List directory contents"
 }
 
+func (t *listTool) PromptGuidelines() []string {
+	return []string{
+		"Use 'list' to inspect directory trees; never call 'read' on a directory path.",
+		"If a listing returns nothing relevant, stop searching and answer from internal knowledge instead of re-listing.",
+	}
+}
+
 func (t *listTool) Definition() Tool {
 	return Tool{
 		Type: "function",

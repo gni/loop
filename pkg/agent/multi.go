@@ -439,6 +439,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		sr.SetPrompt(lastUserPrompt)
 
+		// Same echo suppression as the main loop, so subagent output does not begin
+		// with the model's quoted repeat of the delegated task.
+		echoFilter := NewPromptEchoFilter(lastUserPrompt)
+
 		var responseHeaderStarted bool
 		var subagentCompletionTokens int
 		var subagentGenStart time.Time
@@ -456,13 +460,17 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 			if chunk.Type == "reasoning" {
 				if enableThinking {
+					cleaned := echoFilter.Write(chunk.Content)
+					if cleaned == "" {
+						continue
+					}
 					if !responseHeaderStarted {
 						fmt.Fprintf(ncw, "\n[%s] response: ",
 							style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
 						)
 						responseHeaderStarted = true
 					}
-					sr.WriteReasoning(chunk.Content)
+					sr.WriteReasoning(cleaned)
 				}
 			} else {
 				if !responseHeaderStarted {
@@ -497,6 +505,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 				lastDraw = now
 			}
+		}
+		if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
+			fmt.Fprintf(ncw, "\n[%s] response: ",
+				style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+			)
+			responseHeaderStarted = true
+			sr.WriteReasoning(pending)
 		}
 		sr.Flush()
 
@@ -630,8 +645,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				_ = ma.Manager.SaveAgentState(ma, "running")
 			}
 
-			if consecutiveGuardRejections >= 3 {
-				haltMsg := fmt.Sprintf("[Subagent '%s' halted: loop protection rejected 3 consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", ma.Name)
+			if consecutiveGuardRejections >= ConsecutiveLimit {
+				haltMsg := fmt.Sprintf("[Subagent '%s' halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", ma.Name, ConsecutiveLimit)
 				ma.HistoryMu.Lock()
 				ma.History = append(ma.History, db.Message{
 					Role:    "assistant",
