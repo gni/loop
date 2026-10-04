@@ -434,7 +434,16 @@ func extractToolTarget(toolName string, argsJSON string) string {
 		if p := getString("DirectoryPath"); p != "" {
 			return p
 		}
+		if p := getString("dirPath"); p != "" {
+			return p
+		}
+		if p := getString("directory_path"); p != "" {
+			return p
+		}
 		if p := getString("file_path"); p != "" {
+			return p
+		}
+		if p := getString("filePath"); p != "" {
 			return p
 		}
 		if p := getString("file"); p != "" {
@@ -447,6 +456,18 @@ func extractToolTarget(toolName string, argsJSON string) string {
 			return p
 		}
 		if p := getString("Target"); p != "" {
+			return p
+		}
+		if p := getString("target_file"); p != "" {
+			return p
+		}
+		if p := getString("targetFile"); p != "" {
+			return p
+		}
+		if p := getString("filename"); p != "" {
+			return p
+		}
+		if p := getString("fileName"); p != "" {
 			return p
 		}
 	}
@@ -470,7 +491,8 @@ func extractToolTarget(toolName string, argsJSON string) string {
 	// 5. Fallback - check all keys in priority order
 	keys := []string{
 		"CommandLine", "command", "query", "Query", "pattern", "prompt", "Prompt",
-		"AbsolutePath", "TargetFile", "SearchPath", "DirectoryPath", "path", "target", "Target", "name", "id",
+		"AbsolutePath", "TargetFile", "SearchPath", "DirectoryPath", "dirPath",
+		"file_path", "filePath", "file", "path", "target", "Target", "target_file", "targetFile", "filename", "fileName", "name", "id",
 	}
 	for _, key := range keys {
 		if val := getString(key); val != "" {
@@ -628,6 +650,8 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 					WriteContent       string `json:"write_content"`
 					CodeContent        string `json:"CodeContent"`
 					ReplacementContent string `json:"ReplacementContent"`
+					Text               string `json:"text"`
+					Body               string `json:"body"`
 				}
 				if argsJSON != "" {
 					err := json.Unmarshal([]byte(argsJSON), &args)
@@ -643,6 +667,10 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 							body = args.Content
 						} else if args.WriteContent != "" {
 							body = args.WriteContent
+						} else if args.Text != "" {
+							body = args.Text
+						} else if args.Body != "" {
+							body = args.Body
 						}
 					}
 				}

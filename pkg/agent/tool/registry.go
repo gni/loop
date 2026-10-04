@@ -166,8 +166,36 @@ func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 	}
 }
 
+// NormalizeName maps common hallucinated tool names and aliases from local/quantized
+// models to canonical tool names registered in the harness.
+func NormalizeName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	switch strings.ToLower(trimmed) {
+	case "write_path", "write_file", "writefile", "create_file", "createfile", "write_to_file", "writetofile":
+		return "write"
+	case "edit_file", "editfile", "modify_file", "patch_file":
+		return "edit"
+	case "read_file", "readfile", "cat":
+		return "read"
+	case "list_dir", "list_directory", "listdir", "ls", "dir":
+		return "list"
+	case "find_files", "find_file", "findfiles", "findfile":
+		return "find"
+	case "grep_search", "search_code", "search":
+		return "grep"
+	case "run_command", "runcommand", "exec", "shell", "terminal":
+		return "bash"
+	default:
+		return trimmed
+	}
+}
+
 func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) (string, error) {
-	executor, exists := r.tools[name]
+	canonicalName := NormalizeName(name)
+	executor, exists := r.tools[canonicalName]
+	if !exists {
+		executor, exists = r.tools[name]
+	}
 	if !exists {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}

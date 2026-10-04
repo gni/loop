@@ -29,8 +29,6 @@ tmp
 
 maquis_ubuntu
 maquis_test
-maquis_bin
-*_bin
 
 .codegraph
 maquis_debug.log

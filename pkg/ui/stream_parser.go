@@ -38,8 +38,21 @@ type jsonStreamParser struct {
 	streamWrites         bool
 }
 
+func isToolTargetPathKey(key string, toolName string) bool {
+	switch key {
+	case "path", "file_path", "filePath", "file", "target", "Target", "target_file", "targetFile",
+		"filename", "fileName", "AbsolutePath", "TargetFile", "SearchPath", "searchPath",
+		"DirectoryPath", "dirPath", "directory_path", "pattern", "query", "Query",
+		"prompt", "Prompt", "name", "id", "task_id":
+		return true
+	case "command", "CommandLine", "cmd":
+		return toolName == "bash" || toolName == "ls" || strings.Contains(toolName, "command") || strings.Contains(toolName, "exec") || strings.Contains(toolName, "run")
+	}
+	return false
+}
+
 func (p *jsonStreamParser) needsPath() bool {
-	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || strings.HasPrefix(p.activeToolName, "subagent__")
+	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "find" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "list" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || strings.HasPrefix(p.activeToolName, "subagent__")
 }
 
 type parserWriter struct {
@@ -121,10 +134,31 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 					if p.isPath {
 						if !p.titlePrinted {
 							p.pathPrinted = true
+							if p.guessedLang == "" && p.path != "" {
+								ext := filepath.Ext(p.path)
+								if len(ext) > 1 {
+									p.guessedLang = ext[1:]
+								} else {
+									p.guessedLang = "plaintext"
+								}
+							}
 							p.printStreamTitle(w, theme)
 							if p.outputBuf.Len() > 0 {
-								fmt.Fprint(w, p.outputBuf.String())
+								raw := p.outputBuf.String()
 								p.outputBuf.Reset()
+								lang := p.guessedLang
+								if lang != "" && lang != "plaintext" {
+									lines := strings.Split(raw, "\n")
+									for idx, l := range lines {
+										if idx == len(lines)-1 && l == "" {
+											break
+										}
+										_ = HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
+										fmt.Fprint(w, "\n")
+									}
+								} else {
+									fmt.Fprint(w, raw)
+								}
 							}
 						} else if !p.pathPrinted {
 							p.pathPrinted = true
@@ -183,20 +217,22 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 				p.inString = true
 			} else if char == ':' {
 				p.inValue = true
-				isBashOrCmd := (p.currentKey == "command" || p.currentKey == "CommandLine") && (p.activeToolName == "bash" || p.activeToolName == "ls" || strings.Contains(p.activeToolName, "command") || strings.Contains(p.activeToolName, "exec") || strings.Contains(p.activeToolName, "run"))
-				isPathKey := p.currentKey == "path" || p.currentKey == "pattern" || p.currentKey == "name" || p.currentKey == "id" || p.currentKey == "prompt" || p.currentKey == "task_id" || p.currentKey == "AbsolutePath" || p.currentKey == "TargetFile" || isBashOrCmd
-				if isPathKey {
-					p.isPath = true
-				} else if p.currentKey == "write_content" || p.currentKey == "content" || strings.Contains(p.currentKey, "Content") || p.currentKey == "code" {
+				if isToolTargetPathKey(p.currentKey, p.activeToolName) {
+					if p.path == "" {
+						p.isPath = true
+					}
+				} else if p.activeToolName != "edit" && (p.currentKey == "write_content" || p.currentKey == "content" || strings.Contains(p.currentKey, "Content") || p.currentKey == "code" || p.currentKey == "text" || p.currentKey == "body") {
 					if p.streamWrites {
 						p.isContent = true
 						p.guessedLang = ""
 						p.markBodyStreamed()
 						if !p.titlePrinted {
-							p.printStreamTitle(w, theme)
-							if p.outputBuf.Len() > 0 {
-								fmt.Fprint(w, p.outputBuf.String())
-								p.outputBuf.Reset()
+							if !p.needsPath() || p.path != "" {
+								p.printStreamTitle(w, theme)
+								if p.outputBuf.Len() > 0 {
+									fmt.Fprint(w, p.outputBuf.String())
+									p.outputBuf.Reset()
+								}
 							}
 						}
 					}
@@ -210,6 +246,13 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 					_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
 					fmt.Fprint(pw, "\n")
 					p.lineBuffer.Reset()
+				}
+				if !p.titlePrinted {
+					p.printStreamTitle(w, theme)
+					if p.outputBuf.Len() > 0 {
+						fmt.Fprint(w, p.outputBuf.String())
+						p.outputBuf.Reset()
+					}
 				}
 				p.inValue = false
 				p.isContent = false

@@ -1,6 +1,10 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+
+	"maquis/pkg/agent/tool"
+)
 
 // Single source of truth for tool side-effect classification.
 // Before this file the same question was answered four different ways
@@ -20,11 +24,12 @@ var actionTools = map[string]bool{
 }
 
 // IsInspectionTool reports whether a tool is side-effect free.
-func IsInspectionTool(name string) bool { return inspectionTools[name] }
+func IsInspectionTool(name string) bool { return inspectionTools[tool.NormalizeName(name)] }
 
 // IsActionTool reports whether a tool can mutate state.
 func IsActionTool(name string) bool {
-	return actionTools[name] || strings.HasPrefix(name, "subagent__")
+	norm := tool.NormalizeName(name)
+	return actionTools[norm] || strings.HasPrefix(norm, "subagent__")
 }
 
 // NeedsApproval is the approval decision used by the loop: inspection never

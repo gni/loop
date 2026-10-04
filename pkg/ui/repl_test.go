@@ -1028,6 +1028,67 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 			t.Errorf("expected edit intent to remain suppressed, but got %q", got)
 		}
 	})
+
+	t.Run("write_content before path displays filename in header and streams body", func(t *testing.T) {
+		p := &jsonStreamParser{
+			activeToolName: "write",
+			streamWrites:   true,
+		}
+		var buf bytes.Buffer
+		p.feed(`{"write_content": "from __future__ import annotations\nimport json\n", "path": "test.py"}`, &buf, theme)
+		got := stripAnsi(buf.String())
+		if !strings.Contains(got, "write test.py") {
+			t.Fatalf("expected header with 'write test.py', got %q", got)
+		}
+		if !strings.Contains(got, "from __future__ import annotations") || !strings.Contains(got, "import json") {
+			t.Fatalf("expected streamed file contents, got %q", got)
+		}
+		headerIdx := strings.Index(got, "write test.py")
+		codeIdx := strings.Index(got, "from __future__ import annotations")
+		if headerIdx > codeIdx {
+			t.Fatalf("expected header before code, got header at %d, code at %d in %q", headerIdx, codeIdx, got)
+		}
+	})
+
+	t.Run("chunked streaming buffers write_content until path arrives", func(t *testing.T) {
+		p := &jsonStreamParser{
+			activeToolName: "write",
+			streamWrites:   true,
+		}
+		var buf bytes.Buffer
+		// First chunk: write_content arrives first without path
+		p.feed(`{"write_content": "line 1\nline 2\n"`, &buf, theme)
+		if buf.Len() > 0 {
+			t.Fatalf("expected output to be buffered until path is known, but got: %q", buf.String())
+		}
+		// Second chunk: path arrives
+		p.feed(`, "path": "app/worker.py"}`, &buf, theme)
+		got := stripAnsi(buf.String())
+		if !strings.Contains(got, "write app/worker.py") {
+			t.Fatalf("expected header 'write app/worker.py', got %q", got)
+		}
+		if !strings.Contains(got, "line 1\nline 2") {
+			t.Fatalf("expected buffered lines flushed after title, got %q", got)
+		}
+	})
+
+	t.Run("alternative path keys like file_path and file are recognized", func(t *testing.T) {
+		for _, key := range []string{"file_path", "filePath", "file", "target", "filename"} {
+			p := &jsonStreamParser{
+				activeToolName: "write",
+				streamWrites:   true,
+			}
+			var buf bytes.Buffer
+			p.feed(fmt.Sprintf(`{"%s": "app/config.py", "write_content": "PORT = 8080\n"}`, key), &buf, theme)
+			got := stripAnsi(buf.String())
+			if !strings.Contains(got, "write app/config.py") {
+				t.Fatalf("key %q: expected header 'write app/config.py', got %q", key, got)
+			}
+			if !strings.Contains(got, "PORT = 8080") {
+				t.Fatalf("key %q: expected body 'PORT = 8080', got %q", key, got)
+			}
+		}
+	})
 }
 
 func TestStreamRendererStartToolCall(t *testing.T) {

@@ -294,6 +294,49 @@ func TestStreamedWriteContentIsNotRenderedTwice(t *testing.T) {
 	}
 }
 
+func TestStreamedWriteContentBeforePathIncludesFilename(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+	arguments := `{"write_content":"import sys\nimport os\n","path":"nested/tool.py"}`
+
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(arguments)
+	renderer.Flush()
+
+	rendered := stripAnsi(output.String())
+	if !strings.Contains(rendered, "write nested/tool.py") {
+		t.Fatalf("expected header 'write nested/tool.py', got %q", rendered)
+	}
+	if !strings.Contains(rendered, "import sys") {
+		t.Fatalf("expected streamed content 'import sys', got %q", rendered)
+	}
+	headerIdx := strings.Index(rendered, "write nested/tool.py")
+	codeIdx := strings.Index(rendered, "import sys")
+	if headerIdx > codeIdx {
+		t.Fatalf("expected header to appear before code, got header at %d, code at %d", headerIdx, codeIdx)
+	}
+}
+
+func TestStreamedWriteAlternativePathKeys(t *testing.T) {
+	for _, key := range []string{"file_path", "filePath", "file", "target", "filename"} {
+		var output renderLineCounter
+		renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+		arguments := fmt.Sprintf(`{"%s":"service/api.py","write_content":"from flask import Flask\n"}`, key)
+
+		renderer.StartToolCall("write", 0)
+		renderer.WriteToolCall(arguments)
+		renderer.Flush()
+
+		rendered := stripAnsi(output.String())
+		if !strings.Contains(rendered, "write service/api.py") {
+			t.Fatalf("key %q: expected header 'write service/api.py', got %q", key, rendered)
+		}
+		if !strings.Contains(rendered, "from flask import Flask") {
+			t.Fatalf("key %q: expected streamed content, got %q", key, rendered)
+		}
+	}
+}
+
 func TestEditIntentIsNotRenderedBeforeExecution(t *testing.T) {
 	var output renderLineCounter
 	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")

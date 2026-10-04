@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"maquis/pkg/agent/tool"
 	"maquis/pkg/db"
 	"maquis/pkg/ui/style"
 )
@@ -241,6 +242,8 @@ func FormatDefensiveError(toolName string, err error) string {
 		suggestion = "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked."
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
 		suggestion = "Review the command syntax and arguments. If the command depends on specific environment setups or files, verify they are present."
+	} else if strings.HasPrefix(lowerErr, "unknown tool:") {
+		suggestion = "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'."
 	} else {
 		suggestion = "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly."
 	}
@@ -377,6 +380,7 @@ func ParseFallbackToolCalls(content string) []db.ToolCall {
 }
 
 func buildToolCall(name string, args string) db.ToolCall {
+	name = tool.NormalizeName(name)
 	// Try parsing as JSON first
 	var temp map[string]interface{}
 	isJSON := json.Unmarshal([]byte(args), &temp) == nil

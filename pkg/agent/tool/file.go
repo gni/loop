@@ -240,7 +240,10 @@ func (t *writeTool) PromptSnippet() string {
 }
 
 func (t *writeTool) PromptGuidelines() []string {
-	return []string{"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch."}
+	return []string{
+		"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
+		"Specify the target file in 'path' and the complete file contents in 'write_content'.",
+	}
 }
 
 func (t *writeTool) Definition() Tool {
@@ -272,6 +275,9 @@ func (t *writeTool) Execute(ctx AgentContext, arguments string) (string, error) 
 		Path         string `json:"path"`
 		File         string `json:"file"`
 		FilePath     string `json:"file_path"`
+		Target       string `json:"target"`
+		TargetFile   string `json:"target_file"`
+		WritePath    string `json:"write_path"`
 		Content      string `json:"content"`
 		WriteContent string `json:"write_content"`
 		Text         string `json:"text"`
@@ -285,6 +291,12 @@ func (t *writeTool) Execute(ctx AgentContext, arguments string) (string, error) 
 			args.Path = args.FilePath
 		} else if args.File != "" {
 			args.Path = args.File
+		} else if args.TargetFile != "" {
+			args.Path = args.TargetFile
+		} else if args.Target != "" {
+			args.Path = args.Target
+		} else if args.WritePath != "" {
+			args.Path = args.WritePath
 		}
 	}
 	if args.Path == "" {
@@ -359,7 +371,7 @@ func (t *editTool) Definition() Tool {
 				Properties: map[string]SchemaProp{
 					"path": {
 						Type:        "string",
-						Description: "Path to the file to edit.",
+						Description: "Path to the file to edit. Always specify path first.",
 					},
 					"updates": {
 						Type:        "array",

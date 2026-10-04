@@ -360,5 +360,68 @@ func TestToolFloatArgumentsUnmarshaling(t *testing.T) {
 	}
 }
 
+func TestWriteToolAliasesAndNormalizeName(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := &fileTestContext{root: tmpDir}
 
+	// 1. Verify NormalizeName mappings
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"write_path", "write"},
+		{"write_file", "write"},
+		{"writeFile", "write"},
+		{"create_file", "write"},
+		{"write_to_file", "write"},
+		{"edit_file", "edit"},
+		{"editFile", "edit"},
+		{"read_file", "read"},
+		{"readFile", "read"},
+		{"list_dir", "list"},
+		{"ls", "list"},
+		{"run_command", "bash"},
+		{"exec", "bash"},
+		{"shell", "bash"},
+		{"find_files", "find"},
+		{"find_file", "find"},
+	}
 
+	for _, tc := range tests {
+		if got := NormalizeName(tc.input); got != tc.expected {
+			t.Errorf("NormalizeName(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+
+	// 2. Test ToolRegistry execution via alias "write_path"
+	r := NewToolRegistry()
+	r.Register(NewWriteTool())
+
+	_, err := r.Execute(ctx, "write_path", `{"path": "from_write_path.txt", "write_content": "created via write_path"}`)
+	if err != nil {
+		t.Fatalf("r.Execute with write_path failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "from_write_path.txt"))
+	if err != nil {
+		t.Fatalf("failed to read created file: %v", err)
+	}
+	if string(data) != "created via write_path" {
+		t.Fatalf("file content mismatch: got %q", string(data))
+	}
+
+	// 3. Test writeTool argument aliases (e.g. write_path and target_file as path key)
+	writeTool := NewWriteTool()
+	_, err = writeTool.Execute(ctx, `{"write_path": "alias_key.txt", "content": "hello alias key"}`)
+	if err != nil {
+		t.Fatalf("writeTool.Execute with write_path key failed: %v", err)
+	}
+
+	data2, err := os.ReadFile(filepath.Join(tmpDir, "alias_key.txt"))
+	if err != nil {
+		t.Fatalf("failed to read created file: %v", err)
+	}
+	if string(data2) != "hello alias key" {
+		t.Fatalf("file content mismatch: got %q", string(data2))
+	}
+}

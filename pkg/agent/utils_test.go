@@ -326,3 +326,22 @@ func TestGetGlobalTokenUsageEstimatesAtStartup(t *testing.T) {
 		t.Fatalf("expected estimated=true at startup")
 	}
 }
+
+func TestFallbackAndDefensiveErrorWithWritePath(t *testing.T) {
+	// 1. Fallback tool call normalization
+	content := `<tool:write_path>{"path": "file.py", "write_content": "print(1)"}</tool:write_path>`
+	calls := ParseFallbackToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "write" {
+		t.Fatalf("expected tool name 'write', got %q", calls[0].Function.Name)
+	}
+
+	// 2. Defensive error for unknown tool
+	err := errors.New("unknown tool: random_tool")
+	alert := FormatDefensiveError("random_tool", err)
+	if !strings.Contains(alert, "Inspect <tools>") {
+		t.Fatalf("expected unknown tool recommendation in alert, got:\n%s", alert)
+	}
+}

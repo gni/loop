@@ -629,8 +629,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 						existing.Type = tc.Type
 					}
 					if tc.Function.Name != "" {
-						existing.Function.Name = tc.Function.Name
-						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx})
+						tcName := tool.NormalizeName(tc.Function.Name)
+						existing.Function.Name = tcName
+						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx})
 					}
 					existing.Function.Arguments += tc.Function.Arguments
 				}
@@ -712,6 +713,7 @@ func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawRea
 		for i := 0; i <= maxIdx; i++ {
 			if tc, ok := toolCallsMap[i]; ok {
 				cleaned := *tc
+				cleaned.Function.Name = tool.NormalizeName(cleaned.Function.Name)
 				cleaned.Function.Arguments = SanitizeLLMControlTokens(cleaned.Function.Arguments)
 				calls = append(calls, cleaned)
 			}
