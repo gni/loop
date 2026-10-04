@@ -1985,4 +1985,409 @@ func TestPrintSessionHistoryHidesThinkingWhenOff(t *testing.T) {
 	}
 }
 
+func TestPasteMultilineThreshold_CollapsesOver80Lines(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	var buf bytes.Buffer
+	var lines []string
+	for i := 1; i <= 90; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	multiline90 := strings.Join(lines, "\n") + "\n"
+	bracketed := fmt.Sprintf("\x1b[200~%s\x1b[201~", multiline90)
+	ki := &keyInterceptorReader{
+		r:     bytes.NewReader([]byte(bracketed)),
+		agent: a,
+		w:     &buf,
+	}
+
+	p := make([]byte, 2048)
+	n, err := ki.Read(p)
+	if err != nil {
+		t.Fatalf("failed to read paste: %v", err)
+	}
+
+	result := string(p[:n])
+	expectedTag := "[Pasted 90 lines]"
+	if result != expectedTag {
+		t.Fatalf("expected collapsed tag %q, got %q", expectedTag, result)
+	}
+
+	if ki.pastedCodeBlocks == nil || ki.pastedCodeBlocks[expectedTag] != multiline90 {
+		t.Fatalf("expected pastedCodeBlocks[%q] to contain original 90 lines", expectedTag)
+	}
+}
+
+func TestPasteMultilineThreshold_DoesNotCollapseUnder80Lines(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	var buf bytes.Buffer
+	multiline10 := "1\n2\n3\n4\n5\n6\n7\n8\n9\n10"
+	bracketed := fmt.Sprintf("\x1b[200~%s\x1b[201~", multiline10)
+	ki := &keyInterceptorReader{
+		r:     bytes.NewReader([]byte(bracketed)),
+		agent: a,
+		w:     &buf,
+	}
+
+	p := make([]byte, 1024)
+	n, err := ki.Read(p)
+	if err != nil {
+		t.Fatalf("failed to read paste: %v", err)
+	}
+
+	result := string(p[:n])
+	expectedNormalized := "1 ↵ 2 ↵ 3 ↵ 4 ↵ 5 ↵ 6 ↵ 7 ↵ 8 ↵ 9 ↵ 10"
+	if result != expectedNormalized {
+		t.Fatalf("expected normalized multiline string %q, got %q", expectedNormalized, result)
+	}
+
+	if len(ki.pastedCodeBlocks) > 0 {
+		t.Fatalf("expected no pastedCodeBlocks for <= 80 lines, got %v", ki.pastedCodeBlocks)
+	}
+}
+
+func TestSingleLongLine_DoesNotAutoresizePromptVertically(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	longLine := "m psql sqlite3 2>/dev/null; python3 --version; node --version 2>/dev/nullwhich python3 node npm psql sqlite3 2>/dev/null; python3 --version; node --version"
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: longLine,
+		currentInputPos:  len([]rune(longLine)),
+	}
+
+	getUI().StateMu.Lock()
+	origEnabled := getUI().Enabled
+	origLastText := getUI().LastStatusBarText
+	getUI().Enabled = true
+	getUI().LastStatusBarText = ""
+	getUI().PasteLinesOffset = 0
+	getUI().StateMu.Unlock()
+	t.Cleanup(func() {
+		getUI().StateMu.Lock()
+		getUI().Enabled = origEnabled
+		getUI().LastStatusBarText = origLastText
+		getUI().PasteLinesOffset = 0
+		getUI().StateMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	out := buf.String()
+
+	// In 24-height terminal, single line prompt must stay strictly at row 22 (height-2)
+	if !strings.Contains(out, "\x1b[22;1H") {
+		t.Fatalf("expected prompt at row 22 (height-2), output was:\n%q", out)
+	}
+
+	// Separator should remain at row 21 (height-3), NOT pushed up
+	if !strings.Contains(out, "\x1b[21;1H") {
+		t.Fatalf("expected top separator at row 21 (height-3), output was:\n%q", out)
+	}
+
+	// Stats line at row 20 (height-4)
+	if !strings.Contains(out, "\x1b[20;1H") {
+		t.Fatalf("expected stats line at row 20 (height-4), output was:\n%q", out)
+	}
+
+	// Bottom delimiter at row 23 (height-1)
+	if !strings.Contains(out, "\x1b[23;1H") {
+		t.Fatalf("expected bottom delimiter at row 23 (height-1), output was:\n%q", out)
+	}
+
+	// Cursor must be on row 22 (height-2) with the text, NOT pushed down to an empty row
+	if !strings.Contains(out, "\x1b[22;") || strings.Contains(out, "\x1b[14;") {
+		t.Fatalf("expected cursor on row 22 and no empty row jump, output was:\n%q", out)
+	}
+}
+
+func TestPromptAutoresize_StaticBottomDelimiterAndMovingTopDelimiter(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: "alpha\nbeta\ngamma",
+		currentInputPos:  16,
+	}
+
+	getUI().StateMu.Lock()
+	origEnabled := getUI().Enabled
+	origLastText := getUI().LastStatusBarText
+	getUI().Enabled = true
+	getUI().LastStatusBarText = ""
+	getUI().StateMu.Unlock()
+	t.Cleanup(func() {
+		getUI().StateMu.Lock()
+		getUI().Enabled = origEnabled
+		getUI().LastStatusBarText = origLastText
+		getUI().PasteLinesOffset = 0
+		getUI().StateMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	out := buf.String()
+
+	// Bottom delimiter at height-1 (row 23 in 24-height terminal) must be drawn
+	if !strings.Contains(out, "\x1b[23;1H") {
+		t.Fatalf("expected bottom delimiter at row 23 (height-1) to remain static, output was:\n%q", out)
+	}
+
+	// Status bar at height (row 24 in 24-height terminal) must be drawn
+	if !strings.Contains(out, "\x1b[24;1H") {
+		t.Fatalf("expected status bar at row 24 (height), output was:\n%q", out)
+	}
+
+	// For a 3-line input, extra offset is 2.
+	// Top delimiter should move up from row 21 (height-3) to row 19 (height-3-2).
+	if !strings.Contains(out, "\x1b[19;1H") {
+		t.Fatalf("expected top prompt separator at row 19 (height-3-2) moved up dynamically, output was:\n%q", out)
+	}
+
+	// Stats line should move up from row 20 (height-4) to row 18 (height-4-2).
+	if !strings.Contains(out, "\x1b[18;1H") {
+		t.Fatalf("expected stats line at row 18 (height-4-2) moved up dynamically, output was:\n%q", out)
+	}
+
+	// Prompt rows should be drawn at rows 20, 21, and 22
+	if !strings.Contains(out, "\x1b[20;1H") || !strings.Contains(out, "\x1b[21;1H") || !strings.Contains(out, "\x1b[22;1H") {
+		t.Fatalf("expected prompt rows at 20, 21, 22, output was:\n%q", out)
+	}
+}
+
+func TestPromptAutoresize_WithRealTerminal(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	var outBuf bytes.Buffer
+	pasteData := []byte("\x1b[200~alpha\nbeta\ngamma\n\x1b[201~")
+	ki := &keyInterceptorReader{
+		agent: a,
+		r:     bytes.NewReader(pasteData),
+		w:     &outBuf,
+	}
+	rl := term.NewTerminal(ki, "")
+	ki.rl = rl
+	ki.isAtMainPrompt = true
+
+	getUI().StateMu.Lock()
+	origEnabled := getUI().Enabled
+	getUI().Enabled = true
+	getUI().StateMu.Unlock()
+	t.Cleanup(func() {
+		getUI().StateMu.Lock()
+		getUI().Enabled = origEnabled
+		getUI().PasteLinesOffset = 0
+		getUI().StateMu.Unlock()
+	})
+	line, err := rl.ReadLine()
+	t.Logf("outBuf output: %q", outBuf.String())
+	if err != nil && !strings.Contains(err.Error(), "EOF") {
+		t.Fatalf("ReadLine failed: %v", err)
+	}
+	t.Logf("ReadLine returned: %q", line)
+}
+
+func TestNonBracketedPaste_CoalescesMultipleLines(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:     a,
+		inputChan: make(chan byte, 1000),
+	}
+
+	payload := "echo 1\necho 2\necho 3\n"
+	for _, b := range []byte(payload) {
+		ki.inputChan <- b
+	}
+
+	p := make([]byte, 1024)
+	n, err := ki.Read(p)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+
+	result := string(p[:n])
+	expected := "echo 1 ↵ echo 2 ↵ echo 3 ↵ "
+	if result != expected {
+		t.Fatalf("expected coalesced multiline string %q, got %q", expected, result)
+	}
+}
+
+func TestNonBracketedPaste_SingleLineEndingInNewline(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:     a,
+		inputChan: make(chan byte, 1000),
+	}
+
+	payload := "echo hello\n"
+	for _, b := range []byte(payload) {
+		ki.inputChan <- b
+	}
+
+	p := make([]byte, 1024)
+	n, err := ki.Read(p)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+
+	result := string(p[:n])
+	expected := "echo hello\n"
+	if result != expected {
+		t.Fatalf("expected single line with trailing newline %q, got %q", expected, result)
+	}
+}
+
+func TestNonBracketedPaste_Over80LinesCollapses(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:     a,
+		inputChan: make(chan byte, 5000),
+	}
+
+	var lines []string
+	for i := 1; i <= 85; i++ {
+		lines = append(lines, fmt.Sprintf("cmd %d", i))
+	}
+	payload := strings.Join(lines, "\n") + "\n"
+	for _, b := range []byte(payload) {
+		ki.inputChan <- b
+	}
+
+	p := make([]byte, 2048)
+	n, err := ki.Read(p)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+
+	result := string(p[:n])
+	expectedTag := "[Pasted 85 lines]"
+	if result != expectedTag {
+		t.Fatalf("expected %q, got %q", expectedTag, result)
+	}
+
+	if ki.pastedCodeBlocks[expectedTag] != payload {
+		t.Fatalf("expected stored block to match payload")
+	}
+}
+
+func TestPromptAutoresize_ParagraphWrappingAcrossMultipleRows(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	p1 := "Gated Residual: Residual streams with normalization are what make deep LLM training manageable. Gated Residual modulates information flowing through widened residual streams."
+	p2 := "N-gram Embedding: Embeddings provide a unique axis for parameter scaling that requires less computation and is more amenable to offloading than Mixture-of-Experts (MoE)."
+	p3 := "Tailored Training Recipe: The Muon and AdamW optimizers are applied to specific weight categories to maximize efficiency."
+	multilineInput := p1 + "\n" + p2 + "\n" + p3 + "\n"
+
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: multilineInput,
+		currentInputPos:  len([]rune(multilineInput)),
+	}
+
+	getUI().StateMu.Lock()
+	origEnabled := getUI().Enabled
+	origLastText := getUI().LastStatusBarText
+	getUI().Enabled = true
+	getUI().LastStatusBarText = ""
+	getUI().PasteLinesOffset = 0
+	getUI().StateMu.Unlock()
+	t.Cleanup(func() {
+		getUI().StateMu.Lock()
+		getUI().Enabled = origEnabled
+		getUI().LastStatusBarText = origLastText
+		getUI().PasteLinesOffset = 0
+		getUI().StateMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	out := buf.String()
+
+	// In 80-col terminal, p1 (175 chars) wraps into 3 rows, p2 (170 chars) wraps into 3 rows, p3 (117 chars) wraps into 2 rows = 8 rows total.
+	// Check that none of the text is lost:
+	if !strings.Contains(out, "ed residual streams") {
+		t.Fatalf("expected full end of p1 'ed residual streams' to be rendered, got:\n%q", out)
+	}
+	if !strings.Contains(out, "-Experts (MoE)") {
+		t.Fatalf("expected full end of p2 '-Experts (MoE)' to be rendered, got:\n%q", out)
+	}
+	if !strings.Contains(out, "maximize efficiency") {
+		t.Fatalf("expected full end of p3 'maximize efficiency' to be rendered, got:\n%q", out)
+	}
+
+	// Bottom delimiter at height-1 (row 23) must be static
+	if !strings.Contains(out, "\x1b[23;1H") {
+		t.Fatalf("expected bottom delimiter at row 23 to remain static")
+	}
+	// Status bar at height (row 24) must be static
+	if !strings.Contains(out, "\x1b[24;1H") {
+		t.Fatalf("expected status bar at row 24 to remain static")
+	}
+}
+
+func TestConfigurablePasteThreshold(t *testing.T) {
+	a := &agent.Agent{
+		Config: &config.Config{
+			MaxPasteLines: 5,
+			MaxPasteChars: 500,
+		},
+	}
+
+	// 1. Paste with 6 lines (> MaxPasteLines=5) should be collapsed
+	pasted6Lines := "\x1b[200~line1\nline2\nline3\nline4\nline5\nline6\x1b[201~"
+	ki := &keyInterceptorReader{
+		agent: a,
+		r:     strings.NewReader(pasted6Lines),
+	}
+	buf := make([]byte, 256)
+	n, err := ki.Read(buf)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	res := string(buf[:n])
+	if !strings.Contains(res, "[Pasted 6 lines") {
+		t.Fatalf("expected paste of 6 lines to be collapsed into tag, got: %q", res)
+	}
+
+	// 2. Paste with 4 lines (<= MaxPasteLines=5) should NOT be collapsed
+	pasted4Lines := "\x1b[200~line1\nline2\nline3\nline4\x1b[201~"
+	ki2 := &keyInterceptorReader{
+		agent: a,
+		r:     strings.NewReader(pasted4Lines),
+	}
+	buf2 := make([]byte, 256)
+	n2, err := ki2.Read(buf2)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	res2 := string(buf2[:n2])
+	if strings.Contains(res2, "[Pasted") {
+		t.Fatalf("expected paste of 4 lines NOT to be collapsed, got: %q", res2)
+	}
+	if !strings.Contains(res2, " ↵ ") {
+		t.Fatalf("expected paste to contain ' ↵ ' separators, got: %q", res2)
+	}
+}
+
+func TestConfigSetPasteThresholds(t *testing.T) {
+	a := &agent.Agent{
+		Config:     config.DefaultConfig(),
+		ConfigPath: "/dev/null",
+	}
+	theme := &UITheme{}
+	var out bytes.Buffer
+	sessionID := "test"
+
+	handled, _ := HandleSlashCommand(a, "/config set max_paste_lines 42", nil, nil, theme, &out, &sessionID, nil, nil, nil)
+	if !handled {
+		t.Fatalf("expected /config set max_paste_lines to be handled")
+	}
+	if a.Config.MaxPasteLines != 42 {
+		t.Fatalf("expected MaxPasteLines to be 42, got %d", a.Config.MaxPasteLines)
+	}
+
+	handled, _ = HandleSlashCommand(a, "/config set max_paste_chars 1234", nil, nil, theme, &out, &sessionID, nil, nil, nil)
+	if !handled {
+		t.Fatalf("expected /config set max_paste_chars to be handled")
+	}
+	if a.Config.MaxPasteChars != 1234 {
+		t.Fatalf("expected MaxPasteChars to be 1234, got %d", a.Config.MaxPasteChars)
+	}
+}
+
 

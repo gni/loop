@@ -296,6 +296,20 @@ func HandleSlashCommand(
 					a.DebugLogger.Close()
 				}
 				a.DebugLogger = agent.NewDebugLogger(a.WorkspaceRoot, val)
+			case "max_paste_lines", "paste_lines", "paste_threshold":
+				lines, err := strconv.Atoi(val)
+				if err != nil || lines <= 0 {
+					fmt.Fprintf(w, "Invalid max paste lines value: %v\n", err)
+					return true, false
+				}
+				a.Config.MaxPasteLines = lines
+			case "max_paste_chars", "paste_chars":
+				chars, err := strconv.Atoi(val)
+				if err != nil || chars <= 0 {
+					fmt.Fprintf(w, "Invalid max paste chars value: %v\n", err)
+					return true, false
+				}
+				a.Config.MaxPasteChars = chars
 			default:
 				fmt.Fprintf(w, "unknown config key: %s\n", key)
 				return true, false

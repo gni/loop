@@ -49,6 +49,8 @@ type Config struct {
 	DisableLocalPlugins  bool                       `json:"disable_local_plugins,omitempty"`
 	DebugLogFile         string                     `json:"debug_log_file,omitempty"`
 	MaxSubagentDepth     int                        `json:"max_subagent_depth,omitempty"`
+	MaxPasteLines        int                        `json:"max_paste_lines,omitempty"`
+	MaxPasteChars        int                        `json:"max_paste_chars,omitempty"`
 }
 
 func DefaultConfig() *Config {
@@ -99,6 +101,8 @@ func DefaultConfig() *Config {
 		Providers:           make(map[string]ProviderConfig),
 		ActiveProvider:      "",
 		CompactPrompt:       false,
+		MaxPasteLines:       80,
+		MaxPasteChars:       8000,
 	}
 }
 
@@ -194,6 +198,12 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.CompressionThreshold == 0.0 {
 		config.CompressionThreshold = 0.80
+	}
+	if config.MaxPasteLines <= 0 {
+		config.MaxPasteLines = 80
+	}
+	if config.MaxPasteChars <= 0 {
+		config.MaxPasteChars = 8000
 	}
 	mcpPath := filepath.Join(filepath.Dir(path), "mcp.json")
 	if mcpData, err := os.ReadFile(mcpPath); err == nil {

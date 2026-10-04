@@ -774,6 +774,40 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 				cloned.StreamWrites = !cloned.StreamWrites
 			},
 		},
+		{
+			id:          "max_paste_lines",
+			name:        "max paste lines",
+			value:       func() string { return fmt.Sprintf("%d", cloned.MaxPasteLines) },
+			description: "Threshold of lines before multiline paste collapses into a tag",
+			onEdit: func(newVal string) error {
+				if newVal == "" {
+					return nil
+				}
+				lines, err := strconv.Atoi(newVal)
+				if err != nil || lines <= 0 {
+					return fmt.Errorf("must be a positive integer")
+				}
+				cloned.MaxPasteLines = lines
+				return nil
+			},
+		},
+		{
+			id:          "max_paste_chars",
+			name:        "max paste chars",
+			value:       func() string { return fmt.Sprintf("%d", cloned.MaxPasteChars) },
+			description: "Threshold of characters before paste collapses into a tag",
+			onEdit: func(newVal string) error {
+				if newVal == "" {
+					return nil
+				}
+				chars, err := strconv.Atoi(newVal)
+				if err != nil || chars <= 0 {
+					return fmt.Errorf("must be a positive integer")
+				}
+				cloned.MaxPasteChars = chars
+				return nil
+			},
+		},
 	}
 
 	extraRender := func(buf *strings.Builder) {

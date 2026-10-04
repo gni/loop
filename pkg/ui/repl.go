@@ -104,6 +104,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				"collapse_results", "show_tokens", "theme", "syntax_theme", "context_limit", "steps",
 				"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
 				"before_tool_hook", "after_tool_hook", "debug", "debug_file",
+				"max_paste_lines", "max_paste_chars",
 			}
 			if !isSet {
 				configCandidates = append(configCandidates, "show", "set")
@@ -809,8 +810,12 @@ func stylePrompt(p []byte, prefix string, styledPrefix string) []byte {
 }
 
 func (ki *keyInterceptorReader) Write(p []byte) (int, error) {
-	activeTheme := GetConfiguredTheme(ki.agent.Config)
-	promptPrefix := getPromptSymbol(ki.agent.Config)
+	var cfg *config.Config
+	if ki.agent != nil {
+		cfg = ki.agent.Config
+	}
+	activeTheme := GetConfiguredTheme(cfg)
+	promptPrefix := getPromptSymbol(cfg)
 	if ki.mam != nil && ki.mam.ActiveAgent != nil {
 		promptPrefix = fmt.Sprintf("[%s]%s", ki.mam.ActiveAgent.Name, promptPrefix)
 	}
@@ -841,71 +846,18 @@ func (ki *keyInterceptorReader) Write(p []byte) (int, error) {
 	}
 
 	if ki.isAtMainPrompt && ki.rl != nil {
-		termW, height := getTerminalSize()
-		if height > 3 {
-			if termW <= 0 {
-				termW = 80
-			}
-			line, pos := getTerminalLine(ki.rl)
-			prefixLen := utf8.RuneCountInString(stripAnsi(promptPrefix))
-			availWidth := termW - prefixLen - 1
-			if availWidth < 10 {
-				availWidth = 10
-			}
-
-			runes := []rune(line)
-			totalRunes := len(runes)
-
-			displayStr := line
-			cursorCol := prefixLen + pos + 1
-
-			if totalRunes > availWidth {
-				start := pos - (availWidth / 2)
-				if start < 0 {
-					start = 0
-				}
-				end := start + availWidth
-				if end > totalRunes {
-					end = totalRunes
-					start = end - availWidth
-					if start < 0 {
-						start = 0
-					}
-				}
-				displayStr = string(runes[start:end])
-				cursorCol = prefixLen + (pos - start) + 1
-			}
-
-			hintText := ""
-			getUI().StateMu.Lock()
-			hint := getUI().PromptHint
-			getUI().StateMu.Unlock()
-			if displayStr != "" {
-				if hint != "" {
-					getUI().ClearPromptHint()
-				}
-			} else if hint != "" {
-				hintRunes := []rune(hint)
-				if len(hintRunes) > availWidth && availWidth > 5 {
-					hint = string(hintRunes[:availWidth])
-				}
-				hintStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
-				hintText = hintStyle.Render(hint)
-			}
-
-			var buf bytes.Buffer
-			cursorVisibility := "\x1b[?25h"
-			if ki.agent != nil && ki.agent.CurrentWriter != nil {
-				if pw, ok := ki.agent.CurrentWriter.(*PromptPreservingWriter); ok && pw.cursorHidden {
-					cursorVisibility = "\x1b[?25l"
-				}
-			}
-			fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s%s%s\x1b[%d;%dH%s", height-2, promptStr, displayStr, hintText, height-2, cursorCol, cursorVisibility)
-			TerminalMu.Lock()
-			_, _ = ki.writeToTerminal(buf.Bytes())
-			TerminalMu.Unlock()
-			return len(p), nil
+		var targetWriter io.Writer
+		if ki.w != nil {
+			targetWriter = ki.w
+		} else if w, ok := ki.r.(io.Writer); ok {
+			targetWriter = w
+		} else {
+			targetWriter = os.Stderr
 		}
+		TerminalMu.Lock()
+		drawConsoleStaticControlsLocked(targetWriter, ki.agent, ki, ki.rl, true)
+		TerminalMu.Unlock()
+		return len(p), nil
 	}
 
 	return ki.writeToTerminal(p)
@@ -1088,16 +1040,30 @@ func (ki *keyInterceptorReader) Read(p []byte) (int, error) {
 					goto done
 				}
 			} else {
-				select {
-				case input, ok := <-ki.inputChan:
-					if ok {
-						p[n] = input
-						n++
-					} else {
-						break
+				if n > 1 {
+					select {
+					case input, ok := <-ki.inputChan:
+						if ok {
+							p[n] = input
+							n++
+						} else {
+							goto done
+						}
+					case <-time.After(15 * time.Millisecond):
+						goto done
 					}
-				default:
-					goto done
+				} else {
+					select {
+					case input, ok := <-ki.inputChan:
+						if ok {
+							p[n] = input
+							n++
+						} else {
+							break
+						}
+					default:
+						goto done
+					}
 				}
 			}
 		}
@@ -1121,7 +1087,7 @@ func (ki *keyInterceptorReader) Read(p []byte) (int, error) {
 						break
 					}
 					ki.bracketedBuffer = append(ki.bracketedBuffer, b)
-				case <-time.After(25 * time.Millisecond):
+				case <-time.After(50 * time.Millisecond):
 					goto bracketedDrainDone
 				}
 			}
@@ -1146,7 +1112,21 @@ func (ki *keyInterceptorReader) Read(p []byte) (int, error) {
 		trimmed := bytes.TrimRight(p[:n], "\r\n")
 		if len(trimmed) > 0 && (bytes.Contains(trimmed, []byte("\n")) || bytes.Contains(trimmed, []byte("\r"))) {
 			isPaste = true
-			pasteBytes = p[:n]
+			pasteBytes = append([]byte(nil), p[:n]...)
+			if ki.inputChan != nil {
+				for {
+					select {
+					case b, ok := <-ki.inputChan:
+						if !ok {
+							goto rawPasteDrainDone
+						}
+						pasteBytes = append(pasteBytes, b)
+					case <-time.After(30 * time.Millisecond):
+						goto rawPasteDrainDone
+					}
+				}
+			}
+		rawPasteDrainDone:
 		} else {
 			n = ki.copyReadData(p, normalizePromptNavigationKeys(p[:n]))
 		}
@@ -1168,15 +1148,41 @@ func (ki *keyInterceptorReader) Read(p []byte) (int, error) {
 			}
 		}
 		rawStr := string(rawBytes)
-		lines := strings.Split(rawStr, "\n")
+		cleanStr := strings.TrimRight(rawStr, "\r\n")
+		countLines := 0
+		if len(cleanStr) > 0 {
+			countLines = strings.Count(cleanStr, "\n") + 1
+		}
 
-		// Only collapse into tag if truly massive (> 15 lines or > 2000 chars)
-		if len(lines) > 15 || len(rawStr) > 2000 {
+		maxPasteLines := 80
+		maxPasteChars := 8000
+		if ki.agent != nil && ki.agent.Config != nil {
+			if ki.agent.Config.MaxPasteLines > 0 {
+				maxPasteLines = ki.agent.Config.MaxPasteLines
+			}
+			if ki.agent.Config.MaxPasteChars > 0 {
+				maxPasteChars = ki.agent.Config.MaxPasteChars
+			}
+		}
+
+		// Collapse into tag only for massive dumps (> maxPasteLines or > maxPasteChars)
+		if countLines > maxPasteLines || len(rawStr) > maxPasteChars {
 			if ki.pastedCodeBlocks == nil {
 				ki.pastedCodeBlocks = make(map[string]string)
 			}
 			getUI().PasteCounter++
-			tagStr := fmt.Sprintf("[Pasted code #%d (+%d lines, %d chars)]", getUI().PasteCounter, len(lines)-1, len(rawStr))
+			var tagStr string
+			if countLines > 1 {
+				tagStr = fmt.Sprintf("[Pasted %d lines]", countLines)
+				if _, exists := ki.pastedCodeBlocks[tagStr]; exists {
+					tagStr = fmt.Sprintf("[Pasted %d lines #%d]", countLines, getUI().PasteCounter)
+				}
+			} else {
+				tagStr = fmt.Sprintf("[Pasted %d chars]", len(rawStr))
+				if _, exists := ki.pastedCodeBlocks[tagStr]; exists {
+					tagStr = fmt.Sprintf("[Pasted %d chars #%d]", len(rawStr), getUI().PasteCounter)
+				}
+			}
 			ki.pastedCodeBlocks[tagStr] = rawStr
 			n = ki.copyReadData(p, []byte(tagStr))
 		} else {
@@ -1707,13 +1713,32 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			term.Restore(fd, oldState)
 		}
 
+		prevOffset := getUI().PasteLinesOffset
+		getUI().StateMu.Lock()
+		getUI().PasteLinesOffset = 0
+		getUI().StateMu.Unlock()
+
 		if height > 0 {
-			fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", height-2-getUI().PasteLinesOffset)
+			if prevOffset > 0 {
+				for r := height - 4 - prevOffset; r <= height-2; r++ {
+					if r >= 1 {
+						fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", r)
+					}
+				}
+				getUI().StateMu.Lock()
+				savedStats := getUI().LastStatsText
+				getUI().StateMu.Unlock()
+				DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
+				DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, theme)
+			} else {
+				fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", height-2)
+			}
 
 			// Redraw prompt prefix so it doesn't disappear during stream
 			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-			fmt.Fprint(os.Stderr, promptStyle.Render(promptPrefix))
+			fmt.Fprintf(os.Stderr, "\x1b[%d;1H%s", height-2, promptStyle.Render(promptPrefix))
 			ppWriter.SetPromptCol(1 + utf8.RuneCountInString(promptPrefix))
+			DrawStatusBar(os.Stderr, theme)
 		}
 
 		if !fromQueue {
@@ -1732,6 +1757,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 				kiReader.pastedCodeBlocks = nil
 				getUI().StateMu.Lock()
 				kiReader.resetTypeAheadLocked()
+				getUI().PasteLinesOffset = 0
 				getUI().StateMu.Unlock()
 				kiReader.ClearQueue()
 				getUI().StateMu.Lock()
@@ -1769,6 +1795,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		getUI().ClearPromptHint()
 		kiReader.currentInputLine = ""
 		line = hist.GetFull(line)
+		line, _ = normalizeHistoryInput(line, len([]rune(line)))
 		line = strings.ReplaceAll(line, "↵", "\n")
 		if kiReader.pastedCodeBlocks != nil {
 			for tag, code := range kiReader.pastedCodeBlocks {
@@ -2177,65 +2204,197 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	inputLine = strings.ReplaceAll(inputLine, "\r", "")
 	inputLine, posOffset = normalizeHistoryInput(inputLine, posOffset)
 
-	layout := CalculatePromptLayout(fullPrefixPlain, inputLine, posOffset, termW)
+	cleanInput := strings.TrimRight(inputLine, "\r\n")
+	logicalLines := strings.Split(cleanInput, "\n")
+	hasMultipleLines := len(logicalLines) > 1
+
+	prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
+	availWidth := termW - prefixLen - 1
+	if availWidth < 10 {
+		availWidth = 10
+	}
+
+	type visualRow struct {
+		text    string
+		isFirst bool
+	}
+
+	var vRows []visualRow
+	cursorVRow := 0
+	cursorVCol := 1 + prefixLen
+	cursorFound := false
+	accumRunes := 0
+
+	if hasMultipleLines {
+		for lIdx, lStr := range logicalLines {
+			runes := []rune(lStr)
+			if len(runes) == 0 {
+				if !cursorFound && posOffset <= accumRunes {
+					cursorVRow = len(vRows)
+					cursorVCol = 1 + prefixLen
+					cursorFound = true
+				}
+				vRows = append(vRows, visualRow{text: "", isFirst: lIdx == 0})
+				accumRunes++ // accounting for '\n'
+				continue
+			}
+
+			for start := 0; start < len(runes); start += availWidth {
+				end := start + availWidth
+				if end > len(runes) {
+					end = len(runes)
+				}
+				chunkRunes := runes[start:end]
+				chunkLen := len(chunkRunes)
+
+				if !cursorFound && posOffset <= accumRunes+chunkLen {
+					cursorVRow = len(vRows)
+					colOffset := posOffset - accumRunes
+					cursorVCol = 1 + prefixLen + colOffset
+					cursorFound = true
+				}
+
+				vRows = append(vRows, visualRow{
+					text:    string(chunkRunes),
+					isFirst: lIdx == 0 && start == 0,
+				})
+				accumRunes += chunkLen
+			}
+			accumRunes++ // accounting for '\n'
+		}
+
+		if !cursorFound {
+			if len(vRows) > 0 {
+				cursorVRow = len(vRows) - 1
+				cursorVCol = 1 + prefixLen + len([]rune(vRows[len(vRows)-1].text))
+			}
+		}
+	}
+
+	effectiveOffset := 0
+	if hasMultipleLines {
+		maxAllowedOffset := height - 10
+		if maxAllowedOffset > 15 {
+			maxAllowedOffset = 15
+		}
+		if maxAllowedOffset < 2 {
+			maxAllowedOffset = 2
+		}
+		effectiveOffset = len(vRows) - 1
+		if effectiveOffset > maxAllowedOffset {
+			effectiveOffset = maxAllowedOffset
+		}
+	}
 
 	getUI().StateMu.Lock()
 	oldOffset := getUI().PasteLinesOffset
-	getUI().PasteLinesOffset = layout.ExtraOffset
+	getUI().PasteLinesOffset = effectiveOffset
 	getUI().StateMu.Unlock()
 
 	maxOffset := oldOffset
-	if layout.ExtraOffset > maxOffset {
-		maxOffset = layout.ExtraOffset
+	if effectiveOffset > maxOffset {
+		maxOffset = effectiveOffset
 	}
 
-	promptStartRow := height - 2 - layout.ExtraOffset
+	promptStartRow := height - 2 - effectiveOffset
 	if promptStartRow < 1 {
 		promptStartRow = 1
 	}
 
-	var clearBuf bytes.Buffer
+	var frameBuf bytes.Buffer
+	// Hide cursor while redrawing static controls and prompt to eliminate any cursor flicker/jumping onto column 1 ('>')
+	frameBuf.WriteString("\x1b[?25l")
+
 	for l := height - 4 - maxOffset; l <= height-2; l++ {
 		if l >= 1 {
-			fmt.Fprintf(&clearBuf, "\x1b[%d;1H\x1b[2K", l)
+			fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", l)
 		}
 	}
-	_, _ = w.Write(clearBuf.Bytes())
 
 	// Draw Status Bar at row height
-	DrawStatusBarLocked(w, activeTheme)
+	DrawStatusBarLocked(&frameBuf, activeTheme)
 
 	// Draw Separator at row height-3-PasteLinesOffset
-	DrawStaticPromptSeparatorLocked(w, a.Config.ShowThinking, a.Config.ReasoningEffort, activeTheme)
+	DrawStaticPromptSeparatorLocked(&frameBuf, a.Config.ShowThinking, a.Config.ReasoningEffort, activeTheme)
 
 	// Draw Stats Line at row height-4-PasteLinesOffset
 	getUI().StateMu.Lock()
 	savedStats := getUI().LastStatsText
 	getUI().StateMu.Unlock()
-	DrawStaticStatsLineLocked(w, activeTheme, "", savedStats)
+	DrawStaticStatsLineLocked(&frameBuf, activeTheme, "", savedStats)
 
 	if inApproval {
-		fmt.Fprintf(w, "\x1b[%d;1H\x1b[2K", promptStartRow)
-		fmt.Fprint(w, promptStyle.Render(" Approve tool execution? [y/N/a (always)]: "))
+		fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
+		fmt.Fprint(&frameBuf, promptStyle.Render(" Approve tool execution? [y/N/a (always)]: "))
+		if drawPrompt {
+			frameBuf.WriteString("\x1b[?25h")
+		}
 	} else {
-		lines := strings.Split(inputLine, "\n")
-		var pBuf bytes.Buffer
-
-		if len(lines) > 1 {
-			prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
+		if hasMultipleLines && len(vRows) > 0 {
 			indent := strings.Repeat(" ", prefixLen)
-			for i, line := range lines {
-				row := promptStartRow + i
+			numVisibleRows := effectiveOffset + 1
+			if numVisibleRows < 1 {
+				numVisibleRows = 1
+			}
+
+			startVRow := 0
+			if len(vRows) > numVisibleRows {
+				if cursorVRow >= startVRow+numVisibleRows {
+					startVRow = cursorVRow - numVisibleRows + 1
+				}
+				if cursorVRow < startVRow {
+					startVRow = cursorVRow
+				}
+				if startVRow < 0 {
+					startVRow = 0
+				}
+				if startVRow+numVisibleRows > len(vRows) {
+					startVRow = len(vRows) - numVisibleRows
+				}
+				if startVRow < 0 {
+					startVRow = 0
+				}
+			}
+
+			for r := 0; r < numVisibleRows; r++ {
+				vIdx := startVRow + r
+				if vIdx >= len(vRows) {
+					break
+				}
+				row := promptStartRow + r
 				if row > height-2 {
 					break
 				}
-				fmt.Fprintf(&pBuf, "\x1b[%d;1H\x1b[2K", row)
-				if i == 0 {
-					pBuf.WriteString(promptStr)
+				fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", row)
+				vr := vRows[vIdx]
+				if vr.isFirst {
+					frameBuf.WriteString(promptStr)
 				} else {
-					pBuf.WriteString(indent)
+					frameBuf.WriteString(indent)
 				}
-				pBuf.WriteString(line)
+				frameBuf.WriteString(vr.text)
+			}
+
+			cursorRow := promptStartRow + (cursorVRow - startVRow)
+			if cursorRow > height-2 {
+				cursorRow = height - 2
+			}
+			if cursorRow < promptStartRow {
+				cursorRow = promptStartRow
+			}
+
+			if cursorVCol > termW {
+				cursorVCol = termW
+			}
+			if cursorVCol < 1 {
+				cursorVCol = 1
+			}
+
+			if drawPrompt {
+				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorVCol)
+			} else {
+				promptCol := 1 + prefixLen
+				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, promptCol)
 			}
 		} else {
 			prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
@@ -2247,9 +2406,10 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			runes := []rune(inputLine)
 			totalRunes := len(runes)
 
+			start := 0
 			displayStr := inputLine
 			if totalRunes > availWidth {
-				start := posOffset - (availWidth / 2)
+				start = posOffset - (availWidth / 2)
 				if start < 0 {
 					start = 0
 				}
@@ -2264,10 +2424,10 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 				displayStr = string(runes[start:end])
 			}
 
-			fmt.Fprintf(&pBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
-			pBuf.WriteString(promptStr)
+			fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
+			frameBuf.WriteString(promptStr)
 			if displayStr != "" {
-				pBuf.WriteString(displayStr)
+				frameBuf.WriteString(displayStr)
 			} else {
 				getUI().StateMu.Lock()
 				hint := getUI().PromptHint
@@ -2278,26 +2438,30 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 						hint = string(hintRunes[:availWidth])
 					}
 					hintStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
-					pBuf.WriteString(hintStyle.Render(hint))
+					frameBuf.WriteString(hintStyle.Render(hint))
 				}
 			}
-		}
 
-		cursorRow := promptStartRow + layout.CursorRow
-		if cursorRow > height-2 {
-			cursorRow = height - 2
-		}
+			cursorRow := promptStartRow
+			cursorCol := 1 + prefixLen + (posOffset - start)
+			if cursorCol > termW {
+				cursorCol = termW
+			}
+			if cursorCol < 1+prefixLen {
+				cursorCol = 1 + prefixLen
+			}
 
-		if drawPrompt {
-			fmt.Fprintf(&pBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, layout.CursorCol)
-		} else {
-			prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
-			promptCol := 1 + prefixLen
-			fmt.Fprintf(&pBuf, "\x1b[%d;%dH", promptStartRow, promptCol)
+			if drawPrompt {
+				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorCol)
+			} else {
+				prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
+				promptCol := 1 + prefixLen
+				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, promptCol)
+			}
 		}
-
-		_, _ = w.Write(pBuf.Bytes())
 	}
+
+	_, _ = w.Write(frameBuf.Bytes())
 }
 
 func redrawScreen(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {

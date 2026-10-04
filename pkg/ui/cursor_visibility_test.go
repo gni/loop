@@ -2,8 +2,11 @@ package ui
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
+
+	"golang.org/x/term"
 
 	"maquis/pkg/agent"
 	"maquis/pkg/config"
@@ -118,4 +121,49 @@ func TestBackgroundUIUpdatesNeverResetCursorBlink(t *testing.T) {
 		t.Fatalf("ReplaceScrollBlockBack did not save/restore cursor: %q", got)
 	}
 }
+
+func TestGetTerminalLine(t *testing.T) {
+	var in, out bytes.Buffer
+	rl := term.NewTerminal(struct {
+		io.Reader
+		io.Writer
+	}{&in, &out}, "")
+
+	line, pos := getTerminalLine(rl)
+	if line != "" || pos != 0 {
+		t.Fatalf("expected empty line, got %q, %d", line, pos)
+	}
+}
+
+func TestDrawConsoleStaticControlsCursorPosition(t *testing.T) {
+	useIsolatedCursorTestUI(t)
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: "hello",
+		currentInputPos:  5,
+	}
+
+	var buf bytes.Buffer
+	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	out := buf.String()
+
+	// Prompt row should be 22 in 24-height terminal
+	// Prefix is "> " (len 2)
+	// Cursor col should be 1 + 2 + 5 = 8
+	if !strings.Contains(out, "\x1b[22;8H") {
+		t.Fatalf("expected cursor at row 22, col 8, got:\n%q", out)
+	}
+
+	// Must begin with cursor hidden (\x1b[?25l) to prevent flickering on column 1 ('>')
+	if !strings.HasPrefix(out, "\x1b[?25l") {
+		t.Fatalf("expected output to start with cursor hidden, got:\n%q", out)
+	}
+
+	// Must show cursor (\x1b[?25h) only at final cursor position
+	if !strings.Contains(out, "\x1b[22;8H\x1b[?25h") {
+		t.Fatalf("expected cursor to be revealed at final position (row 22, col 8), got:\n%q", out)
+	}
+}
+
 

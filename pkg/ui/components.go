@@ -207,7 +207,9 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 			"  %-20s %v\n"+
 			"  %-20s %v\n"+
 			"  %-20s %s\n"+
-			"  %-20s %s\n\n"+
+			"  %-20s %s\n"+
+			"  %-20s %d\n"+
+			"  %-20s %d\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
 		titleStyle.Render("maquis runtime settings"),
 		keyStyle.Render("active provider:"), valStyle.Render(cfg.ActiveProvider),
@@ -226,6 +228,8 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 		keyStyle.Render("stream writes:"), cfg.StreamWrites,
 		keyStyle.Render("visual theme:"), valStyle.Render(cfg.Theme),
 		keyStyle.Render("syntax theme:"), valStyle.Render(cfg.SyntaxTheme),
+		keyStyle.Render("max paste lines:"), cfg.MaxPasteLines,
+		keyStyle.Render("max paste chars:"), cfg.MaxPasteChars,
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))
