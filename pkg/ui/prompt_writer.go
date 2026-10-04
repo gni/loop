@@ -101,15 +101,39 @@ func (p *PromptPreservingWriter) SetPromptCol(col int) {
 	TerminalMu.Unlock()
 }
 
-func (p *PromptPreservingWriter) ForceReposition() {
+func (p *PromptPreservingWriter) AdjustPrintLineLocked(delta int) {
+	p.printLine += delta
+	scrollBottom := p.getScrollBottom()
+	if p.printLine > scrollBottom {
+		p.printLine = scrollBottom
+	}
+	if p.printLine < 1 {
+		p.printLine = 1
+	}
+}
+
+func (p *PromptPreservingWriter) AdjustPrintLine(delta int) {
 	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.AdjustPrintLineLocked(delta)
+}
+
+func (p *PromptPreservingWriter) ForceRepositionLocked() {
 	p.cursorAtPrompt = true
-	p.printLine = p.getScrollBottom()
+	scrollBottom := p.getScrollBottom()
+	if p.printLine > scrollBottom || p.printLine < 1 {
+		p.printLine = scrollBottom
+	}
 	p.printCol = 1
 	p.autoWrapPending = false
 	p.autoWrapDetached = false
 	fmt.Fprintf(p.inner, "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
-	TerminalMu.Unlock()
+}
+
+func (p *PromptPreservingWriter) ForceReposition() {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.ForceRepositionLocked()
 }
 
 func (p *PromptPreservingWriter) Write(data []byte) (int, error) {

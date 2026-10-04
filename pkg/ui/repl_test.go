@@ -2152,6 +2152,45 @@ func TestPromptAutoresize_StaticBottomDelimiterAndMovingTopDelimiter(t *testing.
 	}
 }
 
+func TestPromptAutoresize_MovesChatSectionWhenPastingMultipleLines(t *testing.T) {
+	a := &agent.Agent{Config: &config.Config{}}
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: "line1\nline2\nline3\nline4",
+		currentInputPos:  23,
+	}
+
+	getUI().StateMu.Lock()
+	origEnabled := getUI().Enabled
+	origLastText := getUI().LastStatusBarText
+	origOffset := getUI().ScrollRegionOffset
+	getUI().Enabled = true
+	getUI().LastStatusBarText = ""
+	getUI().PasteLinesOffset = 0
+	getUI().ScrollRegionOffset = 3
+	getUI().StateMu.Unlock()
+	t.Cleanup(func() {
+		getUI().StateMu.Lock()
+		getUI().Enabled = origEnabled
+		getUI().LastStatusBarText = origLastText
+		getUI().PasteLinesOffset = 0
+		getUI().ScrollRegionOffset = origOffset
+		getUI().StateMu.Unlock()
+	})
+
+	var buf bytes.Buffer
+	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	out := buf.String()
+
+	// In 24-height terminal, 4-line input has effectiveOffset = 3.
+	// Old scroll bottom was 24 - 5 - 0 = 19.
+	// It must scroll the chat region (1..19) up by 3 lines (\x1b[3S) so chat content is not hidden!
+	expectedScroll := "\x1b7\x1b[1;19r\x1b[19;1H\x1b[3S\x1b8"
+	if !strings.Contains(out, expectedScroll) {
+		t.Fatalf("expected chat region to scroll up with %q, output was:\n%q", expectedScroll, out)
+	}
+}
+
 func TestPromptAutoresize_WithRealTerminal(t *testing.T) {
 	a := &agent.Agent{Config: &config.Config{}}
 	var outBuf bytes.Buffer
@@ -2387,6 +2426,39 @@ func TestConfigSetPasteThresholds(t *testing.T) {
 	}
 	if a.Config.MaxPasteChars != 1234 {
 		t.Fatalf("expected MaxPasteChars to be 1234, got %d", a.Config.MaxPasteChars)
+	}
+}
+
+func TestPromptAutoresize_NoDeadlockWhenTerminalMuIsHeld(t *testing.T) {
+	useIsolatedCursorTestUI(t)
+	a := &agent.Agent{Config: &config.Config{}}
+	var discardBuf bytes.Buffer
+	ppWriter := NewPromptPreservingWriter(&discardBuf, 24)
+	uiImpl := &AgentUIImpl{
+		ppWriter: ppWriter,
+	}
+	a.UI = uiImpl
+
+	ki := &keyInterceptorReader{
+		agent:            a,
+		currentInputLine: "line1\nline2\nline3",
+		currentInputPos:  17,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		TerminalMu.Lock()
+		defer TerminalMu.Unlock()
+		var buf bytes.Buffer
+		drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success, no deadlock
+	case <-time.After(2 * time.Second):
+		t.Fatal("DEADLOCK: drawConsoleStaticControlsLocked deadlocked on TerminalMu")
 	}
 }
 

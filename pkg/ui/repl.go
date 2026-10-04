@@ -2291,6 +2291,13 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	getUI().PasteLinesOffset = effectiveOffset
 	getUI().StateMu.Unlock()
 
+	delta := effectiveOffset - oldOffset
+	offset := getUI().ScrollRegionOffset
+	oldScrollBottom := height - 2 - offset - oldOffset
+	if oldScrollBottom < 1 {
+		oldScrollBottom = 1
+	}
+
 	maxOffset := oldOffset
 	if effectiveOffset > maxOffset {
 		maxOffset = effectiveOffset
@@ -2304,6 +2311,19 @@ func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	var frameBuf bytes.Buffer
 	// Hide cursor while redrawing static controls and prompt to eliminate any cursor flicker/jumping onto column 1 ('>')
 	frameBuf.WriteString("\x1b[?25l")
+
+	if delta > 0 && oldScrollBottom > delta {
+		fmt.Fprintf(&frameBuf, "\x1b7\x1b[1;%dr\x1b[%d;1H\x1b[%dS\x1b8", oldScrollBottom, oldScrollBottom, delta)
+		if a != nil {
+			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.ppWriter != nil {
+				uiImpl.ppWriter.AdjustPrintLineLocked(-delta)
+			} else if a.CurrentWriter != nil {
+				if pw, ok := a.CurrentWriter.(*PromptPreservingWriter); ok {
+					pw.AdjustPrintLineLocked(-delta)
+				}
+			}
+		}
+	}
 
 	for l := height - 4 - maxOffset; l <= height-2; l++ {
 		if l >= 1 {
@@ -2627,7 +2647,9 @@ func handleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 	drawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
 
 	if !activeOp && a.CurrentWriter != nil {
-		if fr, ok := a.CurrentWriter.(interface{ ForceReposition() }); ok {
+		if pw, ok := a.CurrentWriter.(*PromptPreservingWriter); ok {
+			pw.ForceRepositionLocked()
+		} else if fr, ok := a.CurrentWriter.(interface{ ForceReposition() }); ok {
 			fr.ForceReposition()
 		}
 	}
