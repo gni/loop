@@ -1865,41 +1865,48 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 					}
 				}
 
+				promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+				ppWriter.ForceReposition()
+				fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 				err := os.Chdir(target)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "cd: %v\n", err)
+					fmt.Fprintf(ppWriter, "cd: %v\n", err)
 				} else {
 					pwd, _ := os.Getwd()
 					a.WorkspaceRoot = pwd
-					fmt.Fprintf(os.Stderr, "changed directory to: %s\n", pwd)
+					fmt.Fprintf(ppWriter, "changed directory to: %s\n", pwd)
 				}
 				contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", target)
 				messages = append(messages, db.Message{Role: "user", Content: contextMsg})
 				_ = db.SaveMessage(currentSessionID, messages[len(messages)-1])
-				redrawScreen(os.Stderr, a, kiReader, rl)
+				ppWriter.ForceReposition()
+				kiReader.Drain()
+				activeTasks := a.CountActiveTasks()
+				pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
+				latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
+				UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+				refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 				continue
 			}
 
-			fmt.Fprintf(os.Stderr, "executing: %s\n", cmdStr)
-			ShutdownStatusBar(os.Stderr)
+			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+			ppWriter.ForceReposition()
+			fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
 			cmd := exec.Command("bash", "-c", cmdStr)
 			cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 			var stdout, stderr bytes.Buffer
-			cmd.Stdout = io.MultiWriter(os.Stdout, &stdout)
-			cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+			cw := crnlWriter{w: ppWriter}
+			cmd.Stdout = io.MultiWriter(cw, &stdout)
+			cmd.Stderr = io.MultiWriter(cw, &stderr)
 			cmd.Stdin = os.Stdin
 			err := cmd.Run()
-
-			InitStatusBar(os.Stderr)
-			kiReader.Drain()
-			DrawStatusBar(os.Stderr, theme)
 
 			output := tool.SanitizeUTF8(stdout.Bytes())
 			errOutput := tool.SanitizeUTF8(stderr.Bytes())
 
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "command failed: %v\n", err)
+				fmt.Fprintf(ppWriter, "command failed: %v\n", err)
 			}
 
 			combined := ""
@@ -1921,9 +1928,15 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			_ = db.SaveMessage(currentSessionID, messages[len(messages)-1])
 
 			successStyle := style.NewStyle().Foreground(theme.Success).Italic(true)
-			fmt.Fprintln(os.Stderr)
-			fmt.Fprintln(os.Stderr, successStyle.Render("command output appended to conversation context."))
-			redrawScreen(os.Stderr, a, kiReader, rl)
+			fmt.Fprintln(ppWriter)
+			fmt.Fprintln(ppWriter, successStyle.Render("command output appended to conversation context."))
+			ppWriter.ForceReposition()
+			kiReader.Drain()
+			activeTasks := a.CountActiveTasks()
+			pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
+			latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
+			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+			refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 			continue
 		}
 

@@ -543,6 +543,7 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 	for _, wrapper := range echoWrappers {
 		s = strings.TrimLeft(s, "\r\n\t ")
 		if s == "" {
+			f.held.Reset()
 			return ""
 		}
 		if strings.HasPrefix(s, wrapper) {
@@ -556,6 +557,7 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 		s = strings.TrimLeft(s, "\r\n\t ")
 	}
 	if s == "" {
+		f.held.Reset()
 		return ""
 	}
 	f.phase = 2
@@ -565,6 +567,10 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 
 // Flush returns anything still held when the stream ends before the decision resolved.
 func (f *PromptEchoFilter) Flush() string {
+	if f.phase == 1 {
+		f.held.Reset()
+		return ""
+	}
 	out := f.held.String()
 	f.held.Reset()
 	return out

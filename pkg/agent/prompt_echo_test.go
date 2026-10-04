@@ -89,3 +89,30 @@ func TestPromptEchoFilterFlushesUndecidedPrefix(t *testing.T) {
 		t.Fatalf("flush lost held text: %q", got)
 	}
 }
+
+func TestPromptEchoFilterEmptyEchoDoesNotLeakResidueOnFlush(t *testing.T) {
+	f := NewPromptEchoFilter("hi")
+	chunks := []string{`"`, `hi`, `"`, "\n\n"}
+	var out strings.Builder
+	for _, c := range chunks {
+		out.WriteString(f.Write(c))
+	}
+	out.WriteString(f.Flush())
+	if got := out.String(); got != "" {
+		t.Fatalf("expected empty string for pure echo with residue, got %q", got)
+	}
+}
+
+func TestPromptEchoFilterThoughtMentioningPromptNotChopped(t *testing.T) {
+	f := NewPromptEchoFilter("hi")
+	input := `The user said "hi" and ran ls. Just respond briefly.`
+	var out strings.Builder
+	for _, ch := range input {
+		out.WriteString(f.Write(string(ch)))
+	}
+	out.WriteString(f.Flush())
+	if got := out.String(); got != input {
+		t.Fatalf("thought mentioning prompt was chopped or altered: got %q, want %q", got, input)
+	}
+}
+

@@ -275,5 +275,36 @@ func TestStreamRendererSuppressesEchoedPrompt(t *testing.T) {
 	if !strings.Contains(rendered2, "Hi! How can I help you today?") {
 		t.Fatalf("response text was not rendered: %q", rendered2)
 	}
+
+	// Case 3: Thought mentioning the user's prompt must NOT be truncated
+	var term3 bytes.Buffer
+	w3 := NewPromptPreservingWriter(&term3, 80)
+	sr3 := NewStreamRenderer(w3, UITheme{}, true, false, "test")
+	sr3.SetPrompt("hi")
+
+	thought3 := "The user said \"hi\" and ran ls. Just respond briefly."
+	sr3.WriteReasoning(thought3)
+	sr3.EndThinking()
+
+	rendered3 := sanitizeTerminalText(term3.String())
+	if !strings.Contains(rendered3, "The user said \"hi\" and ran ls. Just respond briefly.") {
+		t.Fatalf("thought mentioning prompt was chopped or dropped: %q", rendered3)
+	}
+
+	// Case 4: Streaming char-by-char with prompt mention must remain intact
+	var term4 bytes.Buffer
+	w4 := NewPromptPreservingWriter(&term4, 80)
+	sr4 := NewStreamRenderer(w4, UITheme{}, true, false, "test")
+	sr4.SetPrompt("hi")
+
+	for _, ch := range "The user said \"hi\" and ran ls. Just respond briefly." {
+		sr4.WriteReasoning(string(ch))
+	}
+	sr4.EndThinking()
+
+	rendered4 := sanitizeTerminalText(term4.String())
+	if !strings.Contains(rendered4, "The user said \"hi\" and ran ls. Just respond briefly.") {
+		t.Fatalf("streamed thought mentioning prompt was chopped: %q", rendered4)
+	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/chroma/v2/quick"
+	"maquis/pkg/agent"
 	"maquis/pkg/ui/style"
 )
 
@@ -27,8 +28,7 @@ type StreamRenderer struct {
 	reasoningResetSequence    string
 	pendingThoughtTextGap     bool
 	prompt                    string
-	echoFilterDone            bool
-	reasoningPrefixBuf        string
+	echoFilter                *agent.PromptEchoFilter
 
 	lastEndedWithNewline bool
 	hasWrittenText       bool
@@ -88,8 +88,11 @@ func (sr *StreamRenderer) SetPrompt(prompt string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.prompt = strings.TrimSpace(prompt)
-	sr.echoFilterDone = false
-	sr.reasoningPrefixBuf = ""
+	if sr.prompt != "" {
+		sr.echoFilter = agent.NewPromptEchoFilter(sr.prompt)
+	} else {
+		sr.echoFilter = nil
+	}
 }
 
 func (sr *StreamRenderer) WriteReasoning(chunk string) {
@@ -100,49 +103,10 @@ func (sr *StreamRenderer) WriteReasoning(chunk string) {
 		return
 	}
 
-	if !sr.echoFilterDone && sr.prompt != "" {
-		sr.reasoningPrefixBuf += chunk
-		cleanBuf := strings.TrimLeft(sr.reasoningPrefixBuf, "\r\n\t ")
-		normPrompt := sr.prompt
-
-		if cleanBuf == "" {
+	if sr.echoFilter != nil {
+		chunk = sr.echoFilter.Write(chunk)
+		if chunk == "" {
 			return
-		}
-
-		lowerBuf := strings.ToLower(cleanBuf)
-		lowerPrompt := strings.ToLower(normPrompt)
-
-		if strings.Contains(lowerBuf, lowerPrompt) {
-			idx := strings.Index(lowerBuf, lowerPrompt)
-			sr.echoFilterDone = true
-			remaining := cleanBuf[idx+len(lowerPrompt):]
-			remaining = strings.TrimLeft(remaining, "\r\n\t \"'`")
-			sr.reasoningPrefixBuf = ""
-			if remaining == "" {
-				return
-			}
-			chunk = remaining
-		} else {
-			// Check if cleanBuf is still a potential prefix of prompt
-			isPrefix := strings.HasPrefix(lowerPrompt, lowerBuf)
-			if !isPrefix {
-				for _, q := range []string{`"`, `'`, "`", "> "} {
-					if strings.HasPrefix(lowerPrompt, strings.TrimPrefix(lowerBuf, q)) {
-						isPrefix = true
-						break
-					}
-				}
-			}
-
-			// If it's a prefix, or if buffer is still shorter than prompt + 50 (waiting for possible prompt echo)
-			if isPrefix || (len(cleanBuf) < len(lowerPrompt)+50 && len(cleanBuf) < 300) {
-				return
-			}
-
-			// Buffer exceeded expected echo length and didn't match prompt, flush it
-			sr.echoFilterDone = true
-			chunk = sr.reasoningPrefixBuf
-			sr.reasoningPrefixBuf = ""
 		}
 	}
 
@@ -177,41 +141,10 @@ func (sr *StreamRenderer) EndThinking() {
 }
 
 func (sr *StreamRenderer) endThinking() {
-	if !sr.echoFilterDone && sr.reasoningPrefixBuf != "" {
-		sr.echoFilterDone = true
-		cleanBuf := strings.TrimSpace(sr.reasoningPrefixBuf)
-		lowerBuf := strings.ToLower(cleanBuf)
-		lowerPrompt := strings.ToLower(sr.prompt)
-
-		matched := cleanBuf == "" || strings.EqualFold(lowerBuf, lowerPrompt)
-		if !matched && lowerPrompt != "" && strings.Contains(lowerBuf, lowerPrompt) {
-			idx := strings.Index(lowerBuf, lowerPrompt)
-			rem := strings.TrimLeft(cleanBuf[idx+len(lowerPrompt):], "\r\n\t \"'`")
-			if rem != "" {
-				chunk := rem
-				sr.reasoningPrefixBuf = ""
-				sr.checkFirstWrite()
-				dimStyle := sr.getThinkingStyle()
-				startSeq, resetSeq := dimStyle.GetSequence()
-				if !sr.inThinking {
-					sr.inThinking = true
-					sr.reasoningStart = time.Now()
-					sr.reasoningHasText = false
-					sr.reasoningEndedWithNewline = false
-					sr.pendingThoughtTextGap = false
-					sr.reasoningResetSequence = resetSeq
-				}
-				sr.hasWrittenThoughts = true
-				sr.reasoningHasText = true
-				sr.reasoningEndedWithNewline = strings.HasSuffix(chunk, "\n")
-				fmt.Fprint(sr.w, startSeq+chunk+resetSeq)
-			}
-			matched = true
-		}
-
-		if !matched {
-			chunk := sr.reasoningPrefixBuf
-			sr.reasoningPrefixBuf = ""
+	if sr.echoFilter != nil {
+		rem := sr.echoFilter.Flush()
+		sr.echoFilter = nil
+		if rem != "" && strings.TrimSpace(rem) != "" {
 			sr.checkFirstWrite()
 			dimStyle := sr.getThinkingStyle()
 			startSeq, resetSeq := dimStyle.GetSequence()
@@ -225,10 +158,8 @@ func (sr *StreamRenderer) endThinking() {
 			}
 			sr.hasWrittenThoughts = true
 			sr.reasoningHasText = true
-			sr.reasoningEndedWithNewline = strings.HasSuffix(chunk, "\n")
-			fmt.Fprint(sr.w, startSeq+chunk+resetSeq)
-		} else {
-			sr.reasoningPrefixBuf = ""
+			sr.reasoningEndedWithNewline = strings.HasSuffix(rem, "\n")
+			fmt.Fprint(sr.w, startSeq+rem+resetSeq)
 		}
 	}
 
