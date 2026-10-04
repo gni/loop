@@ -50,17 +50,24 @@ func TestPromptEchoFilterKeepsQuotesAfterDecision(t *testing.T) {
 	}
 }
 
-// Punctuation-only fragments are template artifacts, not thoughts.
-func TestPromptEchoFilterDropsPunctuationOnlyArtifact(t *testing.T) {
+// Punctuation, mathematical operators, and decimal points in thoughts must never be dropped.
+func TestPromptEchoFilterPreservesPunctuationAndMathInThoughts(t *testing.T) {
 	f := NewPromptEchoFilter("hello")
-	if got := f.Write("working on the parser"); got == "" {
-		t.Fatal("dropped real content")
+	if got := f.Write("working on the parser"); got != "working on the parser" {
+		t.Fatalf("expected real content, got %q", got)
 	}
-	if got := f.Write("."); got != "" {
-		t.Fatalf("punctuation-only artifact survived: %q", got)
+	if got := f.Write("."); got != "." {
+		t.Fatalf("period was dropped from thought: %q", got)
 	}
 	if got := f.Write("\n"); got != "\n" {
 		t.Fatalf("whitespace needed for formatting was dropped: %q", got)
+	}
+	// Check math and decimal tokens:
+	mathChunks := []string{"0", ".", "5", " * ", "tmp", "[", "rk", "]", " = ", "(", "1", "/", "2", ")"}
+	for _, chunk := range mathChunks {
+		if got := f.Write(chunk); got != chunk {
+			t.Fatalf("chunk %q was dropped or mutated: %q", chunk, got)
+		}
 	}
 }
 

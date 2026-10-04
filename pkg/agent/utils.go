@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"maquis/pkg/agent/tool"
 	"maquis/pkg/db"
@@ -495,7 +494,7 @@ func NewPromptEchoFilter(prompt string) *PromptEchoFilter {
 // Write returns the portion of chunk that is safe to print.
 func (f *PromptEchoFilter) Write(chunk string) string {
 	if f.phase == 2 || f.normPrompt == "" {
-		return f.dropArtifact(chunk)
+		return chunk
 	}
 	f.held.WriteString(chunk)
 
@@ -532,21 +531,10 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 		// Confirmed not an echo: emit what was held.
 		f.phase = 2
 		f.held.Reset()
-		return f.dropArtifact(clean)
+		return clean
 	}
 
 	return f.skipResidue(f.held.String())
-}
-
-// dropArtifact suppresses punctuation-only fragments. A lone "." inside streamed
-// reasoning is a chat-template boundary artifact, not a thought, and printing it
-// produced a stray dot line between the thought and the timing line. Chunks that
-// carry only whitespace (needed for formatting) are kept.
-func (f *PromptEchoFilter) dropArtifact(chunk string) string {
-	if chunk == "" || strings.ContainsFunc(chunk, unicode.IsLetter) || strings.ContainsFunc(chunk, unicode.IsDigit) || strings.ContainsFunc(chunk, unicode.IsSpace) {
-		return chunk
-	}
-	return ""
 }
 
 // skipResidue consumes the closing wrapper and separator punctuation that separates the
