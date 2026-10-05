@@ -183,6 +183,18 @@ func NormalizeName(name string) string {
 		return "find"
 	case "grep_search", "search_code", "search":
 		return "grep"
+	case "list_subagents", "subagents_list", "subagent_list", "list_agents", "swarm_topology":
+		return "list_subagents"
+	case "audit_subagent", "subagent_audit", "subagent_history", "audit_subagents", "swarm_audit":
+		return "audit_subagent"
+	case "kill_subagent", "terminate_subagent", "delete_subagent":
+		return "remove_subagent"
+	case "create_subagent", "new_subagent":
+		return "spawn_subagent"
+	case "kill_task", "stop_task":
+		return "task_kill"
+	case "status_task", "get_task_status":
+		return "task_status"
 	case "run_command", "runcommand", "exec", "shell", "terminal":
 		return "bash"
 	default:

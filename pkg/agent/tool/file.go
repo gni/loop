@@ -242,7 +242,7 @@ func (t *writeTool) PromptSnippet() string {
 func (t *writeTool) PromptGuidelines() []string {
 	return []string{
 		"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
-		"Specify the target file in 'path' and the complete file contents in 'write_content'.",
+		"Specify the target file in 'path' and the complete file contents in 'content'.",
 	}
 }
 
@@ -259,12 +259,12 @@ func (t *writeTool) Definition() Tool {
 						Type:        "string",
 						Description: "Path to the target file.",
 					},
-					"write_content": {
+					"content": {
 						Type:        "string",
 						Description: "Complete content to write into the file.",
 					},
 				},
-				Required: []string{"path", "write_content"},
+				Required: []string{"path", "content"},
 			},
 		},
 	}

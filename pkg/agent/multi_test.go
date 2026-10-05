@@ -389,15 +389,21 @@ func TestSwarmAuditTool(t *testing.T) {
 		t.Fatalf("failed to save bob state: %v", err)
 	}
 
-	// Verify swarm_audit tool is registered and works
-	auditExecutor, ok := baseAgent.Registry.GetAllExecutors()["swarm_audit"]
+	// Verify audit_subagent tool is registered and works
+	auditExecutor, ok := baseAgent.Registry.GetAllExecutors()["audit_subagent"]
 	if !ok {
-		t.Fatalf("swarm_audit tool not registered")
+		t.Fatalf("audit_subagent tool not registered")
 	}
 
 	res, err := auditExecutor.Execute(baseAgent, `{"name":"bob"}`)
 	if err != nil {
-		t.Fatalf("failed to execute swarm_audit: %v", err)
+		t.Fatalf("failed to execute audit_subagent: %v", err)
+	}
+
+	// Also verify alias works via registry
+	aliasRes, err := baseAgent.Registry.Execute(baseAgent, "swarm_audit", `{"name":"bob"}`)
+	if err != nil || aliasRes != res {
+		t.Fatalf("swarm_audit alias failed: %v", err)
 	}
 
 	if !strings.Contains(res, "=== Swarm Audit Trail for Subagent: 'bob' ===") {
@@ -649,7 +655,7 @@ func TestSubagentNestingDepthAndAllowlist(t *testing.T) {
 
 	allowlist := worker.GetToolAllowlist()
 	for _, toolName := range allowlist {
-		if toolName == "spawn_subagent" || toolName == "remove_subagent" || toolName == "swarm_audit" || toolName == "swarm_topology" {
+		if toolName == "spawn_subagent" || toolName == "remove_subagent" || toolName == "list_subagents" || toolName == "audit_subagent" || toolName == "swarm_audit" || toolName == "swarm_topology" {
 			t.Fatalf("subagent at max depth should not have tool %q in allowlist: %v", toolName, allowlist)
 		}
 	}

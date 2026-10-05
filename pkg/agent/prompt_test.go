@@ -105,7 +105,7 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 	if !strings.Contains(child, "Subagent skill assignment") {
 		t.Fatalf("non-spawning agent lost the skill catalog:\n%s", child)
 	}
-	if strings.Contains(child, "use 'spawn_subagent'") || strings.Contains(child, "swarm_audit") {
+	if strings.Contains(child, "use 'spawn_subagent'") || strings.Contains(child, "audit_subagent") || strings.Contains(child, "swarm_audit") {
 		t.Fatalf("non-spawning agent was given delegation rules it cannot execute:\n%s", child)
 	}
 }

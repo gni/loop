@@ -12,7 +12,9 @@ import (
 // action:     writes files, executes commands, spawns or kills processes
 var inspectionTools = map[string]bool{
 	"read": true, "grep": true, "find": true, "list": true, "ls": true,
-	"load_skill": true, "task_status": true, "swarm_topology": true, "swarm_audit": true,
+	"load_skill": true, "task_status": true,
+	"list_subagents": true, "audit_subagent": true,
+	"swarm_topology": true, "swarm_audit": true,
 }
 
 var actionTools = map[string]bool{

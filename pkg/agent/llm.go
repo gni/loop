@@ -991,6 +991,10 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 			prop.Description = "File path"
 			compressed.Function.Parameters.Properties["path"] = prop
 		}
+		if prop, ok := compressed.Function.Parameters.Properties["content"]; ok {
+			prop.Description = "File content"
+			compressed.Function.Parameters.Properties["content"] = prop
+		}
 		if prop, ok := compressed.Function.Parameters.Properties["write_content"]; ok {
 			prop.Description = "File content"
 			compressed.Function.Parameters.Properties["write_content"] = prop
@@ -1057,9 +1061,9 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 			prop.Description = "Subagent name"
 			compressed.Function.Parameters.Properties["name"] = prop
 		}
-	case "swarm_topology":
+	case "list_subagents", "swarm_topology":
 		compressed.Function.Description = "View active subagents"
-	case "swarm_audit":
+	case "audit_subagent", "swarm_audit":
 		compressed.Function.Description = "Audit subagent execution"
 		if prop, ok := compressed.Function.Parameters.Properties["name"]; ok {
 			prop.Description = "Subagent name"

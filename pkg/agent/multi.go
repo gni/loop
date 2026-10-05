@@ -241,7 +241,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 			if children[subagentName] {
 				allowlist = append(allowlist, name)
 			}
-		} else if name == "spawn_subagent" || name == "remove_subagent" || name == "swarm_audit" || name == "swarm_topology" {
+		} else if name == "spawn_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" || name == "swarm_audit" || name == "swarm_topology" {
 			if canSpawn {
 				allowlist = append(allowlist, name)
 			}
@@ -791,8 +791,8 @@ func NewMultiAgentManager(baseAgent *Agent, w io.Writer, theme style.UITheme) *M
 	if baseAgent != nil && baseAgent.Registry != nil {
 		baseAgent.Registry.Register(&spawnSubagentTool{mam: mam})
 		baseAgent.Registry.Register(&removeSubagentTool{mam: mam})
-		baseAgent.Registry.Register(&swarmTopologyTool{mam: mam})
-		baseAgent.Registry.Register(&swarmAuditTool{mam: mam})
+		baseAgent.Registry.Register(&listSubagentsTool{mam: mam})
+		baseAgent.Registry.Register(&auditSubagentTool{mam: mam})
 	}
 
 	return mam
@@ -1832,17 +1832,22 @@ func (s *removeSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	return fmt.Sprintf("Subagent '%s' terminated.", name), nil
 }
 
-type swarmTopologyTool struct {
+type listSubagentsTool struct {
 	mam *MultiAgentManager
 }
 
-func (s *swarmTopologyTool) Name() string { return "swarm_topology" }
-func (s *swarmTopologyTool) Definition() tool.Tool {
+type swarmTopologyTool = listSubagentsTool
+
+func (s *listSubagentsTool) Name() string { return "list_subagents" }
+func (s *listSubagentsTool) PromptSnippet() string {
+	return "View active subagents and their skills"
+}
+func (s *listSubagentsTool) Definition() tool.Tool {
 	return tool.Tool{
 		Type: "function",
 		Function: tool.FunctionDefinition{
-			Name:        "swarm_topology",
-			Description: "View the tree hierarchy of all active spawned subagents and their loaded skills.",
+			Name:        "list_subagents",
+			Description: "View active subagents, their parent relationships, and their loaded skills.",
 			Parameters: tool.JSONSchema{
 				Type:       "object",
 				Properties: map[string]tool.SchemaProp{},
@@ -1851,13 +1856,13 @@ func (s *swarmTopologyTool) Definition() tool.Tool {
 	}
 }
 
-func (s *swarmTopologyTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+func (s *listSubagentsTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	agents := s.mam.ListAgents()
 	if len(agents) == 0 {
 		return "No subagents currently spawned in the swarm.", nil
 	}
 	var sb strings.Builder
-	sb.WriteString("Active Swarm Topology:\n")
+	sb.WriteString("Active Subagents:\n")
 	for _, name := range agents {
 		parent := s.mam.GetParentName(name)
 		skills, _ := s.mam.ListAgentSkills(name)
@@ -1884,16 +1889,21 @@ func (s *swarmTopologyTool) Execute(ctx tool.AgentContext, arguments string) (st
 	return sb.String(), nil
 }
 
-type swarmAuditTool struct {
+type auditSubagentTool struct {
 	mam *MultiAgentManager
 }
 
-func (s *swarmAuditTool) Name() string { return "swarm_audit" }
-func (s *swarmAuditTool) Definition() tool.Tool {
+type swarmAuditTool = auditSubagentTool
+
+func (s *auditSubagentTool) Name() string { return "audit_subagent" }
+func (s *auditSubagentTool) PromptSnippet() string {
+	return "Review a subagent's action, thought, and tool history"
+}
+func (s *auditSubagentTool) Definition() tool.Tool {
 	return tool.Tool{
 		Type: "function",
 		Function: tool.FunctionDefinition{
-			Name:        "swarm_audit",
+			Name:        "audit_subagent",
 			Description: "Audit the execution history of a spawned subagent to see exactly what actions, tool calls, thoughts, and results it produced. Essential for verifying subagent work.",
 			Parameters: tool.JSONSchema{
 				Type: "object",
@@ -1909,7 +1919,7 @@ func (s *swarmAuditTool) Definition() tool.Tool {
 	}
 }
 
-func (s *swarmAuditTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+func (s *auditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	name, err := parseSubagentName(arguments)
 	if err != nil {
 		return "", err

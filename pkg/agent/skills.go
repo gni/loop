@@ -219,8 +219,8 @@ func subagentSkillGuidance(tools []ToolEntry, skills []Skill) string {
 
 	if hasToolEntry(tools, "spawn_subagent") {
 		sb.WriteString("- Subagents: When the user asks to call or use agents, or to delegate duties, use 'spawn_subagent' to spawn specialized agents and delegate tasks to them.\n")
-		if hasToolEntry(tools, "remove_subagent") && hasToolEntry(tools, "swarm_audit") {
-			sb.WriteString("- After a delegated task completes, call swarm_audit for the subagent, then remove_subagent to release its context.\n")
+		if hasToolEntry(tools, "remove_subagent") && (hasToolEntry(tools, "audit_subagent") || hasToolEntry(tools, "swarm_audit")) {
+			sb.WriteString("- After a delegated task completes, call audit_subagent for the subagent, then remove_subagent to release its context.\n")
 		}
 	}
 	return sb.String()
