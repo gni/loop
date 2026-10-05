@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 type StreamRenderer interface {
@@ -278,8 +278,8 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	// Surgical allowlist: allow writing to global memory files
 	home, err := os.UserHomeDir()
 	if err == nil {
-		globalMaquis := filepath.Clean(filepath.Join(home, ".maquis", "MAQUIS.md"))
-		if cleanTarget == globalMaquis {
+		globalLoop := filepath.Clean(filepath.Join(home, ".loop", "LOOP.md"))
+		if cleanTarget == globalLoop {
 			return cleanTarget, nil
 		}
 	}

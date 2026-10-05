@@ -3,7 +3,6 @@ package tool
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,11 +13,11 @@ import (
 )
 
 const (
-	defaultGrepLimit     = 100
-	maxGrepLimit         = 500
-	maxGrepLineLength    = 500
-	maxGrepOutputBytes   = 64 * 1024
-	maxGrepFileSize      = 2 * 1024 * 1024 // 2MB
+	defaultGrepLimit   = 100
+	maxGrepLimit       = 500
+	maxGrepLineLength  = 500
+	maxGrepOutputBytes = 64 * 1024
+	maxGrepFileSize    = 2 * 1024 * 1024 // 2MB
 )
 
 type grepTool struct{}
@@ -85,31 +84,21 @@ func (t *grepTool) Definition() Tool {
 
 func (t *grepTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	var args struct {
-		Pattern    string `json:"pattern"`
-		Query      string `json:"query"`
-		Q          string `json:"q"`
-		Path       string `json:"path"`
-		SearchPath string `json:"search_path"`
-		Glob       string `json:"glob"`
-		IgnoreCase bool   `json:"ignore_case"`
-		IgnoreCaseCamel bool `json:"ignoreCase"`
+		Pattern         string  `json:"pattern"`
+		Query           string  `json:"query"`
+		Q               string  `json:"q"`
+		Path            string  `json:"path"`
+		SearchPath      string  `json:"search_path"`
+		Glob            string  `json:"glob"`
+		IgnoreCase      bool    `json:"ignore_case"`
+		IgnoreCaseCamel bool    `json:"ignoreCase"`
 		Literal         bool    `json:"literal"`
 		Context         float64 `json:"context"`
 		Limit           float64 `json:"limit"`
 	}
 
-	trimmed := strings.TrimSpace(arguments)
-	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
-		var unquoted string
-		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil {
-			args.Pattern = unquoted
-		}
-	} else if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		if !strings.HasPrefix(trimmed, "{") && trimmed != "" {
-			args.Pattern = trimmed
-		} else {
-			return "", fmt.Errorf("invalid arguments: %w", err)
-		}
+	if err := ParsePatternOrArgs(arguments, &args, func(p string) { args.Pattern = p }); err != nil {
+		return "", err
 	}
 
 	pattern := args.Pattern

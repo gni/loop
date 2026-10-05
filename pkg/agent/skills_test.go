@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/config"
+	"loop/pkg/config"
 )
 
 func TestLoadSkillsSubdirectorySKILLMD(t *testing.T) {
@@ -48,11 +48,11 @@ func TestSkillSearchDirsCoversConfiguredAndWorkspacePaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("home dir: %v", err)
 	}
-	dirs := SkillSearchDirs("~/maquis-skills-test", "/workspace")
+	dirs := SkillSearchDirs("~/loop-skills-test", "/workspace")
 	if len(dirs) < 3 {
 		t.Fatalf("expected configured + workspace dirs, got %v", dirs)
 	}
-	if dirs[0] != filepath.Join(home, "maquis-skills-test") {
+	if dirs[0] != filepath.Join(home, "loop-skills-test") {
 		t.Errorf("expected configured dir first, got %q", dirs[0])
 	}
 	if !strings.HasSuffix(dirs[1], filepath.Join("workspace", "skills")) {
@@ -65,7 +65,7 @@ func TestSkillSearchDirsCoversConfiguredAndWorkspacePaths(t *testing.T) {
 			t.Errorf("duplicate search dir %q", d)
 		}
 		seen[d] = true
-		if d != filepath.Join(home, "maquis-skills-test") && filepath.Base(d) != "skills" && filepath.Base(d) != ".agents" {
+		if d != filepath.Join(home, "loop-skills-test") && filepath.Base(d) != "skills" && filepath.Base(d) != ".agents" {
 			t.Errorf("unexpected dir %q", d)
 		}
 	}

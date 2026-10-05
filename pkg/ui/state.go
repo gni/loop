@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 )
 
 // ActiveUI holds a global reference to the currently active TUI instance.
@@ -24,8 +24,6 @@ func getUI() *AgentUIImpl {
 // TerminalMu protects terminal output operations.
 var TerminalMu sync.Mutex
 
-
-
 // IsInteractive indicates if the interactive REPL session is currently running.
 var IsInteractive bool
 
@@ -43,7 +41,6 @@ func SetCollapseStatus(collapsed bool) {
 func SetScrollRegionOffset(offset int) {
 	getUI().SetScrollRegionOffset(offset)
 }
-
 
 // InitStatusBar starts the status bar.
 func InitStatusBar(w io.Writer) {

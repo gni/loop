@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 type cancelledPartialProvider struct {

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func unwrapWriter(w io.Writer) io.Writer {
@@ -132,7 +132,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		enableThinking := a.Config.ShowThinking && effort != "off" && effort != "none"
 		var sr StreamRenderer
 		if a.UI != nil {
-			sr = a.UI.NewStreamRenderer(ncw, theme, enableThinking, a.Config.StreamWrites, "maquis")
+			sr = a.UI.NewStreamRenderer(ncw, theme, enableThinking, a.Config.StreamWrites, "loop")
 		} else {
 			sr = &fallbackStreamRenderer{w: ncw}
 		}
@@ -670,18 +670,6 @@ func (tl *turnLoader) Stop() {
 	})
 }
 
-func (a *Agent) startSoftDotLoader(ctx context.Context, w io.Writer, theme style.UITheme) func() {
-	if a.UI == nil {
-		return func() {}
-	}
-	tl := a.newTurnLoader(ctx, w, theme, a.TurnStartTime)
-	return func() {
-		if tl != nil {
-			tl.Stop()
-		}
-	}
-}
-
 type newlineCounterWriter struct {
 	io.Writer
 	count int
@@ -759,10 +747,6 @@ func (f *fallbackStreamRenderer) CompleteToolCall(index int, toolName string, to
 }
 func (f *fallbackStreamRenderer) GetReasoningDuration() float64 { return 0 }
 func (f *fallbackStreamRenderer) SetPrompt(prompt string)       {}
-
-// isReadOnly is retained for callers that still reference it; it now defers to
-// the shared classification in intent.go.
-func isReadOnly(toolName string) bool { return IsInspectionTool(toolName) }
 
 func getTerminalSize() (int, int) {
 	return style.GetTerminalSize()

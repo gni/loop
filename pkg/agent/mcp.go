@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 )
 
-var mcpDebugLogging = os.Getenv("MAQUIS_MCP_DEBUG") == "1"
+var mcpDebugLogging = os.Getenv("LOOP_MCP_DEBUG") == "1"
 
 func mcpLog(format string, args ...interface{}) {
 	if mcpDebugLogging {
@@ -49,14 +49,13 @@ type MCPTool struct {
 	InputSchema map[string]interface{} `json:"inputSchema"`
 }
 
-
 type mcpToolExecutor struct {
 	client   *mcpClient
 	toolName string
 	def      Tool
 }
 
-func (m *mcpToolExecutor) Name() string { return m.def.Function.Name }
+func (m *mcpToolExecutor) Name() string     { return m.def.Function.Name }
 func (m *mcpToolExecutor) Definition() Tool { return m.def }
 func (m *mcpToolExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	return m.client.callTool(m.toolName, arguments)
@@ -395,7 +394,7 @@ func (c *mcpClient) handshake() error {
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]string{
-			"name":    "maquis-client",
+			"name":    "loop-client",
 			"version": "1.0.0",
 		},
 	}

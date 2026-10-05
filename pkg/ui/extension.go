@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/db"
+	"loop/pkg/agent"
+	"loop/pkg/db"
 )
 
 // RunExtension checks for a custom executable script matching the slash command and runs it securely.
@@ -44,7 +44,7 @@ func RunExtension(
 	// Define extension directories (both global and workspace-local)
 	var dirs []string
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, ".maquis", "extensions"))
+		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
 	}
 	dirs = append(dirs, filepath.Join(a.GetWorkspaceRoot(), "extensions"))
 

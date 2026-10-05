@@ -13,12 +13,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 
 	"github.com/alecthomas/chroma/v2/quick"
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func PrintBanner(w io.Writer, a *agent.Agent) {
@@ -56,7 +56,7 @@ func PrintBanner(w io.Writer, a *agent.Agent) {
 	var dirs []string
 	home, err := os.UserHomeDir()
 	if err == nil {
-		dirs = append(dirs, filepath.Join(home, ".maquis", "extensions"))
+		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
 	}
 	dirs = append(dirs, filepath.Join(a.GetWorkspaceRoot(), "extensions"))
 
@@ -92,7 +92,7 @@ func PrintBanner(w io.Writer, a *agent.Agent) {
 		tagStr = "  " + tagStyle.Render(fmt.Sprintf("[⊞ %d, ⌁ %d]", pluginsCount, extensionsCount))
 	}
 
-	info := fmt.Sprintf("\n\nmaquis v1.0.0%s\nendpoint: %s\nmodel:    %s", tagStr, cfg.Endpoint, cfg.Model)
+	info := fmt.Sprintf("\n\nloop v1.0.0%s\nendpoint: %s\nmodel:    %s", tagStr, cfg.Endpoint, cfg.Model)
 
 	joined := style.JoinHorizontal(
 		style.Center,
@@ -137,7 +137,7 @@ func RenderHelp(w io.Writer, theme UITheme) {
 		{"/debug", "view path and status of debug execution log"},
 		{"/clear", "clear conversation history and start fresh"},
 		{"/help", "display this help menu"},
-		{"/exit", "exit the maquis application"},
+		{"/exit", "exit the loop application"},
 	}
 
 	for _, cmd := range commands {
@@ -217,7 +217,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 			"  %-20s %d\n"+
 			"  %-20s %s\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
-		titleStyle.Render("maquis runtime settings"),
+		titleStyle.Render("loop runtime settings"),
 		keyStyle.Render("active provider:"), valStyle.Render(cfg.ActiveProvider),
 		keyStyle.Render("temperature:"), cfg.Temperature,
 		keyStyle.Render("auto-approve:"), approveVal,
@@ -240,119 +240,6 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))
-}
-
-func formatToolArguments(toolName string, argsJSON string, theme UITheme) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
-		return "arguments: " + argsJSON
-	}
-
-	keyStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	valStyle := style.NewStyle().Foreground(theme.Text)
-
-	var sb strings.Builder
-
-	var simpleLines []string
-	var blockLines []string
-
-	keys := make([]string, 0, len(m))
-	if _, ok := m["path"]; ok {
-		keys = append(keys, "path")
-	}
-	for k := range m {
-		if k != "path" {
-			keys = append(keys, k)
-		}
-	}
-
-	for _, k := range keys {
-		v := m[k]
-		switch k {
-		case "content", "command":
-			strVal, ok := v.(string)
-			if !ok {
-				strVal = fmt.Sprintf("%v", v)
-			}
-
-			lang := "plaintext"
-			if k == "command" {
-				lang = "bash"
-			} else if pathVal, ok := m["path"].(string); ok {
-				ext := filepath.Ext(pathVal)
-				if len(ext) > 1 {
-					lang = ext[1:]
-				}
-			}
-
-			var codeBuf bytes.Buffer
-			err := quick.Highlight(&codeBuf, strVal, lang, "terminal16", "friendly")
-			var highlightedStr string
-			if err == nil {
-				highlightedStr = codeBuf.String()
-			} else {
-				highlightedStr = strVal
-			}
-
-			var blockSb strings.Builder
-			blockSb.WriteString(fmt.Sprintf("%s:\n", keyStyle.Render(k)))
-			lines := strings.Split(highlightedStr, "\n")
-			for i, line := range lines {
-				if line == "" && i == len(lines)-1 {
-					continue
-				}
-				blockSb.WriteString(fmt.Sprintf("%s\n", line))
-			}
-			blockLines = append(blockLines, strings.TrimSuffix(blockSb.String(), "\n"))
-
-		case "edits", "updates":
-			edits, ok := v.([]interface{})
-			if !ok {
-				continue
-			}
-			var blockSb strings.Builder
-			blockSb.WriteString(fmt.Sprintf("%s:\n", keyStyle.Render(k)))
-			for i, eVal := range edits {
-				eMap, ok := eVal.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				oldText, _ := eMap["oldText"].(string)
-				newText, _ := eMap["newText"].(string)
-
-				blockSb.WriteString(fmt.Sprintf("edit block %d:\n", i+1))
-				if oldText != "" {
-					blockSb.WriteString(style.NewStyle().Foreground(theme.Error).Render("- [old text]:\n"))
-					for _, line := range strings.Split(oldText, "\n") {
-						blockSb.WriteString(fmt.Sprintf("%s\n", style.NewStyle().Foreground(theme.Error).Render(line)))
-					}
-				}
-				if newText != "" {
-					blockSb.WriteString(style.NewStyle().Foreground(theme.Success).Render("+ [new text]:\n"))
-					for _, line := range strings.Split(newText, "\n") {
-						blockSb.WriteString(fmt.Sprintf("%s\n", style.NewStyle().Foreground(theme.Success).Render(line)))
-					}
-				}
-			}
-			blockLines = append(blockLines, strings.TrimSuffix(blockSb.String(), "\n"))
-
-		default:
-			valStr := fmt.Sprintf("%v", v)
-			simpleLines = append(simpleLines, fmt.Sprintf("%s: %s", keyStyle.Render(k), valStyle.Render(valStr)))
-		}
-	}
-
-	if len(simpleLines) > 0 {
-		sb.WriteString(strings.Join(simpleLines, "\n"))
-	}
-	if len(blockLines) > 0 {
-		if len(simpleLines) > 0 {
-			sb.WriteString("\n\n")
-		}
-		sb.WriteString(strings.Join(blockLines, "\n\n"))
-	}
-
-	return sb.String()
 }
 
 func extractToolTarget(toolName string, argsJSON string) string {
@@ -807,10 +694,6 @@ func RenderMCPStartupErrors(w io.Writer, startErrors map[string]error, theme UIT
 
 	fmt.Fprint(w, borderStyle.Render(strings.TrimSuffix(sb.String(), "\n")))
 	fmt.Fprintln(w)
-}
-
-func FormatToolDelimiter(theme UITheme) string {
-	return ""
 }
 
 func FormatBashCommandLine(symbol string, command string, theme UITheme) string {

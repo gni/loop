@@ -155,19 +155,6 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 	}
 }
 
-// IsInspectionCall returns true if the tool call performs read-only inspection.
-func (g *TurnExecutionGuard) IsInspectionCall(toolName, arguments string) bool {
-	switch {
-	case IsInspectionTool(toolName):
-		return true
-	case toolName == "bash":
-		cmd := extractBashCommand(arguments)
-		return isBashInspection(cmd)
-	default:
-		return false
-	}
-}
-
 func cmdForTool(toolName, arguments string) string {
 	if toolName != "bash" {
 		return ""
@@ -269,27 +256,6 @@ func extractBashCommand(arguments string) string {
 		}
 	}
 	return trimmed
-}
-
-func isBashInspection(cmd string) bool {
-	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" {
-		return false
-	}
-	prefixes := []string{"cat ", "head ", "tail ", "sed -n", "awk ", "wc ", "more ", "less "}
-	for _, p := range prefixes {
-		if strings.HasPrefix(trimmed, p) {
-			return true
-		}
-	}
-	lower := strings.ToLower(trimmed)
-	if strings.Contains(lower, "python") || strings.Contains(lower, "python3") {
-		if (strings.Contains(lower, ".read_text()") || strings.Contains(lower, ".read()") || strings.Contains(lower, "open(")) &&
-			!strings.Contains(lower, ".write_text(") && !strings.Contains(lower, ".write(") {
-			return true
-		}
-	}
-	return false
 }
 
 func isBashModifying(cmd string) bool {

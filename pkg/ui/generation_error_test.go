@@ -6,8 +6,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func TestGenerationErrorRenderingSanitizesAndBoundsServerBody(t *testing.T) {

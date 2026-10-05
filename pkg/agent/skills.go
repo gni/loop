@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 
-	"maquis/pkg/agent/tool"
+	"loop/pkg/agent/tool"
 )
 
 type Skill = tool.Skill
@@ -342,7 +342,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		userGuidelines = cfg.UserGuidelines
 	}
 	if baseInstruction == "" {
-		baseInstruction = "You are maquis, an elite autonomous software engineering harness. You solve engineering tasks with senior craft, architectural rigor, and direct working deliverables."
+		baseInstruction = "You are loop, an elite autonomous software engineering harness. You solve engineering tasks with senior craft, architectural rigor, and direct working deliverables."
 	}
 
 	var sb strings.Builder

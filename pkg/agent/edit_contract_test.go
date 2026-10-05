@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 )
 
 func TestEditTreatsUniqueDesiredBlockAsAlreadyApplied(t *testing.T) {
@@ -134,7 +134,7 @@ func TestCleanStructuredSystemPromptSections(t *testing.T) {
 	a := &Agent{
 		Config: &config.Config{
 			CompactPrompt:     false,
-			SystemInstruction: "You are maquis, an elite autonomous software engineering harness.",
+			SystemInstruction: "You are loop, an elite autonomous software engineering harness.",
 			SkillsDir:         t.TempDir(),
 		},
 		WorkspaceRoot: "/workspace/project",

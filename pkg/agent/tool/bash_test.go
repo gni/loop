@@ -213,6 +213,3 @@ func TestBashCompoundCommandWithBackgroundServer(t *testing.T) {
 		t.Fatalf("command took %v, expected < 2s", elapsed)
 	}
 }
-
-
-

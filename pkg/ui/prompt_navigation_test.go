@@ -7,8 +7,8 @@ import (
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
+	"loop/pkg/agent"
+	"loop/pkg/config"
 )
 
 func TestNormalizePromptNavigationKeys(t *testing.T) {

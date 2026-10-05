@@ -54,10 +54,10 @@ func (t *listTool) Definition() Tool {
 
 func (t *listTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	var args struct {
-		Path     string `json:"path"`
-		Dir      string `json:"dir"`
-		DirPath  string  `json:"dir_path"`
-		Depth    float64 `json:"depth"`
+		Path    string  `json:"path"`
+		Dir     string  `json:"dir"`
+		DirPath string  `json:"dir_path"`
+		Depth   float64 `json:"depth"`
 	}
 
 	trimmed := strings.TrimSpace(arguments)

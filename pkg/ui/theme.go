@@ -1,12 +1,11 @@
 package ui
 
 import (
-	"maquis/pkg/config"
-	"maquis/pkg/ui/style"
+	"loop/pkg/config"
+	"loop/pkg/ui/style"
 )
 
 type UITheme = style.UITheme
-
 
 func GetConfiguredTheme(cfg *config.Config) UITheme {
 	theme := style.GetTheme(cfg.Theme)

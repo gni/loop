@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func TestCommitProviderConfigRefreshesLiveAgent(t *testing.T) {
@@ -21,6 +21,7 @@ func TestCommitProviderConfigRefreshesLiveAgent(t *testing.T) {
 		Model:              "old-model",
 		ActiveProvider:     "old",
 		ContextWindowLimit: 128000,
+		DebugLogFile:       "off",
 		Providers: map[string]config.ProviderConfig{
 			"old": {
 				Name:     "old",
@@ -123,6 +124,7 @@ func TestCommitProviderConfigResolvesNoneToDefaultProfile(t *testing.T) {
 		Endpoint:       "https://custom.example",
 		Model:          "custom-model",
 		ActiveProvider: "custom",
+		DebugLogFile:   "off",
 		Providers: map[string]config.ProviderConfig{
 			"default": {
 				Name:     "default",
@@ -181,6 +183,7 @@ func TestDirectProviderSwitchCommand(t *testing.T) {
 		Endpoint:       "https://old.example",
 		Model:          "old-model",
 		ActiveProvider: "old",
+		DebugLogFile:   "off",
 		Providers: map[string]config.ProviderConfig{
 			"old": {
 				Name:     "old",
@@ -224,7 +227,6 @@ func TestDirectProviderSwitchCommand(t *testing.T) {
 	}
 }
 
-
 func TestProviderAutocomplete(t *testing.T) {
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{
@@ -246,5 +248,3 @@ func TestProviderAutocomplete(t *testing.T) {
 		t.Fatalf("expected /provider openai, got ok=%v, newLine=%q, newPos=%d", ok, newLine, newPos)
 	}
 }
-
-

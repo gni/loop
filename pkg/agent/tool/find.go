@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -59,25 +58,15 @@ func (t *findTool) Definition() Tool {
 
 func (t *findTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	var args struct {
-		Pattern string `json:"pattern"`
-		Glob    string `json:"glob"`
-		Path    string `json:"path"`
+		Pattern string  `json:"pattern"`
+		Glob    string  `json:"glob"`
+		Path    string  `json:"path"`
 		Dir     string  `json:"dir"`
 		Limit   float64 `json:"limit"`
 	}
 
-	trimmed := strings.TrimSpace(arguments)
-	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
-		var unquoted string
-		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil {
-			args.Pattern = unquoted
-		}
-	} else if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		if !strings.HasPrefix(trimmed, "{") && trimmed != "" {
-			args.Pattern = trimmed
-		} else {
-			return "", fmt.Errorf("invalid arguments: %w", err)
-		}
+	if err := ParsePatternOrArgs(arguments, &args, func(p string) { args.Pattern = p }); err != nil {
+		return "", err
 	}
 
 	pattern := strings.TrimSpace(args.Pattern)

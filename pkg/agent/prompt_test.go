@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 )
 
 // promptTestRegistry mirrors the built-in tool set a real agent registers, so the
@@ -34,7 +34,7 @@ func promptTestRegistry() *tool.ToolRegistry {
 func TestUserGuidelinesSurvivePromptBuild(t *testing.T) {
 	a := &Agent{
 		Config: &config.Config{
-			SystemInstruction: "You are maquis.\nGuidelines:\n1. Answer greetings conversationally; do not call tools.",
+			SystemInstruction: "You are loop.\nGuidelines:\n1. Answer greetings conversationally; do not call tools.",
 			SkillsDir:         t.TempDir(),
 			CompactPrompt:     true,
 		},
@@ -46,7 +46,7 @@ func TestUserGuidelinesSurvivePromptBuild(t *testing.T) {
 	if !strings.Contains(prompt, "Answer greetings conversationally") {
 		t.Fatalf("user guideline was dropped from the prompt:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "You are maquis.") {
+	if !strings.Contains(prompt, "You are loop.") {
 		t.Fatalf("identity preamble was lost: %s", prompt)
 	}
 

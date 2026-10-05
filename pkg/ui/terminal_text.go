@@ -7,7 +7,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 )
 
 // sanitizeTerminalText removes cursor-moving and other control sequences from
@@ -33,7 +33,7 @@ func sanitizeTerminalText(input string) string {
 			output.WriteString("    ")
 			i++
 		case '\x1b':
-			i = skipTerminalEscape(input, i)
+			i = style.SkipAnsiEscape(input, i)
 		default:
 			r, size := utf8.DecodeRuneInString(input[i:])
 			i += size
@@ -45,41 +45,6 @@ func sanitizeTerminalText(input string) string {
 	}
 
 	return strings.TrimRight(output.String(), "\n")
-}
-
-func skipTerminalEscape(input string, start int) int {
-	i := start + 1
-	if i >= len(input) {
-		return i
-	}
-
-	switch input[i] {
-	case '[':
-		i++
-		for i < len(input) {
-			final := input[i] >= 0x40 && input[i] <= 0x7e
-			i++
-			if final {
-				return i
-			}
-		}
-	case ']', 'P', 'X', '^', '_':
-		i++
-		for i < len(input) {
-			if input[i] == '\a' {
-				return i + 1
-			}
-			if input[i] == '\x1b' && i+1 < len(input) && input[i+1] == '\\' {
-				return i + 2
-			}
-			i++
-		}
-	default:
-		_, size := utf8.DecodeRuneInString(input[i:])
-		return i + size
-	}
-
-	return i
 }
 
 func RenderGenerationError(w io.Writer, message string, theme UITheme) {

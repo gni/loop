@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func TestMultiAgentCancellationScopes(t *testing.T) {
@@ -375,7 +375,7 @@ func TestSwarmAuditTool(t *testing.T) {
 		Role:       "tool",
 		ToolCallID: "call_1",
 		Name:       "bash",
-		Content:    "PASS\nok  maquis/pkg/agent",
+		Content:    "PASS\nok  loop/pkg/agent",
 	})
 	bob.History = append(bob.History, db.Message{
 		Role:    "assistant",
@@ -717,5 +717,3 @@ func TestRenderStatsSwarmTotal(t *testing.T) {
 		t.Fatalf("GetSubagentsCompletionTokens = %d, want 25", subTokens)
 	}
 }
-
-

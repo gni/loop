@@ -46,7 +46,6 @@ func RoundedBorder() int {
 	return roundedBorder
 }
 
-
 const (
 	Center = iota
 	Left
@@ -92,7 +91,6 @@ func (s Style) Foreground(c color.Color) Style {
 	}
 	return s
 }
-
 
 func (s Style) Bold(v bool) Style {
 	s.bold = v
@@ -257,11 +255,11 @@ func (s Style) Render(args ...string) string {
 		padL := strings.Repeat(" ", s.paddingLeft)
 		var padR string
 		if s.bg != nil || s.borderType != noBorder {
-			padR = strings.Repeat(" ", s.paddingRight + (maxWidth - runeCount))
+			padR = strings.Repeat(" ", s.paddingRight+(maxWidth-runeCount))
 		} else {
 			padR = strings.Repeat(" ", s.paddingRight)
 		}
-		formattedLines = append(formattedLines, padL + line + padR)
+		formattedLines = append(formattedLines, padL+line+padR)
 	}
 
 	var borderedLines []string
@@ -302,7 +300,7 @@ func (s Style) Render(args ...string) string {
 		borderedLines = append(borderedLines, bottom)
 	} else {
 		for _, line := range formattedLines {
-			borderedLines = append(borderedLines, ansiStart + line + ansiEnd)
+			borderedLines = append(borderedLines, ansiStart+line+ansiEnd)
 		}
 	}
 
@@ -311,7 +309,7 @@ func (s Style) Render(args ...string) string {
 		marginLines = append(marginLines, "")
 	}
 	for _, line := range borderedLines {
-		marginLines = append(marginLines, strings.Repeat(" ", s.marginLeft) + line + strings.Repeat(" ", s.marginRight))
+		marginLines = append(marginLines, strings.Repeat(" ", s.marginLeft)+line+strings.Repeat(" ", s.marginRight))
 	}
 	for i := 0; i < s.marginBottom; i++ {
 		marginLines = append(marginLines, "")
@@ -360,15 +358,14 @@ func JoinHorizontal(pos int, strs ...string) string {
 				lineVal = lines[i]
 			}
 			visibleW := utf8.RuneCountInString(StripAnsi(lineVal))
-			padR := strings.Repeat(" ", w - visibleW)
-			lineParts = append(lineParts, lineVal + padR)
+			padR := strings.Repeat(" ", w-visibleW)
+			lineParts = append(lineParts, lineVal+padR)
 		}
 		joinedLines = append(joinedLines, strings.Join(lineParts, ""))
 	}
 
 	return strings.Join(joinedLines, "\n")
 }
-
 
 // SkipAnsiEscape returns the end index of the ANSI escape sequence starting at start in s.
 func SkipAnsiEscape(s string, start int) int {

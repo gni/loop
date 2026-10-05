@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/db"
+	"loop/pkg/agent/tool"
+	"loop/pkg/db"
 )
 
 func TestDebugLoggerLogsExecutionTracesAndRereads(t *testing.T) {
@@ -31,7 +31,7 @@ func TestDebugLoggerLogsExecutionTracesAndRereads(t *testing.T) {
 
 	// 2. Log LLM request
 	msgs := []db.Message{
-		{Role: "system", Content: "You are maquis."},
+		{Role: "system", Content: "You are loop."},
 		{Role: "user", Content: "inspect and modify code"},
 	}
 	tools := []tool.Tool{
@@ -110,4 +110,3 @@ func TestDebugLoggerDisabled(t *testing.T) {
 		}
 	}
 }
-

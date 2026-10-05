@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 )
 
 var sgrSequencePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -307,4 +307,3 @@ func TestStreamRendererSuppressesEchoedPrompt(t *testing.T) {
 		t.Fatalf("streamed thought mentioning prompt was chopped: %q", rendered4)
 	}
 }
-

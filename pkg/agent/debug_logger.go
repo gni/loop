@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/db"
+	"loop/pkg/agent/tool"
+	"loop/pkg/db"
 )
 
 // DebugLogger records complete execution traces, function calls, arguments,
@@ -23,14 +23,14 @@ type DebugLogger struct {
 	fileReadCounts map[string]int
 }
 
-// NewDebugLogger creates a new DebugLogger targeting customPath, MAQUIS_DEBUG_FILE,
-// or defaulting to maquis_debug.log in workspaceRoot.
-// If customPath or MAQUIS_DEBUG_FILE is "off", "none", "false", "disabled", or "/dev/null",
+// NewDebugLogger creates a new DebugLogger targeting customPath, LOOP_DEBUG_FILE,
+// or defaulting to loop_debug.log in workspaceRoot.
+// If customPath or LOOP_DEBUG_FILE is "off", "none", "false", "disabled", or "/dev/null",
 // debug logging is disabled and nil is returned.
 func NewDebugLogger(workspaceRoot string, customPath string) *DebugLogger {
 	target := strings.TrimSpace(customPath)
 	if target == "" {
-		target = strings.TrimSpace(os.Getenv("MAQUIS_DEBUG_FILE"))
+		target = strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE"))
 	}
 	if strings.EqualFold(target, "off") || strings.EqualFold(target, "none") || strings.EqualFold(target, "false") || strings.EqualFold(target, "disabled") || target == "/dev/null" || target == "null" {
 		return nil
@@ -39,7 +39,7 @@ func NewDebugLogger(workspaceRoot string, customPath string) *DebugLogger {
 		if workspaceRoot == "" {
 			workspaceRoot = "."
 		}
-		target = filepath.Join(workspaceRoot, "maquis_debug.log")
+		target = filepath.Join(workspaceRoot, "loop_debug.log")
 	}
 
 	absTarget, err := filepath.Abs(target)

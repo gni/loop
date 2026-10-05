@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent/tool"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 // MultiAgent represents an independent agent node in a multi-agent swarm.
@@ -76,26 +76,6 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 		Skills:          ma.Skills,
 		AllSkills:       allSkills,
 	})
-}
-
-// NewMultiAgent creates a new MultiAgent node.
-func NewMultiAgent(name string, systemPrompt string, parent *MultiAgent, baseAgent *Agent, skillNames []string) *MultiAgent {
-	var skills []tool.Skill
-	if len(skillNames) > 0 {
-		for _, sn := range skillNames {
-			for _, s := range baseAgent.ActiveSkills {
-				if s.Name == sn {
-					skills = append(skills, s)
-					break
-				}
-			}
-		}
-	} else {
-		skills = make([]tool.Skill, len(baseAgent.ActiveSkills))
-		copy(skills, baseAgent.ActiveSkills)
-	}
-
-	return newMultiAgentWithSkills(name, systemPrompt, parent, baseAgent, skills, nil, len(skillNames) == 0)
 }
 
 func newMultiAgentWithSkills(
@@ -922,7 +902,7 @@ func (mam *MultiAgentManager) getAgentsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".maquis", "agents"), nil
+	return filepath.Join(home, ".loop", "agents"), nil
 }
 
 func validateAgentName(name string) error {
@@ -2025,7 +2005,7 @@ func (mam *MultiAgentManager) ClearAllAgents() {
 	// Wipe all JSON state files
 	home, err := os.UserHomeDir()
 	if err == nil {
-		os.RemoveAll(filepath.Join(home, ".maquis", "agents"))
+		os.RemoveAll(filepath.Join(home, ".loop", "agents"))
 	}
 
 	// Unregister tools from the base agent

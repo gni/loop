@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func filterFallbackChunks(chunks ...string) string {

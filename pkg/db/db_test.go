@@ -33,7 +33,7 @@ func TestNewUUID(t *testing.T) {
 }
 
 func TestDBLifecycle(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "maquis_db_test_*")
+	tempDir, err := os.MkdirTemp("", "loop_db_test_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestDBLifecycle(t *testing.T) {
 	}
 
 	sessionID := "test-session-001"
-	msg1 := Message{Role: "user", Content: "Hello maquis"}
+	msg1 := Message{Role: "user", Content: "Hello loop"}
 	if err := SaveMessage(sessionID, msg1); err != nil {
 		t.Fatalf("failed to save message: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestDBLifecycle(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	if messages[0].Content != "Hello maquis" || messages[1].Content != "Hello! I am ready." {
+	if messages[0].Content != "Hello loop" || messages[1].Content != "Hello! I am ready." {
 		t.Errorf("unexpected message contents: %+v", messages)
 	}
 

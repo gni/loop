@@ -431,16 +431,3 @@ func getRealTerminalHeight() int {
 	}
 	return 0
 }
-
-func getRealTerminalWidth() int {
-	if w, _, err := term.GetSize(int(os.Stdin.Fd())); err == nil && w > 0 {
-		return w
-	}
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-		return w
-	}
-	if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
-		return w
-	}
-	return 0
-}

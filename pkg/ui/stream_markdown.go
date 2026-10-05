@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 )
 
 const (

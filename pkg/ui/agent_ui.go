@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/ui/style"
 )
 
 // AgentUIImpl implements agent.AgentUI and encapsulates the state of the TUI.
@@ -232,4 +232,3 @@ func (ui *AgentUIImpl) CheckCtrlDConfirmation(timeout time.Duration) bool {
 	}
 	return false
 }
-

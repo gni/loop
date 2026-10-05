@@ -3,13 +3,10 @@ package agent
 import (
 	"strings"
 
-	"maquis/pkg/agent/tool"
+	"loop/pkg/agent/tool"
 )
 
 // Single source of truth for tool side-effect classification.
-// Before this file the same question was answered four different ways
-// (isReadOnly in loop.go, IsInspectionTool in utils.go, IsActionTool,
-// guard.IsInspectionCall) and the sets disagreed about find/list/load_skill.
 //
 // inspection: no writes, no execution, no process spawn
 // action:     writes files, executes commands, spawns or kills processes

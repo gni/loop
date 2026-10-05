@@ -9,10 +9,10 @@ import (
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func HandleMCPCommand(

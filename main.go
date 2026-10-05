@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"maquis/pkg/cmd"
-	"maquis/pkg/config"
-	"maquis/pkg/ui"
+	"loop/pkg/cmd"
+	"loop/pkg/config"
+	"loop/pkg/ui"
 )
 
 //go:embed config/config.json

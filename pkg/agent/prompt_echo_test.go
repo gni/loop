@@ -115,4 +115,3 @@ func TestPromptEchoFilterThoughtMentioningPromptNotChopped(t *testing.T) {
 		t.Fatalf("thought mentioning prompt was chopped or altered: got %q, want %q", got, input)
 	}
 }
-

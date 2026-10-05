@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"maquis/pkg/config"
-	"maquis/pkg/ui"
+	"loop/pkg/config"
+	"loop/pkg/ui"
 )
 
 var mcpCmd = &cobra.Command{

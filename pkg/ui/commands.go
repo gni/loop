@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 // HandleSlashCommand processes slash commands from the REPL.
@@ -843,7 +843,7 @@ func HandleSlashCommand(
 		var dirs []string
 		home, err := os.UserHomeDir()
 		if err == nil {
-			dirs = append(dirs, filepath.Join(home, ".maquis", "extensions"))
+			dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
 		}
 		dirs = append(dirs, filepath.Join(a.GetWorkspaceRoot(), "extensions"))
 
@@ -864,7 +864,7 @@ func HandleSlashCommand(
 				continue
 			}
 			loc := "project"
-			if strings.Contains(dir, ".maquis") {
+			if strings.Contains(dir, ".loop") {
 				loc = "global"
 			}
 

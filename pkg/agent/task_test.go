@@ -139,4 +139,3 @@ func TestKillTaskNormalizedIdAndStatus(t *testing.T) {
 		t.Fatalf("timed out waiting for task completion event")
 	}
 }
-

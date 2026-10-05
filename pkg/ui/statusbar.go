@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"maquis/pkg/ui/style"
+	"loop/pkg/ui/style"
 )
 
 type StatusBarState struct {

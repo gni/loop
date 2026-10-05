@@ -13,37 +13,37 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui"
 )
 
 var (
-	configPath          string
-	endpoint            string
-	modelName           string
-	autoYes             bool
-	showThinking        bool
-	showTokens          bool
-	allowedToolsStr     string
-	sessionIDFlag       string
-	maxStepsFlag        int
-	resumeSession       bool
-	reasoningEffortFlag string
-	contextLimitFlag    int
-	directCommandsFlag  bool
+	configPath              string
+	endpoint                string
+	modelName               string
+	autoYes                 bool
+	showThinking            bool
+	showTokens              bool
+	allowedToolsStr         string
+	sessionIDFlag           string
+	maxStepsFlag            int
+	resumeSession           bool
+	reasoningEffortFlag     string
+	contextLimitFlag        int
+	directCommandsFlag      bool
 	maxCompletionTokensFlag int
-	compactPrompt       bool
-	debugFileFlag       string
-	maxSubagentDepthFlag int
-	timeoutFlag         int
+	compactPrompt           bool
+	debugFileFlag           string
+	maxSubagentDepthFlag    int
+	timeoutFlag             int
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "maquis [prompt]",
-	Short: "maquis is a minimalist, resilient AI coding agent CLI.",
-	Long:  `maquis is a Unix-style agent harness and interactive REPL that supports persistent session tracking, tool execution sandboxes, and advanced terminal visual themes.`,
+	Use:   "loop [prompt]",
+	Short: "loop is a minimalist, resilient AI coding agent CLI.",
+	Long:  `loop is a Unix-style agent harness and interactive REPL that supports persistent session tracking, tool execution sandboxes, and advanced terminal visual themes.`,
 	Args:  cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig(configPath)
@@ -134,7 +134,7 @@ var rootCmd = &cobra.Command{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		}
-		
+
 		if tlsConfig != nil {
 			transport.TLSClientConfig = tlsConfig
 		}
@@ -145,7 +145,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		cwd, _ := os.Getwd()
-		
+
 		pipedData := ""
 		if isPiped() {
 			pipedData, _ = readStdin()
@@ -154,7 +154,7 @@ var rootCmd = &cobra.Command{
 		isNonInteractive := pipedData != "" || hasPromptArgs
 
 		// Prompt for workspace trust if local executable extensions/plugins exist
-		trustFile := filepath.Join(cwd, ".maquis-trust")
+		trustFile := filepath.Join(cwd, ".loop-trust")
 		trusted := false
 		if _, err := os.Stat(trustFile); err == nil {
 			trusted = true
@@ -204,8 +204,6 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to load skills: %v\n", err)
 		}
-
-
 
 		// Start MCP servers
 		if len(cfg.MCPServers) > 0 {
@@ -274,7 +272,7 @@ var rootCmd = &cobra.Command{
 
 var configCmd = &cobra.Command{
 	Use:   "config",
-	Short: "Manage maquis runtime settings",
+	Short: "Manage loop runtime settings",
 }
 
 var configShowCmd = &cobra.Command{
@@ -407,7 +405,7 @@ func init() {
 	defaultConfig := "config/config.json"
 	home, err := os.UserHomeDir()
 	if err == nil {
-		defaultConfig = filepath.Join(home, ".maquis", "config.json")
+		defaultConfig = filepath.Join(home, ".loop", "config.json")
 	}
 	rootCmd.SetHelpCommand(&cobra.Command{Use: "no-help-command", Hidden: true})
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", defaultConfig, "Path to config JSON file")
@@ -425,7 +423,7 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&maxCompletionTokensFlag, "max-completion-tokens", 0, "Override maximum completion/output tokens limit (default: 16384)")
 	rootCmd.PersistentFlags().BoolVar(&directCommandsFlag, "direct", false, "Enable direct execution of local shell commands (default: true in config)")
 	rootCmd.PersistentFlags().BoolVar(&compactPrompt, "compact", false, "Enable highly compressed system instructions for smaller models")
-	rootCmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: maquis_debug.log in workspace)")
+	rootCmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: loop_debug.log in workspace)")
 	rootCmd.PersistentFlags().IntVar(&maxSubagentDepthFlag, "max-subagent-depth", 0, "Maximum subagent nesting depth (default: 0, leaf subagents cannot spawn further subagents)")
 	rootCmd.PersistentFlags().IntVar(&timeoutFlag, "timeout", 0, "Override LLM request timeout in seconds (default: 120)")
 

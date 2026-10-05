@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/db"
+	"loop/pkg/db"
 )
 
 func TestFormatDefensiveErrorExplainsOldTextMismatch(t *testing.T) {
@@ -223,8 +223,6 @@ func TestSanitizeLLMControlTokens(t *testing.T) {
 		}
 	}
 }
-
-
 
 func TestParseFallbackToolCallsHermesDialect(t *testing.T) {
 	observed := "<tool_call> \n <function=bash \n <parametercommand \n mkdir -p /home/w/experimental/tests/petitbleu/src/core/net && ls /home/w/experimental/tests/petitbleu/src/core \n </parameter \n </function \n </tool_call> \n thought (1.2s)"

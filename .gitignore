@@ -1,5 +1,5 @@
 # Binaries
-/maquis
+/loop
 *.exe
 *.exe~
 *.dll
@@ -12,7 +12,7 @@ go.work.sum
 
 # Session history & local configs
 /config/sessions/
-/config/maquis.db
+/config/loop.db
 .env
 .env.*
 
@@ -27,8 +27,8 @@ scratch
 dev.txt
 tmp
 
-maquis_ubuntu
-maquis_test
+loop_ubuntu
+loop_test
 
 .codegraph
-maquis_debug.log
+loop_debug.log

@@ -69,7 +69,7 @@ func DefaultConfig() *Config {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	skillsDir := filepath.Join(homeDir, ".maquis", "skills")
+	skillsDir := filepath.Join(homeDir, ".loop", "skills")
 	if _, err := os.Stat("/workspace/agent/skills"); err == nil {
 		skillsDir = "/workspace/agent/skills"
 	} else if _, err := os.Stat("skills"); err == nil {
@@ -177,7 +177,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	if config.SkillsDir == "" {
 		homeDir, _ := os.UserHomeDir()
-		config.SkillsDir = filepath.Join(homeDir, ".maquis", "skills")
+		config.SkillsDir = filepath.Join(homeDir, ".loop", "skills")
 		if _, err := os.Stat("/workspace/agent/skills"); err == nil {
 			config.SkillsDir = "/workspace/agent/skills"
 		} else if _, err := os.Stat("skills"); err == nil {
@@ -308,7 +308,8 @@ func LoadConfig(path string) (*Config, error) {
 		config.ReasoningEffort = "low"
 	}
 	config.SyncActiveProvider()
-	if envTimeout := os.Getenv("MAQUIS_TIMEOUT"); envTimeout != "" {
+	envTimeout := os.Getenv("LOOP_TIMEOUT")
+	if envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
 			config.Timeout = t
 		}

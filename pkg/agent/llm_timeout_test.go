@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func TestLLMStreamChatCompletionsTimeout(t *testing.T) {
@@ -266,4 +266,3 @@ func TestLLMNonRetryableConnectionErrorFailsFast(t *testing.T) {
 		t.Fatalf("expected fast failure without 3 retries, took: %v", duration)
 	}
 }
-

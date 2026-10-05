@@ -14,10 +14,10 @@ import (
 	"github.com/alecthomas/chroma/v2/quick"
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 type settingItem struct {
@@ -542,8 +542,8 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			},
 		},
 		{
-			id:          "timeout",
-			name:        "llm timeout (s)",
+			id:   "timeout",
+			name: "llm timeout (s)",
 			value: func() string {
 				if cloned.Timeout > 0 {
 					return fmt.Sprintf("%ds", cloned.Timeout)
@@ -614,8 +614,8 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			},
 		},
 		{
-			id:          "show_thinking",
-			name:        "show thinking",
+			id:   "show_thinking",
+			name: "show thinking",
 			value: func() string {
 				effort := strings.ToLower(strings.TrimSpace(cloned.ReasoningEffort))
 				isThinking := cloned.ShowThinking && effort != "off" && effort != "none"
@@ -636,8 +636,8 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			},
 		},
 		{
-			id:          "reasoning_effort",
-			name:        "reasoning effort",
+			id:   "reasoning_effort",
+			name: "reasoning effort",
 			value: func() string {
 				effort := strings.ToLower(strings.TrimSpace(cloned.ReasoningEffort))
 				if !cloned.ShowThinking || effort == "off" || effort == "none" || effort == "" {
@@ -701,15 +701,7 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			value:       func() string { return fmt.Sprintf("%d", cloned.ContextWindowLimit) },
 			description: "Maximum token context window limit before compression",
 			onEdit: func(newVal string) error {
-				if newVal == "" {
-					return nil
-				}
-				l, err := strconv.Atoi(newVal)
-				if err != nil || l <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				cloned.ContextWindowLimit = l
-				return nil
+				return parsePositiveInt(newVal, &cloned.ContextWindowLimit)
 			},
 		},
 		{
@@ -718,15 +710,7 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			value:       func() string { return fmt.Sprintf("%d", cloned.MaxCompletionTokens) },
 			description: "Maximum token limit for output/completion generations",
 			onEdit: func(newVal string) error {
-				if newVal == "" {
-					return nil
-				}
-				tokens, err := strconv.Atoi(newVal)
-				if err != nil || tokens <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				cloned.MaxCompletionTokens = tokens
-				return nil
+				return parsePositiveInt(newVal, &cloned.MaxCompletionTokens)
 			},
 		},
 		{
@@ -735,15 +719,7 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			value:       func() string { return fmt.Sprintf("%d", cloned.MaxReasoningSteps) },
 			description: "Maximum number of sequential reasoning steps before termination",
 			onEdit: func(newVal string) error {
-				if newVal == "" {
-					return nil
-				}
-				steps, err := strconv.Atoi(newVal)
-				if err != nil || steps <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				cloned.MaxReasoningSteps = steps
-				return nil
+				return parsePositiveInt(newVal, &cloned.MaxReasoningSteps)
 			},
 		},
 		{
@@ -802,15 +778,7 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			value:       func() string { return fmt.Sprintf("%d", cloned.MaxPasteLines) },
 			description: "Threshold of lines before multiline paste collapses into a tag",
 			onEdit: func(newVal string) error {
-				if newVal == "" {
-					return nil
-				}
-				lines, err := strconv.Atoi(newVal)
-				if err != nil || lines <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				cloned.MaxPasteLines = lines
-				return nil
+				return parsePositiveInt(newVal, &cloned.MaxPasteLines)
 			},
 		},
 		{
@@ -819,15 +787,7 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			value:       func() string { return fmt.Sprintf("%d", cloned.MaxPasteChars) },
 			description: "Threshold of characters before paste collapses into a tag",
 			onEdit: func(newVal string) error {
-				if newVal == "" {
-					return nil
-				}
-				chars, err := strconv.Atoi(newVal)
-				if err != nil || chars <= 0 {
-					return fmt.Errorf("must be a positive integer")
-				}
-				cloned.MaxPasteChars = chars
-				return nil
+				return parsePositiveInt(newVal, &cloned.MaxPasteChars)
 			},
 		},
 	}
@@ -898,7 +858,7 @@ func RunSessionExplorer(theme UITheme, rlInput io.Reader, rlOutput io.Writer) (s
 		}
 
 		fmt.Fprintln(rlOutput, "\n==================================================")
-		fmt.Fprintln(rlOutput, "                maquis sessions                  ")
+		fmt.Fprintln(rlOutput, "                 loop sessions                   ")
 		fmt.Fprintln(rlOutput, "==================================================")
 		if len(sessions) == 0 {
 			fmt.Fprintln(rlOutput, "no past sessions found.")
@@ -1521,16 +1481,7 @@ func (sr *sessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 					return line.String(), nil
 				}
 				if b == 127 || b == 8 {
-					if line.Len() > 0 {
-						s := line.String()
-						runes := []rune(s)
-						if len(runes) > 0 {
-							truncated := string(runes[:len(runes)-1])
-							line.Reset()
-							line.WriteString(truncated)
-							fmt.Fprint(rlOutput, "\b\x1b[K")
-						}
-					}
+					popRuneFromBuilder(&line, rlOutput)
 					continue
 				}
 				if b == 3 || b == 4 {
@@ -1555,16 +1506,7 @@ func (sr *sessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 				return line.String(), nil
 			}
 			if b == 127 || b == 8 {
-				if line.Len() > 0 {
-					s := line.String()
-					runes := []rune(s)
-					if len(runes) > 0 {
-						truncated := string(runes[:len(runes)-1])
-						line.Reset()
-						line.WriteString(truncated)
-						fmt.Fprint(rlOutput, "\b\x1b[K")
-					}
-				}
+				popRuneFromBuilder(&line, rlOutput)
 				continue
 			}
 			if b == 3 || b == 4 {
@@ -1574,6 +1516,31 @@ func (sr *sessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 				line.WriteByte(b)
 				fmt.Fprint(rlOutput, string(b))
 			}
+		}
+	}
+}
+
+func parsePositiveInt(newVal string, target *int) error {
+	if newVal == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(newVal)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("must be a positive integer")
+	}
+	*target = n
+	return nil
+}
+
+func popRuneFromBuilder(line *strings.Builder, out io.Writer) {
+	if line.Len() > 0 {
+		s := line.String()
+		runes := []rune(s)
+		if len(runes) > 0 {
+			truncated := string(runes[:len(runes)-1])
+			line.Reset()
+			line.WriteString(truncated)
+			fmt.Fprint(out, "\b\x1b[K")
 		}
 	}
 }

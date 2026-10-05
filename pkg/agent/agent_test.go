@@ -8,13 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"maquis/pkg/agent/tool"
+	"loop/pkg/agent/tool"
 )
-
 
 func TestSafePath(t *testing.T) {
 	a := &Agent{
-		WorkspaceRoot: "/workspace/maquis",
+		WorkspaceRoot: "/workspace/loop",
 	}
 
 	home, _ := os.UserHomeDir()
@@ -24,14 +23,14 @@ func TestSafePath(t *testing.T) {
 		expectErr bool
 		expected  string
 	}{
-		{"pkg/agent/loop.go", false, "/workspace/maquis/pkg/agent/loop.go"},
-		{"/workspace/maquis/pkg/agent/loop.go", false, "/workspace/maquis/pkg/agent/loop.go"},
+		{"pkg/agent/loop.go", false, "/workspace/loop/pkg/agent/loop.go"},
+		{"/workspace/loop/pkg/agent/loop.go", false, "/workspace/loop/pkg/agent/loop.go"},
 		{"../loop.go", true, ""},
 		{"/etc/passwd", true, ""},
 		{"../../../etc/passwd", true, ""},
-		{"", false, "/workspace/maquis"},
-		{".", false, "/workspace/maquis"},
-		{home + "/.maquis/MAQUIS.md", false, home + "/.maquis/MAQUIS.md"},
+		{"", false, "/workspace/loop"},
+		{".", false, "/workspace/loop"},
+		{home + "/.loop/LOOP.md", false, home + "/.loop/LOOP.md"},
 		{home + "/some_other_file.txt", true, ""},
 	}
 
@@ -75,7 +74,7 @@ func TestBackgroundTask(t *testing.T) {
 	if tempDirRoot == "" {
 		tempDirRoot = os.TempDir()
 	}
-	tempDir, err := os.MkdirTemp(tempDirRoot, "maquis-test-*")
+	tempDir, err := os.MkdirTemp(tempDirRoot, "loop-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -135,7 +134,7 @@ func TestBackgroundTask(t *testing.T) {
 		t.Errorf("expected status 'killed', got %q", status)
 	}
 
-	id2, err := a.SpawnTask("echo 'hello maquis'", &buf)
+	id2, err := a.SpawnTask("echo 'hello loop'", &buf)
 	if err != nil {
 		t.Fatalf("failed to spawn second task: %v", err)
 	}
@@ -149,18 +148,17 @@ func TestBackgroundTask(t *testing.T) {
 	if status2 != "completed" {
 		t.Errorf("expected second task status 'completed', got %q", status2)
 	}
-	if !strings.Contains(output2, "hello maquis") {
-		t.Errorf("expected output to contain 'hello maquis', got %q", output2)
+	if !strings.Contains(output2, "hello loop") {
+		t.Errorf("expected output to contain 'hello loop', got %q", output2)
 	}
 }
-
 
 func TestResilientEdit(t *testing.T) {
 	tempDirRoot := os.Getenv("GOTMPDIR")
 	if tempDirRoot == "" {
 		tempDirRoot = os.TempDir()
 	}
-	tempDir, err := os.MkdirTemp(tempDirRoot, "maquis-test-*")
+	tempDir, err := os.MkdirTemp(tempDirRoot, "loop-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -278,14 +276,12 @@ def other():
 	}
 }
 
-
-
 func TestKillTaskProcessGroup(t *testing.T) {
 	tempDirRoot := os.Getenv("GOTMPDIR")
 	if tempDirRoot == "" {
 		tempDirRoot = os.TempDir()
 	}
-	tempDir, err := os.MkdirTemp(tempDirRoot, "maquis-test-*")
+	tempDir, err := os.MkdirTemp(tempDirRoot, "loop-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -336,7 +332,3 @@ func TestKillTaskProcessGroup(t *testing.T) {
 		exec.Command("pkill", "-f", "sleep 999").Run()
 	}
 }
-
-
-
-

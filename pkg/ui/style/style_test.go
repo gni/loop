@@ -78,7 +78,7 @@ func TestTruncateRunes(t *testing.T) {
 		},
 		{
 			name:     "truncate ascii",
-			input:    "hello world from maquis",
+			input:    "hello world from loop",
 			maxRunes: 10,
 			expected: "hello w...",
 		},

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 type renderLineCounter struct {
@@ -568,4 +568,3 @@ func TestBashToolHeaderAndCompletionFormat(t *testing.T) {
 		t.Fatalf("expected session history to contain output 'node', got: %q", historyText)
 	}
 }
-

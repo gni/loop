@@ -1,4 +1,4 @@
-module maquis
+module loop
 
 go 1.26.1
 

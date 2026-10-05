@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func TestRunExtension(t *testing.T) {
@@ -66,7 +66,7 @@ cat
 func TestRunExtensionValidation(t *testing.T) {
 	a := &agent.Agent{
 		Config:        &config.Config{},
-		WorkspaceRoot: "/workspace/maquis",
+		WorkspaceRoot: t.TempDir(),
 	}
 	var buf bytes.Buffer
 

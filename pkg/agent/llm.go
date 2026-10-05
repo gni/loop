@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 type Tool = tool.Tool
@@ -129,7 +129,7 @@ func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) boo
 	if err != nil {
 		return false
 	}
-	req.Header.Set("maquis", "v1.0.0")
+	req.Header.Set("loop", "v1.0.0")
 	if p.Config.ApiKey != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))
 	}
@@ -361,7 +361,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("maquis", "v1.0.0")
+		req.Header.Set("loop", "v1.0.0")
 
 		if p.Config.ApiKey != "" {
 			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))

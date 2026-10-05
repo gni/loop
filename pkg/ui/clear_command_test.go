@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
 )
 
 func TestClearCommandRebuildsOneCanonicalFrame(t *testing.T) {
@@ -56,7 +56,7 @@ func TestClearCommandRebuildsOneCanonicalFrame(t *testing.T) {
 	if !strings.Contains(rendered, "\x1b[r\x1b[H\x1b[J") {
 		t.Fatal("/clear did not emit an atomic clear-and-redraw frame")
 	}
-	if got := strings.Count(rendered, "maquis v1.0.0"); got != 1 {
+	if got := strings.Count(rendered, "loop v1.0.0"); got != 1 {
 		t.Fatalf("/clear rendered %d banners; want exactly 1", got)
 	}
 	if !strings.Contains(rendered, "conversation cleared and started a new one.") {

@@ -23,11 +23,11 @@ import (
 	"golang.org/x/sys/unix"
 
 	"golang.org/x/term"
-	"maquis/pkg/agent"
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (string, int, bool) {
@@ -2093,7 +2093,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	ShutdownStatusBar(os.Stderr)
 	ForceExitAlternateScreen(os.Stderr)
 	_ = db.SetLatestSessionID(currentSessionID)
-	fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: ./maquis --session %s (or ./maquis --resume)\n", currentSessionID)
+	fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: ./loop --session %s (or ./loop --resume)\n", currentSessionID)
 }
 
 func clearTerminalForStartup(w io.Writer) {
@@ -2128,55 +2128,6 @@ func parseManualCommand(line string, enabled bool) (bool, string) {
 	}
 
 	return false, ""
-}
-
-func isMutatingOrInteractiveSlashCommand(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	parts := strings.Fields(trimmed)
-	if len(parts) == 0 {
-		return false
-	}
-	cmdName := parts[0]
-	if cmdName == "/agent" && len(parts) == 1 {
-		return true
-	}
-	if cmdName == "/config" && len(parts) == 1 {
-		return true
-	}
-	if cmdName == "/session" && len(parts) > 1 {
-		op := parts[1]
-		if op == "load" || op == "clear" || op == "new" || op == "branch" {
-			return true
-		}
-	}
-	if cmdName == "/clear" || cmdName == "/rewind" {
-		return true
-	}
-	return false
-}
-
-func countWrappedLines(s string, termW int) int {
-	if termW <= 0 {
-		return strings.Count(s, "\n")
-	}
-	lines := strings.Split(s, "\n")
-	count := 0
-	for i, line := range lines {
-		if i == len(lines)-1 && line == "" {
-			break
-		}
-		stripped := stripAnsi(line)
-		length := utf8.RuneCountInString(stripped)
-		if length == 0 {
-			count += 1
-		} else {
-			count += (length + termW - 1) / termW
-		}
-	}
-	if s == "" {
-		return 0
-	}
-	return count
 }
 
 func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, drawPrompt bool) {
@@ -2594,7 +2545,6 @@ func redrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	// Set scroll region BEFORE rendering content so text auto-scrolls within 1..scrollBottom
 	fmt.Fprintf(cwFinal, "\x1b[1;%dr\x1b[1;1H", scrollBottom)
 
-
 	fmt.Fprint(cwFinal, content)
 
 	a.CurrentStreamMu.Lock()
@@ -2659,7 +2609,6 @@ func setNonCanonical(fd int) (func(), error) {
 	}
 	return restore, nil
 }
-
 
 func handleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
 	TerminalMu.Lock()

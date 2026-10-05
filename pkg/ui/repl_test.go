@@ -10,11 +10,11 @@ import (
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func TestParseManualCommand(t *testing.T) {
@@ -845,7 +845,7 @@ func TestKeyInterceptorReader_LongPromptPasteNotCollapsed(t *testing.T) {
 }
 
 func TestCdUpdatesWorkspaceRoot(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "maquis-cd-test-*")
+	tempDir, err := os.MkdirTemp("", "loop-cd-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -2522,5 +2522,3 @@ func TestPromptAutoresize_NoDeadlockWhenTerminalMuIsHeld(t *testing.T) {
 		t.Fatal("DEADLOCK: drawConsoleStaticControlsLocked deadlocked on TerminalMu")
 	}
 }
-
-

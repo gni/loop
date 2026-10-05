@@ -363,3 +363,24 @@ func (r *ToolRegistry) GetAllExecutors() map[string]ToolExecutor {
 	}
 	return res
 }
+
+// ParsePatternOrArgs unmarshals arguments into dest; if arguments is a plain string
+// or quoted JSON string rather than a JSON object, setPattern is called with that string.
+func ParsePatternOrArgs(arguments string, dest interface{}, setPattern func(string)) error {
+	trimmed := strings.TrimSpace(arguments)
+	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
+		var unquoted string
+		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil {
+			setPattern(unquoted)
+			return nil
+		}
+	}
+	if err := json.Unmarshal([]byte(arguments), dest); err != nil {
+		if !strings.HasPrefix(trimmed, "{") && trimmed != "" {
+			setPattern(trimmed)
+			return nil
+		}
+		return fmt.Errorf("invalid arguments: %w", err)
+	}
+	return nil
+}

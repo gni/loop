@@ -1,4 +1,4 @@
-# maquis
+# loop
 
 a minimalist, zero-bloat terminal harness for autonomous agents.
 built in go. highly optimized for local models via llama.cpp.
@@ -9,7 +9,7 @@ no heavy frameworks. no visual noise. just raw execution.
 
 ### ARCHITECTURE
 
-maquis operates on a continuous feedback loop. you type a prompt. the agent reasons, spawns tasks, executes commands on your local machine, reads files, and iterates until the objective is complete.
+loop operates on a continuous feedback loop. you type a prompt. the agent reasons, spawns tasks, executes commands on your local machine, reads files, and iterates until the objective is complete.
 
 ```mermaid
 graph TD
@@ -49,7 +49,7 @@ requires go 1.21+.
 
 ```bash
 go mod tidy
-go build -o maquis
+go build -o loop
 ```
 
 ---
@@ -58,17 +58,17 @@ go build -o maquis
 
 start a standard interactive session:
 ```bash
-./maquis
+./loop
 ```
 
 start a session with a direct objective:
 ```bash
-./maquis "audit the network layer and patch vulnerabilities"
+./loop "audit the network layer and patch vulnerabilities"
 ```
 
 bypass all execution safety prompts (use with caution):
 ```bash
-./maquis --yes
+./loop --yes
 ```
 
 #### session management
@@ -76,16 +76,16 @@ bypass all execution safety prompts (use with caution):
 sessions are persistent. state is automatically written to disk.
 
 ```bash
-./maquis session list
-./maquis session new
-./maquis --resume
-./maquis --session <uuid>
-./maquis session clear
+./loop session list
+./loop session new
+./loop --resume
+./loop --session <uuid>
+./loop session clear
 ```
 
 #### configuration
 
-by default, configuration is stored in `~/.maquis/config.json`.
+by default, configuration is stored in `~/.loop/config.json`.
 the harness is heavily optimized for `llama.cpp`.
 
 ```bash
@@ -94,20 +94,20 @@ the harness is heavily optimized for `llama.cpp`.
 
 override configuration variables on the fly:
 ```bash
-./maquis --endpoint http://localhost:8080/v1 --model local-model --thinking
+./loop --endpoint http://localhost:8080/v1 --model local-model --thinking
 ```
 
 ---
 
 ### AGENT CAPABILITIES
 
-maquis equips the LLM with direct access to your local machine.
+loop equips the LLM with direct access to your local machine.
 
 - `bash`: run commands, compile binaries, start servers.
 - `background tasks`: run long-running tasks asynchronously without blocking the main event loop.
 - `file ops`: read files, search codebase (grep), overwrite, and surgical line-by-line replacements.
 - `subagents`: spawn child agents to delegate sub-tasks.
-- `memory`: load custom operational protocols (`~/.maquis/MAQUIS.md`) and project-specific state (`MEMORY.md`).
+- `memory`: load custom operational protocols (`~/.loop/LOOP.md`) and project-specific state (`MEMORY.md`).
 
 ```mermaid
 sequenceDiagram
@@ -134,21 +134,21 @@ sequenceDiagram
 
 ### PLUGINS & EXTENSIONS
 
-maquis is extensible at runtime without recompiling the core binary.
+loop is extensible at runtime without recompiling the core binary.
 
 #### tools
-drop any executable script into `~/.maquis/plugins/` or `<workspace>/plugins/`.
+drop any executable script into `~/.loop/plugins/` or `<workspace>/plugins/`.
 if called with `--info`, it must return a JSON schema describing its parameters. if called normally via stdin, it executes the operation. the agent instantly gains this capability.
 
 #### slash commands
-drop any executable script into `~/.maquis/extensions/`.
-when you type `/your-script` in the REPL, the script executes. maquis pipes the entire conversation history into its `stdin` for custom telemetry, analytics, or state injection.
+drop any executable script into `~/.loop/extensions/`.
+when you type `/your-script` in the REPL, the script executes. loop pipes the entire conversation history into its `stdin` for custom telemetry, analytics, or state injection.
 
 ---
 
 ### DISCLAIMER
 
-maquis executes commands directly on your local system. running an uncensored or unpredictable model with `--yes` (auto-approve) can destroy your file system. 
+loop executes commands directly on your local system. running an uncensored or unpredictable model with `--yes` (auto-approve) can destroy your file system. 
 
 use a sandbox. use source control. you have been warned.
 

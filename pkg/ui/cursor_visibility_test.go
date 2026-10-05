@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
+	"loop/pkg/agent"
+	"loop/pkg/config"
 )
 
 func useIsolatedCursorTestUI(t *testing.T) {
@@ -165,5 +165,3 @@ func TestDrawConsoleStaticControlsCursorPosition(t *testing.T) {
 		t.Fatalf("expected cursor to be revealed at final position (row 22, col 8), got:\n%q", out)
 	}
 }
-
-

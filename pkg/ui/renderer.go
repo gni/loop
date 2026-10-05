@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/chroma/v2/quick"
-	"maquis/pkg/agent"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/ui/style"
 )
 
 type StreamRenderer struct {

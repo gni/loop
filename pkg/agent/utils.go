@@ -8,19 +8,19 @@ import (
 	"regexp"
 	"strings"
 
-	"maquis/pkg/agent/tool"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent/tool"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
-// LoadMemoryContext loads global (~/.maquis/MAQUIS.md) and project (MEMORY.md) memory context.
+// LoadMemoryContext loads global (~/.loop/LOOP.md) and project (MEMORY.md) memory context.
 func (a *Agent) LoadMemoryContext() string {
 	var sb strings.Builder
 
-	// 1. Global Memory (~/.maquis/MAQUIS.md)
+	// 1. Global Memory (~/.loop/LOOP.md)
 	home, err := os.UserHomeDir()
 	if err == nil {
-		globalPath := filepath.Join(home, ".maquis", "MAQUIS.md")
+		globalPath := filepath.Join(home, ".loop", "LOOP.md")
 		if data, err := os.ReadFile(globalPath); err == nil {
 			trimmed := strings.TrimSpace(string(data))
 			if len(trimmed) > 0 {
@@ -44,7 +44,7 @@ func (a *Agent) LoadMemoryContext() string {
 				break
 			}
 
-			projectDotPath := filepath.Join(dir, ".maquis", "MEMORY.md")
+			projectDotPath := filepath.Join(dir, ".loop", "MEMORY.md")
 			if data, err := os.ReadFile(projectDotPath); err == nil {
 				trimmed := strings.TrimSpace(string(data))
 				if len(trimmed) > 0 {
@@ -71,6 +71,26 @@ func (a *Agent) LoadMemoryContext() string {
 	return sb.String()
 }
 
+func messageChars(m db.Message) int {
+	chars := len(m.Content) + len(m.ReasoningContent)
+	for _, tc := range m.ToolCalls {
+		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	return chars
+}
+
+func estimateCompletionTokens(m db.Message) int {
+	if m.CompletionTokens > 0 {
+		return m.CompletionTokens
+	}
+	chars := messageChars(m)
+	comp := chars / 4
+	if comp == 0 && chars > 0 {
+		comp = 1
+	}
+	return comp
+}
+
 // CalculateHistoryTokens calculates prompt and completion tokens for a conversation history.
 // For each assistant turn, if PromptTokens > 0 it uses it; otherwise it estimates prompt tokens
 // from all messages in the history preceding that turn. If CompletionTokens > 0 it uses it;
@@ -87,19 +107,7 @@ func CalculateHistoryTokens(history []db.Message) (int, int) {
 		}
 
 		// Completion tokens
-		if m.CompletionTokens > 0 {
-			totalCompletion += m.CompletionTokens
-		} else {
-			chars := len(m.Content) + len(m.ReasoningContent)
-			for _, tc := range m.ToolCalls {
-				chars += len(tc.Function.Name) + len(tc.Function.Arguments)
-			}
-			comp := chars / 4
-			if comp == 0 && chars > 0 {
-				comp = 1
-			}
-			totalCompletion += comp
-		}
+		totalCompletion += estimateCompletionTokens(m)
 
 		// Prompt tokens
 		if m.PromptTokens > 0 {
@@ -107,11 +115,7 @@ func CalculateHistoryTokens(history []db.Message) (int, int) {
 		} else {
 			priorChars := 0
 			for j := 0; j < i; j++ {
-				prior := history[j]
-				priorChars += len(prior.Content) + len(prior.ReasoningContent)
-				for _, tc := range prior.ToolCalls {
-					priorChars += len(tc.Function.Name) + len(tc.Function.Arguments)
-				}
+				priorChars += messageChars(history[j])
 			}
 			p := priorChars / 4
 			if p == 0 && priorChars > 0 {
@@ -183,19 +187,7 @@ func (a *Agent) GetSessionTotalCompletionTokens(messages []db.Message) int {
 		if m.Role == "assistant" {
 			hasPayload := m.Content != "" || m.ReasoningContent != "" || len(m.ToolCalls) > 0
 			if hasPayload {
-				if m.CompletionTokens > 0 {
-					total += m.CompletionTokens
-				} else {
-					chars := len(m.Content) + len(m.ReasoningContent)
-					for _, tc := range m.ToolCalls {
-						chars += len(tc.Function.Name) + len(tc.Function.Arguments)
-					}
-					comp := chars / 4
-					if comp == 0 && chars > 0 {
-						comp = 1
-					}
-					total += comp
-				}
+				total += estimateCompletionTokens(m)
 			}
 		}
 	}

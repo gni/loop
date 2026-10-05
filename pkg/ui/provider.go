@@ -10,10 +10,10 @@ import (
 
 	"golang.org/x/term"
 
-	"maquis/pkg/agent"
-	"maquis/pkg/config"
-	"maquis/pkg/db"
-	"maquis/pkg/ui/style"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func cloneProviderConfig(cfg *config.Config) *config.Config {
@@ -273,7 +273,6 @@ func HandleProviderCommand(
 	}
 }
 
-
 func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 	if cfg.Providers == nil || len(cfg.Providers) == 0 {
 		fmt.Fprintln(w, "No custom endpoint providers configured.")
@@ -384,7 +383,6 @@ func RunInteractiveProviderConfig(
 	if cloned.Providers == nil {
 		cloned.Providers = make(map[string]config.ProviderConfig)
 	}
-
 
 	itemsProvider := func() []*settingItem {
 		var items []*settingItem

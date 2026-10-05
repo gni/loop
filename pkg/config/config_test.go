@@ -9,7 +9,7 @@ import (
 
 func TestConfigProviders(t *testing.T) {
 	// Create a temporary directory for config file
-	tmpDir, err := os.MkdirTemp("", "maquis-config-test-*")
+	tmpDir, err := os.MkdirTemp("", "loop-config-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestConfigProvidersUnmarshal(t *testing.T) {
 }
 
 func TestConfigTimeout(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "maquis-timeout-test-*")
+	tmpDir, err := os.MkdirTemp("", "loop-timeout-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -163,13 +163,13 @@ func TestConfigTimeout(t *testing.T) {
 	}
 
 	// Test env override
-	t.Setenv("MAQUIS_TIMEOUT", "75")
+	t.Setenv("LOOP_TIMEOUT", "75")
 	envCfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("failed to load config with env: %v", err)
 	}
 	if envCfg.Timeout != 75 {
-		t.Errorf("expected MAQUIS_TIMEOUT override to be 75, got %d", envCfg.Timeout)
+		t.Errorf("expected LOOP_TIMEOUT override to be 75, got %d", envCfg.Timeout)
 	}
 }
 
