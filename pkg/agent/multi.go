@@ -241,7 +241,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 			if children[subagentName] {
 				allowlist = append(allowlist, name)
 			}
-		} else if name == "spawn_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" || name == "swarm_audit" || name == "swarm_topology" {
+		} else if name == "create_subagent" || name == "spawn_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" || name == "swarm_audit" || name == "swarm_topology" {
 			if canSpawn {
 				allowlist = append(allowlist, name)
 			}
@@ -789,7 +789,7 @@ func NewMultiAgentManager(baseAgent *Agent, w io.Writer, theme style.UITheme) *M
 	}
 
 	if baseAgent != nil && baseAgent.Registry != nil {
-		baseAgent.Registry.Register(&spawnSubagentTool{mam: mam})
+		baseAgent.Registry.Register(&createSubagentTool{mam: mam})
 		baseAgent.Registry.Register(&removeSubagentTool{mam: mam})
 		baseAgent.Registry.Register(&listSubagentsTool{mam: mam})
 		baseAgent.Registry.Register(&auditSubagentTool{mam: mam})
@@ -1524,18 +1524,23 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 
 // Below are the implementations for the dynamic multi-agent tools:
 
-type spawnSubagentTool struct {
-	mam *MultiAgentManager
-}
-
 type inlineSkillRequest struct {
 	Name         string `json:"name"`
 	Description  string `json:"description"`
 	Instructions string `json:"instructions"`
 }
 
-func (s *spawnSubagentTool) Name() string { return "spawn_subagent" }
-func (s *spawnSubagentTool) Definition() tool.Tool {
+type createSubagentTool struct {
+	mam *MultiAgentManager
+}
+
+type spawnSubagentTool = createSubagentTool
+
+func (s *createSubagentTool) Name() string { return "create_subagent" }
+func (s *createSubagentTool) PromptSnippet() string {
+	return "Create a specialized subagent"
+}
+func (s *createSubagentTool) Definition() tool.Tool {
 	availableSkillNames := []string{}
 	if s != nil && s.mam != nil && s.mam.BaseAgent != nil {
 		seen := make(map[string]struct{}, len(s.mam.BaseAgent.ActiveSkills))
@@ -1560,13 +1565,13 @@ func (s *spawnSubagentTool) Definition() tool.Tool {
 	} else {
 		skillNamesDescription += " Available names: " + strings.Join(availableSkillNames, ", ") + "."
 	}
-	skillNamesDescription += " Unknown names are converted into agent-local skills using system_prompt so spawning can continue."
+	skillNamesDescription += " Unknown names are converted into agent-local skills using system_prompt so creation can continue."
 
 	return tool.Tool{
 		Type: "function",
 		Function: tool.FunctionDefinition{
-			Name:        "spawn_subagent",
-			Description: "Spawn one specialized subagent. Use system_prompt for its role. Assign exact registered skill_names or define new private inline_skills; never invent a registered skill name.",
+			Name:        "create_subagent",
+			Description: "Create one specialized subagent. Use system_prompt for its role. Assign exact registered skill_names or define new private inline_skills; never invent a registered skill name.",
 			Parameters: tool.JSONSchema{
 				Type: "object",
 				Properties: map[string]tool.SchemaProp{
@@ -1615,7 +1620,7 @@ func (s *spawnSubagentTool) Definition() tool.Tool {
 	}
 }
 
-func (s *spawnSubagentTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+func (s *createSubagentTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	var args struct {
 		Name         string               `json:"name"`
 		AgentName    string               `json:"agent_name"`
@@ -1658,7 +1663,7 @@ func (s *spawnSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 	}
 
 	if s == nil || s.mam == nil || s.mam.BaseAgent == nil {
-		return "", fmt.Errorf("spawn_subagent is not attached to an initialized multi-agent manager")
+		return "", fmt.Errorf("create_subagent is not attached to an initialized multi-agent manager")
 	}
 
 	var parentName string
@@ -1799,6 +1804,9 @@ type removeSubagentTool struct {
 }
 
 func (s *removeSubagentTool) Name() string { return "remove_subagent" }
+func (s *removeSubagentTool) PromptSnippet() string {
+	return "Terminate a subagent"
+}
 func (s *removeSubagentTool) Definition() tool.Tool {
 	return tool.Tool{
 		Type: "function",
@@ -1840,7 +1848,7 @@ type swarmTopologyTool = listSubagentsTool
 
 func (s *listSubagentsTool) Name() string { return "list_subagents" }
 func (s *listSubagentsTool) PromptSnippet() string {
-	return "View active subagents and their skills"
+	return "View active subagents"
 }
 func (s *listSubagentsTool) Definition() tool.Tool {
 	return tool.Tool{
@@ -1859,7 +1867,7 @@ func (s *listSubagentsTool) Definition() tool.Tool {
 func (s *listSubagentsTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	agents := s.mam.ListAgents()
 	if len(agents) == 0 {
-		return "No subagents currently spawned in the swarm.", nil
+		return "No subagents currently active.", nil
 	}
 	var sb strings.Builder
 	sb.WriteString("Active Subagents:\n")

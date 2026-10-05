@@ -250,7 +250,7 @@ func TestToolCategoryClassification(t *testing.T) {
 	if !IsActionTool("bash") || !IsActionTool("write") || !IsActionTool("edit") || !IsActionTool("task_kill") {
 		t.Fatal("action tools misclassified")
 	}
-	if !IsActionTool("subagent__critic") || !IsActionTool("spawn_subagent") {
+	if !IsActionTool("subagent__critic") || !IsActionTool("create_subagent") || !IsActionTool("spawn_subagent") {
 		t.Fatal("subagents should be classified as action tools")
 	}
 	if IsActionTool("read") || IsActionTool("grep") || IsActionTool("find") || IsActionTool("list") {

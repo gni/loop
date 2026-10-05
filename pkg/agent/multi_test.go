@@ -655,7 +655,7 @@ func TestSubagentNestingDepthAndAllowlist(t *testing.T) {
 
 	allowlist := worker.GetToolAllowlist()
 	for _, toolName := range allowlist {
-		if toolName == "spawn_subagent" || toolName == "remove_subagent" || toolName == "list_subagents" || toolName == "audit_subagent" || toolName == "swarm_audit" || toolName == "swarm_topology" {
+		if toolName == "create_subagent" || toolName == "spawn_subagent" || toolName == "remove_subagent" || toolName == "list_subagents" || toolName == "audit_subagent" || toolName == "swarm_audit" || toolName == "swarm_topology" {
 			t.Fatalf("subagent at max depth should not have tool %q in allowlist: %v", toolName, allowlist)
 		}
 	}
@@ -677,8 +677,8 @@ func TestSubagentNestingDepthAndAllowlist(t *testing.T) {
 	if strings.Contains(workerPrompt, "peer_agent") {
 		t.Fatalf("worker system prompt leaked peer agent: %s", workerPrompt)
 	}
-	if strings.Contains(workerPrompt, "use 'spawn_subagent'") {
-		t.Fatalf("worker system prompt instructed subagent to use spawn_subagent: %s", workerPrompt)
+	if strings.Contains(workerPrompt, "use 'create_subagent'") || strings.Contains(workerPrompt, "use 'spawn_subagent'") {
+		t.Fatalf("worker system prompt instructed subagent to use create_subagent: %s", workerPrompt)
 	}
 }
 
@@ -723,3 +723,63 @@ func TestRenderStatsSwarmTotal(t *testing.T) {
 		t.Fatalf("GetSubagentsCompletionTokens = %d, want 25", subTokens)
 	}
 }
+
+func TestCleanSubagentToolCatalogNames(t *testing.T) {
+	baseAgent := &Agent{
+		Config:   &config.Config{MaxSubagentDepth: 2},
+		Registry: promptTestRegistry(),
+	}
+	mam := NewMultiAgentManager(baseAgent, &bytes.Buffer{}, style.UITheme{})
+
+	executors := baseAgent.Registry.GetAllExecutors()
+
+	// Verify all 4 clean subagent tools are registered
+	expectedTools := map[string]string{
+		"create_subagent": "Create a specialized subagent",
+		"audit_subagent":  "Review a subagent's action, thought, and tool history",
+		"remove_subagent": "Terminate a subagent",
+		"list_subagents":  "View active subagents",
+	}
+
+	for toolName, expectedSnippet := range expectedTools {
+		exec, exists := executors[toolName]
+		if !exists {
+			t.Fatalf("expected tool %q to be registered", toolName)
+		}
+		snippet := tool.GetPromptSnippet(exec)
+		if snippet != expectedSnippet {
+			t.Errorf("tool %q: snippet = %q, want %q", toolName, snippet, expectedSnippet)
+		}
+	}
+
+	// Verify no tool name contains 'spawn' or 'swarm'
+	for name := range executors {
+		if strings.Contains(name, "spawn") {
+			t.Fatalf("tool name %q contains 'spawn'", name)
+		}
+		if strings.Contains(name, "swarm") {
+			t.Fatalf("tool name %q contains 'swarm'", name)
+		}
+	}
+
+	// Verify backwards compatibility: spawn_subagent resolves to create_subagent
+	if tool.NormalizeName("spawn_subagent") != "create_subagent" {
+		t.Fatalf("spawn_subagent normalization = %q, want create_subagent", tool.NormalizeName("spawn_subagent"))
+	}
+
+	// Test executing via legacy name alias
+	res, err := baseAgent.Registry.Execute(baseAgent, "spawn_subagent", `{
+		"name": "tester",
+		"system_prompt": "You are a test subagent."
+	}`)
+	if err != nil {
+		t.Fatalf("executing via spawn_subagent alias failed: %v", err)
+	}
+	if !strings.Contains(res, "tester") {
+		t.Fatalf("unexpected result: %q", res)
+	}
+	if _, ok := mam.Agents["tester"]; !ok {
+		t.Fatalf("subagent 'tester' was not created via alias")
+	}
+}
+

@@ -126,7 +126,7 @@ type PromptContributor interface {
 
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {
-	if pc, ok := t.(PromptContributor); ok {
+	if pc, ok := t.(interface{ PromptSnippet() string }); ok {
 		if s := pc.PromptSnippet(); s != "" {
 			return s
 		}
@@ -136,7 +136,7 @@ func GetPromptSnippet(t ToolExecutor) string {
 
 // GetPromptGuidelines retrieves the prompt guidelines for a tool executor.
 func GetPromptGuidelines(t ToolExecutor) []string {
-	if pc, ok := t.(PromptContributor); ok {
+	if pc, ok := t.(interface{ PromptGuidelines() []string }); ok {
 		return pc.PromptGuidelines()
 	}
 	return nil
@@ -189,8 +189,8 @@ func NormalizeName(name string) string {
 		return "audit_subagent"
 	case "kill_subagent", "terminate_subagent", "delete_subagent":
 		return "remove_subagent"
-	case "create_subagent", "new_subagent":
-		return "spawn_subagent"
+	case "create_subagent", "new_subagent", "spawn_subagent", "spawn", "add_subagent":
+		return "create_subagent"
 	case "kill_task", "stop_task":
 		return "task_kill"
 	case "status_task", "get_task_status":

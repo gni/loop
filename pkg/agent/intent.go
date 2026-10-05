@@ -19,7 +19,7 @@ var inspectionTools = map[string]bool{
 
 var actionTools = map[string]bool{
 	"write": true, "edit": true, "bash": true, "task_kill": true,
-	"spawn_subagent": true, "remove_subagent": true,
+	"create_subagent": true, "spawn_subagent": true, "remove_subagent": true,
 }
 
 // IsInspectionTool reports whether a tool is side-effect free.

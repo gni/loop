@@ -68,13 +68,13 @@ func TestThoughtCompletesBeforeToolHeader(t *testing.T) {
 	renderer := NewStreamRenderer(&output, UITheme{}, true, false, "test")
 
 	renderer.WriteReasoning("checking prerequisites")
-	renderer.StartToolCall("spawn_subagent", 0)
+	renderer.StartToolCall("create_subagent", 0)
 	renderer.WriteToolCall(`{"name":"devops_audit"}`)
 	renderer.Flush()
 
 	rendered := stripAnsi(output.String())
 	thoughtIndex := strings.Index(rendered, "thought (")
-	toolIndex := strings.Index(rendered, "spawn_subagent")
+	toolIndex := strings.Index(rendered, "create_subagent")
 	if thoughtIndex < 0 || toolIndex < 0 || !strings.Contains(rendered, "devops_audit") {
 		t.Fatalf("missing thought completion or tool header: %q", rendered)
 	}

@@ -82,13 +82,13 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 		Registry:      promptTestRegistry(),
 		WorkspaceRoot: "/workspace",
 	}
-	spawner.Registry.Register(&spawnSubagentTool{mam: &MultiAgentManager{}})
+	spawner.Registry.Register(&createSubagentTool{mam: &MultiAgentManager{}})
 
 	prompt := spawner.GetSystemPrompt()
 	for _, expected := range []string{
 		"Subagent skill assignment",
 		"Do not invent reference skill names",
-		"use 'spawn_subagent' to spawn specialized agents",
+		"use 'create_subagent' to create specialized agents",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("spawning agent missing %q:\n%s", expected, prompt)
@@ -97,7 +97,7 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 
 	var restricted []string
 	for _, entry := range promptToolEntries(spawner.Registry) {
-		if entry.Name != "spawn_subagent" {
+		if entry.Name != "create_subagent" && entry.Name != "spawn_subagent" {
 			restricted = append(restricted, entry.Name)
 		}
 	}
@@ -105,7 +105,7 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 	if !strings.Contains(child, "Subagent skill assignment") {
 		t.Fatalf("non-spawning agent lost the skill catalog:\n%s", child)
 	}
-	if strings.Contains(child, "use 'spawn_subagent'") || strings.Contains(child, "audit_subagent") || strings.Contains(child, "swarm_audit") {
+	if strings.Contains(child, "use 'create_subagent'") || strings.Contains(child, "use 'spawn_subagent'") || strings.Contains(child, "audit_subagent") || strings.Contains(child, "swarm_audit") {
 		t.Fatalf("non-spawning agent was given delegation rules it cannot execute:\n%s", child)
 	}
 }

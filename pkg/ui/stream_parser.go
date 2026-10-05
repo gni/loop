@@ -52,7 +52,7 @@ func isToolTargetPathKey(key string, toolName string) bool {
 }
 
 func (p *jsonStreamParser) needsPath() bool {
-	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "find" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "list" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || p.activeToolName == "list_subagents" || p.activeToolName == "audit_subagent" || strings.HasPrefix(p.activeToolName, "subagent__")
+	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "find" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "list" || p.activeToolName == "create_subagent" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || p.activeToolName == "list_subagents" || p.activeToolName == "audit_subagent" || strings.HasPrefix(p.activeToolName, "subagent__")
 }
 
 func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {

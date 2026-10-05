@@ -424,7 +424,7 @@ func getToolGlyph(toolName string) string {
 		return "$"
 	case lower == "load_skill" || strings.Contains(lower, "skill"):
 		return "✦"
-	case lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
+	case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
 		return "❖"
 	case lower == "task_kill" || lower == "kill":
 		return "✖"
@@ -453,7 +453,7 @@ func renderToolSymbol(toolName string, status toolRenderStatus, theme UITheme) s
 			color = theme.Success
 		case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
 			color = theme.Highlight
-		case lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
+		case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
 			color = theme.Secondary
 		case lower == "load_skill" || strings.Contains(lower, "skill"):
 			color = theme.Highlight
@@ -737,7 +737,7 @@ func getActionStyle(toolName string, theme UITheme) style.Style {
 		return style.NewStyle().Foreground(theme.Error).Bold(true)
 	case lower == "task_status" || lower == "task_list" || lower == "ps":
 		return style.NewStyle().Foreground(theme.TextMuted).Bold(true)
-	case lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
+	case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
 		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
 		return style.NewStyle().Foreground(theme.Highlight).Bold(true)
@@ -770,7 +770,7 @@ func FormatToolTitle(symbol string, toolName string, path string, theme UITheme)
 
 	if path != "" {
 		relPath := path
-		isNonFilePathTool := toolName == "spawn_subagent" || strings.HasPrefix(toolName, "subagent__") || toolName == "task_status" || toolName == "task_kill" || toolName == "load_skill" || toolName == "bash"
+		isNonFilePathTool := toolName == "create_subagent" || toolName == "spawn_subagent" || strings.HasPrefix(toolName, "subagent__") || toolName == "task_status" || toolName == "task_kill" || toolName == "load_skill" || toolName == "bash"
 		if toolName != "ls" && !isNonFilePathTool {
 			wd, err := os.Getwd()
 			if err == nil {

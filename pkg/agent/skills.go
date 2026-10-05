@@ -217,8 +217,8 @@ func subagentSkillGuidance(tools []ToolEntry, skills []Skill) string {
 	sb.WriteString("- Unknown names are converted into agent-local skills using the subagent's system_prompt, so spawning continues but the reference instructions are not loaded.\n")
 	sb.WriteString("- For a new specialization, define it in the subagent system_prompt or provide inline_skills.\n")
 
-	if hasToolEntry(tools, "spawn_subagent") {
-		sb.WriteString("- Subagents: When the user asks to call or use agents, or to delegate duties, use 'spawn_subagent' to spawn specialized agents and delegate tasks to them.\n")
+	if hasToolEntry(tools, "create_subagent") || hasToolEntry(tools, "spawn_subagent") {
+		sb.WriteString("- Subagents: When the user asks to call or use agents, or to delegate duties, use 'create_subagent' to create specialized agents and delegate tasks to them.\n")
 		if hasToolEntry(tools, "remove_subagent") && (hasToolEntry(tools, "audit_subagent") || hasToolEntry(tools, "swarm_audit")) {
 			sb.WriteString("- After a delegated task completes, call audit_subagent for the subagent, then remove_subagent to release its context.\n")
 		}
@@ -395,7 +395,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	// 5. Swarm info if subagents active (in non-compact mode)
 	if !cfg.CompactPrompt && len(cfg.ActiveAgents) > 0 {
-		sb.WriteString(fmt.Sprintf("\n\n<subagents>\nActive spawned subagents in the swarm: %s.\nDelegate subtasks by calling 'subagent__<name>' with the task prompt.\n</subagents>", strings.Join(cfg.ActiveAgents, ", ")))
+		sb.WriteString(fmt.Sprintf("\n\n<subagents>\nActive subagents: %s.\nDelegate subtasks by calling 'subagent__<name>' with the task prompt.\n</subagents>", strings.Join(cfg.ActiveAgents, ", ")))
 	}
 
 	if cfg.MemoryContext != "" {

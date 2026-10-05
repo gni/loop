@@ -1045,8 +1045,8 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 			prop.Description = "Task ID"
 			compressed.Function.Parameters.Properties["task_id"] = prop
 		}
-	case "spawn_subagent":
-		compressed.Function.Description = "Spawn specialized subagent"
+	case "create_subagent", "spawn_subagent":
+		compressed.Function.Description = "Create specialized subagent"
 		if prop, ok := compressed.Function.Parameters.Properties["name"]; ok {
 			prop.Description = "Subagent name"
 			compressed.Function.Parameters.Properties["name"] = prop
