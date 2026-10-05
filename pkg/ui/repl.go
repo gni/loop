@@ -71,7 +71,9 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/provider add ",
 		"/provider select ",
 		"/provider model ",
+		"/provider timeout ",
 		"/provider remove ",
+		"/p ",
 		"/agent ",
 		"/agent list",
 		"/agent join ",
@@ -151,9 +153,15 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 					matches = append(matches, match)
 				}
 			}
-		} else if strings.HasPrefix(prefixToPos, "/provider ") {
-			providerSubcommands := []string{"list", "add", "select", "use", "model", "remove", "delete"}
-			filterPrefix := strings.TrimPrefix(prefixToPos, "/provider ")
+		} else if strings.HasPrefix(prefixToPos, "/provider ") || strings.HasPrefix(prefixToPos, "/providers ") || strings.HasPrefix(prefixToPos, "/p ") {
+			providerSubcommands := []string{"list", "add", "select", "use", "model", "timeout", "remove", "delete"}
+			cmdPrefix := "/provider "
+			if strings.HasPrefix(prefixToPos, "/p ") {
+				cmdPrefix = "/p "
+			} else if strings.HasPrefix(prefixToPos, "/providers ") {
+				cmdPrefix = "/providers "
+			}
+			filterPrefix := strings.TrimPrefix(prefixToPos, cmdPrefix)
 			if strings.HasPrefix(filterPrefix, "select ") || strings.HasPrefix(filterPrefix, "use ") || strings.HasPrefix(filterPrefix, "remove ") || strings.HasPrefix(filterPrefix, "delete ") {
 				var subCmd string
 				if strings.HasPrefix(filterPrefix, "select ") {
@@ -179,10 +187,24 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 					}
 				}
 			} else {
+				// Suggest provider names directly for fast switching
+				var providerKeys []string
+				providerKeys = append(providerKeys, "default")
+				if a != nil && a.Config != nil && a.Config.Providers != nil {
+					for k := range a.Config.Providers {
+						providerKeys = append(providerKeys, k)
+					}
+				}
+				for _, pk := range providerKeys {
+					if strings.HasPrefix(pk, filterPrefix) {
+						matches = append(matches, pk)
+					}
+				}
+				// And suggest subcommands
 				for _, c := range providerSubcommands {
 					if strings.HasPrefix(c, filterPrefix) {
 						match := c
-						if c == "add" || c == "select" || c == "use" || c == "model" || c == "remove" || c == "delete" {
+						if c == "add" || c == "select" || c == "use" || c == "model" || c == "timeout" || c == "remove" || c == "delete" {
 							match += " "
 						}
 						matches = append(matches, match)

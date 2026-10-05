@@ -172,6 +172,10 @@ func (ui *AgentUIImpl) SetCursorHidden(hidden bool) {
 	}
 }
 
+func (ui *AgentUIImpl) RenderGenerationError(w io.Writer, message string, theme style.UITheme) {
+	RenderGenerationError(w, message, theme)
+}
+
 // SetPromptHint sets a transient hint message to be displayed at the prompt,
 // optionally scheduling a timer to clear the hint and call onExpire if not cancelled.
 func (ui *AgentUIImpl) SetPromptHint(hint string, d time.Duration, onExpire func()) {

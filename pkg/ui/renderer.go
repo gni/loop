@@ -239,18 +239,9 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 		if !sr.parser.titlePrinted {
 			sr.parser.printStreamTitle(sr.w, sr.theme)
 		}
-		if sr.parser.outputBuf.Len() > 0 {
-			fmt.Fprint(sr.w, sr.parser.outputBuf.String())
-			sr.parser.outputBuf.Reset()
-		}
+		sr.parser.flushOutputBuf(sr.w, sr.theme)
 		if sr.parser.lineBuffer.Len() > 0 {
-			lang := sr.parser.guessedLang
-			if lang == "" {
-				lang = "plaintext"
-			}
-			_ = HighlightWithoutTrailingNewline(sr.w, sr.parser.lineBuffer.String(), lang, sr.theme.ChromaStyle)
-			fmt.Fprint(sr.w, "\n")
-			sr.parser.lineBuffer.Reset()
+			sr.parser.emitLine(sr.w, sr.theme)
 		}
 	}
 }
@@ -387,6 +378,9 @@ func (sr *StreamRenderer) renderInlineMarkdown(text string) string {
 }
 
 func HighlightWithoutTrailingNewline(w io.Writer, source, lang, chromaStyle string) error {
+	if strings.Contains(source, "\x1b") {
+		source = style.StripAnsi(source)
+	}
 	if chromaStyle == "" {
 		chromaStyle = "friendly"
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -51,6 +52,7 @@ type Config struct {
 	MaxSubagentDepth     int                        `json:"max_subagent_depth,omitempty"`
 	MaxPasteLines        int                        `json:"max_paste_lines,omitempty"`
 	MaxPasteChars        int                        `json:"max_paste_chars,omitempty"`
+	Timeout              int                        `json:"timeout,omitempty"`
 }
 
 func DefaultConfig() *Config {
@@ -62,7 +64,7 @@ func DefaultConfig() *Config {
 
 	model := "llama-3-instruct"
 	if apiKey != "" && os.Getenv("OPENAI_API_BASE") == "" {
-		endpoint = "https://api.openai.com"
+		endpoint = "http://openai-compatible.local"
 		model = "gpt-4-turbo"
 	}
 
@@ -103,6 +105,7 @@ func DefaultConfig() *Config {
 		CompactPrompt:       false,
 		MaxPasteLines:       80,
 		MaxPasteChars:       8000,
+		Timeout:             120,
 	}
 }
 
@@ -222,20 +225,43 @@ func LoadConfig(path string) (*Config, error) {
 	if provData, err := os.ReadFile(providersPath); err == nil {
 		var provFile ProvidersFile
 		if err := json.Unmarshal(provData, &provFile); err == nil && provFile.Providers != nil {
-			config.Providers = provFile.Providers
-			if provFile.ActiveProvider != "" {
-				config.ActiveProvider = provFile.ActiveProvider
+			active := provFile.Active
+			if active == "" {
+				active = provFile.ActiveProvider
 			}
+			if active != "" {
+				config.ActiveProvider = active
+			}
+			for name, p := range provFile.Providers {
+				if p.Name == "" {
+					p.Name = name
+					provFile.Providers[name] = p
+				}
+			}
+			config.Providers = provFile.Providers
 		} else {
 			var provMap map[string]ProviderConfig
 			if err := json.Unmarshal(provData, &provMap); err == nil && provMap != nil {
+				for name, p := range provMap {
+					if p.Name == "" {
+						p.Name = name
+						provMap[name] = p
+					}
+				}
 				config.Providers = provMap
 			}
 		}
 	} else if len(config.Providers) > 0 {
+		cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
+		for name, p := range config.Providers {
+			cp := p
+			cp.Name = ""
+			cleanProviders[name] = cp
+		}
 		provFile := ProvidersFile{
+			Active:         config.ActiveProvider,
 			ActiveProvider: config.ActiveProvider,
-			Providers:      config.Providers,
+			Providers:      cleanProviders,
 		}
 		provData, err := json.MarshalIndent(provFile, "", "  ")
 		if err == nil {
@@ -258,11 +284,19 @@ func LoadConfig(path string) (*Config, error) {
 			Endpoint: config.Endpoint,
 			ApiKey:   config.ApiKey,
 			Model:    config.Model,
+			Timeout:  config.Timeout,
 		}
 
+		cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
+		for name, p := range config.Providers {
+			cp := p
+			cp.Name = ""
+			cleanProviders[name] = cp
+		}
 		provFile := ProvidersFile{
+			Active:         config.ActiveProvider,
 			ActiveProvider: config.ActiveProvider,
-			Providers:      config.Providers,
+			Providers:      cleanProviders,
 		}
 		provData, err := json.MarshalIndent(provFile, "", "  ")
 		if err == nil {
@@ -274,6 +308,11 @@ func LoadConfig(path string) (*Config, error) {
 		config.ReasoningEffort = "low"
 	}
 	config.SyncActiveProvider()
+	if envTimeout := os.Getenv("MAQUIS_TIMEOUT"); envTimeout != "" {
+		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
+			config.Timeout = t
+		}
+	}
 	if config.SyntaxTheme == "" {
 		config.SyntaxTheme = "auto"
 	}
@@ -290,28 +329,18 @@ func SaveConfig(path string, config *Config) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
+	config.UpdateActiveProvider()
+
 	savedMCP := config.MCPServers
 	savedProviders := config.Providers
-	savedEndpoint := config.Endpoint
-	savedApiKey := config.ApiKey
-	savedModel := config.Model
-	savedActive := config.ActiveProvider
 
 	config.MCPServers = nil
 	config.Providers = nil
-	config.Endpoint = ""
-	config.ApiKey = ""
-	config.Model = ""
-	config.ActiveProvider = ""
 
 	data, err := json.MarshalIndent(config, "", "  ")
 
 	config.MCPServers = savedMCP
 	config.Providers = savedProviders
-	config.Endpoint = savedEndpoint
-	config.ApiKey = savedApiKey
-	config.Model = savedModel
-	config.ActiveProvider = savedActive
 
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -335,18 +364,28 @@ func SaveConfig(path string, config *Config) error {
 		config.Providers = make(map[string]ProviderConfig)
 	}
 	// Always ensure at least a default active provider exists
-	if config.ActiveProvider == "" {
-		config.ActiveProvider = "default"
-		config.Providers["default"] = ProviderConfig{
-			Name:     "default",
-			Endpoint: savedEndpoint,
-			ApiKey:   savedApiKey,
-			Model:    savedModel,
+	if config.ActiveProvider == "" || config.ActiveProvider == "default" {
+		if _, ok := config.Providers["default"]; !ok {
+			config.ActiveProvider = "default"
+			config.Providers["default"] = ProviderConfig{
+				Name:     "default",
+				Endpoint: config.Endpoint,
+				ApiKey:   config.ApiKey,
+				Model:    config.Model,
+				Timeout:  config.Timeout,
+			}
 		}
 	}
+	cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
+	for name, prov := range config.Providers {
+		p := prov
+		p.Name = ""
+		cleanProviders[name] = p
+	}
 	provFile := ProvidersFile{
+		Active:         config.ActiveProvider,
 		ActiveProvider: config.ActiveProvider,
-		Providers:      config.Providers,
+		Providers:      cleanProviders,
 	}
 	provData, err := json.MarshalIndent(provFile, "", "  ")
 	if err == nil {

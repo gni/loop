@@ -190,6 +190,11 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 		directVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("enabled")
 	}
 
+	timeoutVal := "disabled (no timeout)"
+	if cfg.Timeout > 0 {
+		timeoutVal = fmt.Sprintf("%ds", cfg.Timeout)
+	}
+
 	configStr := fmt.Sprintf(
 		"%s\n\n"+
 			"  %-20s %s\n"+
@@ -209,7 +214,8 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 			"  %-20s %s\n"+
 			"  %-20s %s\n"+
 			"  %-20s %d\n"+
-			"  %-20s %d\n\n"+
+			"  %-20s %d\n"+
+			"  %-20s %s\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
 		titleStyle.Render("maquis runtime settings"),
 		keyStyle.Render("active provider:"), valStyle.Render(cfg.ActiveProvider),
@@ -230,6 +236,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 		keyStyle.Render("syntax theme:"), valStyle.Render(cfg.SyntaxTheme),
 		keyStyle.Render("max paste lines:"), cfg.MaxPasteLines,
 		keyStyle.Render("max paste chars:"), cfg.MaxPasteChars,
+		keyStyle.Render("llm timeout:"), valStyle.Render(timeoutVal),
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))
@@ -1521,13 +1528,18 @@ func RenderProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 			if p.ApiKey != "" {
 				apiKeyDisplay = "configured"
 			}
+			timeoutDisplay := ""
+			if p.Timeout > 0 {
+				timeoutDisplay = fmt.Sprintf(" | Timeout: %ds", p.Timeout)
+			}
 
-			sb.WriteString(fmt.Sprintf("%s%-12s : URL: %s | Model: %s | API Key: %s\n",
+			sb.WriteString(fmt.Sprintf("%s%-12s : URL: %s | Model: %s | API Key: %s%s\n",
 				marker,
 				style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name),
 				p.Endpoint,
 				p.Model,
 				apiKeyDisplay,
+				timeoutDisplay,
 			))
 		}
 	}
@@ -1536,14 +1548,19 @@ func RenderProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 	if cfg.ActiveProvider == "" {
 		activeMarker = style.NewStyle().Foreground(theme.Success).Render("➔ ")
 	}
-	sb.WriteString(fmt.Sprintf("\n%s%-12s : URL: %s | Model: %s | (default settings)\n",
+	defaultTimeoutDisplay := ""
+	if cfg.Timeout > 0 {
+		defaultTimeoutDisplay = fmt.Sprintf(" | Timeout: %ds", cfg.Timeout)
+	}
+	sb.WriteString(fmt.Sprintf("\n%s%-12s : URL: %s | Model: %s%s | (default settings)\n",
 		activeMarker,
 		style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("default"),
 		cfg.Endpoint,
 		cfg.Model,
+		defaultTimeoutDisplay,
 	))
 
-	sb.WriteString("\ntip: manage providers via REPL: /provider add/select/model/remove/list")
+	sb.WriteString("\ntip: manage providers via REPL: /provider add/select/model/timeout/remove/list")
 
 	fmt.Fprintln(w, borderStyle.Render(sb.String()))
 }

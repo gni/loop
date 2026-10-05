@@ -310,6 +310,14 @@ func HandleSlashCommand(
 					return true, false
 				}
 				a.Config.MaxPasteChars = chars
+			case "timeout", "llm_timeout":
+				sec, err := strconv.Atoi(val)
+				if err != nil || sec < 0 {
+					fmt.Fprintf(w, "Invalid timeout value: %v (must be non-negative integer)\n", err)
+					return true, false
+				}
+				a.Config.Timeout = sec
+				a.Config.UpdateActiveProvider()
 			default:
 				fmt.Fprintf(w, "unknown config key: %s\n", key)
 				return true, false
@@ -345,7 +353,7 @@ func HandleSlashCommand(
 			}
 		}
 		return true, false
-	case "/provider", "/providers":
+	case "/provider", "/providers", "/p":
 		HandleProviderCommand(a, parts, messages, *theme, w, kiReader)
 		return true, false
 	case "/skills", "/skill":

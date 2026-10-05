@@ -51,6 +51,7 @@ func (m *mockTurnLoaderUI) RenderToolHeader(w io.Writer, theme style.UITheme, to
 func (m *mockTurnLoaderUI) RenderToolOutput(w io.Writer, output string, isError bool, collapseResults bool, theme style.UITheme, toolName string, toolArgs string, bodyWasStreamed bool) {
 }
 func (m *mockTurnLoaderUI) SetCursorHidden(hidden bool) {}
+func (m *mockTurnLoaderUI) RenderGenerationError(w io.Writer, message string, theme style.UITheme) {}
 
 func TestTurnLoaderTimer(t *testing.T) {
 	mockUI := &mockTurnLoaderUI{}

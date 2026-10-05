@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -164,7 +165,37 @@ var providerRemoveCmd = &cobra.Command{
 	},
 }
 
+var providerTimeoutCmd = &cobra.Command{
+	Use:   "timeout <seconds>",
+	Short: "Set timeout in seconds for the currently active endpoint provider",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			return
+		}
+		sec, err := strconv.Atoi(args[0])
+		if err != nil || sec < 0 {
+			fmt.Printf("Error: timeout must be a non-negative integer\n")
+			return
+		}
+		cfg.Timeout = sec
+		cfg.UpdateActiveProvider()
+		err = config.SaveConfig(configPath, cfg)
+		if err != nil {
+			fmt.Printf("Error saving config: %v\n", err)
+			return
+		}
+		if cfg.ActiveProvider != "" {
+			fmt.Printf("Updated timeout for provider '%s' to %ds.\n", cfg.ActiveProvider, sec)
+		} else {
+			fmt.Printf("Updated default timeout to %ds.\n", sec)
+		}
+	},
+}
+
 func init() {
-	providerCmd.AddCommand(providerListCmd, providerAddCmd, providerSelectCmd, providerModelCmd, providerRemoveCmd)
+	providerCmd.AddCommand(providerListCmd, providerAddCmd, providerSelectCmd, providerModelCmd, providerTimeoutCmd, providerRemoveCmd)
 	rootCmd.AddCommand(providerCmd)
 }

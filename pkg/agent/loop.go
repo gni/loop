@@ -222,20 +222,32 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			if loader != nil {
 				loader.Stop()
 			}
-			if !isNonInteractive {
-				fmt.Fprintln(writerToUse)
-				cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
-				fmt.Fprintln(writerToUse, cancelStyle.Render("[Operation Cancelled]"))
-			}
-			if ctx.Err() == nil {
-				if isNonInteractive {
-					errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-					fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
-				} else {
-					*messages = append(*messages, db.Message{
+			if ctx.Err() != nil {
+				if !isNonInteractive {
+					fmt.Fprintln(writerToUse)
+					cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
+					fmt.Fprintln(writerToUse, cancelStyle.Render("[Operation Cancelled]"))
+				}
+			} else {
+				if !isNonInteractive {
+					fmt.Fprintln(writerToUse)
+					if a.UI != nil {
+						a.UI.RenderGenerationError(writerToUse, streamErr.Error(), theme)
+					} else {
+						errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+						fmt.Fprintf(writerToUse, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
+					}
+					errMsg := db.Message{
 						Role:    "error",
 						Content: streamErr.Error(),
-					})
+					}
+					*messages = append(*messages, errMsg)
+					if sessionID != "" {
+						_ = db.SaveMessage(sessionID, errMsg)
+					}
+				} else {
+					errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+					fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
 				}
 			}
 			return

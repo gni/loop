@@ -317,6 +317,30 @@ func TestStreamedWriteContentBeforePathIncludesFilename(t *testing.T) {
 	}
 }
 
+func TestStreamedWriteContentBeforePathDoesNotCorruptAnsiCodes(t *testing.T) {
+	var output renderLineCounter
+	theme := UITheme{ChromaStyle: "dracula"}
+	renderer := NewStreamRenderer(&output, theme, false, true, "test")
+	arguments := `{"content":"from __future__ import annotations\nimport os\n","path":"petitbleu/src/main.py"}`
+
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(arguments)
+	renderer.Flush()
+
+	raw := output.String()
+	if strings.Contains(raw, "[97m") && !strings.Contains(raw, "\x1b[97m") {
+		t.Fatalf("raw [97m escape leaked into output: %q", raw)
+	}
+	if strings.Contains(raw, "[0m") && !strings.Contains(raw, "\x1b[0m") {
+		t.Fatalf("raw [0m escape leaked into output: %q", raw)
+	}
+
+	rendered := stripAnsi(raw)
+	if !strings.Contains(rendered, "from __future__ import annotations") {
+		t.Fatalf("expected code line in output, got: %q", rendered)
+	}
+}
+
 func TestStreamedWriteAlternativePathKeys(t *testing.T) {
 	for _, key := range []string{"file_path", "filePath", "file", "target", "filename"} {
 		var output renderLineCounter

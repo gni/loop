@@ -542,6 +542,28 @@ func RunInteractiveConfig(cfg *config.Config, theme UITheme, rlInput io.Reader, 
 			},
 		},
 		{
+			id:          "timeout",
+			name:        "llm timeout (s)",
+			value: func() string {
+				if cloned.Timeout > 0 {
+					return fmt.Sprintf("%ds", cloned.Timeout)
+				}
+				return "disabled (0s)"
+			},
+			description: "LLM endpoint HTTP request timeout in seconds (0 to disable)",
+			onEdit: func(newVal string) error {
+				if newVal == "" {
+					return nil
+				}
+				sec, err := strconv.Atoi(newVal)
+				if err != nil || sec < 0 {
+					return fmt.Errorf("must be a non-negative integer")
+				}
+				cloned.Timeout = sec
+				return nil
+			},
+		},
+		{
 			id:          "theme",
 			name:        "visual theme",
 			value:       func() string { return cloned.Theme },

@@ -55,25 +55,63 @@ func (p *jsonStreamParser) needsPath() bool {
 	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "find" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "list" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || strings.HasPrefix(p.activeToolName, "subagent__")
 }
 
-type parserWriter struct {
-	p *jsonStreamParser
-	w io.Writer
-}
+func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {
+	line := p.lineBuffer.String()
+	p.lineBuffer.Reset()
 
-func (pw parserWriter) Write(data []byte) (int, error) {
-	if pw.p.needsPath() && pw.p.path == "" && !pw.p.titlePrinted && !pw.p.isPath {
-		return pw.p.outputBuf.Write(data)
+	if p.needsPath() && p.path == "" && !p.titlePrinted && !p.isPath {
+		p.outputBuf.WriteString(line)
+		p.outputBuf.WriteByte('\n')
+		return
 	}
-	return pw.w.Write(data)
+
+	if p.guessedLang == "" && p.path != "" {
+		ext := filepath.Ext(p.path)
+		if len(ext) > 1 {
+			p.guessedLang = ext[1:]
+		} else {
+			p.guessedLang = "plaintext"
+		}
+	}
+	lang := p.guessedLang
+	if lang == "" {
+		lang = "plaintext"
+	}
+	_ = HighlightWithoutTrailingNewline(w, line, lang, theme.ChromaStyle)
+	fmt.Fprint(w, "\n")
 }
 
-func (pw parserWriter) Unwrap() io.Writer {
-	return pw.w
+func (p *jsonStreamParser) flushOutputBuf(w io.Writer, theme UITheme) {
+	if p.outputBuf.Len() == 0 {
+		return
+	}
+	raw := p.outputBuf.String()
+	p.outputBuf.Reset()
+
+	if p.guessedLang == "" && p.path != "" {
+		ext := filepath.Ext(p.path)
+		if len(ext) > 1 {
+			p.guessedLang = ext[1:]
+		} else {
+			p.guessedLang = "plaintext"
+		}
+	}
+	lang := p.guessedLang
+	if lang == "" {
+		lang = "plaintext"
+	}
+
+	lines := strings.Split(raw, "\n")
+	for idx, l := range lines {
+		if idx == len(lines)-1 && l == "" {
+			break
+		}
+		_ = HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
+		fmt.Fprint(w, "\n")
+	}
 }
 
 func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
-	pw := parserWriter{p: p, w: w}
-
 	for i := 0; i < len(chunk); i++ {
 		char := chunk[i]
 
@@ -97,21 +135,7 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 				if p.inValue {
 					if p.isContent {
 						if unescaped == "\n" {
-							if p.guessedLang == "" && p.path != "" {
-								ext := filepath.Ext(p.path)
-								if len(ext) > 1 {
-									p.guessedLang = ext[1:]
-								} else {
-									p.guessedLang = "plaintext"
-								}
-							}
-							lang := p.guessedLang
-							if lang == "" {
-								lang = "plaintext"
-							}
-							_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
-							fmt.Fprint(pw, "\n")
-							p.lineBuffer.Reset()
+							p.emitLine(w, theme)
 						} else {
 							p.lineBuffer.WriteString(unescaped)
 						}
@@ -143,23 +167,7 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 								}
 							}
 							p.printStreamTitle(w, theme)
-							if p.outputBuf.Len() > 0 {
-								raw := p.outputBuf.String()
-								p.outputBuf.Reset()
-								lang := p.guessedLang
-								if lang != "" && lang != "plaintext" {
-									lines := strings.Split(raw, "\n")
-									for idx, l := range lines {
-										if idx == len(lines)-1 && l == "" {
-											break
-										}
-										_ = HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
-										fmt.Fprint(w, "\n")
-									}
-								} else {
-									fmt.Fprint(w, raw)
-								}
-							}
+							p.flushOutputBuf(w, theme)
 						} else if !p.pathPrinted {
 							p.pathPrinted = true
 							p.updateStreamTitleWithPath(w, theme)
@@ -167,16 +175,8 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 					}
 					if p.isContent {
 						if p.lineBuffer.Len() > 0 {
-							lang := p.guessedLang
-							if lang == "" {
-								lang = "plaintext"
-							}
-							_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
-							p.lineBuffer.Reset()
+							p.emitLine(w, theme)
 						}
-					}
-					if p.isContent {
-						fmt.Fprintln(pw)
 					}
 					p.inValue = false
 					p.isContent = false
@@ -187,21 +187,7 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 					charStr := string(char)
 					if p.isContent {
 						if char == '\n' {
-							if p.guessedLang == "" && p.path != "" {
-								ext := filepath.Ext(p.path)
-								if len(ext) > 1 {
-									p.guessedLang = ext[1:]
-								} else {
-									p.guessedLang = "plaintext"
-								}
-							}
-							lang := p.guessedLang
-							if lang == "" {
-								lang = "plaintext"
-							}
-							_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
-							fmt.Fprint(pw, "\n")
-							p.lineBuffer.Reset()
+							p.emitLine(w, theme)
 						} else {
 							p.lineBuffer.WriteString(charStr)
 						}
@@ -229,43 +215,25 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 						if !p.titlePrinted {
 							if !p.needsPath() || p.path != "" {
 								p.printStreamTitle(w, theme)
-								if p.outputBuf.Len() > 0 {
-									fmt.Fprint(w, p.outputBuf.String())
-									p.outputBuf.Reset()
-								}
+								p.flushOutputBuf(w, theme)
 							}
 						}
 					}
 				}
 			} else if char == '}' || char == ']' {
 				if p.isContent && p.lineBuffer.Len() > 0 {
-					lang := p.guessedLang
-					if lang == "" {
-						lang = "plaintext"
-					}
-					_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
-					fmt.Fprint(pw, "\n")
-					p.lineBuffer.Reset()
+					p.emitLine(w, theme)
 				}
 				if !p.titlePrinted {
 					p.printStreamTitle(w, theme)
-					if p.outputBuf.Len() > 0 {
-						fmt.Fprint(w, p.outputBuf.String())
-						p.outputBuf.Reset()
-					}
+					p.flushOutputBuf(w, theme)
 				}
 				p.inValue = false
 				p.isContent = false
 				p.isPath = false
 			} else if char == ',' {
 				if p.isContent && p.lineBuffer.Len() > 0 {
-					lang := p.guessedLang
-					if lang == "" {
-						lang = "plaintext"
-					}
-					_ = HighlightWithoutTrailingNewline(pw, p.lineBuffer.String(), lang, theme.ChromaStyle)
-					fmt.Fprint(pw, "\n")
-					p.lineBuffer.Reset()
+					p.emitLine(w, theme)
 				}
 				p.inValue = false
 				p.isContent = false

@@ -1,16 +1,17 @@
 {
+  "active": "brain",
   "active_provider": "brain",
   "providers": {
     "brain": {
-      "name": "brain",
       "endpoint": "https://brain.mlops",
       "api_key": "none",
-      "model": "brain.fr"
+      "model": "brain.fr",
+      "timeout": 120
     },
     "openai": {
-      "name": "openai",
-      "endpoint": "https://api.openai.com",
-      "model": "gpt-4-turbo"
+      "endpoint": "http://openai-compatible.local",
+      "model": "gpt-4-turbo",
+      "timeout": 120
     }
   }
 }

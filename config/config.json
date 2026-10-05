@@ -16,5 +16,6 @@
   "syntax_theme": "monokai",
   "max_completion_tokens": 128000,
   "compact_prompt": true,
+  "timeout": 120,
   "debug_log_file": "off"
 }

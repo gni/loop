@@ -11,6 +11,7 @@ import (
 	"maquis/pkg/agent"
 	"maquis/pkg/config"
 	"maquis/pkg/db"
+	"maquis/pkg/ui/style"
 )
 
 func TestCommitProviderConfigRefreshesLiveAgent(t *testing.T) {
@@ -174,3 +175,76 @@ func (transport *providerRecordingTransport) RoundTrip(request *http.Request) (*
 		Request:    request,
 	}, nil
 }
+
+func TestDirectProviderSwitchCommand(t *testing.T) {
+	cfg := &config.Config{
+		Endpoint:       "https://old.example",
+		Model:          "old-model",
+		ActiveProvider: "old",
+		Providers: map[string]config.ProviderConfig{
+			"old": {
+				Name:     "old",
+				Endpoint: "https://old.example",
+				Model:    "old-model",
+			},
+			"brain": {
+				Name:     "brain",
+				Endpoint: "https://brain.example",
+				Model:    "brain.fr",
+			},
+		},
+	}
+	a := agent.NewAgent(cfg, filepath.Join(t.TempDir(), "config.json"), &http.Client{Transport: &providerRecordingTransport{}})
+	var buf strings.Builder
+	theme := style.GetTheme("plain")
+
+	// 1. Direct switch via /provider brain
+	HandleProviderCommand(a, []string{"/provider", "brain"}, nil, theme, &buf, nil)
+	if a.Config.ActiveProvider != "brain" {
+		t.Fatalf("ActiveProvider = %q; want brain", a.Config.ActiveProvider)
+	}
+	if a.Config.Endpoint != "https://brain.example" {
+		t.Fatalf("Endpoint = %q; want https://brain.example", a.Config.Endpoint)
+	}
+	if a.Config.Model != "brain.fr" {
+		t.Fatalf("Model = %q; want brain.fr", a.Config.Model)
+	}
+	if !strings.Contains(buf.String(), "Switched active provider to 'brain'") {
+		t.Fatalf("expected switch message in buffer, got: %s", buf.String())
+	}
+
+	// 2. Direct switch with model override via /p brain custom-model
+	buf.Reset()
+	HandleProviderCommand(a, []string{"/p", "brain", "custom-model"}, nil, theme, &buf, nil)
+	if a.Config.ActiveProvider != "brain" {
+		t.Fatalf("ActiveProvider = %q; want brain", a.Config.ActiveProvider)
+	}
+	if a.Config.Model != "custom-model" {
+		t.Fatalf("Model = %q; want custom-model", a.Config.Model)
+	}
+}
+
+
+func TestProviderAutocomplete(t *testing.T) {
+	cfg := &config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"brain":  {Endpoint: "https://brain.example"},
+			"openai": {Endpoint: "http://openai-compatible.local"},
+		},
+	}
+	a := &agent.Agent{Config: cfg}
+
+	// 1. Completing "/p br"
+	newLine, newPos, ok := autoCompleteCallback("/p br", 5, '\t', a)
+	if !ok || newLine != "/p brain" {
+		t.Fatalf("expected /p brain, got ok=%v, newLine=%q, newPos=%d", ok, newLine, newPos)
+	}
+
+	// 2. Completing "/provider op"
+	newLine, newPos, ok = autoCompleteCallback("/provider op", 12, '\t', a)
+	if !ok || newLine != "/provider openai" {
+		t.Fatalf("expected /provider openai, got ok=%v, newLine=%q, newPos=%d", ok, newLine, newPos)
+	}
+}
+
+

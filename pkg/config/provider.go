@@ -2,19 +2,34 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
 type ProviderConfig struct {
-	Name     string `json:"name"`
-	Endpoint string `json:"endpoint"`
-	ApiKey   string `json:"api_key,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Name     string            `json:"name,omitempty"`
+	Endpoint string            `json:"endpoint"`
+	ApiKey   string            `json:"api_key,omitempty"`
+	Model    string            `json:"model,omitempty"`
+	Timeout  int               `json:"timeout,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 type ProvidersFile struct {
-	ActiveProvider string                    `json:"active_provider"`
+	Active         string                    `json:"active,omitempty"`
+	ActiveProvider string                    `json:"active_provider,omitempty"`
 	Providers      map[string]ProviderConfig `json:"providers"`
+}
+
+func (p ProviderConfig) ResolvedApiKey() string {
+	key := strings.TrimSpace(p.ApiKey)
+	if strings.HasPrefix(key, "$") {
+		return os.Getenv(strings.TrimPrefix(key, "$"))
+	}
+	if strings.HasPrefix(key, "env:") {
+		return os.Getenv(strings.TrimPrefix(key, "env:"))
+	}
+	return p.ApiKey
 }
 
 func (c *Config) ActivateProvider(name string) error {
@@ -39,9 +54,12 @@ func (c *Config) ActivateProvider(name string) error {
 
 	c.ActiveProvider = name
 	c.Endpoint = provider.Endpoint
-	c.ApiKey = provider.ApiKey
+	c.ApiKey = provider.ResolvedApiKey()
 	if provider.Model != "" {
 		c.Model = provider.Model
+	}
+	if provider.Timeout > 0 {
+		c.Timeout = provider.Timeout
 	}
 	return nil
 }
@@ -62,7 +80,10 @@ func (c *Config) UpdateActiveProvider() {
 		return
 	}
 	p.Endpoint = c.Endpoint
-	p.ApiKey = c.ApiKey
+	if p.ApiKey == "" || (!strings.HasPrefix(p.ApiKey, "$") && !strings.HasPrefix(p.ApiKey, "env:")) || p.ResolvedApiKey() != c.ApiKey {
+		p.ApiKey = c.ApiKey
+	}
 	p.Model = c.Model
+	p.Timeout = c.Timeout
 	c.Providers[c.ActiveProvider] = p
 }

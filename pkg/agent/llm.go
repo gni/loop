@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,8 +117,15 @@ type OpenAICompatibleProvider struct {
 }
 
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
+	timeout := 5 * time.Second
+	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
+		timeout = time.Duration(p.Config.Timeout) * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	url := fmt.Sprintf("%s/props?model=%s", strings.TrimSuffix(p.Config.Endpoint, "/"), p.Config.Model)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(checkCtx, "GET", url, nil)
 	if err != nil {
 		return false
 	}
@@ -125,7 +133,11 @@ func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) boo
 	if p.Config.ApiKey != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))
 	}
-	resp, err := p.HttpClient.Do(req)
+	client := p.HttpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
@@ -139,6 +151,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
+	if p.Config != nil && p.Config.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(p.Config.Timeout)*time.Second)
+		defer cancel()
+	}
+
 	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimSuffix(p.Config.Endpoint, "/"))
 
 	if !p.ThinkingSupportChecked {
@@ -176,6 +194,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if strings.HasPrefix(msg.Content, "[user manually executed slash command:") {
 			continue
 		}
+		// Never send internal messages (like error banners) to the LLM API
+		if msg.Role != "system" && msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
+			continue
+		}
 		if msg.Role == "assistant" {
 			msg.Content = StripFallbackToolMarkup(msg.Content)
 		}
@@ -195,10 +217,21 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if msg.Role != "assistant" && msg.Content == "" {
 			msgCopy := msg
 			msgCopy.Content = " "
-			validMessages = append(validMessages, msgCopy)
-		} else {
-			validMessages = append(validMessages, msg)
+			msg = msgCopy
 		}
+		// If consecutive user messages occur (e.g. user retrying a prompt after an error turn), merge them
+		if msg.Role == "user" && len(validMessages) > 0 && validMessages[len(validMessages)-1].Role == "user" {
+			lastIdx := len(validMessages) - 1
+			if validMessages[lastIdx].Content == msg.Content {
+				// Same message repeated, keep single copy
+				continue
+			}
+			totalChars -= len(validMessages[lastIdx].Content)
+			validMessages[lastIdx].Content += "\n\n" + msg.Content
+			totalChars += len(validMessages[lastIdx].Content)
+			continue
+		}
+		validMessages = append(validMessages, msg)
 		totalChars += len(validMessages[len(validMessages)-1].Content)
 		if validMessages[len(validMessages)-1].Role == "assistant" {
 			totalChars += len(validMessages[len(validMessages)-1].ReasoningContent)
@@ -305,11 +338,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var resp *http.Response
 	var lastErr error
 	maxRetries := 3
+	client := p.HttpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
+					return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+				}
 				return nil, ctx.Err()
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
@@ -328,9 +368,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		var doErr error
-		resp, doErr = p.HttpClient.Do(req)
+		resp, doErr = client.Do(req)
 		if doErr != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
+				return nil, fmt.Errorf("HTTP request failed: LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			lastErr = fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", doErr, p.Config.Endpoint)
+			if isNonRetryableError(doErr) {
+				return nil, lastErr
+			}
 			continue
 		}
 
@@ -350,6 +399,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	if lastErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
+			return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
 	}
 	defer resp.Body.Close()
@@ -443,6 +498,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	for {
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
+				return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+			}
 			return finalizePartial(), ctx.Err()
 		default:
 		}
@@ -453,6 +511,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				break
 			}
 			if ctx.Err() != nil {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
+					return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+				}
 				return finalizePartial(), ctx.Err()
 			}
 			return nil, fmt.Errorf("error reading stream: %w", err)
@@ -683,6 +744,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
+	if textBuilder.Len() == 0 && len(calls) == 0 && cleanReasoningBuilder.Len() == 0 {
+		return nil, fmt.Errorf("server closed stream without returning any content or tool calls")
+	}
+
 	assistantMsg := &db.Message{
 		Role:             "assistant",
 		Content:          textBuilder.String(),
@@ -699,6 +764,24 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	return assistantMsg, nil
+}
+
+func isNonRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "certificate") ||
+		strings.Contains(errStr, "tls:") ||
+		strings.Contains(errStr, "x509:") ||
+		strings.Contains(errStr, "unsupported protocol scheme") ||
+		strings.Contains(errStr, "cannot assign requested address") ||
+		strings.Contains(errStr, "no route to host") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "deadline exceeded")
 }
 
 func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string) []db.ToolCall {
@@ -770,7 +853,14 @@ func (a *Agent) currentLLMProvider() LLMProvider {
 
 func (a *Agent) CheckThinkingSupport() bool {
 	provider := a.currentLLMProvider()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timeout := 5 * time.Second
+	if a.Config != nil && a.Config.Timeout > 0 {
+		t := time.Duration(a.Config.Timeout) * time.Second
+		if t < timeout {
+			timeout = t
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return provider.CheckThinkingSupport(ctx)
 }

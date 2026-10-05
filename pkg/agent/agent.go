@@ -55,6 +55,7 @@ type AgentUI interface {
 	RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, toolArgs string)
 	RenderToolOutput(w io.Writer, output string, isError bool, collapseResults bool, theme style.UITheme, toolName string, toolArgs string, bodyWasStreamed bool)
 	SetCursorHidden(hidden bool)
+	RenderGenerationError(w io.Writer, message string, theme style.UITheme)
 }
 
 type Agent struct {

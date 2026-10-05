@@ -37,6 +37,7 @@ var (
 	compactPrompt       bool
 	debugFileFlag       string
 	maxSubagentDepthFlag int
+	timeoutFlag         int
 )
 
 var rootCmd = &cobra.Command{
@@ -96,6 +97,9 @@ var rootCmd = &cobra.Command{
 		if cmd.Flags().Changed("max-subagent-depth") {
 			cfg.MaxSubagentDepth = maxSubagentDepthFlag
 		}
+		if cmd.Flags().Changed("timeout") {
+			cfg.Timeout = timeoutFlag
+		}
 
 		theme := ui.GetConfiguredTheme(cfg)
 
@@ -113,8 +117,12 @@ var rootCmd = &cobra.Command{
 			tlsConfig = nil
 		}
 
+		dialerTimeout := 10 * time.Second
+		if cfg.Timeout > 0 && time.Duration(cfg.Timeout)*time.Second < dialerTimeout {
+			dialerTimeout = time.Duration(cfg.Timeout) * time.Second
+		}
 		dialer := &net.Dialer{
-			Timeout:   30 * time.Second,
+			Timeout:   dialerTimeout,
 			KeepAlive: 30 * time.Second,
 		}
 
@@ -133,7 +141,7 @@ var rootCmd = &cobra.Command{
 
 		httpClient := &http.Client{
 			Transport: transport,
-			Timeout:   0, // No timeout on long-running streaming responses
+			Timeout:   0, // Streaming requests are bounded by request context timeout
 		}
 
 		cwd, _ := os.Getwd()
@@ -419,6 +427,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&compactPrompt, "compact", false, "Enable highly compressed system instructions for smaller models")
 	rootCmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: maquis_debug.log in workspace)")
 	rootCmd.PersistentFlags().IntVar(&maxSubagentDepthFlag, "max-subagent-depth", 0, "Maximum subagent nesting depth (default: 0, leaf subagents cannot spawn further subagents)")
+	rootCmd.PersistentFlags().IntVar(&timeoutFlag, "timeout", 0, "Override LLM request timeout in seconds (default: 120)")
 
 	configCmd.AddCommand(configShowCmd, configEditCmd)
 	sessionCmd.AddCommand(sessionListCmd, sessionNewCmd, sessionClearCmd)
