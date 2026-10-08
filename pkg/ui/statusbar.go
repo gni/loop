@@ -23,12 +23,21 @@ type StatusBarState struct {
 	LastTps                 float64
 	HasLastTps              bool
 	ActiveTasksCount        int
+	PlanCompleted           int
+	PlanTotal               int
 	ShowTokens              bool
 	QueuedPromptsCount      int
 }
 
 func getTerminalSize() (int, int) {
 	return style.GetTerminalSize()
+}
+
+func UpdatePlanStatus(completed, total int) {
+	getUI().StateMu.Lock()
+	getUI().State.PlanCompleted = completed
+	getUI().State.PlanTotal = total
+	getUI().StateMu.Unlock()
 }
 
 func UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool, tokenEstimate ...bool) {
@@ -265,7 +274,17 @@ func formatRight(theme UITheme, width int) string {
 		}
 	}
 
-	rightInfo := queueStr + taskStr
+	planStr := ""
+	if getUI().State.PlanTotal > 0 {
+		planStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+		if width < 50 {
+			planStr = planStyle.Render(fmt.Sprintf("[%d/%d]", getUI().State.PlanCompleted, getUI().State.PlanTotal)) + " "
+		} else {
+			planStr = planStyle.Render(fmt.Sprintf("[plan:%d/%d]", getUI().State.PlanCompleted, getUI().State.PlanTotal)) + " "
+		}
+	}
+
+	rightInfo := queueStr + planStr + taskStr
 	if width < 45 {
 		return rightInfo
 	} else if width < 65 {

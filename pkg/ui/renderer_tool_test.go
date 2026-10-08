@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 type renderLineCounter struct {
@@ -81,8 +82,204 @@ func TestThoughtCompletesBeforeToolHeader(t *testing.T) {
 	if thoughtIndex > toolIndex {
 		t.Fatalf("thought completion rendered after its tool call: %q", rendered)
 	}
-	if strings.Contains(rendered[thoughtIndex:toolIndex], "\n\n") {
-		t.Fatalf("thought and tool header were separated by a transient blank row: %q", rendered)
+	between := rendered[thoughtIndex:toolIndex]
+	if !strings.Contains(between, "\n\n") || strings.Contains(between, "\n\n\n") {
+		t.Fatalf("thought and tool header must have exactly one blank row: %q", rendered)
+	}
+}
+
+func TestThoughtBashToolSpacing(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, true, false, "test")
+
+	renderer.WriteReasoning("inspecting pytest warnings")
+	renderer.StartToolCall("bash", 0)
+	renderer.WriteToolCall(`{"command":"cd /home/w/conq && grep -n \"^def test\" tests/test_api.py"}`)
+	renderer.Flush()
+
+	rendered := stripAnsi(output.String())
+	thoughtIdx := strings.Index(rendered, "thought (")
+	bashIdx := strings.Index(rendered, "$ cd /home/w/conq")
+	if thoughtIdx < 0 || bashIdx < 0 || thoughtIdx > bashIdx {
+		t.Fatalf("missing ordered thought and bash command: %q", rendered)
+	}
+	between := rendered[thoughtIdx:bashIdx]
+	if !strings.Contains(between, "\n\n") || strings.Contains(between, "\n\n\n") {
+		t.Fatalf("thought and bash tool run must have exactly one blank row: %q", rendered)
+	}
+}
+
+func TestThoughtTextToolSpacing(t *testing.T) {
+	const (
+		reasoning = "checking CI dependencies"
+		text      = "Let me check the CI workflow first, then install deps so tests can actually run."
+		command   = "cd /home/w/conq && cat .github/workflows/ci.yml; .venv/bin/python --version"
+	)
+	theme := UITheme{}
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, theme, true, false, "test")
+
+	renderer.WriteReasoning(reasoning)
+	renderer.Write(text)
+	renderer.StartToolCall("bash", 0)
+	renderer.WriteToolCall(fmt.Sprintf(`{"command":%q}`, command))
+	renderer.Flush()
+
+	rendered := stripAnsi(output.String())
+	thoughtIdx := strings.Index(rendered, "thought (")
+	textIdx := strings.Index(rendered, text)
+	bashIdx := strings.Index(rendered, "$ cd /home/w/conq")
+	if thoughtIdx < 0 || textIdx < 0 || bashIdx < 0 {
+		t.Fatalf("missing parts in output: %q", rendered)
+	}
+	if !(thoughtIdx < textIdx && textIdx < bashIdx) {
+		t.Fatalf("incorrect order: thought=%d, text=%d, bash=%d", thoughtIdx, textIdx, bashIdx)
+	}
+
+	betweenThoughtAndText := rendered[thoughtIdx:textIdx]
+	if !strings.Contains(betweenThoughtAndText, "\n\n") || strings.Contains(betweenThoughtAndText, "\n\n\n") {
+		t.Fatalf("thought and text must have exactly one blank row: %q", betweenThoughtAndText)
+	}
+
+	betweenTextAndBash := rendered[textIdx+len(text) : bashIdx]
+	if !strings.Contains(betweenTextAndBash, "\n\n") || strings.Contains(betweenTextAndBash, "\n\n\n") {
+		t.Fatalf("text and bash tool run must have exactly one blank row: %q", betweenTextAndBash)
+	}
+
+	// Verify parity with PrintSessionHistory
+	toolCall := db.ToolCall{
+		ID:   "call-1",
+		Type: "function",
+		Function: db.ToolFunction{
+			Name:      "bash",
+			Arguments: fmt.Sprintf(`{"command":%q}`, command),
+		},
+	}
+	messages := []db.Message{
+		{
+			Role:              "assistant",
+			ReasoningContent:  reasoning,
+			ReasoningDuration: renderer.GetReasoningDuration(),
+			Content:           text,
+			ToolCalls:         []db.ToolCall{toolCall},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    "name: ci",
+		},
+	}
+	var history bytes.Buffer
+	PrintSessionHistory(&history, messages, theme, &config.Config{ShowThinking: true})
+
+	historyText := stripAnsi(history.String())
+	if !strings.Contains(historyText, "Let me check the CI workflow") || !strings.Contains(historyText, "$ cd /home/w/conq") {
+		t.Fatalf("history missing text or bash command: %q", historyText)
+	}
+	prefixIdx := strings.Index(historyText, "Let me check the CI workflow")
+	bashPos := strings.Index(historyText, "$ cd /home/w/conq")
+	histBetween := historyText[prefixIdx:bashPos]
+	if !strings.Contains(histBetween, "\n\n") || strings.Contains(histBetween, "\n\n\n") {
+		t.Fatalf("history text and bash tool must have exactly one blank row: %q", histBetween)
+	}
+}
+
+func TestTextToolSpacingWithoutThinking(t *testing.T) {
+	const (
+		text    = "Let me check the CI workflow first, then install deps so tests can actually run."
+		command = "cd /home/w/conq && cat .github/workflows/ci.yml; .venv/bin/python --version"
+	)
+	theme := UITheme{}
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, theme, false, false, "test")
+
+	renderer.Write(text)
+	renderer.StartToolCall("bash", 0)
+	renderer.WriteToolCall(fmt.Sprintf(`{"command":%q}`, command))
+	renderer.Flush()
+
+	rendered := stripAnsi(output.String())
+	textIdx := strings.Index(rendered, text)
+	bashIdx := strings.Index(rendered, "$ cd /home/w/conq")
+	if textIdx < 0 || bashIdx < 0 || textIdx > bashIdx {
+		t.Fatalf("missing ordered text and bash command without thinking: %q", rendered)
+	}
+	between := rendered[textIdx+len(text) : bashIdx]
+	if !strings.Contains(between, "\n\n") || strings.Contains(between, "\n\n\n") {
+		t.Fatalf("text and bash tool run without thinking must have exactly one blank row: %q", between)
+	}
+
+	// Verify parity with PrintSessionHistory
+	toolCall := db.ToolCall{
+		ID:   "call-1",
+		Type: "function",
+		Function: db.ToolFunction{
+			Name:      "bash",
+			Arguments: fmt.Sprintf(`{"command":%q}`, command),
+		},
+	}
+	messages := []db.Message{
+		{
+			Role:      "assistant",
+			Content:   text,
+			ToolCalls: []db.ToolCall{toolCall},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Function.Name,
+			Content:    "name: ci",
+		},
+	}
+	var history bytes.Buffer
+	PrintSessionHistory(&history, messages, theme, &config.Config{ShowThinking: false})
+
+	historyText := stripAnsi(history.String())
+	if !strings.Contains(historyText, "Let me check the CI workflow") || !strings.Contains(historyText, "$ cd /home/w/conq") {
+		t.Fatalf("history missing text or bash command: %q", historyText)
+	}
+	hPrefixIdx := strings.Index(historyText, "Let me check the CI workflow")
+	hBashPos := strings.Index(historyText, "$ cd /home/w/conq")
+	histBetween := historyText[hPrefixIdx:hBashPos]
+	if !strings.Contains(histBetween, "\n\n") || strings.Contains(histBetween, "\n\n\n") {
+		t.Fatalf("history text and bash tool without thinking must have exactly one blank row: %q", histBetween)
+	}
+}
+
+func TestUnrespondedToolCallSpacing(t *testing.T) {
+	const (
+		text    = "Let me check the CI workflow first."
+		command = "cat .github/workflows/ci.yml"
+	)
+	theme := UITheme{}
+	toolCall := db.ToolCall{
+		ID:   "call-unresp",
+		Type: "function",
+		Function: db.ToolFunction{
+			Name:      "bash",
+			Arguments: fmt.Sprintf(`{"command":%q}`, command),
+		},
+	}
+	messages := []db.Message{
+		{
+			Role:      "assistant",
+			Content:   text,
+			ToolCalls: []db.ToolCall{toolCall},
+		},
+	}
+	var history bytes.Buffer
+	PrintSessionHistory(&history, messages, theme, &config.Config{ShowThinking: false})
+
+	historyText := stripAnsi(history.String())
+	textIdx := strings.Index(historyText, text)
+	bashIdx := strings.Index(historyText, "$ cat .github/workflows/ci.yml")
+	if textIdx < 0 || bashIdx < 0 || textIdx > bashIdx {
+		t.Fatalf("missing text or bash header: %q", historyText)
+	}
+	between := historyText[textIdx+len(text) : bashIdx]
+	if !strings.Contains(between, "\n\n") || strings.Contains(between, "\n\n\n") {
+		t.Fatalf("unresponded tool call must have exactly one blank row after text: %q", between)
 	}
 }
 
@@ -291,6 +488,9 @@ func TestStreamedWriteContentIsNotRenderedTwice(t *testing.T) {
 	rendered := stripAnsi(output.String())
 	if count := strings.Count(rendered, payload); count != 1 {
 		t.Fatalf("expected streamed write content once, got %d occurrences in %q", count, rendered)
+	}
+	if strings.Contains(rendered, "wrote result.txt") {
+		t.Fatalf("expected redundant post-stream write output to be suppressed, got %q", rendered)
 	}
 }
 
@@ -568,3 +768,278 @@ func TestBashToolHeaderAndCompletionFormat(t *testing.T) {
 		t.Fatalf("expected session history to contain output 'node', got: %q", historyText)
 	}
 }
+
+func TestBashCommandFullVisibilityWithoutTruncation(t *testing.T) {
+	theme := UITheme{}
+
+	// 1. Long command exceeding standard 80-col terminal width must not be truncated with "..."
+	longCmd := "export PATH=$HOME/go/go/bin:$PATH mkdir -p /tmp/gotest && cd /tmp/gotest && cat > pc.go <<'EOF' package main import (\"fmt\";\"net\";\"os\";\"path/filepath\";\"syscall\")"
+	formattedLong := stripAnsi(FormatBashCommandLine("", longCmd, theme))
+	if strings.HasSuffix(formattedLong, "...") {
+		t.Fatalf("long bash command was truncated with '...': %q", formattedLong)
+	}
+	if !strings.Contains(formattedLong, "syscall") {
+		t.Fatalf("long bash command is missing ending tokens: %q", formattedLong)
+	}
+
+	// 2. Multi-line command preserves all lines
+	multilineCmd := "export PATH=$HOME/go/go/bin:$PATH\nmkdir -p /tmp/gotest\ncat > pc.go <<'EOF'\npackage main\nEOF"
+	formattedMulti := stripAnsi(FormatBashCommandLine("", multilineCmd, theme))
+	if !strings.Contains(formattedMulti, "$ export PATH=$HOME/go/go/bin:$PATH") {
+		t.Fatalf("first line missing '$ ' prompt: %q", formattedMulti)
+	}
+	if !strings.Contains(formattedMulti, "  mkdir -p /tmp/gotest") {
+		t.Fatalf("second line missing indentation: %q", formattedMulti)
+	}
+	if !strings.Contains(formattedMulti, "  package main") {
+		t.Fatalf("heredoc content line missing: %q", formattedMulti)
+	}
+	if strings.Contains(formattedMulti, "...") {
+		t.Fatalf("multiline command was truncated with '...': %q", formattedMulti)
+	}
+}
+
+func TestStreamedWriteMultiToolIndex(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	// Simulate tool 0 (e.g. todo)
+	renderer.StartToolCall("todo", 0)
+	renderer.WriteToolCall(`{"action":"read"}`)
+	renderer.Flush()
+
+	// Simulate tool 1 (write)
+	renderer.StartToolCall("write", 1)
+	renderer.WriteToolCall(`{"path":"backend/run_turn.py","content":"def run_turn():\n    pass\n"}`)
+	renderer.Flush()
+
+	if !renderer.DidStreamToolBody(1) {
+		t.Fatalf("expected tool call index 1 body to be recorded as streamed")
+	}
+
+	rendered := stripAnsi(output.String())
+	if !strings.Contains(rendered, "backend/run_turn.py") {
+		t.Fatalf("expected write header in output, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "def run_turn():") {
+		t.Fatalf("expected streamed python content in output, got: %q", rendered)
+	}
+}
+
+func TestStreamedWriteErrorIsStillRendered(t *testing.T) {
+	var output renderLineCounter
+	arguments := `{"path":"read_only.txt","content":"some content"}`
+	errorMessage := "Error: permission denied"
+
+	RenderToolOutput(&output, errorMessage, true, false, UITheme{}, "write", arguments, true)
+
+	rendered := stripAnsi(output.String())
+	if !strings.Contains(rendered, errorMessage) {
+		t.Fatalf("expected error message %q to be rendered even when body was streamed, got %q", errorMessage, rendered)
+	}
+}
+func TestHighlightYamlAndMarkdown(t *testing.T) {
+	var buf bytes.Buffer
+	errYaml := HighlightWithoutTrailingNewline(&buf, "name: test", "yaml", "friendly")
+	if errYaml != nil {
+		t.Fatalf("yaml highlight failed: %v", errYaml)
+	}
+	buf.Reset()
+
+	errYml := HighlightWithoutTrailingNewline(&buf, "name: test", "yml", "friendly")
+	if errYml != nil {
+		t.Fatalf("yml highlight failed: %v", errYml)
+	}
+	buf.Reset()
+
+	errMd := HighlightWithoutTrailingNewline(&buf, "# header", "md", "friendly")
+	if errMd != nil {
+		t.Fatalf("md highlight failed: %v", errMd)
+	}
+	buf.Reset()
+
+	errMarkdown := HighlightWithoutTrailingNewline(&buf, "# header", "markdown", "friendly")
+	if errMarkdown != nil {
+		t.Fatalf("markdown highlight failed: %v", errMarkdown)
+	}
+}
+
+func TestStreamedWriteYamlAndMarkdownRealtime(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		path     string
+		content  string
+		pathLast bool
+	}{
+		{
+			name:     "yaml path first",
+			path:     "docker-compose.yml",
+			content:  "version: '3.8'\nservices:\n  app:\n    image: app:latest\n",
+			pathLast: false,
+		},
+		{
+			name:     "yaml content first",
+			path:     "config.yaml",
+			content:  "database:\n  host: localhost\n  port: 5432\n",
+			pathLast: true,
+		},
+		{
+			name:     "markdown path first",
+			path:     "README.md",
+			content:  "# Project Overview\n\nThis is production markdown.\n",
+			pathLast: false,
+		},
+		{
+			name:     "markdown content first",
+			path:     "docs/architecture.markdown",
+			content:  "## Architecture\n- Locality of Behavior\n- Zero-trust\n",
+			pathLast: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output renderLineCounter
+			renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+			renderer.StartToolCall("write", 0)
+
+			if tc.pathLast {
+				renderer.WriteToolCall(fmt.Sprintf(`{"content": %q`, tc.content))
+				renderedMid := stripAnsi(output.String())
+				if renderedMid != "" {
+					t.Fatalf("expected content to buffer until path arrives without emitting bare title, got: %q", renderedMid)
+				}
+				renderer.WriteToolCall(fmt.Sprintf(`, "path": %q}`, tc.path))
+			} else {
+				renderer.WriteToolCall(fmt.Sprintf(`{"path": %q, "content": %q}`, tc.path, tc.content))
+			}
+
+			renderer.Flush()
+
+			if !renderer.DidStreamToolBody(0) {
+				t.Fatalf("expected DidStreamToolBody=true for %s", tc.name)
+			}
+
+			rendered := stripAnsi(output.String())
+			if !strings.Contains(rendered, fmt.Sprintf("write %s", tc.path)) {
+				t.Fatalf("expected header 'write %s', got: %q", tc.path, rendered)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(tc.content), "\n") {
+				if !strings.Contains(rendered, line) {
+					t.Fatalf("expected streamed line %q in %q", line, rendered)
+				}
+			}
+
+			// Post-stream RenderToolOutput must suppress duplicate body
+			beforeOutput := output.String()
+			RenderToolOutput(&output, "wrote "+tc.path, false, false, UITheme{}, "write", fmt.Sprintf(`{"path":%q}`, tc.path), renderer.DidStreamToolBody(0))
+			if output.String() != beforeOutput {
+				t.Fatalf("expected RenderToolOutput to be suppressed when body was streamed")
+			}
+		})
+	}
+}
+
+func TestStreamedWriteNonCodeContentKeys(t *testing.T) {
+	for _, key := range []string{"data", "yaml", "raw", "body", "code", "text", "content"} {
+		t.Run("key_"+key, func(t *testing.T) {
+			var output renderLineCounter
+			renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+			renderer.StartToolCall("write", 0)
+
+			args := fmt.Sprintf(`{"path": "config.yml", %q: "app_name: test\nport: 8080\n"}`, key)
+			renderer.WriteToolCall(args)
+			renderer.Flush()
+
+			if !renderer.DidStreamToolBody(0) {
+				t.Fatalf("expected key %q to be recognized as streamed body", key)
+			}
+
+			rendered := stripAnsi(output.String())
+			if !strings.Contains(rendered, "app_name: test") || !strings.Contains(rendered, "port: 8080") {
+				t.Fatalf("expected content streamed for key %q, got: %q", key, rendered)
+			}
+		})
+	}
+}
+
+func TestStreamedWriteContentBeforePathSyntaxHighlighting(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{ChromaStyle: "monokai"}, false, true, "test")
+	renderer.StartToolCall("write", 0)
+
+	// Stream content chunks first, then path at the end
+	renderer.WriteToolCall(`{"content": "import pytest\nfrom fastapi.testclient import TestClient\n`)
+	renderer.WriteToolCall(`from sqlalchemy.pool import StaticPool\n", `)
+	renderer.WriteToolCall(`"path": "tests/test_api.py"}`)
+	renderer.Flush()
+
+	raw := output.String()
+	if !strings.Contains(raw, "\x1b[") {
+		t.Fatalf("expected syntax highlighting ANSI sequences even when content preceded path, got raw: %q", raw)
+	}
+
+	clean := stripAnsi(raw)
+	if !strings.Contains(clean, "write tests/test_api.py") {
+		t.Fatalf("expected updated title with path, got: %q", clean)
+	}
+	if !strings.Contains(clean, "import pytest") {
+		t.Fatalf("expected content in output, got: %q", clean)
+	}
+}
+
+func TestStreamedNestedInputPath(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, false, "test")
+	renderer.StartToolCall("read", 0)
+	renderer.WriteToolCall(`{"input": {"path": "app/security.py"}}`)
+	renderer.Flush()
+
+	clean := stripAnsi(output.String())
+	if !strings.Contains(clean, "read app/security.py") {
+		t.Fatalf("expected nested input path to be recognized in header, got: %q", clean)
+	}
+}
+
+func TestDetectLangFromContent(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"import pytest\nfrom fastapi import FastAPI", "python"},
+		{"from datetime import datetime\nimport jwt", "python"},
+		{"def calculate_total(a, b):\n    return a + b", "python"},
+		{"package main\n\nfunc main() {}", "go"},
+		{"use std::collections::HashMap;\nfn main() {}", "rust"},
+		{"import { useState } from 'react';\nexport default App;", "typescript"},
+		{"#!/usr/bin/env python3\nprint('hello')", "python"},
+		{"#!/bin/bash\nset -euo pipefail", "bash"},
+		{"<!DOCTYPE html>\n<html><body></body></html>", "html"},
+		{"---\nversion: '3.8'\nservices:", "yaml"},
+		{"{\n  \"name\": \"app\"\n}", "json"},
+	}
+
+	for _, tc := range cases {
+		got := detectLangFromContent(tc.input)
+		if got != tc.expected {
+			t.Errorf("detectLangFromContent(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestRenderToolSymbolWritePendingColor(t *testing.T) {
+	theme := style.GetTheme("tokyonight")
+
+	pendingWrite := renderToolSymbol("write", toolStatusPending, theme)
+	successWrite := renderToolSymbol("write", toolStatusSuccess, theme)
+
+	if pendingWrite == successWrite {
+		t.Fatalf("expected write pending symbol color to differ from success symbol color, got both: %q", pendingWrite)
+	}
+
+	pendingEdit := renderToolSymbol("edit", toolStatusPending, theme)
+	successEdit := renderToolSymbol("edit", toolStatusSuccess, theme)
+
+	if pendingEdit == successEdit {
+		t.Fatalf("expected edit pending symbol color to differ from success symbol color, got both: %q", pendingEdit)
+	}
+}
+

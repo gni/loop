@@ -258,12 +258,28 @@ func HandleSlashCommand(
 				a.Config.SyntaxTheme = val
 				*theme = GetConfiguredTheme(a.Config)
 			case "context_window_limit", "context_limit", "context":
+				if strings.ToLower(val) == "auto" {
+					a.Config.AutoAdaptContext = true
+					_ = config.SaveConfig(a.ConfigPath, a.Config)
+					fmt.Fprintln(w, "context auto-adaptation enabled.")
+					return true, false
+				}
 				l, err := strconv.Atoi(val)
 				if err != nil || l <= 0 {
 					fmt.Fprintf(w, "Invalid context window limit value: %v\n", err)
 					return true, false
 				}
 				a.Config.ContextWindowLimit = l
+			case "auto_adapt_context", "auto_adapt":
+				valLower := strings.ToLower(strings.TrimSpace(val))
+				a.Config.AutoAdaptContext = valLower == "true" || valLower == "yes" || valLower == "1" || valLower == "on"
+			case "min_context_window", "min_context":
+				minVal, err := strconv.Atoi(val)
+				if err != nil || minVal <= 0 {
+					fmt.Fprintf(w, "Invalid min context window value: %v\n", err)
+					return true, false
+				}
+				a.Config.MinContextWindow = minVal
 			case "max_completion_tokens", "max_tokens", "output_tokens":
 				tokens, err := strconv.Atoi(val)
 				if err != nil || tokens <= 0 {
@@ -317,6 +333,31 @@ func HandleSlashCommand(
 					return true, false
 				}
 				a.Config.Timeout = sec
+			case "max_tool_output_bytes", "spill_limit":
+				bytesLimit, err := strconv.Atoi(val)
+				if err != nil || bytesLimit <= 0 {
+					fmt.Fprintf(w, "Invalid max tool output bytes value: %v\n", err)
+					return true, false
+				}
+				a.Config.MaxToolOutputBytes = bytesLimit
+			case "repeat_guard_limit", "guard_limit":
+				guardLimit, err := strconv.Atoi(val)
+				if err != nil || guardLimit <= 0 {
+					fmt.Fprintf(w, "Invalid repeat guard limit value: %v\n", err)
+					return true, false
+				}
+				a.Config.RepeatGuardLimit = guardLimit
+			case "persistent_bash", "persistent_shell":
+				a.Config.PersistentBash = val == "true" || val == "yes" || val == "1"
+			case "atomic_writes", "atomic_write":
+				a.Config.AtomicWrites = val == "true" || val == "yes" || val == "1"
+			case "ask_user_mode", "ask_user":
+				mode := strings.ToLower(strings.TrimSpace(val))
+				if mode != "interactive" && mode != "auto_recommended" && mode != "disabled" {
+					fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, auto_recommended, disabled\n", val)
+					return true, false
+				}
+				a.Config.AskUserMode = mode
 				a.Config.UpdateActiveProvider()
 			default:
 				fmt.Fprintf(w, "unknown config key: %s\n", key)
@@ -331,7 +372,16 @@ func HandleSlashCommand(
 				msgs = *messages
 			}
 			latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
-			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+			effLimit := a.GetEffectiveContextLimit(pTok)
+			getUI().StateMu.Lock()
+			getUI().LastStatusBarText = ""
+			getUI().StateMu.Unlock()
+			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+			var rl *term.Terminal
+			if kiReader != nil {
+				rl = kiReader.rl
+			}
+			refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 			DrawStatusBar(w, *theme)
 		} else {
 			input, output, cleanup := getInteractiveIO(kiReader)
@@ -483,9 +533,17 @@ func HandleSlashCommand(
 				*messages = []db.Message{
 					{Role: "system", Content: a.GetSystemPrompt()},
 				}
-				fmt.Fprintln(w, "started a new conversation session.")
 				pTok, cTok, estimated := calcHistoryTokens()
-				UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+				effLimit := a.GetEffectiveContextLimit(pTok)
+				getUI().StateMu.Lock()
+				getUI().LastStatusBarText = ""
+				getUI().StateMu.Unlock()
+				UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+				var rl *term.Terminal
+				if kiReader != nil {
+					rl = kiReader.rl
+				}
+				refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 				DrawStatusBar(os.Stderr, *theme)
 			case "branch":
 				if len(parts) < 3 {
@@ -583,7 +641,16 @@ func HandleSlashCommand(
 				}
 				fmt.Fprintln(w, "all conversation sessions deleted from disk.")
 				pTok, cTok, estimated := calcHistoryTokens()
-				UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+				effLimit := a.GetEffectiveContextLimit(pTok)
+				getUI().StateMu.Lock()
+				getUI().LastStatusBarText = ""
+				getUI().StateMu.Unlock()
+				UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+				var rl *term.Terminal
+				if kiReader != nil {
+					rl = kiReader.rl
+				}
+				refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 				DrawStatusBar(os.Stderr, *theme)
 			default:
 				fmt.Fprintf(w, "active session: %s\n", *currentSessionID)
@@ -597,7 +664,106 @@ func HandleSlashCommand(
 	case "/compress":
 		a.CompressHistory(context.Background(), messages, *currentSessionID, *theme, w)
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		DrawStatusBar(os.Stderr, *theme)
+		return true, false
+	case "/context", "/ctx":
+		pTok, cTok, estimated := calcHistoryTokens()
+		latestTurnTokens := 0
+		if messages != nil {
+			latestTurnTokens = a.GetLatestAssistantCompletionTokens(*messages)
+		}
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		serverLimit := 0
+		if d, ok := a.LLMProvider.(agent.ContextLimitDetector); ok {
+			serverLimit = d.GetDetectedContextLimit()
+		}
+		if serverLimit == 0 {
+			if p, ok := a.LLMProvider.(*agent.OpenAICompatibleProvider); ok && !p.ThinkingSupportChecked {
+				p.ProbeServerCapabilities(context.Background())
+				serverLimit = p.GetDetectedContextLimit()
+				effLimit = a.GetEffectiveContextLimit(pTok)
+			}
+		}
+
+		if len(parts) == 1 {
+			headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+			titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+			valueStyle := style.NewStyle().Foreground(theme.Text)
+
+			fmt.Fprintln(w, headerStyle.Render("╭───────────────────────────────────────────────────────────────────────────────────────────────────╮"))
+			fmt.Fprintln(w, headerStyle.Render("│  CONTEXT WINDOW & ADAPTIVE SIZING CONFIGURATION                                                   │"))
+			fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
+			fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Context Status"))
+			fmt.Fprintf(w, "    Current Prompt Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", pTok)))
+			fmt.Fprintf(w, "    Effective Active Tier:  %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", effLimit)))
+			fmt.Fprintf(w, "    Configured Ceiling:     %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", a.Config.ContextWindowLimit)))
+			if serverLimit > 0 {
+				fmt.Fprintf(w, "    Server Detected Limit:  %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", serverLimit)))
+			}
+			autoStr := "disabled"
+			if a.Config.AutoAdaptContext {
+				autoStr = "enabled"
+			}
+			fmt.Fprintf(w, "    Auto-Adaptation:        %s\n", valueStyle.Render(autoStr))
+			fmt.Fprintf(w, "    Minimum Window:         %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", a.Config.MinContextWindow)))
+			fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
+			fmt.Fprintln(w, "  Commands:")
+			fmt.Fprintln(w, "    /context auto            - enable dynamic context tier scaling")
+			fmt.Fprintln(w, "    /context off             - disable dynamic tier scaling")
+			fmt.Fprintln(w, "    /context <limit>         - set static context limit (e.g. 32768, 65536, 128000)")
+			fmt.Fprintln(w, headerStyle.Render("╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"))
+			return true, false
+		}
+
+		var rl *term.Terminal
+		if kiReader != nil {
+			rl = kiReader.rl
+		}
+
+		arg := strings.ToLower(parts[1])
+		if arg == "auto" || arg == "on" || arg == "enable" {
+			a.Config.AutoAdaptContext = true
+			_ = config.SaveConfig(a.ConfigPath, a.Config)
+			newLimit := a.GetEffectiveContextLimit(pTok)
+			fmt.Fprintf(w, "context auto-adaptation enabled (active tier: %d tokens).\n", newLimit)
+			getUI().StateMu.Lock()
+			getUI().LastStatusBarText = ""
+			getUI().StateMu.Unlock()
+			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, newLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+			refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+			DrawStatusBar(os.Stderr, *theme)
+			return true, false
+		}
+		if arg == "off" || arg == "disable" {
+			a.Config.AutoAdaptContext = false
+			_ = config.SaveConfig(a.ConfigPath, a.Config)
+			newLimit := a.GetEffectiveContextLimit(pTok)
+			fmt.Fprintf(w, "context auto-adaptation disabled (ceiling: %d tokens).\n", newLimit)
+			getUI().StateMu.Lock()
+			getUI().LastStatusBarText = ""
+			getUI().StateMu.Unlock()
+			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, newLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+			refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+			DrawStatusBar(os.Stderr, *theme)
+			return true, false
+		}
+
+		newLimit, err := strconv.Atoi(parts[1])
+		if err != nil || newLimit <= 0 {
+			fmt.Fprintf(w, "Invalid context limit value: %v (must be positive integer or 'auto')\n", parts[1])
+			return true, false
+		}
+		a.Config.ContextWindowLimit = newLimit
+		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		activeLimit := a.GetEffectiveContextLimit(pTok)
+		fmt.Fprintf(w, "context window limit set to %d tokens (active limit: %d tokens).\n", newLimit, activeLimit)
+		getUI().StateMu.Lock()
+		getUI().LastStatusBarText = ""
+		getUI().StateMu.Unlock()
+		UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, activeLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 		DrawStatusBar(os.Stderr, *theme)
 		return true, false
 	case "/debug":

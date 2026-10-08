@@ -34,17 +34,30 @@ type TurnExecutionGuard struct {
 	maxConsecutiveCalls    int
 	maxConsecutiveReads    int
 	maxConsecutiveFailures int
+	reminderThresholds     []int
 }
 
 // NewTurnExecutionGuard creates a new execution guard for an active turn.
 func NewTurnExecutionGuard() *TurnExecutionGuard {
+	return NewTurnExecutionGuardWithConfig(ConsecutiveLimit, []int{3, 5})
+}
+
+// NewTurnExecutionGuardWithConfig creates a new execution guard with customizable limits and reminder thresholds.
+func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecutionGuard {
+	if limit <= 0 {
+		limit = ConsecutiveLimit
+	}
+	if len(thresholds) == 0 {
+		thresholds = []int{3, 5}
+	}
 	return &TurnExecutionGuard{
 		targetStreaks:          make(map[string]int),
 		callStreaks:            make(map[string]int),
 		failedStreaks:          make(map[string]int),
-		maxConsecutiveCalls:    ConsecutiveLimit,
-		maxConsecutiveReads:    ConsecutiveLimit,
-		maxConsecutiveFailures: ConsecutiveLimit,
+		maxConsecutiveCalls:    limit,
+		maxConsecutiveReads:    limit,
+		maxConsecutiveFailures: limit,
+		reminderThresholds:     thresholds,
 	}
 }
 
@@ -64,6 +77,59 @@ func (g *TurnExecutionGuard) FileReadCount(target string) int {
 	return g.targetStreaks[filepath.Clean(target)]
 }
 
+// CanonicalizeArguments produces a canonical JSON string where object keys are sorted recursively.
+func CanonicalizeArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}"
+	}
+	var val interface{}
+	if err := json.Unmarshal([]byte(trimmed), &val); err != nil {
+		return trimmed
+	}
+	b, err := json.Marshal(val)
+	if err != nil {
+		return trimmed
+	}
+	return string(b)
+}
+
+// GetAdvisoryReminder returns a gentle or detailed advisory message
+// if the model is repeating identical tool calls, nudging it before hitting ConsecutiveLimit.
+func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) string {
+	if g == nil {
+		return ""
+	}
+	callKey := toolName + ":" + CanonicalizeArguments(arguments)
+	streak := g.callStreaks[callKey]
+
+	thresholds := g.reminderThresholds
+	if len(thresholds) == 0 {
+		thresholds = []int{3, 5}
+	}
+
+	if len(thresholds) > 0 && streak == thresholds[0] {
+		return "Advisory Reminder: You are repeating the exact same tool call with identical arguments. " +
+			"Carefully analyze the previous result before calling again: if the task is not complete, try a different approach, " +
+			"different search query, or different arguments instead of repeating the call."
+	}
+	if len(thresholds) > 1 && streak == thresholds[1] {
+		preview := arguments
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
+		}
+		return fmt.Sprintf("Advisory Loop Warning: Repeated tool call detected:\n"+
+			"- tool: %s\n"+
+			"- consecutive_calls: %d\n"+
+			"- arguments: %s\n"+
+			"The repeated calls are not making progress. Do not repeat this exact call again. "+
+			"Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.",
+			toolName, streak, preview)
+	}
+
+	return ""
+}
+
 // CheckPreExecution evaluates a proposed tool call BEFORE execution.
 // Only back-to-back repetition past ConsecutiveLimit is blocked; a call that
 // is interleaved with other work is always allowed.
@@ -72,8 +138,7 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 		return nil
 	}
 
-	trimmedArgs := strings.TrimSpace(arguments)
-	callKey := toolName + ":" + trimmedArgs
+	callKey := toolName + ":" + CanonicalizeArguments(arguments)
 
 	// 1. Same failing command run ConsecutiveLimit times in a row.
 	if toolName == "bash" {
@@ -105,8 +170,7 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 		return
 	}
 
-	trimmedArgs := strings.TrimSpace(arguments)
-	callKey := toolName + ":" + trimmedArgs
+	callKey := toolName + ":" + CanonicalizeArguments(arguments)
 	target := g.ExtractTargetFile(toolName, arguments)
 	cmd := cmdForTool(toolName, arguments)
 

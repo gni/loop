@@ -130,6 +130,72 @@ func TestLLMStreamChatCompletionsStreamingTimeout(t *testing.T) {
 	}
 }
 
+func TestLLMStreamChatCompletionsResetsTimeoutOnActivity(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+
+	// Server streams multiple chunks with delays between them.
+	// Total duration is ~1500ms, exceeding the 1000ms configured timeout.
+	// Because chunks arrive every 300ms, the inactivity timer is refreshed
+	// and the stream should complete successfully without timing out.
+	activeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/props" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
+		for i := 0; i < 5; i++ {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			case <-time.After(300 * time.Millisecond):
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk%d \"}}]}\n\n", i)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer activeServer.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Endpoint = activeServer.URL
+	cfg.Timeout = 1 // 1 second timeout
+
+	provider := &OpenAICompatibleProvider{
+		Config:                 cfg,
+		HttpClient:             activeServer.Client(),
+		ThinkingSupportChecked: true,
+	}
+
+	chunkChan := make(chan StreamChunk, 20)
+	msg, err := provider.StreamChatCompletions(
+		context.Background(),
+		[]db.Message{{Role: "user", Content: "hello"}},
+		nil,
+		chunkChan,
+	)
+
+	if err != nil {
+		t.Fatalf("expected active stream to succeed, got error: %v", err)
+	}
+
+	if msg == nil || !strings.Contains(msg.Content, "chunk0 chunk1 chunk2 chunk3 chunk4") {
+		t.Fatalf("expected complete content across all chunks, got: %#v", msg)
+	}
+}
+
 func TestCheckThinkingSupportTimeout(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)

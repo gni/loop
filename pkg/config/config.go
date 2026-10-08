@@ -22,6 +22,8 @@ type Config struct {
 	ApiKey               string                     `json:"api_key,omitempty"`
 	Model                string                     `json:"model,omitempty"`
 	Temperature          float64                    `json:"temperature"`
+	FrequencyPenalty     float64                    `json:"frequency_penalty,omitempty"`
+	PresencePenalty      float64                    `json:"presence_penalty,omitempty"`
 	SystemInstruction    string                     `json:"system_instruction"`
 	AutoApprove          bool                       `json:"auto_approve,omitempty"`
 	ShowThinking         bool                       `json:"show_thinking"`
@@ -37,6 +39,8 @@ type Config struct {
 	MCPServers           map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
 	MaxReasoningSteps    int                        `json:"max_reasoning_steps"`
 	ContextWindowLimit   int                        `json:"context_window_limit"`
+	AutoAdaptContext     bool                       `json:"auto_adapt_context"`
+	MinContextWindow     int                        `json:"min_context_window,omitempty"`
 	CompressionThreshold float64                    `json:"compression_threshold"`
 	ReasoningEffort      string                     `json:"reasoning_effort,omitempty"`
 	BeforeToolHook       string                     `json:"before_tool_hook,omitempty"`
@@ -53,6 +57,13 @@ type Config struct {
 	MaxPasteLines        int                        `json:"max_paste_lines,omitempty"`
 	MaxPasteChars        int                        `json:"max_paste_chars,omitempty"`
 	Timeout              int                        `json:"timeout,omitempty"`
+	MaxToolOutputBytes       int                        `json:"max_tool_output_bytes,omitempty"`
+	RepeatReminderThresholds []int                      `json:"repeat_reminder_thresholds,omitempty"`
+	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
+	PersistentBash           bool                       `json:"persistent_bash"`
+	AtomicWrites             bool                       `json:"atomic_writes"`
+	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
+	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
 }
 
 func DefaultConfig() *Config {
@@ -97,6 +108,9 @@ func DefaultConfig() *Config {
 		MaxReasoningSteps:   30,
 		MaxCompletionTokens: 16384,
 		ContextWindowLimit:  128000,
+		AutoAdaptContext:    true,
+		MinContextWindow:    32768,
+		CompressionThreshold: 0.80,
 		ReasoningEffort:     "low",
 		StreamWrites:        true,
 		SyntaxTheme:         "auto",
@@ -105,7 +119,14 @@ func DefaultConfig() *Config {
 		CompactPrompt:       false,
 		MaxPasteLines:       80,
 		MaxPasteChars:       8000,
-		Timeout:             120,
+		Timeout:                  120,
+		MaxToolOutputBytes:       8192,
+		RepeatReminderThresholds: []int{3, 5},
+		RepeatGuardLimit:         10,
+		PersistentBash:           true,
+		AtomicWrites:             true,
+		AskUserMode:              "interactive",
+		ParallelToolCalls:        false,
 	}
 }
 
@@ -198,6 +219,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.ContextWindowLimit == 0 {
 		config.ContextWindowLimit = 128000
+	}
+	if config.MinContextWindow <= 0 {
+		config.MinContextWindow = 32768
 	}
 	if config.CompressionThreshold == 0.0 {
 		config.CompressionThreshold = 0.80

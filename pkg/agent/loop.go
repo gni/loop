@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
@@ -39,15 +40,21 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	rawW := unwrapWriter(writerToUse)
 	a.CurrentWriter = writerToUse
 	a.CurrentContext = ctx
+	a.CurrentTheme = theme
 	defer func() {
 		a.CurrentWriter = nil
 		a.CurrentContext = nil
+		a.CurrentTheme = style.UITheme{}
 	}()
 
 	var loader *turnLoader
 	if a.UI != nil && !isNonInteractive {
 		loader = a.newTurnLoader(ctx, rawW, theme, startTime)
-		defer loader.Stop()
+		a.CurrentLoader = loader
+		defer func() {
+			a.CurrentLoader = nil
+			loader.Stop()
+		}()
 	}
 
 	var totalCompletionTokens int
@@ -66,9 +73,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	}()
 
 	if len(*messages) > 0 && (*messages)[0].Role == "system" {
-		currentSysPrompt := a.GetSystemPrompt()
-		if (*messages)[0].Content != currentSysPrompt {
+		if (*messages)[0].Content == "" || a.ForceSystemPromptUpdate {
+			currentSysPrompt := a.GetSystemPrompt()
 			(*messages)[0].Content = currentSysPrompt
+			a.ForceSystemPromptUpdate = false
 			if sessionID != "" {
 				_ = db.RewriteSession(sessionID, *messages)
 			}
@@ -95,6 +103,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		maxSteps = 30
 	}
 	guard := NewTurnExecutionGuard()
+	if a.Config != nil {
+		guard = NewTurnExecutionGuardWithConfig(a.Config.RepeatGuardLimit, a.Config.RepeatReminderThresholds)
+	}
 	consecutiveGuardRejections := 0
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
@@ -104,6 +115,27 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if iter > 1 {
 			divider := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("╌", 40))
 			fmt.Fprintln(writerToUse, divider)
+		}
+
+		autoAdapt := true
+		if a.Config != nil {
+			autoAdapt = a.Config.AutoAdaptContext
+		}
+		if autoAdapt {
+			*messages = CompactHistoricalToolOutputs(*messages)
+		}
+
+		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
+		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
+
+		thresh := 0.80
+		if a.Config != nil && a.Config.CompressionThreshold > 0 {
+			thresh = a.Config.CompressionThreshold
+		}
+		if len(*messages) > 4 && globalPromptTokensEst >= int(thresh*float64(effectiveLimit)) {
+			a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
+			globalPromptTokensEst, _ = a.GetGlobalTokens(*messages, allowlist)
+			effectiveLimit = a.GetEffectiveContextLimit(globalPromptTokensEst)
 		}
 
 		toolsForLog := a.Registry.GetAvailableTools(allowlist)
@@ -143,7 +175,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		// user already saw.
 		echoFilter := NewPromptEchoFilter(prompt)
 
-		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
 		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 
 		tickerDone := make(chan struct{})
@@ -152,7 +183,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			tickerOnce.Do(func() {
 				close(tickerDone)
 				if a.UI != nil && !isNonInteractive {
-					a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, a.Config.ContextWindowLimit, false, 0, a.CountActiveTasks(), a.Config.ShowTokens)
+					a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, false, 0, a.CountActiveTasks(), a.Config.ShowTokens)
 					a.UI.DrawStatusBar(rawW, theme)
 				}
 			})
@@ -160,7 +191,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		defer stopTicker()
 
 		if a.UI != nil && !isNonInteractive {
-			a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, a.Config.ContextWindowLimit, true, 0, a.CountActiveTasks(), a.Config.ShowTokens)
+			a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, true, 0, a.CountActiveTasks(), a.Config.ShowTokens)
 			a.UI.DrawStatusBar(rawW, theme)
 		}
 
@@ -181,17 +212,13 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 				sr.Write(chunk.Content)
 			} else if chunk.Type == "tool_name" {
-				if chunk.ToolCallIndex == 0 {
-					sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
-				}
+				sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
 				if loader != nil {
 					loader.ShowDots()
 					loader.Feed()
 				}
 			} else if chunk.Type == "tool_call" {
-				if chunk.ToolCallIndex == 0 {
-					sr.WriteToolCall(chunk.Content)
-				}
+				sr.WriteToolCall(chunk.Content)
 				if sr.DidStreamToolBody(chunk.ToolCallIndex) {
 					if loader != nil {
 						loader.PauseDots()
@@ -274,8 +301,17 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		globalPromptTokens, _ := a.GetGlobalTokens(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
-		if totalTokens := globalPromptTokens + assistantMsg.CompletionTokens; totalTokens >= int(a.Config.CompressionThreshold*float64(a.Config.ContextWindowLimit)) {
-			a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
+		postEffectiveLimit := a.GetEffectiveContextLimit(globalPromptTokens)
+		if len(*messages) > 4 {
+			thresh := 0.80
+			if a.Config != nil && a.Config.CompressionThreshold > 0 {
+				thresh = a.Config.CompressionThreshold
+			}
+			if totalTokens := globalPromptTokens + assistantMsg.CompletionTokens; totalTokens >= int(thresh*float64(postEffectiveLimit)) {
+				a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
+				globalPromptTokens, _ = a.GetGlobalTokens(*messages, allowlist)
+				postEffectiveLimit = a.GetEffectiveContextLimit(globalPromptTokens)
+			}
 		}
 
 		var finalTps float64
@@ -316,7 +352,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 			if !isNonInteractive {
 				if a.UI != nil {
-					a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, a.Config.ContextWindowLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
+					a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
 					a.UI.DrawStatusBar(rawW, theme)
 				}
 			}
@@ -325,7 +361,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		if !isNonInteractive {
 			if a.UI != nil {
-				a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, a.Config.ContextWindowLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
+				a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
 				a.UI.DrawStatusBar(rawW, theme)
 			}
 		}
@@ -337,15 +373,23 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			tc     db.ToolCall
 		}
 
+		if a.Config != nil && !a.Config.ParallelToolCalls && len(assistantMsg.ToolCalls) > 1 {
+			assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+		}
+
 		for idx, tc := range assistantMsg.ToolCalls {
 			if ctx.Err() != nil {
 				return
 			}
 
+
 			isSubagent := strings.HasPrefix(tc.Function.Name, "subagent__")
 			wasStreamed := sr.GetToolTitleLineNumber(idx) != -1
 
-			if !wasStreamed || (len(assistantMsg.ToolCalls) > 1 && idx > 0) {
+			if !wasStreamed {
+				if idx == 0 && (strings.TrimSpace(assistantMsg.Content) != "" || strings.TrimSpace(assistantMsg.ReasoningContent) != "") {
+					fmt.Fprintln(ncw)
+				}
 				// Render the tool header only if it wasn't already streamed
 				if a.UI != nil {
 					a.UI.RenderToolHeader(ncw, theme, tc.Function.Name, tc.Function.Arguments)
@@ -410,6 +454,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 
 				guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, toolOutput, toolErr)
+				if reminder := guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
+					toolOutput = toolOutput + "\n\n[" + reminder + "]"
+				}
 
 				if toolErr != nil {
 					toolOutput = FormatToolExecutionFailure(tc.Function.Name, toolOutput, toolErr)
@@ -418,16 +465,23 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					toolOutput = "(no output)"
 				}
 
-				if !isSubagent && !approvalRendered && len(assistantMsg.ToolCalls) == 1 {
+				// Apply deterministic output pruning and spill-to-disk to preserve context budget
+				maxOutputBytes := tool.DefaultMaxToolOutputBytes
+				if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
+					maxOutputBytes = a.Config.MaxToolOutputBytes
+				}
+				prunedOutput, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, sessionID, tc.ID, tc.Function.Name, toolOutput, maxOutputBytes)
+
+				if !isSubagent && !approvalRendered {
 					sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
 				}
 
 				// Render the tool output
 				if !isSubagent {
 					if a.UI != nil {
-						a.UI.RenderToolOutput(ncw, toolOutput, toolErr != nil, a.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
+						a.UI.RenderToolOutput(ncw, prunedOutput, toolErr != nil, a.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
 					} else {
-						fmt.Fprintln(ncw, toolOutput)
+						fmt.Fprintln(ncw, prunedOutput)
 					}
 				}
 
@@ -435,7 +489,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				isReadOnlyTool := IsInspectionTool(tc.Function.Name)
 				isPrevEdit := a.lastToolWasEdit
 				if !isReadOnlyTool || !isPrevEdit || a.lastToolOutput == "" {
-					a.lastToolOutput = toolOutput
+					a.lastToolOutput = prunedOutput
 					a.lastToolIsError = toolErr != nil
 					a.lastToolWasEdit = (tc.Function.Name == "edit")
 				}
@@ -445,7 +499,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					Role:       "tool",
 					ToolCallID: tc.ID,
 					Name:       tc.Function.Name,
-					Content:    toolOutput,
+					Content:    prunedOutput,
 				})
 				if sessionID != "" {
 					_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
@@ -474,7 +528,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				a.lastToolOutput = toolOutput
 				a.lastToolIsError = true
 
-				if !approvalRendered && len(assistantMsg.ToolCalls) == 1 {
+				if !approvalRendered {
 					sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
 				}
 				if a.UI != nil {

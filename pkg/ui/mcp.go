@@ -124,7 +124,8 @@ func HandleMCPCommand(
 		}
 
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "enable", "disable":
 		if len(parts) < 3 {
@@ -153,7 +154,8 @@ func HandleMCPCommand(
 		}
 
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "remove", "delete":
 		if len(parts) < 3 {
@@ -180,7 +182,8 @@ func HandleMCPCommand(
 		}
 
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "tools":
 		mcpTools := a.GetMCPTools()

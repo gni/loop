@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -391,7 +392,8 @@ func firstTerminalActionIsGraphic(data []byte, initialANSIState int) bool {
 // ReplaceScrollLineBack atomically replaces one visible line without changing
 // the tracked stream position or repainting neighboring rows.
 func (p *PromptPreservingWriter) ReplaceScrollLineBack(linesBack int, content string) bool {
-	return p.ReplaceScrollBlockBack(linesBack, []string{content})
+	lines := strings.Split(content, "\n")
+	return p.ReplaceScrollBlockBack(linesBack, lines)
 }
 
 // ReplaceScrollBlockBack atomically repaints existing scroll-region rows

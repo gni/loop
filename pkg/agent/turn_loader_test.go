@@ -32,6 +32,7 @@ func (m *mockTurnLoaderUI) NewStreamRenderer(w io.Writer, theme style.UITheme, s
 func (m *mockTurnLoaderUI) SetCollapseStatus(collapsed bool) {}
 func (m *mockTurnLoaderUI) UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool) {
 }
+func (m *mockTurnLoaderUI) UpdatePlanStatus(completed, total int) {}
 func (m *mockTurnLoaderUI) DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -42,6 +43,15 @@ func (m *mockTurnLoaderUI) DrawStatsLine(w io.Writer, theme style.UITheme, spinn
 }
 func (m *mockTurnLoaderUI) AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
 	return true, false
+}
+func (m *mockTurnLoaderUI) AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error) {
+	if recommended != "" {
+		return recommended, nil
+	}
+	if len(options) > 0 {
+		return options[0], nil
+	}
+	return "Confirmed", nil
 }
 func (m *mockTurnLoaderUI) AskForSubagentCancellation(w io.Writer, theme style.UITheme, agentName string) SubagentCancellationDecision {
 	return SubagentCancellationContinue

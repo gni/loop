@@ -229,6 +229,10 @@ func (sr *StreamRenderer) Flush() {
 
 func (sr *StreamRenderer) flushLocked() {
 	sr.endThinking()
+	if sr.pendingThoughtTextGap && sr.parser != nil && sr.parser.activeToolName != "" {
+		fmt.Fprint(sr.w, "\n")
+		sr.pendingThoughtTextGap = false
+	}
 	sr.pendingThoughtTextGap = false
 	sr.finishLiveTextLocked()
 	sr.flushActiveToolLocked()
@@ -381,13 +385,28 @@ func HighlightWithoutTrailingNewline(w io.Writer, source, lang, chromaStyle stri
 	if strings.Contains(source, "\x1b") {
 		source = style.StripAnsi(source)
 	}
+	switch strings.ToLower(lang) {
+	case "md":
+		lang = "markdown"
+	case "yml":
+		lang = "yaml"
+	case "js":
+		lang = "javascript"
+	case "ts":
+		lang = "typescript"
+	case "py":
+		lang = "python"
+	case "sh":
+		lang = "bash"
+	}
 	if chromaStyle == "" {
 		chromaStyle = "friendly"
 	}
 	var buf bytes.Buffer
 	err := quick.Highlight(&buf, source, lang, "terminal16", chromaStyle)
 	if err != nil {
-		return err
+		_, writeErr := io.WriteString(w, source)
+		return writeErr
 	}
 	data := buf.Bytes()
 	if !strings.Contains(source, "\n") {
@@ -408,8 +427,16 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	defer sr.mu.Unlock()
 
 	sr.endThinking()
-	sr.pendingThoughtTextGap = false
+	if sr.pendingThoughtTextGap {
+		fmt.Fprint(sr.w, "\n")
+		sr.pendingThoughtTextGap = false
+	}
+	hadText := sr.hasWrittenText
 	sr.finishLiveTextLocked()
+	if hadText {
+		fmt.Fprint(sr.w, "\n")
+		sr.hasWrittenText = false
+	}
 
 	if sr.parser != nil {
 		if sr.parser.activeToolName != "" && sr.parser.activeToolIndex == toolCallIndex {

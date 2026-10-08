@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"loop/pkg/config"
 	"loop/pkg/db"
 )
 
@@ -201,6 +206,30 @@ func TestStripEchoedPrompt(t *testing.T) {
 			prompt:    "",
 			expected:  "Some thoughts",
 		},
+		{
+			name:      "markdown heading title with em dash",
+			reasoning: "# LLM Harness — Build Plan (v2)\n\nHere is the implementation plan.",
+			prompt:    "# LLM Harness — Build Plan (v2)",
+			expected:  "Here is the implementation plan.",
+		},
+		{
+			name:      "markdown heading title with literal unicode escape dash",
+			reasoning: "# LLM Harness \\u2014 Build Plan (v2)\n\nHere is the implementation plan.",
+			prompt:    "# LLM Harness — Build Plan (v2)",
+			expected:  "Here is the implementation plan.",
+		},
+		{
+			name:      "multiline prompt with echoed first line title",
+			reasoning: "# LLM Harness — Build Plan (v2)\n\nProceeding with task execution.",
+			prompt:    "# LLM Harness — Build Plan (v2)\n\nPlease create the harness according to specification.",
+			expected:  "Proceeding with task execution.",
+		},
+		{
+			name:      "model adds markdown header to plain prompt",
+			reasoning: "## LLM Harness — Build Plan (v2)\n\nLet's begin.",
+			prompt:    "LLM Harness — Build Plan (v2)",
+			expected:  "Let's begin.",
+		},
 	}
 
 	for _, tt := range tests {
@@ -341,5 +370,178 @@ func TestFallbackAndDefensiveErrorWithWritePath(t *testing.T) {
 	alert := FormatDefensiveError("random_tool", err)
 	if !strings.Contains(alert, "Inspect <tools>") {
 		t.Fatalf("expected unknown tool recommendation in alert, got:\n%s", alert)
+	}
+}
+
+func TestGetAdaptiveContextLimit(t *testing.T) {
+	// 1. autoAdapt disabled: uses configured ceiling
+	if got := GetAdaptiveContextLimit(1000, 0, 128000, 32768, false); got != 128000 {
+		t.Fatalf("autoAdapt=false: expected 128000, got %d", got)
+	}
+
+	// 2. autoAdapt disabled with server limit lower than ceiling: clamps to server limit
+	if got := GetAdaptiveContextLimit(1000, 32768, 128000, 32768, false); got != 32768 {
+		t.Fatalf("autoAdapt=false with server limit: expected 32768, got %d", got)
+	}
+
+	// 3. autoAdapt enabled: small context fits min window (32k tier)
+	if got := GetAdaptiveContextLimit(1000, 0, 128000, 32768, true); got != 32768 {
+		t.Fatalf("small context: expected 32768, got %d", got)
+	}
+
+	// 4. autoAdapt enabled: 25k tokens + 4096 headroom = 29096 <= 32768 -> stays in 32k tier
+	if got := GetAdaptiveContextLimit(25000, 0, 128000, 32768, true); got != 32768 {
+		t.Fatalf("25k context: expected 32768, got %d", got)
+	}
+
+	// 5. autoAdapt enabled: 30k tokens + 4096 headroom = 34096 > 32768 -> scales to 64k tier
+	if got := GetAdaptiveContextLimit(30000, 0, 128000, 32768, true); got != 65536 {
+		t.Fatalf("30k context: expected 65536, got %d", got)
+	}
+
+	// 6. autoAdapt enabled: 60k tokens + 4096 headroom = 64096 <= 65536 -> stays in 64k tier
+	if got := GetAdaptiveContextLimit(60000, 0, 128000, 32768, true); got != 65536 {
+		t.Fatalf("60k context: expected 65536, got %d", got)
+	}
+
+	// 7. autoAdapt enabled: 62k tokens + 4096 headroom = 66096 > 65536 -> capped at configured ceiling 128000
+	if got := GetAdaptiveContextLimit(62000, 0, 128000, 32768, true); got != 128000 {
+		t.Fatalf("62k context with 128k ceiling: expected 128000, got %d", got)
+	}
+
+	// 8. autoAdapt enabled with higher ceiling 262144: scales to 131072 tier
+	if got := GetAdaptiveContextLimit(62000, 0, 262144, 32768, true); got != 131072 {
+		t.Fatalf("62k context with 262k ceiling: expected 131072, got %d", got)
+	}
+
+	// 8. Server limit clamp: 60k tokens with server limit 32768 clamps to 32768
+	if got := GetAdaptiveContextLimit(60000, 32768, 128000, 32768, true); got != 32768 {
+		t.Fatalf("server limit clamp: expected 32768, got %d", got)
+	}
+
+	// 9. Config ceiling clamp: 200k tokens with cfg 65536 clamps to 65536
+	if got := GetAdaptiveContextLimit(200000, 0, 65536, 32768, true); got != 65536 {
+		t.Fatalf("ceiling clamp: expected 65536, got %d", got)
+	}
+}
+
+func TestCompactHistoricalToolOutputs(t *testing.T) {
+	hugeOutput1 := strings.Repeat("line one of historical output\n", 50)
+	hugeOutput2 := strings.Repeat("line two of historical output\n", 60)
+	activeOutput := strings.Repeat("active output line\n", 40)
+
+	msgs := []db.Message{
+		{Role: "system", Content: "you are a coding assistant"},
+		{Role: "user", Content: "turn 1 request"},
+		{Role: "assistant", Content: "reading file 1", ToolCalls: []db.ToolCall{{Function: db.ToolFunction{Name: "read"}}}},
+		{Role: "tool", Content: hugeOutput1},
+		{Role: "user", Content: "turn 2 request"},
+		{Role: "assistant", Content: "reading file 2", ToolCalls: []db.ToolCall{{Function: db.ToolFunction{Name: "read"}}}},
+		{Role: "tool", Content: hugeOutput2},
+		{Role: "user", Content: "turn 3 request"},
+		{Role: "assistant", Content: "active turn", ToolCalls: []db.ToolCall{{Function: db.ToolFunction{Name: "active_tool"}}}},
+		{Role: "tool", Content: activeOutput},
+	}
+
+	compacted := CompactHistoricalToolOutputs(msgs)
+
+	if len(compacted) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(compacted))
+	}
+
+	// Turn 1 tool message (index 3) should be compacted
+	if !strings.Contains(compacted[3].Content, "omitted from historical") && !strings.Contains(compacted[3].Content, "output truncated") {
+		t.Fatalf("turn 1 tool message was not compacted: %s", compacted[3].Content)
+	}
+
+	// Turn 2 tool message (index 6) should be compacted
+	if !strings.Contains(compacted[6].Content, "omitted from historical") && !strings.Contains(compacted[6].Content, "output truncated") {
+		t.Fatalf("turn 2 tool message was not compacted: %s", compacted[6].Content)
+	}
+
+	// Turn 3 tool message (index 9, active turn) MUST NOT be compacted
+	if compacted[9].Content != activeOutput {
+		t.Fatalf("active turn tool output was modified! expected exact match")
+	}
+
+	// System and user messages must remain identical
+	if compacted[0].Content != msgs[0].Content || compacted[1].Content != msgs[1].Content {
+		t.Fatalf("system or user message was mutated")
+	}
+}
+
+func TestEstimateMessageTokens(t *testing.T) {
+	msg := db.Message{
+		Role:    "user",
+		Content: "hello world, this is a test prompt",
+	}
+	tokens := EstimateMessageTokens(msg)
+	if tokens <= 0 {
+		t.Fatalf("expected positive token estimate, got %d", tokens)
+	}
+
+	msgWithTools := db.Message{
+		Role:    "assistant",
+		Content: "calling a tool",
+		ToolCalls: []db.ToolCall{
+			{Function: db.ToolFunction{Name: "execute", Arguments: `{"cmd":"ls -la"}`}},
+		},
+	}
+	toolsTokens := EstimateMessageTokens(msgWithTools)
+	if toolsTokens <= tokens {
+		t.Fatalf("expected tool call message to have more tokens, got %d vs %d", toolsTokens, tokens)
+	}
+}
+
+func TestOpenAICompatibleProviderPropsDetection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/props" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"default_generation_settings": {"n_ctx": 32768}, "n_ctx": 32768}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	provider := &OpenAICompatibleProvider{
+		Config: &config.Config{
+			Endpoint: server.URL,
+			Model:    "test-model",
+		},
+		HttpClient: server.Client(),
+	}
+
+	supported := provider.CheckThinkingSupport(context.Background())
+	if !supported {
+		t.Fatalf("expected CheckThinkingSupport=true from mock props")
+	}
+
+	detected := provider.GetDetectedContextLimit()
+	if detected != 32768 {
+		t.Fatalf("expected detected context limit 32768, got %d", detected)
+	}
+}
+
+func TestAgentGetEffectiveContextLimit(t *testing.T) {
+	cfg := &config.Config{
+		ContextWindowLimit: 128000,
+		AutoAdaptContext:   true,
+		MinContextWindow:   32768,
+	}
+	a := &Agent{
+		Config: cfg,
+	}
+
+	// Without provider, auto adapts based on prompt tokens
+	limit := a.GetEffectiveContextLimit(1000)
+	if limit != 32768 {
+		t.Fatalf("expected 32768, got %d", limit)
+	}
+
+	// Large prompt scales to 64k tier
+	limitLarge := a.GetEffectiveContextLimit(30000)
+	if limitLarge != 65536 {
+		t.Fatalf("expected 65536, got %d", limitLarge)
 	}
 }

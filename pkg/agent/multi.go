@@ -427,6 +427,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		var subagentCompletionTokens int
 		var subagentGenStart time.Time
 		var lastDraw time.Time
+		subagentCtxLimit := 128000
+		if ma.BaseAgent != nil {
+			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(0)
+		}
 
 		for chunk := range chunkChan {
 			if subagentGenStart.IsZero() {
@@ -481,7 +485,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 					tps = float64(subagentCompletionTokens) / elapsed
 				}
 
-				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, ma.BaseAgent.Config.ContextWindowLimit, true, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, subagentCtxLimit, true, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
 				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 				lastDraw = now
 			}
@@ -502,7 +506,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				finalTps = float64(subagentCompletionTokens) / elapsed
 			}
 
-			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, ma.BaseAgent.Config.ContextWindowLimit, false, finalTps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, subagentCtxLimit, false, finalTps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
 			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 		}
 
@@ -521,12 +525,16 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return db.Message{}, fmt.Errorf("received empty completion response")
 		}
 
+		if lastUserPrompt != "" && assistantMsg.ReasoningContent != "" {
+			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
+		}
+
 		ma.HistoryMu.Lock()
 		ma.History = append(ma.History, *assistantMsg)
 		ma.HistoryMu.Unlock()
 
 		if ma.Parent == nil && ma.BaseAgent != nil && ma.BaseAgent.UI != nil && assistantMsg.CompletionTokens > 0 {
-			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, assistantMsg.CompletionTokens, ma.BaseAgent.Config.ContextWindowLimit, false, 0, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, assistantMsg.CompletionTokens, subagentCtxLimit, false, 0, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
 			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 		}
 		if ma.BaseAgent != nil {
@@ -534,10 +542,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		if ma.Manager != nil {
 			_ = ma.Manager.SaveAgentState(ma, "running")
-		}
-
-		if assistantMsg != nil && lastUserPrompt != "" && assistantMsg.ReasoningContent != "" {
-			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
@@ -552,6 +556,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return *assistantMsg, nil
 		}
 
+		if ma.BaseAgent != nil && ma.BaseAgent.Config != nil && !ma.BaseAgent.Config.ParallelToolCalls && len(assistantMsg.ToolCalls) > 1 {
+			assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+		}
+
 		for idx, tc := range assistantMsg.ToolCalls {
 			if ctx.Err() != nil {
 				return db.Message{}, ctx.Err()
@@ -560,7 +568,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			isSubagent := strings.HasPrefix(tc.Function.Name, "subagent__")
 			wasStreamed := sr.GetToolTitleLineNumber(idx) != -1
 
-			if !wasStreamed || (len(assistantMsg.ToolCalls) > 1 && idx > 0) {
+			if !wasStreamed {
 				prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 				fmt.Fprintf(ncw, "%s [%s] calling tool:\n",
 					style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
@@ -598,6 +606,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 
 			guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, toolErr)
+			if reminder := guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
+				output = output + "\n\n[" + reminder + "]"
+			}
 
 			if toolErr != nil {
 				output = FormatToolExecutionFailure(tc.Function.Name, output, toolErr)
@@ -606,7 +617,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				output = "(no output)"
 			}
 
-			if !isSubagent && len(assistantMsg.ToolCalls) == 1 {
+			if !isSubagent {
 				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
 			}
 
@@ -1248,6 +1259,52 @@ func (mac *multiAgentContext) Context() context.Context {
 		return ctx
 	}
 	return mac.ma.Context
+}
+
+func (mac *multiAgentContext) RecordRead(absPath string, data []byte) {
+	if fo, ok := mac.AgentContext.(tool.FileObserver); ok {
+		fo.RecordRead(absPath, data)
+	}
+}
+
+func (mac *multiAgentContext) CheckMutationAllowed(absPath string, isEdit bool) error {
+	if fo, ok := mac.AgentContext.(tool.FileObserver); ok {
+		return fo.CheckMutationAllowed(absPath, isEdit)
+	}
+	return nil
+}
+
+func (mac *multiAgentContext) RecordMutation(absPath string, data []byte) {
+	if fo, ok := mac.AgentContext.(tool.FileObserver); ok {
+		fo.RecordMutation(absPath, data)
+	}
+}
+
+func (mac *multiAgentContext) GetTodos() []tool.TodoItem {
+	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
+		return ts.GetTodos()
+	}
+	return nil
+}
+
+func (mac *multiAgentContext) SetTodos(todos []tool.TodoItem) error {
+	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
+		return ts.SetTodos(todos)
+	}
+	return nil
+}
+
+func (mac *multiAgentContext) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
+	if uq, ok := mac.AgentContext.(tool.UserInquirer); ok {
+		return uq.AskUser(question, options, recommended)
+	}
+	if recommended != "" {
+		return recommended, nil
+	}
+	if len(options) > 0 {
+		return options[0].Label, nil
+	}
+	return "Confirmed", nil
 }
 
 func (mac *multiAgentContext) GetActiveSkills() []tool.Skill {

@@ -104,6 +104,7 @@ func TestFallbackToolMarkupIsHiddenFromStreamContentAndNextRequest(t *testing.T)
 			Endpoint:           server.URL,
 			Model:              "test",
 			ContextWindowLimit: 128000,
+			ParallelToolCalls:  true,
 		},
 		HttpClient:             server.Client(),
 		ThinkingSupportChecked: true,

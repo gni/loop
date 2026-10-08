@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"loop/pkg/ui/style"
 
@@ -407,7 +406,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		sb.WriteString("\n\n<background_tasks>\n")
 		sb.WriteString("Active running background tasks in this session:\n")
 		for _, t := range cfg.ActiveTasks {
-			sb.WriteString(fmt.Sprintf("- %s: status=%s duration=%v command=`%s`\n", t.ID, t.Status, t.Duration.Round(time.Second), t.Command))
+			sb.WriteString(fmt.Sprintf("- %s: status=%s command=`%s`\n", t.ID, t.Status, t.Command))
 		}
 		sb.WriteString("Use 'task_status' with task_id to inspect output or 'task_kill' to terminate a task.\n")
 		sb.WriteString("</background_tasks>")

@@ -115,3 +115,56 @@ func TestPromptEchoFilterThoughtMentioningPromptNotChopped(t *testing.T) {
 		t.Fatalf("thought mentioning prompt was chopped or altered: got %q, want %q", got, input)
 	}
 }
+
+func TestPromptEchoFilterSuppressesMarkdownHeadingAndDashVariants(t *testing.T) {
+	prompt := "# LLM Harness — Build Plan (v2)\nPlease proceed."
+	f := NewPromptEchoFilter(prompt)
+
+	chunks := []string{
+		"# ",
+		"LLM ",
+		"Harness ",
+		"— ",
+		"Build ",
+		"Plan ",
+		"(v2)",
+		"\n\n",
+		"Here is ",
+		"the step-by-step ",
+		"breakdown.",
+	}
+
+	var out strings.Builder
+	for _, chunk := range chunks {
+		out.WriteString(f.Write(chunk))
+	}
+	out.WriteString(f.Flush())
+
+	got := out.String()
+	wantPrefix := "Here is the step-by-step breakdown."
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("heading echo leaked into stream: got %q, want prefix %q", got, wantPrefix)
+	}
+}
+
+func TestPromptEchoFilterSuppressesLiteralUnicodeDashEscapeInHeading(t *testing.T) {
+	prompt := "# LLM Harness — Build Plan (v2)"
+	f := NewPromptEchoFilter(prompt)
+
+	chunks := []string{
+		"# LLM Harness \\u2014 Build Plan (v2)\n\n",
+		"Starting execution now.",
+	}
+
+	var out strings.Builder
+	for _, chunk := range chunks {
+		out.WriteString(f.Write(chunk))
+	}
+	out.WriteString(f.Flush())
+
+	got := out.String()
+	if got != "Starting execution now." {
+		t.Fatalf("expected echoed title with unicode escape to be suppressed, got %q", got)
+	}
+}
+

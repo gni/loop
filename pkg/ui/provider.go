@@ -159,7 +159,8 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, a.Config.Endpoint, a.Config.Model)
 		}
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "model":
 		if len(parts) < 3 {
@@ -180,7 +181,8 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "Updated model to '%s'.\n", model)
 		}
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "timeout":
 		if len(parts) < 3 {
@@ -205,7 +207,8 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "Updated default timeout to %ds.\n", sec)
 		}
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	case "remove", "delete":
 		if len(parts) < 3 {
@@ -233,7 +236,8 @@ func HandleProviderCommand(
 		}
 		fmt.Fprintf(w, "Provider '%s' removed.\n", name)
 		pTok, cTok, estimated := calcHistoryTokens()
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 		DrawStatusBar(os.Stderr, theme)
 	default:
 		// Direct provider switch shortcut: /provider <name> [optional-model]
@@ -263,7 +267,8 @@ func HandleProviderCommand(
 				fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, a.Config.Endpoint, a.Config.Model)
 			}
 			pTok, cTok, estimated := calcHistoryTokens()
-			UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+			effLimit := a.GetEffectiveContextLimit(pTok)
+			UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
 			DrawStatusBar(os.Stderr, theme)
 			return
 		}

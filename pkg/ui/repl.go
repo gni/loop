@@ -85,6 +85,11 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/stats",
 		"/tokens",
 		"/usage",
+		"/compress",
+		"/context",
+		"/context auto",
+		"/context off",
+		"/ctx",
 	}
 
 	var matches []string
@@ -107,6 +112,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
 				"before_tool_hook", "after_tool_hook", "debug", "debug_file",
 				"max_paste_lines", "max_paste_chars",
+				"auto_adapt_context", "min_context_window",
 			}
 			if !isSet {
 				configCandidates = append(configCandidates, "show", "set")
@@ -968,7 +974,8 @@ func (ki *keyInterceptorReader) redrawLayout() {
 	}
 	pTok, cTok, estimated := calculateActiveTokenUsage(ki.agent, activeMessagesForTokens, activeToolAllowlist(ki), ki.mam)
 
-	UpdateStatus(ki.agent.Config.Model, pTok, cTok, 0, ki.agent.Config.ContextWindowLimit, false, 0, activeTasks, ki.agent.Config.ShowTokens, estimated)
+	effLimit := ki.agent.GetEffectiveContextLimit(pTok)
+	UpdateStatus(ki.agent.Config.Model, pTok, cTok, 0, effLimit, false, 0, activeTasks, ki.agent.Config.ShowTokens, estimated)
 	DrawStatusBar(cwFinal, activeTheme)
 
 	fmt.Fprintf(cwFinal, "\x1b[%d;1H\x1b[2K", height-2-getUI().PasteLinesOffset)
@@ -1648,7 +1655,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	}
 
 	SetCollapseStatus(a.Config.CollapseResults)
-	UpdateStatus(a.Config.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, initialTokensEstimated)
+	initialEffLimit := a.GetEffectiveContextLimit(initialPromptTokens)
+	UpdateStatus(a.Config.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, initialEffLimit, false, 0, activeTasks, a.Config.ShowTokens, initialTokensEstimated)
 	DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, theme)
 	getUI().StateMu.Lock()
 	savedStats := getUI().LastStatsText
@@ -1793,7 +1801,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 					}
 				}
 				pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
-				UpdateStatus(a.Config.Model, pTok, cTok, 0, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+				effLimit := a.GetEffectiveContextLimit(pTok)
+				UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
 				refreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, rl)
 				continue
 			}
@@ -1906,7 +1915,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 				activeTasks := a.CountActiveTasks()
 				pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
 				latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
-				UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+				effLimit := a.GetEffectiveContextLimit(pTok)
+				UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
 				refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 				continue
 			}
@@ -1916,6 +1926,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
 			cmd := exec.Command("bash", "-c", cmdStr)
+			cmd.Dir = a.WorkspaceRoot
 			cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 			var stdout, stderr bytes.Buffer
 			cw := crnlWriter{w: ppWriter}
@@ -1957,7 +1968,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			activeTasks := a.CountActiveTasks()
 			pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
 			latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
-			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+			effLimit := a.GetEffectiveContextLimit(pTok)
+			UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
 			refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 			continue
 		}
@@ -2085,7 +2097,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 		pTok, cTok, estimated := calculateActiveTokenUsage(a, messages, allowedTools, mam)
 		latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
-		UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
 		refreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 	}
 
@@ -2573,8 +2586,9 @@ func redrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	}
 	pTok, cTok, estimated := calculateActiveTokenUsage(a, activeMessagesForTokens, activeToolAllowlist(kiReader), mam)
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(activeMessagesForTokens)
+	effLimit := a.GetEffectiveContextLimit(pTok)
 
-	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, a.Config.ContextWindowLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
 
 	drawConsoleStaticControlsLocked(cwFinal, a, kiReader, rl, true)
 

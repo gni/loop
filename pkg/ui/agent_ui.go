@@ -146,12 +146,20 @@ func (ui *AgentUIImpl) UpdateStatus(model string, promptTokens, completionTokens
 	UpdateStatus(model, promptTokens, completionTokens, currentCompletionTokens, contextLimit, isGenerating, tps, activeTasks, showTokens)
 }
 
+func (ui *AgentUIImpl) UpdatePlanStatus(completed, total int) {
+	UpdatePlanStatus(completed, total)
+}
+
 func (ui *AgentUIImpl) DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string) {
 	DrawStaticStatsLine(w, theme, spinnerFrame, statsText)
 }
 
 func (ui *AgentUIImpl) AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
 	return AskForApproval(w, theme)
+}
+
+func (ui *AgentUIImpl) AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error) {
+	return AskUserQuestion(w, theme, question, options, recommended)
 }
 
 func (ui *AgentUIImpl) AskForSubagentCancellation(w io.Writer, theme style.UITheme, agentName string) agent.SubagentCancellationDecision {

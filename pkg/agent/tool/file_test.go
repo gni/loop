@@ -425,3 +425,192 @@ func TestWriteToolAliasesAndNormalizeName(t *testing.T) {
 		t.Fatalf("file content mismatch: got %q", string(data2))
 	}
 }
+
+func TestEditToolPathAndFormatAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := &fileTestContext{root: tmpDir}
+	editTool := NewEditTool()
+
+	initialContent := "func alpha() string {\n\treturn \"alpha\"\n}\n"
+	testFile := filepath.Join(tmpDir, "sample.go")
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create initial file: %v", err)
+	}
+
+	// 1. target_file alias with standard updates
+	_, err := editTool.Execute(ctx, `{"target_file": "sample.go", "updates": [{"oldText": "return \"alpha\"", "newText": "return \"beta\""}]}`)
+	if err != nil {
+		t.Fatalf("edit with target_file failed: %v", err)
+	}
+	data, _ := os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"beta\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 2. TargetFile pascal-case alias
+	_, err = editTool.Execute(ctx, `{"TargetFile": "sample.go", "updates": [{"oldText": "return \"beta\"", "newText": "return \"gamma\""}]}`)
+	if err != nil {
+		t.Fatalf("edit with TargetFile failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"gamma\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 3. filePath camelCase alias
+	_, err = editTool.Execute(ctx, `{"filePath": "sample.go", "updates": [{"oldText": "return \"gamma\"", "newText": "return \"delta\""}]}`)
+	if err != nil {
+		t.Fatalf("edit with filePath failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"delta\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 4. Nested wrapper {"input": {"path": "...", "updates": [...]}}
+	_, err = editTool.Execute(ctx, `{"input": {"path": "sample.go", "updates": [{"oldText": "return \"delta\"", "newText": "return \"epsilon\""}]}}`)
+	if err != nil {
+		t.Fatalf("edit with nested input failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"epsilon\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 5. Path inside updates[0]
+	_, err = editTool.Execute(ctx, `{"updates": [{"path": "sample.go", "oldText": "return \"epsilon\"", "newText": "return \"zeta\""}]}`)
+	if err != nil {
+		t.Fatalf("edit with path inside updates failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"zeta\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 6. Top-level single edit with TargetContent and ReplacementContent
+	_, err = editTool.Execute(ctx, `{"path": "sample.go", "TargetContent": "return \"zeta\"", "ReplacementContent": "return \"eta\""}`)
+	if err != nil {
+		t.Fatalf("edit with TargetContent / ReplacementContent failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"eta\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 7. Top-level single edit with search and replace
+	_, err = editTool.Execute(ctx, `{"path": "sample.go", "search": "return \"eta\"", "replace": "return \"theta\""}`)
+	if err != nil {
+		t.Fatalf("edit with search / replace failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"theta\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 8. updates as a single map/object instead of an array
+	_, err = editTool.Execute(ctx, `{"path": "sample.go", "updates": {"oldText": "return \"theta\"", "newText": "return \"iota\""}}`)
+	if err != nil {
+		t.Fatalf("edit with updates as map failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"iota\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 9. Root array format: [{"path": "...", "oldText": "...", "newText": "..."}]
+	_, err = editTool.Execute(ctx, `[{"path": "sample.go", "oldText": "return \"iota\"", "newText": "return \"kappa\""}]`)
+	if err != nil {
+		t.Fatalf("edit with root array failed: %v", err)
+	}
+	data, _ = os.ReadFile(testFile)
+	if !strings.Contains(string(data), "return \"kappa\"") {
+		t.Fatalf("content not updated: %s", string(data))
+	}
+
+	// 10. Missing path triggers "missing required argument: path"
+	_, err = editTool.Execute(ctx, `{"updates": [{"oldText": "return \"kappa\"", "newText": "return \"lambda\""}]}`)
+	if err == nil || !strings.Contains(err.Error(), "missing required argument: path") {
+		t.Fatalf("expected missing required argument: path error, got: %v", err)
+	}
+}
+
+func TestReadAndWriteToolAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := &fileTestContext{root: tmpDir}
+	readTool := NewReadTool()
+	writeTool := NewWriteTool()
+
+	// 1. writeTool with codeContent and TargetFile
+	_, err := writeTool.Execute(ctx, `{"TargetFile": "written.txt", "codeContent": "line 1\nline 2"}`)
+	if err != nil {
+		t.Fatalf("writeTool with TargetFile and codeContent failed: %v", err)
+	}
+
+	// 2. readTool with filePath
+	out, err := readTool.Execute(ctx, `{"filePath": "written.txt"}`)
+	if err != nil {
+		t.Fatalf("readTool with filePath failed: %v", err)
+	}
+	if !strings.Contains(out, "line 1") || !strings.Contains(out, "line 2") {
+		t.Fatalf("readTool unexpected output: %s", out)
+	}
+
+	// 3. writeTool nested in input
+	_, err = writeTool.Execute(ctx, `{"input": {"path": "nested.txt", "content": "from nested input"}}`)
+	if err != nil {
+		t.Fatalf("writeTool with nested input failed: %v", err)
+	}
+
+	// 4. readTool nested in input
+	out, err = readTool.Execute(ctx, `{"input": {"path": "nested.txt"}}`)
+	if err != nil {
+		t.Fatalf("readTool with nested input failed: %v", err)
+	}
+	if !strings.Contains(out, "from nested input") {
+		t.Fatalf("readTool unexpected output: %s", out)
+	}
+
+	// 5. readTool missing path error
+	_, err = readTool.Execute(ctx, `{}`)
+	if err == nil || !strings.Contains(err.Error(), "missing required argument: path") {
+		t.Fatalf("expected missing path error for readTool, got: %v", err)
+	}
+
+	// 6. writeTool missing path error
+	_, err = writeTool.Execute(ctx, `{"content": "abc"}`)
+	if err == nil || !strings.Contains(err.Error(), "missing required argument: path") {
+		t.Fatalf("expected missing path error for writeTool, got: %v", err)
+	}
+}
+
+func TestAtomicWriteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetFile := filepath.Join(tmpDir, "sub", "test_atomic.txt")
+
+	data := []byte("hello atomic world")
+	if err := atomicWriteFile(targetFile, data, 0644); err != nil {
+		t.Fatalf("atomicWriteFile failed: %v", err)
+	}
+
+	readBack, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("failed to read back atomically written file: %v", err)
+	}
+	if string(readBack) != string(data) {
+		t.Fatalf("data mismatch: got %q, want %q", string(readBack), string(data))
+	}
+
+	// Overwrite atomically
+	newData := []byte("overwritten atomically")
+	if err := atomicWriteFile(targetFile, newData, 0644); err != nil {
+		t.Fatalf("atomicWriteFile overwrite failed: %v", err)
+	}
+
+	readBack2, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("failed to read back overwritten file: %v", err)
+	}
+	if string(readBack2) != string(newData) {
+		t.Fatalf("data mismatch after overwrite: got %q, want %q", string(readBack2), string(newData))
+	}
+}

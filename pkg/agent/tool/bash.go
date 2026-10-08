@@ -9,11 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
-type bashTool struct{}
+type bashTool struct {
+	mu         sync.Mutex
+	currentDir string
+}
 
 func NewBashTool() ToolExecutor {
 	return &bashTool{}
@@ -28,6 +32,7 @@ func (t *bashTool) PromptSnippet() string {
 func (t *bashTool) PromptGuidelines() []string {
 	return []string{
 		"Use dedicated tools for file operations (read, edit, write, grep, find) instead of shell commands.",
+		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
 		"For background processes and long-running services, set 'background': true.",
 	}
 }
@@ -52,13 +57,17 @@ func (t *bashTool) Definition() Tool {
 		Type: "function",
 		Function: FunctionDefinition{
 			Name:        "bash",
-			Description: "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management).",
+			Description: "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands.",
 			Parameters: JSONSchema{
 				Type: "object",
 				Properties: map[string]SchemaProp{
 					"command": {
 						Type:        "string",
 						Description: "The command to run in the terminal",
+					},
+					"dir": {
+						Type:        "string",
+						Description: "Optional working directory in which to execute the command. Persists across commands for this session.",
 					},
 					"background": {
 						Type:        "boolean",
@@ -76,6 +85,8 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 		Command    string `json:"command"`
 		Cmd        string `json:"cmd"`
 		Arguments  string `json:"arguments"`
+		Dir        string `json:"dir"`
+		Cwd        string `json:"cwd"`
 		Background bool   `json:"background"`
 	}
 	trimmed := strings.TrimSpace(arguments)
@@ -98,6 +109,44 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 		return "", fmt.Errorf("command parameter is empty")
 	}
 
+	if args.Dir == "" && args.Cwd != "" {
+		args.Dir = args.Cwd
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	persistentBash := true
+	if cp, ok := ctx.(interface{ IsPersistentBashEnabled() bool }); ok {
+		persistentBash = cp.IsPersistentBashEnabled()
+	}
+	if !persistentBash {
+		t.currentDir = ""
+	}
+
+	workspaceRoot := ctx.GetWorkspaceRoot()
+	workDir := t.currentDir
+	if workDir == "" {
+		workDir = workspaceRoot
+	}
+
+	if args.Dir != "" {
+		safeDir, err := ctx.SafePath(args.Dir)
+		if err != nil {
+			return "", fmt.Errorf("invalid working directory '%s': %w", args.Dir, err)
+		}
+		if info, err := os.Stat(safeDir); err != nil || !info.IsDir() {
+			return "", fmt.Errorf("working directory '%s' does not exist or is not a directory", args.Dir)
+		}
+		workDir = safeDir
+		t.currentDir = safeDir
+	} else {
+		if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+			workDir = workspaceRoot
+			t.currentDir = workspaceRoot
+		}
+	}
+
 	isBgCmd := args.Background
 	trimmedCmd := strings.TrimSpace(args.Command)
 	if !isBgCmd {
@@ -111,7 +160,11 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	}
 
 	if isBgCmd {
-		id, err := ctx.SpawnTask(args.Command, os.Stderr)
+		bgCmd := args.Command
+		if workDir != workspaceRoot {
+			bgCmd = fmt.Sprintf("cd %q && %s", workDir, bgCmd)
+		}
+		id, err := ctx.SpawnTask(bgCmd, os.Stderr)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn background task: %w", err)
 		}
@@ -121,8 +174,9 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.Command("bash", "-c", args.Command)
-	cmd.Dir = ctx.GetWorkspaceRoot()
+	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\necho \"__LOOP_PWD:$(pwd -P)\"\nexit $__LOOP_RET", args.Command)
+	cmd := exec.Command("bash", "-c", wrappedCmd)
+	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -222,6 +276,26 @@ func (t *bashTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	// SanitizeUTF8 helper is in file.go, which is in the same package (tool), so it can be called directly!
 	output := SanitizeUTF8(stdout.Bytes())
 	errOutput := SanitizeUTF8(stderr.Bytes())
+
+	const pwdMarker = "__LOOP_PWD:"
+	if idx := strings.LastIndex(output, pwdMarker); idx != -1 {
+		lineEnd := strings.Index(output[idx:], "\n")
+		var extractedDir string
+		if lineEnd == -1 {
+			extractedDir = strings.TrimSpace(output[idx+len(pwdMarker):])
+			output = output[:idx]
+		} else {
+			extractedDir = strings.TrimSpace(output[idx+len(pwdMarker) : idx+lineEnd])
+			output = output[:idx] + output[idx+lineEnd+1:]
+		}
+		if err == nil && extractedDir != "" && persistentBash {
+			if safe, sErr := ctx.SafePath(extractedDir); sErr == nil {
+				if info, statErr := os.Stat(safe); statErr == nil && info.IsDir() {
+					t.currentDir = safe
+				}
+			}
+		}
+	}
 
 	combined := output
 	if errOutput != "" {

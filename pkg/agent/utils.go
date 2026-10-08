@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
@@ -77,6 +79,119 @@ func messageChars(m db.Message) int {
 		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
 	}
 	return chars
+}
+
+// EstimateMessageTokens provides a calibrated token count estimation for messages.
+// It uses an average of 3.2 characters per token to account for code, JSON, and whitespace.
+func EstimateMessageTokens(m db.Message) int {
+	chars := messageChars(m)
+	if chars == 0 {
+		return 0
+	}
+	tokens := int(float64(chars) / 3.2)
+	if tokens == 0 && chars > 0 {
+		return 1
+	}
+	return tokens
+}
+
+// EstimateMessagesTokens computes the total estimated tokens across a list of messages.
+func EstimateMessagesTokens(messages []db.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += EstimateMessageTokens(m)
+	}
+	return total
+}
+
+// DefaultContextTiers defines progressive context tiers standard in local LLM runtimes (32K -> 64K -> 128K -> 262K).
+var DefaultContextTiers = []int{32768, 65536, 131072, 262144}
+
+// GetAdaptiveContextLimit dynamically selects the optimal context tier for the current workload,
+// bounded by the server's detected limits and user configuration.
+func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit int, minWindow int, autoAdapt bool) int {
+	maxCeiling := configuredLimit
+	if maxCeiling <= 0 {
+		maxCeiling = 128000
+	}
+	if serverLimit > 0 {
+		if serverLimit < maxCeiling || configuredLimit == 128000 {
+			maxCeiling = serverLimit
+		}
+	}
+
+	if !autoAdapt {
+		return maxCeiling
+	}
+
+	if minWindow <= 0 {
+		minWindow = 32768
+	}
+	if minWindow > maxCeiling {
+		minWindow = maxCeiling
+	}
+
+	reserveTokens := 4096
+	neededTokens := currentTokens + reserveTokens
+
+	var tiers []int
+	tiers = append(tiers, minWindow)
+	for _, t := range DefaultContextTiers {
+		if t > minWindow && t <= maxCeiling {
+			tiers = append(tiers, t)
+		}
+	}
+	if len(tiers) == 0 || tiers[len(tiers)-1] < maxCeiling {
+		tiers = append(tiers, maxCeiling)
+	}
+
+	for _, tier := range tiers {
+		if tier >= neededTokens {
+			if tier > maxCeiling {
+				return maxCeiling
+			}
+			return tier
+		}
+	}
+
+	return maxCeiling
+}
+
+// CompactHistoricalToolOutputs condenses verbose tool outputs from completed earlier turns,
+// preserving the latest turn's tool outputs in full to protect prefix cache and prevent token explosion.
+func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	lastAssistantIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			lastAssistantIdx = i
+			break
+		}
+	}
+
+	out := make([]db.Message, len(messages))
+	for i, m := range messages {
+		// Only compact historical tool outputs that occur before the latest assistant turn
+		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 {
+			msgCopy := m
+			lines := strings.Split(m.Content, "\n")
+			if len(lines) > 20 {
+				head := strings.Join(lines[:10], "\n")
+				tail := strings.Join(lines[len(lines)-5:], "\n")
+				msgCopy.Content = fmt.Sprintf("%s\n\n[... %d lines omitted from historical '%s' output to preserve context cache; call '%s' again if needed ...]\n\n%s", head, len(lines)-15, m.Name, m.Name, tail)
+			} else {
+				msgCopy.Content = m.Content[:750] + fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", m.Name) + m.Content[len(m.Content)-250:]
+			}
+			out[i] = msgCopy
+		} else {
+			out[i] = m
+		}
+	}
+
+	return out
 }
 
 func estimateCompletionTokens(m db.Message) int {
@@ -416,44 +531,132 @@ func TruncateRunes(s string, maxRunes int) string {
 	return style.TruncateRunes(s, maxRunes)
 }
 
-// echoWrappers are the ways a model wraps an echoed prompt before thinking.
-var echoWrappers = []string{`"`, "'", "`", "> "}
+// echoWrappers are the ways a model wraps an echoed prompt before thinking or writing.
+var echoWrappers = []string{`"`, "'", "`", "> ", "# ", "## ", "### ", "#### ", "##### ", "###### ", "**"}
+
+func normalizeDashVariants(s string) string {
+	s = strings.ReplaceAll(s, `\u2014`, "-")
+	s = strings.ReplaceAll(s, "\u2014", "-") // em-dash —
+	s = strings.ReplaceAll(s, "\u2013", "-") // en-dash –
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	return s
+}
+
+func matchNormalizedPrefix(text, target string) int {
+	normTarget := normalizeDashVariants(strings.ToLower(strings.TrimSpace(target)))
+	if normTarget == "" {
+		return -1
+	}
+
+	var normText strings.Builder
+	for i := 0; i < len(text); {
+		if strings.HasPrefix(text[i:], `\u2014`) {
+			normText.WriteString("-")
+			i += 6
+		} else {
+			r, size := utf8.DecodeRuneInString(text[i:])
+			if r == '\u2014' || r == '\u2013' {
+				normText.WriteString("-")
+			} else {
+				normText.WriteRune(unicode.ToLower(r))
+			}
+			i += size
+		}
+		currentNorm := normText.String()
+		for strings.Contains(currentNorm, "--") {
+			currentNorm = strings.ReplaceAll(currentNorm, "--", "-")
+		}
+		if currentNorm == normTarget {
+			return i
+		}
+	}
+	return -1
+}
+
+func extractPromptTargets(prompt string) []string {
+	norm := strings.TrimSpace(prompt)
+	if norm == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var targets []string
+	addTarget := func(t string) {
+		t = strings.TrimSpace(t)
+		if t != "" && !seen[t] {
+			seen[t] = true
+			targets = append(targets, t)
+		}
+	}
+
+	addTarget(norm)
+
+	// If prompt has multiple lines, also match the title/first line
+	lines := strings.Split(norm, "\n")
+	if len(lines) > 1 {
+		firstLine := strings.TrimSpace(lines[0])
+		if len(firstLine) >= 3 {
+			addTarget(firstLine)
+			cleanFirst := strings.TrimLeft(firstLine, "#*_ \t\"'`")
+			if len(cleanFirst) >= 3 {
+				addTarget(cleanFirst)
+			}
+		}
+	}
+
+	// Also add title with leading markdown heading stripped if present
+	cleanNorm := strings.TrimLeft(norm, "#*_ \t\"'`")
+	if len(cleanNorm) >= 3 {
+		addTarget(cleanNorm)
+	}
+
+	return targets
+}
+
+func matchPromptInText(clean string, targets []string) (matchedTarget string, remainder string, wrapper string) {
+	for _, target := range targets {
+		for _, w := range echoWrappers {
+			if strings.HasPrefix(strings.ToLower(clean), strings.ToLower(w)) {
+				body := clean[len(w):]
+				if cut := matchNormalizedPrefix(body, target); cut != -1 {
+					return target, body[cut:], w
+				}
+			}
+		}
+
+		if cut := matchNormalizedPrefix(clean, target); cut != -1 {
+			return target, clean[cut:], ""
+		}
+	}
+	return "", "", ""
+}
 
 // stripPromptEcho removes a leading echoed prompt (optionally wrapped) plus the
-// closing wrapper and any separator punctuation that follows it. The closing quote
-// and separator are part of the echo, not the thought, which is why a stream looked
-// like it "started with a quote/dot".
+// closing wrapper and any separator punctuation that follows it.
 func stripPromptEcho(reasoning, normPrompt string) string {
 	if normPrompt == "" || reasoning == "" {
 		return reasoning
 	}
 	clean := strings.TrimLeft(reasoning, "\r\n\t ")
-	lowerPrompt := strings.ToLower(normPrompt)
+	targets := extractPromptTargets(normPrompt)
 
-	for _, wrapper := range echoWrappers {
-		if !strings.HasPrefix(clean, wrapper) {
-			continue
-		}
-		body := strings.TrimPrefix(clean, wrapper)
-		if strings.HasPrefix(strings.ToLower(body), lowerPrompt) {
-			return trimEchoResidue(body[len(normPrompt):], wrapper)
-		}
-	}
-	if strings.HasPrefix(strings.ToLower(clean), lowerPrompt) {
-		return trimEchoResidue(clean[len(normPrompt):], "")
+	_, rem, wrapper := matchPromptInText(clean, targets)
+	if rem != "" || wrapper != "" {
+		return trimEchoResidue(rem, wrapper)
 	}
 	return reasoning
 }
 
 // trimEchoResidue drops the closing wrapper and the separator punctuation the model
-// uses to transition from the echo into its actual thought.
+// uses to transition from the echo into its actual thought or text.
 func trimEchoResidue(rest, wrapper string) string {
 	rest = strings.TrimLeft(rest, "\r\n\t ")
 	if wrapper != "" && strings.HasPrefix(rest, wrapper) {
 		rest = strings.TrimPrefix(rest, wrapper)
 	}
 	rest = strings.TrimLeft(rest, "\r\n\t ")
-	for len(rest) > 0 && strings.ContainsRune(".:-,", rune(rest[0])) {
+	for len(rest) > 0 && strings.ContainsRune(".:-,#", rune(rest[0])) {
 		rest = rest[1:]
 		rest = strings.TrimLeft(rest, "\r\n\t ")
 	}
@@ -461,31 +664,32 @@ func trimEchoResidue(rest, wrapper string) string {
 }
 
 // StripEchoedPrompt strips leading echoed prompt text and trailing newlines/whitespace
-// from model reasoning content if the model begins thinking by repeating the user's prompt.
-func StripEchoedPrompt(reasoning, prompt string) string {
-	return stripPromptEcho(reasoning, strings.TrimSpace(prompt))
+// from model content if the model begins by repeating the user's prompt or title.
+func StripEchoedPrompt(content, prompt string) string {
+	return stripPromptEcho(content, strings.TrimSpace(prompt))
 }
 
 // PromptEchoFilter suppresses an echoed prompt as it streams. Post-hoc stripping was
 // not enough: chunks are printed the moment they arrive, so a model that opens its
-// reasoning by repeating the prompt printed the echo (and the trailing quote and
+// response by repeating the prompt printed the echo (and the trailing quote and
 // separator punctuation) before anything could be removed. The filter holds back only
 // the runes needed to decide, then passes everything through.
 type PromptEchoFilter struct {
 	normPrompt  string
-	lowerPrompt string
+	targets     []string
 	held        strings.Builder
 	phase       int // 0 deciding, 1 skipping echo residue, 2 passing through
 }
 
 func NewPromptEchoFilter(prompt string) *PromptEchoFilter {
 	norm := strings.TrimSpace(prompt)
-	return &PromptEchoFilter{normPrompt: norm, lowerPrompt: strings.ToLower(norm)}
+	targets := extractPromptTargets(norm)
+	return &PromptEchoFilter{normPrompt: norm, targets: targets}
 }
 
 // Write returns the portion of chunk that is safe to print.
 func (f *PromptEchoFilter) Write(chunk string) string {
-	if f.phase == 2 || f.normPrompt == "" {
+	if f.phase == 2 || f.normPrompt == "" || len(f.targets) == 0 {
 		return chunk
 	}
 	f.held.WriteString(chunk)
@@ -493,31 +697,34 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 	if f.phase == 0 {
 		clean := strings.TrimLeft(f.held.String(), "\r\n\t ")
 
-		// Full echo confirmed (with or without a wrapper): consume it, then skip residue.
-		// A bare wrapper cannot be judged yet, so it stays held until the echoed prompt
-		// either completes or is ruled out.
-		for _, wrapper := range echoWrappers {
-			if strings.HasPrefix(clean, wrapper) {
-				body := clean[len(wrapper):]
-				if strings.HasPrefix(strings.ToLower(body), f.lowerPrompt) {
-					f.held.Reset()
-					f.phase = 1
-					return f.skipResidue(body[len(f.normPrompt):])
-				}
-				if len(body) < len(f.lowerPrompt) && strings.HasPrefix(f.lowerPrompt, strings.ToLower(body)) {
+		matchedTarget, rem, _ := matchPromptInText(clean, f.targets)
+		if matchedTarget != "" {
+			f.held.Reset()
+			f.phase = 1
+			return f.skipResidue(rem)
+		}
+
+		cleanDash := normalizeDashVariants(clean)
+		lowerCleanDash := strings.ToLower(cleanDash)
+
+		// Ambiguous: the echo could still complete in a later chunk, so hold.
+		for _, target := range f.targets {
+			normTarget := normalizeDashVariants(target)
+			lowerTarget := strings.ToLower(normTarget)
+			if len(lowerCleanDash) < len(lowerTarget) && strings.HasPrefix(lowerTarget, lowerCleanDash) {
+				return ""
+			}
+			for _, wrapper := range echoWrappers {
+				wDash := normalizeDashVariants(wrapper)
+				if strings.HasPrefix(lowerCleanDash, strings.ToLower(wDash)) {
+					bodyDash := lowerCleanDash[len(wDash):]
+					if len(bodyDash) < len(lowerTarget) && strings.HasPrefix(lowerTarget, bodyDash) {
+						return ""
+					}
+				} else if len(lowerCleanDash) < len(wDash) && strings.HasPrefix(strings.ToLower(wDash), lowerCleanDash) {
 					return ""
 				}
 			}
-		}
-		if strings.HasPrefix(strings.ToLower(clean), f.lowerPrompt) {
-			f.held.Reset()
-			f.phase = 1
-			return f.skipResidue(clean[len(f.normPrompt):])
-		}
-
-		// Ambiguous: the echo could still complete in a later chunk, so hold.
-		if len(clean) < len(f.lowerPrompt) && strings.HasPrefix(f.lowerPrompt, strings.ToLower(clean)) {
-			return ""
 		}
 
 		// Confirmed not an echo: emit what was held.
@@ -530,7 +737,7 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 }
 
 // skipResidue consumes the closing wrapper and separator punctuation that separates the
-// echo from the real thought, and emits from the first character of that thought.
+// echo from the real text, and emits from the first character of that text.
 func (f *PromptEchoFilter) skipResidue(s string) string {
 	for _, wrapper := range echoWrappers {
 		s = strings.TrimLeft(s, "\r\n\t ")
@@ -544,7 +751,7 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 		}
 	}
 	s = strings.TrimLeft(s, "\r\n\t ")
-	for len(s) > 0 && strings.ContainsRune(".:-,", rune(s[0])) {
+	for len(s) > 0 && strings.ContainsRune(".:-,#", rune(s[0])) {
 		s = s[1:]
 		s = strings.TrimLeft(s, "\r\n\t ")
 	}

@@ -27,7 +27,7 @@ type JSONSchema struct {
 func (j JSONSchema) MarshalJSON() ([]byte, error) {
 	var propsParts []string
 
-	orderedKeys := []string{"path", "command"}
+	orderedKeys := []string{"path", "target_file", "targetFile", "file_path", "filePath", "file", "target", "command"}
 	for _, key := range orderedKeys {
 		if prop, ok := j.Properties[key]; ok {
 			propBytes, err := json.Marshal(prop)
@@ -193,10 +193,14 @@ func NormalizeName(name string) string {
 		return "create_subagent"
 	case "kill_task", "stop_task":
 		return "task_kill"
-	case "status_task", "get_task_status":
+	case "status_task", "get_task_status", "tasks", "task_list", "list_tasks":
 		return "task_status"
 	case "run_command", "runcommand", "exec", "shell", "terminal":
 		return "bash"
+	case "todo_write", "todowrite", "todo_list", "todolist", "plan", "plan_tasks":
+		return "todo"
+	case "ask_user_question", "askuser", "ask_human", "question_user", "ask":
+		return "ask_user"
 	default:
 		return trimmed
 	}

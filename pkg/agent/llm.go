@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"loop/pkg/agent/tool"
@@ -68,7 +70,10 @@ type ChatCompletionRequest struct {
 	Model                string              `json:"model"`
 	Messages             []db.Message        `json:"messages"`
 	Tools                []Tool              `json:"tools,omitempty"`
+	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
 	Temperature          float64             `json:"temperature"`
+	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
 	Stream               bool                `json:"stream"`
 	StreamOptions        *StreamOptions      `json:"stream_options,omitempty"`
 	ReasoningEffort      string              `json:"reasoning_effort,omitempty"`
@@ -109,11 +114,26 @@ type LLMProvider interface {
 	CheckThinkingSupport(ctx context.Context) bool
 }
 
+// ContextLimitDetector is optionally implemented by providers capable of querying
+// runtime context window limits from backend inference servers.
+type ContextLimitDetector interface {
+	GetDetectedContextLimit() int
+}
+
 type OpenAICompatibleProvider struct {
 	Config                 *config.Config
 	HttpClient             *http.Client
 	ThinkingSupported      bool
 	ThinkingSupportChecked bool
+	DetectedContextLimit   int
+	ContextLimitChecked    bool
+	ContextLimitMu         sync.RWMutex
+}
+
+func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
+	p.ContextLimitMu.RLock()
+	defer p.ContextLimitMu.RUnlock()
+	return p.DetectedContextLimit
 }
 
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
@@ -142,7 +162,54 @@ func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) boo
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+
+	if resp.StatusCode == http.StatusOK {
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+		if readErr == nil && len(bodyBytes) > 0 {
+			var props struct {
+				NCtx                      int `json:"n_ctx"`
+				MaxContext                int `json:"max_context"`
+				EngineMaxContext          int `json:"engine_max_context"`
+				DefaultGenerationSettings struct {
+					NCtx       int `json:"n_ctx"`
+					MaxContext int `json:"max_context"`
+				} `json:"default_generation_settings"`
+			}
+			if json.Unmarshal(bodyBytes, &props) == nil {
+				detected := props.NCtx
+				if detected <= 0 {
+					detected = props.MaxContext
+				}
+				if detected <= 0 {
+					detected = props.EngineMaxContext
+				}
+				if detected <= 0 {
+					detected = props.DefaultGenerationSettings.NCtx
+				}
+				if detected <= 0 {
+					detected = props.DefaultGenerationSettings.MaxContext
+				}
+				if detected > 0 {
+					p.ContextLimitMu.Lock()
+					p.DetectedContextLimit = detected
+					p.ContextLimitChecked = true
+					p.ContextLimitMu.Unlock()
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// ProbeServerCapabilities queries the backend (/props) to discover
+// reasoning support and the server's native active context window limit.
+func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) {
+	p.ThinkingSupported = p.CheckThinkingSupport(ctx)
+	p.ThinkingSupportChecked = true
+	p.ContextLimitMu.Lock()
+	p.ContextLimitChecked = true
+	p.ContextLimitMu.Unlock()
 }
 
 func (p *OpenAICompatibleProvider) StreamChatCompletions(
@@ -151,17 +218,60 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
+	timeoutDuration := time.Duration(0)
 	if p.Config != nil && p.Config.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(p.Config.Timeout)*time.Second)
-		defer cancel()
+		timeoutDuration = time.Duration(p.Config.Timeout) * time.Second
+	}
+
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	var timedOut atomic.Bool
+	activityChan := make(chan struct{}, 1)
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+
+	kickTimer := func() {
+		select {
+		case activityChan <- struct{}{}:
+		default:
+		}
+	}
+
+	if timeoutDuration > 0 {
+		go func() {
+			timer := time.NewTimer(timeoutDuration)
+			defer timer.Stop()
+
+			for {
+				select {
+				case <-watchdogDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-activityChan:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(timeoutDuration)
+				case <-timer.C:
+					timedOut.Load()
+					timedOut.Store(true)
+					cancelStream()
+					return
+				}
+			}
+		}()
 	}
 
 	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimSuffix(p.Config.Endpoint, "/"))
 
 	if !p.ThinkingSupportChecked {
-		p.ThinkingSupported = p.CheckThinkingSupport(ctx)
-		p.ThinkingSupportChecked = true
+		p.ProbeServerCapabilities(streamCtx)
+		kickTimer()
 	}
 
 	effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
@@ -182,15 +292,20 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
-	var validMessages []db.Message
-	limit := p.Config.ContextWindowLimit
-	if limit <= 0 {
-		limit = 128000
+	autoAdapt := true
+	if p.Config != nil {
+		autoAdapt = p.Config.AutoAdaptContext
 	}
-	limitChars := limit * 4
+
+	inputMsgs := messages
+	if autoAdapt {
+		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
+	}
+
+	var validMessages []db.Message
 	totalChars := 0
 
-	for _, msg := range messages {
+	for _, msg := range inputMsgs {
 		if strings.HasPrefix(msg.Content, "[user manually executed slash command:") {
 			continue
 		}
@@ -238,18 +353,41 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
+	pTokensEst := EstimateMessagesTokens(validMessages)
+	serverLimit := p.GetDetectedContextLimit()
+	cfgLimit := 128000
+	minWindow := 32768
+	if p.Config != nil {
+		if p.Config.ContextWindowLimit > 0 {
+			cfgLimit = p.Config.ContextWindowLimit
+		}
+		if p.Config.MinContextWindow > 0 {
+			minWindow = p.Config.MinContextWindow
+		}
+	}
+	effectiveLimit := GetAdaptiveContextLimit(pTokensEst, serverLimit, cfgLimit, minWindow, autoAdapt)
+	limitChars := effectiveLimit * 4
+
 	startIndex := 0
 	if len(validMessages) > 0 && validMessages[0].Role == "system" {
 		startIndex = 1
 	}
 	for totalChars > limitChars && startIndex < len(validMessages)-1 {
-		dropMsg := validMessages[startIndex]
-		dropChars := len(dropMsg.Content)
-		if dropMsg.Role == "assistant" {
-			dropChars += len(dropMsg.ReasoningContent)
+		dropEnd := startIndex + 1
+		if validMessages[startIndex].Role == "assistant" && len(validMessages[startIndex].ToolCalls) > 0 {
+			for dropEnd < len(validMessages)-1 && validMessages[dropEnd].Role == "tool" {
+				dropEnd++
+			}
 		}
-		totalChars -= dropChars
-		startIndex++
+		for k := startIndex; k < dropEnd; k++ {
+			dropMsg := validMessages[k]
+			dropChars := len(dropMsg.Content)
+			if dropMsg.Role == "assistant" {
+				dropChars += len(dropMsg.ReasoningContent)
+			}
+			totalChars -= dropChars
+		}
+		startIndex = dropEnd
 	}
 
 	var apiMessages []db.Message
@@ -277,6 +415,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		cleanMessages = append(cleanMessages, msgCopy)
 	}
 
+	cleanMessages = EnforceToolPairingInvariance(cleanMessages)
+
 	finalTools := prepareToolDefinitions(tools, p.Config.CompactPrompt)
 
 	reasoningEffort := ""
@@ -286,6 +426,22 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		} else if effort == "low" || effort == "medium" || effort == "high" {
 			reasoningEffort = effort
 		}
+	}
+
+	maxCompTokens := 16384
+	if p.Config != nil && p.Config.MaxCompletionTokens > 0 {
+		maxCompTokens = p.Config.MaxCompletionTokens
+	}
+	finalPromptTokensEst := EstimateMessagesTokens(cleanMessages)
+	remainingTokens := effectiveLimit - finalPromptTokensEst
+	if remainingTokens > 0 && maxCompTokens > remainingTokens {
+		maxCompTokens = remainingTokens
+	}
+	if maxCompTokens < 512 {
+		maxCompTokens = 512
+	}
+	if budget > maxCompTokens && maxCompTokens > 0 {
+		budget = maxCompTokens
 	}
 
 	reqBody := ChatCompletionRequest{
@@ -298,8 +454,17 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			IncludeUsage: true,
 		},
 		ReasoningEffort:     reasoningEffort,
-		MaxCompletionTokens: p.Config.MaxCompletionTokens,
-		MaxTokens:           p.Config.MaxCompletionTokens,
+		MaxCompletionTokens: maxCompTokens,
+		MaxTokens:           maxCompTokens,
+	}
+
+	if p.Config != nil && p.Config.FrequencyPenalty != 0 {
+		fp := p.Config.FrequencyPenalty
+		reqBody.FrequencyPenalty = &fp
+	}
+	if p.Config != nil && p.Config.PresencePenalty != 0 {
+		pp := p.Config.PresencePenalty
+		reqBody.PresencePenalty = &pp
 	}
 
 	if p.ThinkingSupported {
@@ -328,6 +493,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	if len(reqBody.Tools) == 0 {
 		reqBody.Tools = nil
+	} else {
+		parallelCalls := false
+		if p.Config != nil && p.Config.ParallelToolCalls {
+			parallelCalls = true
+		}
+		reqBody.ParallelToolCalls = &parallelCalls
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -347,15 +518,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
-					return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
-				}
 				return nil, ctx.Err()
+			case <-streamCtx.Done():
+				if timedOut.Load() && p.Config != nil && p.Config.Timeout > 0 {
+					return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
+				}
+				return nil, streamCtx.Err()
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
+			kickTimer()
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+		req, err := http.NewRequestWithContext(streamCtx, "POST", url, bytes.NewBuffer(jsonData))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
@@ -370,11 +544,14 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		var doErr error
 		resp, doErr = client.Do(req)
 		if doErr != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
-				return nil, fmt.Errorf("HTTP request failed: LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+			if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
+				return nil, fmt.Errorf("HTTP request failed: LLM request timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
 			}
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
+			}
+			if streamCtx.Err() != nil {
+				return nil, streamCtx.Err()
 			}
 			lastErr = fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", doErr, p.Config.Endpoint)
 			if isNonRetryableError(doErr) {
@@ -395,15 +572,19 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		lastErr = nil
+		kickTimer()
 		break
 	}
 
 	if lastErr != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
-			return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
+		if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
+			return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if streamCtx.Err() != nil {
+			return nil, streamCtx.Err()
 		}
 		return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
 	}
@@ -457,7 +638,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
-		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
+		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String(), p.Config != nil && p.Config.ParallelToolCalls)
 		pTokens := promptTokens
 		if pTokens == 0 {
 			totalChars := 0
@@ -498,10 +679,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	for {
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
-				return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
-			}
 			return finalizePartial(), ctx.Err()
+		case <-streamCtx.Done():
+			if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
+				return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
+			}
+			return finalizePartial(), streamCtx.Err()
 		default:
 		}
 
@@ -510,14 +693,19 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			if err == io.EOF {
 				break
 			}
+			if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
+				return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
+			}
 			if ctx.Err() != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) && p.Config != nil && p.Config.Timeout > 0 {
-					return finalizePartial(), fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, ctx.Err())
-				}
 				return finalizePartial(), ctx.Err()
+			}
+			if streamCtx.Err() != nil {
+				return finalizePartial(), streamCtx.Err()
 			}
 			return nil, fmt.Errorf("error reading stream: %w", err)
 		}
+
+		kickTimer()
 
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -672,15 +860,24 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					idx = *tc.Index
 				}
 
+				if p.Config != nil && !p.Config.ParallelToolCalls && idx > 0 {
+					// Drop secondary tool calls so they are never emitted to UI or executed.
+					// Keep reading the stream so tool call 0 receives all its arguments and content!
+					continue
+				}
+
 				existing, ok := toolCallsMap[idx]
 				if !ok {
 					newTC := tc
 					if newTC.ID == "" {
 						newTC.ID = fmt.Sprintf("call_%d_%s", idx, db.NewUUID()[:8])
 					}
+					if newTC.Function.Name != "" {
+						newTC.Function.Name = tool.NormalizeName(newTC.Function.Name)
+					}
 					toolCallsMap[idx] = &newTC
-					if tc.Function.Name != "" {
-						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tc.Function.Name, ToolCallIndex: idx})
+					if newTC.Function.Name != "" {
+						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: newTC.Function.Name, ToolCallIndex: idx})
 					}
 				} else {
 					if tc.ID != "" {
@@ -718,7 +915,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		duration = time.Since(generationStart)
 	}
 
-	calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
+	calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String(), p.Config != nil && p.Config.ParallelToolCalls)
 
 	if promptTokens == 0 {
 		totalChars := 0
@@ -784,7 +981,8 @@ func isNonRetryableError(err error) bool {
 		strings.Contains(errStr, "deadline exceeded")
 }
 
-func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string) []db.ToolCall {
+func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string, parallelAllowed bool) []db.ToolCall {
+	var calls []db.ToolCall
 	if len(toolCallsMap) > 0 {
 		maxIdx := -1
 		for idx := range toolCallsMap {
@@ -792,7 +990,6 @@ func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawRea
 				maxIdx = idx
 			}
 		}
-		var calls []db.ToolCall
 		for i := 0; i <= maxIdx; i++ {
 			if tc, ok := toolCallsMap[i]; ok {
 				cleaned := *tc
@@ -801,27 +998,30 @@ func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawRea
 				calls = append(calls, cleaned)
 			}
 		}
-		return calls
-	}
-	calls := ParseFallbackToolCalls(rawText)
-	if rawReasoning != "" {
-		reasoningCalls := ParseFallbackToolCalls(rawReasoning)
-		if len(calls) == 0 {
-			calls = reasoningCalls
-		} else {
-			for _, rc := range reasoningCalls {
-				duplicate := false
-				for _, c := range calls {
-					if c.Function.Name == rc.Function.Name && c.Function.Arguments == rc.Function.Arguments {
-						duplicate = true
-						break
+	} else {
+		calls = ParseFallbackToolCalls(rawText)
+		if rawReasoning != "" {
+			reasoningCalls := ParseFallbackToolCalls(rawReasoning)
+			if len(calls) == 0 {
+				calls = reasoningCalls
+			} else {
+				for _, rc := range reasoningCalls {
+					duplicate := false
+					for _, c := range calls {
+						if c.Function.Name == rc.Function.Name && c.Function.Arguments == rc.Function.Arguments {
+							duplicate = true
+							break
+						}
 					}
-				}
-				if !duplicate {
-					calls = append(calls, rc)
+					if !duplicate {
+						calls = append(calls, rc)
+					}
 				}
 			}
 		}
+	}
+	if !parallelAllowed && len(calls) > 1 {
+		calls = calls[:1]
 	}
 	return calls
 }
@@ -938,10 +1138,10 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 			compressed.Function.Parameters.Properties["path"] = prop
 		}
 	case "read":
-		compressed.Function.Description = "Read file contents. Path must be a specific file, not a directory. Use 'list' to inspect directory trees."
+		compressed.Function.Description = "Read file contents. Path must be a specific file, not a directory. Specify 'path' first. Use 'list' to inspect directory trees."
 		if compressed.Function.Parameters.Properties != nil {
 			if prop, ok := compressed.Function.Parameters.Properties["path"]; ok {
-				prop.Description = "File path (not directory)"
+				prop.Description = "File path (specify first)"
 				compressed.Function.Parameters.Properties["path"] = prop
 			}
 			if prop, ok := compressed.Function.Parameters.Properties["offset"]; ok {
@@ -986,9 +1186,9 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 			}
 		}
 	case "write":
-		compressed.Function.Description = "Create or intentionally replace a complete file. Never use after an edit mismatch."
+		compressed.Function.Description = "Create or overwrite a file. Always specify 'path' first before 'content'. Never use after an edit mismatch."
 		if prop, ok := compressed.Function.Parameters.Properties["path"]; ok {
-			prop.Description = "File path"
+			prop.Description = "File path (specify first)"
 			compressed.Function.Parameters.Properties["path"] = prop
 		}
 		if prop, ok := compressed.Function.Parameters.Properties["content"]; ok {
@@ -1085,6 +1285,115 @@ func compressToolDefinition(t tool.Tool) tool.Tool {
 		}
 	}
 	return compressed
+}
+
+// EnforceToolPairingInvariance ensures every assistant message with tool calls has
+// matching tool responses for each tool_call_id, and removes any orphaned tool responses,
+// preserving API protocol invariants across conversation trimming.
+func EnforceToolPairingInvariance(messages []db.Message) []db.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	var result []db.Message
+	startIdx := 0
+	if messages[0].Role == "system" {
+		result = append(result, messages[0])
+		startIdx = 1
+	}
+
+	for i := startIdx; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			hasMatchingCall := false
+			for j := len(result) - 1; j >= 0; j-- {
+				if result[j].Role == "assistant" {
+					for _, tc := range result[j].ToolCalls {
+						if tc.ID == msg.ToolCallID {
+							hasMatchingCall = true
+							break
+						}
+					}
+					break
+				}
+				if result[j].Role != "tool" {
+					break
+				}
+			}
+			if hasMatchingCall {
+				result = append(result, msg)
+			}
+			continue
+		}
+
+		// Before appending a non-tool message, check if the preceding assistant message had missing tool responses
+		if len(result) > 0 {
+			lastAsstIdx := -1
+			for j := len(result) - 1; j >= 0; j-- {
+				if result[j].Role == "assistant" {
+					lastAsstIdx = j
+					break
+				}
+				if result[j].Role != "tool" {
+					break
+				}
+			}
+			if lastAsstIdx != -1 && len(result[lastAsstIdx].ToolCalls) > 0 {
+				answered := make(map[string]bool)
+				for k := lastAsstIdx + 1; k < len(result); k++ {
+					if result[k].Role == "tool" {
+						answered[result[k].ToolCallID] = true
+					}
+				}
+				for _, tc := range result[lastAsstIdx].ToolCalls {
+					if !answered[tc.ID] {
+						result = append(result, db.Message{
+							Role:       "tool",
+							ToolCallID: tc.ID,
+							Name:       tc.Function.Name,
+							Content:    "[Tool execution was interrupted or cancelled before returning]",
+						})
+					}
+				}
+			}
+		}
+
+		result = append(result, msg)
+	}
+
+	// Final check on the tail of result
+	if len(result) > 0 {
+		lastAsstIdx := -1
+		for j := len(result) - 1; j >= 0; j-- {
+			if result[j].Role == "assistant" {
+				lastAsstIdx = j
+				break
+			}
+			if result[j].Role != "tool" {
+				break
+			}
+		}
+		if lastAsstIdx != -1 && len(result[lastAsstIdx].ToolCalls) > 0 {
+			answered := make(map[string]bool)
+			for k := lastAsstIdx + 1; k < len(result); k++ {
+				if result[k].Role == "tool" {
+					answered[result[k].ToolCallID] = true
+				}
+			}
+			for _, tc := range result[lastAsstIdx].ToolCalls {
+				if !answered[tc.ID] {
+					result = append(result, db.Message{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Name:       tc.Function.Name,
+						Content:    "[Tool execution was interrupted or cancelled before returning]",
+					})
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {

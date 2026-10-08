@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -211,5 +212,53 @@ func TestBashCompoundCommandWithBackgroundServer(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("command took %v, expected < 2s", elapsed)
+	}
+}
+
+func TestBashPersistentDirectoryTracking(t *testing.T) {
+	tempRoot := t.TempDir()
+	subDir := tempRoot + "/subpkg"
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewBashTool()
+	ctx := &bashTestContext{root: tempRoot}
+
+	// 1. First command changes directory to subpkg
+	out1, err1 := executor.Execute(ctx, `{"command":"cd subpkg && pwd -P"}`)
+	if err1 != nil {
+		t.Fatalf("unexpected error on cd: %v", err1)
+	}
+	if !strings.Contains(out1, "subpkg") {
+		t.Fatalf("expected subpkg in output, got: %q", out1)
+	}
+
+	// 2. Second command runs pwd without specifying directory; should run in subpkg
+	out2, err2 := executor.Execute(ctx, `{"command":"pwd -P"}`)
+	if err2 != nil {
+		t.Fatalf("unexpected error on second command: %v", err2)
+	}
+	if !strings.Contains(out2, "subpkg") {
+		t.Fatalf("expected second command to persist in subpkg, got: %q", out2)
+	}
+}
+
+func TestBashExplicitDirParameter(t *testing.T) {
+	tempRoot := t.TempDir()
+	subDir := tempRoot + "/custom_dir"
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewBashTool()
+	ctx := &bashTestContext{root: tempRoot}
+
+	out, err := executor.Execute(ctx, fmt.Sprintf(`{"command":"pwd -P", "dir":"%s"}`, subDir))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "custom_dir") {
+		t.Fatalf("expected custom_dir in output, got: %q", out)
 	}
 }

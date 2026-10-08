@@ -130,6 +130,66 @@ func TestEditFuzzyBlockMatching(t *testing.T) {
 	}
 }
 
+func TestEditMarkdownSoftWrapAndMultiEditBatch(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "tether-spec.md")
+	const specContent = `# Tether Specification
+
+## Section 7: Behavioral Rules
+- Point 3: Reconsider the turn and U rule under saturated network conditions.
+- Point 9: Evaluate edge cases for tether negotiation.
+
+## Section 10: Telemetry
+- Logging enabled.
+`
+	if err := os.WriteFile(path, []byte(specContent), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	a := &Agent{WorkspaceRoot: workspace}
+	executor := tool.NewEditTool()
+
+	// Test 1: Single edit with soft-wrapped lines, casing difference (u vs U), and markdown bullet tolerance
+	_, err := executor.Execute(
+		a,
+		`{"path":"tether-spec.md","updates":[{"oldText":"* Point 3: Reconsider the turn and u rule\n  under saturated network conditions.","newText":"- Point 3: Finalized turn and u rule under saturated network conditions."}]}`,
+	)
+	if err != nil {
+		t.Fatalf("expected markdown soft-wrap and bullet tolerance to succeed, got error: %v", err)
+	}
+
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated file: %v", err)
+	}
+	if !strings.Contains(string(updated), "Finalized turn and u rule") {
+		t.Fatalf("expected updated content in tether-spec.md, got:\n%s", string(updated))
+	}
+
+	// Test 2: Multi-edit batch authored against initial file state
+	// edit[0] changes Section 7 header, edit[1] changes Section 10 telemetry
+	_, err = executor.Execute(
+		a,
+		`{"path":"tether-spec.md","updates":[{"oldText":"## Section 7: Behavioral Rules","newText":"## Section 7: Hardened System Rules"},{"oldText":"## Section 10: Telemetry\n- Logging enabled.","newText":"## Section 10: Hardened Telemetry\n- Structured JSON logging enabled."}]}`,
+	)
+	if err != nil {
+		t.Fatalf("expected multi-edit batch to succeed without invalidation, got error: %v", err)
+	}
+
+	finalBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read final file: %v", err)
+	}
+	finalContent := string(finalBytes)
+	if !strings.Contains(finalContent, "Section 7: Hardened System Rules") {
+		t.Fatalf("expected edit[0] to apply, got:\n%s", finalContent)
+	}
+	if !strings.Contains(finalContent, "Structured JSON logging enabled.") {
+		t.Fatalf("expected edit[1] to apply, got:\n%s", finalContent)
+	}
+}
+
+
 func TestCleanStructuredSystemPromptSections(t *testing.T) {
 	a := &Agent{
 		Config: &config.Config{

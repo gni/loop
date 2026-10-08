@@ -133,6 +133,7 @@ func RenderHelp(w io.Writer, theme UITheme) {
 		{"/task [list|view|stream|kill]", "manage background tasks"},
 		{"/queue [list|clear]", "view or clear queued prompts"},
 		{"/compress", "compress history to reclaim context tokens"},
+		{"/context [auto|off|<limit>]", "view or configure adaptive context window scaling"},
 		{"/tokens", "display token utilization and cost stats across swarm"},
 		{"/debug", "view path and status of debug execution log"},
 		{"/clear", "clear conversation history and start fresh"},
@@ -204,6 +205,8 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 			"  %-20s %v\n"+
 			"  %-20s %v\n"+
 			"  %-20s %d tokens\n"+
+			"  %-20s %v\n"+
+			"  %-20s %d tokens\n"+
 			"  %-20s %d tokens\n"+
 			"  %-20s %d\n"+
 			"  %-20s %s\n"+
@@ -225,6 +228,8 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 		keyStyle.Render("collapse results:"), cfg.CollapseResults,
 		keyStyle.Render("show tokens:"), cfg.ShowTokens,
 		keyStyle.Render("context limit:"), cfg.ContextWindowLimit,
+		keyStyle.Render("auto adapt context:"), cfg.AutoAdaptContext,
+		keyStyle.Render("min context window:"), cfg.MinContextWindow,
 		keyStyle.Render("max completion tokens:"), cfg.MaxCompletionTokens,
 		keyStyle.Render("max reasoning steps:"), cfg.MaxReasoningSteps,
 		keyStyle.Render("direct commands:"), directVal,
@@ -450,7 +455,7 @@ func renderToolSymbol(toolName string, status toolRenderStatus, theme UITheme) s
 		case lower == "read" || strings.Contains(lower, "read") || strings.Contains(lower, "view"):
 			color = theme.Primary
 		case lower == "write" || strings.Contains(lower, "write"):
-			color = theme.Success
+			color = theme.Highlight
 		case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
 			color = theme.Highlight
 		case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
@@ -476,6 +481,9 @@ func RenderToolHeader(w io.Writer, theme UITheme, toolName string, argsJSON stri
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
+	if !isError && isWriteLikeTool(toolName) && bodyWasStreamed {
+		return
+	}
 	status := toolStatusSuccess
 	if isError {
 		status = toolStatusError
@@ -700,34 +708,31 @@ func FormatBashCommandLine(symbol string, command string, theme UITheme) string 
 	promptStyle := style.NewStyle().Foreground(theme.Success)
 	cmdStyle := style.NewStyle().Foreground(theme.Text)
 
-	command = strings.Join(strings.FieldsFunc(command, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == '\t'
-	}), " ")
-	command = strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return -1
+	command = strings.ReplaceAll(command, "\r\n", "\n")
+	command = strings.ReplaceAll(command, "\r", "\n")
+	command = strings.TrimRight(command, "\n")
+	if strings.TrimSpace(command) == "" {
+		return promptStyle.Render("$")
+	}
+
+	lines := strings.Split(command, "\n")
+	var formatted []string
+	for idx, line := range lines {
+		cleaned := strings.Map(func(r rune) rune {
+			if (r < 32 && r != '\t') || r == 127 {
+				return -1
+			}
+			return r
+		}, line)
+
+		if idx == 0 {
+			formatted = append(formatted, fmt.Sprintf("%s %s", promptStyle.Render("$"), cmdStyle.Render(cleaned)))
+		} else {
+			formatted = append(formatted, fmt.Sprintf("  %s", cmdStyle.Render(cleaned)))
 		}
-		return r
-	}, command)
-
-	width, _ := getTerminalSize()
-	if width <= 0 {
-		width = 80
-	}
-	targetWidth := width - 2
-	maxCmdRunes := targetWidth - 4
-	if maxCmdRunes < 8 {
-		maxCmdRunes = 8
-	}
-	cmdRunes := []rune(command)
-	if len(cmdRunes) > maxCmdRunes {
-		command = string(cmdRunes[:maxCmdRunes-3]) + "..."
 	}
 
-	if command != "" {
-		return fmt.Sprintf("%s %s", promptStyle.Render("$"), cmdStyle.Render(command))
-	}
-	return promptStyle.Render("$")
+	return strings.Join(formatted, "\n")
 }
 
 func getActionStyle(toolName string, theme UITheme) style.Style {
@@ -1273,9 +1278,15 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 				}
 				renderMarkdownContent(w, assistantContent, theme)
 				fmt.Fprintln(w)
+				if len(msg.ToolCalls) > 0 {
+					fmt.Fprintln(w)
+				}
 				hasPrintedAnything = true
+			} else if hasPrintedAnything && len(msg.ToolCalls) > 0 {
+				fmt.Fprintln(w)
 			}
 
+			printedUnrespondedToolCount := 0
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
 					hasResponse := false
@@ -1287,7 +1298,7 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 					}
 
 					if !hasResponse {
-						if hasPrintedAnything {
+						if printedUnrespondedToolCount > 0 {
 							fmt.Fprintln(w)
 						}
 
@@ -1323,6 +1334,7 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 							fmt.Fprintln(w, cancelStyle.Render("  [Operation Cancelled]"))
 						}
 						hasPrintedAnything = true
+						printedUnrespondedToolCount++
 					}
 				}
 			}

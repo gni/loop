@@ -448,6 +448,42 @@ func AskForApproval(w io.Writer, theme UITheme) (bool, bool) {
 	}
 }
 
+func AskUserQuestion(w io.Writer, theme UITheme, question string, options []string, recommended string) (string, error) {
+	var menuOptions []choiceMenuOption
+	defaultIdx := 0
+
+	if len(options) == 0 {
+		menuOptions = []choiceMenuOption{
+			{label: "yes, proceed (Recommended)", keys: "yY1"},
+			{label: "no, cancel", keys: "nN2"},
+		}
+	} else {
+		for i, opt := range options {
+			key := fmt.Sprintf("%d", i+1)
+			if strings.EqualFold(opt, recommended) || (recommended == "" && i == 0) {
+				defaultIdx = i
+			}
+			menuOptions = append(menuOptions, choiceMenuOption{
+				label: opt,
+				keys:  key,
+			})
+		}
+	}
+
+	prompt := strings.TrimSpace(question)
+	if prompt == "" {
+		prompt = "Please select an option:"
+	}
+	selected, dismissed := runModalChoice(w, theme, " "+prompt, menuOptions, defaultIdx)
+	if dismissed {
+		return "Operation cancelled by user", nil
+	}
+	if selected >= 0 && selected < len(menuOptions) {
+		return menuOptions[selected].label, nil
+	}
+	return "Operation cancelled by user", nil
+}
+
 func AskForSubagentCancellation(w io.Writer, theme UITheme, agentName string) agent.SubagentCancellationDecision {
 	return askForSubagentCancellation(w, nil, theme, agentName)
 }

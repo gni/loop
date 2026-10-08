@@ -115,3 +115,71 @@ func TestTokensCommandWithMultiAgentManager(t *testing.T) {
 		t.Fatalf("expected Subagent: worker, got: %s", rendered)
 	}
 }
+
+func TestContextCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := tmpDir + "/config.json"
+	cfg := &config.Config{
+		ContextWindowLimit: 128000,
+		AutoAdaptContext:   true,
+		MinContextWindow:   32768,
+		Model:              "test-model",
+	}
+	_ = config.SaveConfig(cfgPath, cfg)
+
+	a := &agent.Agent{
+		Config:     cfg,
+		ConfigPath: cfgPath,
+	}
+	messages := []db.Message{
+		{Role: "user", Content: "Hello world"},
+	}
+	theme := &UITheme{}
+	sessionID := "context-test"
+
+	// 1. /context with no args
+	var output bytes.Buffer
+	handled, quit := HandleSlashCommand(
+		a,
+		"/context",
+		&messages,
+		nil,
+		theme,
+		&output,
+		&sessionID,
+		nil,
+		nil,
+		nil,
+	)
+	if !handled || quit {
+		t.Fatalf("HandleSlashCommand(/context) = handled %v, quit %v; want true, false", handled, quit)
+	}
+	rendered := output.String()
+	if !strings.Contains(rendered, "CONTEXT WINDOW & ADAPTIVE SIZING") {
+		t.Fatalf("expected context header, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "Effective Active Tier:") {
+		t.Fatalf("expected Effective Active Tier, got: %s", rendered)
+	}
+
+	// 2. /context off
+	output.Reset()
+	handled, _ = HandleSlashCommand(a, "/context off", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || a.Config.AutoAdaptContext {
+		t.Fatalf("expected AutoAdaptContext=false, got %v", a.Config.AutoAdaptContext)
+	}
+
+	// 3. /context auto
+	output.Reset()
+	handled, _ = HandleSlashCommand(a, "/context auto", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || !a.Config.AutoAdaptContext {
+		t.Fatalf("expected AutoAdaptContext=true, got %v", a.Config.AutoAdaptContext)
+	}
+
+	// 4. /context 65536
+	output.Reset()
+	handled, _ = HandleSlashCommand(a, "/context 65536", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || a.Config.ContextWindowLimit != 65536 {
+		t.Fatalf("expected ContextWindowLimit=65536, got %d", a.Config.ContextWindowLimit)
+	}
+}

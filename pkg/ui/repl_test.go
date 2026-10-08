@@ -1050,25 +1050,51 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 	})
 
-	t.Run("chunked streaming buffers write_content until path arrives", func(t *testing.T) {
+	t.Run("chunked streaming buffers write_content until path arrives then displays header and body", func(t *testing.T) {
 		p := &jsonStreamParser{
 			activeToolName: "write",
 			streamWrites:   true,
 		}
 		var buf bytes.Buffer
-		// First chunk: write_content arrives first without path
+		// First chunk: write_content arrives first without path - should buffer until path arrives
 		p.feed(`{"write_content": "line 1\nline 2\n"`, &buf, theme)
-		if buf.Len() > 0 {
-			t.Fatalf("expected output to be buffered until path is known, but got: %q", buf.String())
+		gotChunk1 := stripAnsi(buf.String())
+		if gotChunk1 != "" {
+			t.Fatalf("expected write_content to buffer until path arrives, got: %q", gotChunk1)
 		}
-		// Second chunk: path arrives
+		// Second chunk: path arrives - should display header with path and flush buffered lines
 		p.feed(`, "path": "app/worker.py"}`, &buf, theme)
 		got := stripAnsi(buf.String())
 		if !strings.Contains(got, "write app/worker.py") {
 			t.Fatalf("expected header 'write app/worker.py', got %q", got)
 		}
 		if !strings.Contains(got, "line 1\nline 2") {
-			t.Fatalf("expected buffered lines flushed after title, got %q", got)
+			t.Fatalf("expected streamed lines in output, got %q", got)
+		}
+		headerIdx := strings.Index(got, "write app/worker.py")
+		codeIdx := strings.Index(got, "line 1")
+		if headerIdx > codeIdx {
+			t.Fatalf("expected header before code, got header at %d, code at %d in %q", headerIdx, codeIdx, got)
+		}
+	})
+
+	t.Run("chunked streaming with path first displays header immediately and streams lines", func(t *testing.T) {
+		p := &jsonStreamParser{
+			activeToolName: "write",
+			streamWrites:   true,
+		}
+		var buf bytes.Buffer
+		// First chunk: path arrives first - header must display immediately
+		p.feed(`{"path": "app/worker.py", "write_content": "`, &buf, theme)
+		gotChunk1 := stripAnsi(buf.String())
+		if !strings.Contains(gotChunk1, "write app/worker.py") {
+			t.Fatalf("expected header 'write app/worker.py' immediately on path, got: %q", gotChunk1)
+		}
+		// Second chunk: lines stream in real-time
+		p.feed("line 1\nline 2\n\"}", &buf, theme)
+		got := stripAnsi(buf.String())
+		if !strings.Contains(got, "line 1\nline 2") {
+			t.Fatalf("expected streamed lines in output, got %q", got)
 		}
 	})
 

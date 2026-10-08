@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -40,10 +41,10 @@ type jsonStreamParser struct {
 
 func isToolTargetPathKey(key string, toolName string) bool {
 	switch key {
-	case "path", "file_path", "filePath", "file", "target", "Target", "target_file", "targetFile",
-		"filename", "fileName", "AbsolutePath", "TargetFile", "SearchPath", "searchPath",
-		"DirectoryPath", "dirPath", "directory_path", "pattern", "query", "Query",
-		"prompt", "Prompt", "name", "id", "task_id":
+	case "path", "file_path", "filePath", "file", "target", "Target", "target_file", "targetFile", "TargetFile",
+		"filename", "fileName", "file_name", "write_path", "writePath", "AbsolutePath", "absolute_path",
+		"SearchPath", "searchPath", "DirectoryPath", "dirPath", "directory_path", "pattern", "query", "Query",
+		"prompt", "Prompt", "name", "id", "task_id", "url", "URL", "uri", "URI":
 		return true
 	case "command", "CommandLine", "cmd":
 		return toolName == "bash" || toolName == "ls" || strings.Contains(toolName, "command") || strings.Contains(toolName, "exec") || strings.Contains(toolName, "run")
@@ -51,8 +52,104 @@ func isToolTargetPathKey(key string, toolName string) bool {
 	return false
 }
 
+func isToolContentKey(key string, toolName string) bool {
+	if isToolTargetPathKey(key, toolName) {
+		return false
+	}
+	lower := strings.ToLower(key)
+	if lower == "description" || lower == "summary" || lower == "explanation" || lower == "overwrite" || lower == "encoding" || lower == "background" {
+		return false
+	}
+	if isWriteLikeTool(toolName) {
+		return true
+	}
+	return strings.Contains(lower, "content") || lower == "code" || lower == "body" || lower == "text" || lower == "data" || lower == "payload" || lower == "raw" || lower == "yaml" || lower == "yml" || lower == "json" || lower == "markdown" || lower == "md"
+}
+
 func (p *jsonStreamParser) needsPath() bool {
 	return p.activeToolName == "read" || p.activeToolName == "write" || p.activeToolName == "edit" || p.activeToolName == "grep" || p.activeToolName == "find" || p.activeToolName == "bash" || p.activeToolName == "ls" || p.activeToolName == "list" || p.activeToolName == "create_subagent" || p.activeToolName == "spawn_subagent" || p.activeToolName == "load_skill" || p.activeToolName == "task_status" || p.activeToolName == "task_kill" || p.activeToolName == "list_subagents" || p.activeToolName == "audit_subagent" || strings.HasPrefix(p.activeToolName, "subagent__")
+}
+
+func detectLangFromContent(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, rawLine := range lines {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "#!") {
+			lower := strings.ToLower(trimmed)
+			switch {
+			case strings.Contains(lower, "python"):
+				return "python"
+			case strings.Contains(lower, "bash"), strings.Contains(lower, "sh"):
+				return "bash"
+			case strings.Contains(lower, "node"):
+				return "javascript"
+			case strings.Contains(lower, "ruby"):
+				return "ruby"
+			}
+		}
+
+		if strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "from ") {
+			if strings.HasPrefix(trimmed, "from ") && strings.Contains(trimmed, " import ") {
+				return "python"
+			}
+			if strings.HasPrefix(trimmed, "import ") {
+				if strings.Contains(trimmed, " from '") || strings.Contains(trimmed, ` from "`) || strings.Contains(trimmed, "{") {
+					return "typescript"
+				}
+				return "python"
+			}
+		}
+		if strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "async def ") ||
+			(strings.HasPrefix(trimmed, "class ") && strings.HasSuffix(trimmed, ":")) ||
+			strings.HasPrefix(trimmed, "@pytest.") || strings.HasPrefix(trimmed, "@app.") || strings.HasPrefix(trimmed, "@router.") {
+			return "python"
+		}
+
+		if strings.HasPrefix(trimmed, "package ") || strings.HasPrefix(trimmed, "func ") ||
+			(strings.HasPrefix(trimmed, "type ") && (strings.HasSuffix(trimmed, "struct {") || strings.HasSuffix(trimmed, "interface {"))) {
+			return "go"
+		}
+
+		if strings.HasPrefix(trimmed, "fn ") || strings.HasPrefix(trimmed, "pub fn ") ||
+			strings.HasPrefix(trimmed, "use std::") || strings.HasPrefix(trimmed, "use crate::") ||
+			strings.HasPrefix(trimmed, "pub struct ") || strings.HasPrefix(trimmed, "impl ") {
+			return "rust"
+		}
+
+		if strings.HasPrefix(trimmed, "export default ") || strings.HasPrefix(trimmed, "export const ") ||
+			strings.HasPrefix(trimmed, "export function ") || strings.HasPrefix(trimmed, "export interface ") ||
+			strings.HasPrefix(trimmed, "export type ") || (strings.HasPrefix(trimmed, "const ") && strings.Contains(trimmed, "require(")) {
+			return "typescript"
+		}
+
+		if strings.HasPrefix(trimmed, "<!DOCTYPE") || strings.HasPrefix(trimmed, "<html") || strings.HasPrefix(trimmed, "<?xml") {
+			return "html"
+		}
+
+		if strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "version:") || strings.HasPrefix(trimmed, "services:") {
+			return "yaml"
+		}
+
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			return "json"
+		}
+
+		if strings.HasPrefix(trimmed, "#include <") || strings.HasPrefix(trimmed, `#include "`) {
+			return "c"
+		}
+
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "SELECT ") || strings.HasPrefix(upper, "CREATE TABLE ") || strings.HasPrefix(upper, "INSERT INTO ") {
+			return "sql"
+		}
+
+		break
+	}
+	return ""
 }
 
 func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {
@@ -71,6 +168,11 @@ func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {
 			p.guessedLang = ext[1:]
 		} else {
 			p.guessedLang = "plaintext"
+		}
+	}
+	if p.guessedLang == "" || p.guessedLang == "plaintext" {
+		if detected := detectLangFromContent(line); detected != "" {
+			p.guessedLang = detected
 		}
 	}
 	lang := p.guessedLang
@@ -94,6 +196,11 @@ func (p *jsonStreamParser) flushOutputBuf(w io.Writer, theme UITheme) {
 			p.guessedLang = ext[1:]
 		} else {
 			p.guessedLang = "plaintext"
+		}
+	}
+	if p.guessedLang == "" || p.guessedLang == "plaintext" {
+		if detected := detectLangFromContent(raw); detected != "" {
+			p.guessedLang = detected
 		}
 	}
 	lang := p.guessedLang
@@ -201,16 +308,25 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 		} else {
 			if char == '"' {
 				p.inString = true
+			} else if char == '{' {
+				p.inValue = false
 			} else if char == ':' {
 				p.inValue = true
 				if isToolTargetPathKey(p.currentKey, p.activeToolName) {
 					if p.path == "" {
 						p.isPath = true
 					}
-				} else if p.activeToolName != "edit" && (p.currentKey == "write_content" || p.currentKey == "content" || strings.Contains(p.currentKey, "Content") || p.currentKey == "code" || p.currentKey == "text" || p.currentKey == "body") {
+				} else if p.activeToolName != "edit" && isToolContentKey(p.currentKey, p.activeToolName) {
 					if p.streamWrites {
 						p.isContent = true
-						p.guessedLang = ""
+						if p.guessedLang == "" && p.path != "" {
+							ext := filepath.Ext(p.path)
+							if len(ext) > 1 {
+								p.guessedLang = ext[1:]
+							} else {
+								p.guessedLang = "plaintext"
+							}
+						}
 						p.markBodyStreamed()
 						if !p.titlePrinted {
 							if !p.needsPath() || p.path != "" {
@@ -292,11 +408,16 @@ func getNewlineCount(w io.Writer) int {
 		if counter, ok := w.(interface{ GetCount() int }); ok {
 			return counter.GetCount()
 		}
-		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
-		if !ok {
-			break
+		if bb, ok := w.(interface{ Bytes() []byte }); ok {
+			return bytes.Count(bb.Bytes(), []byte{'\n'})
 		}
-		w = unwrapper.Unwrap()
+		if unwrapper, ok := w.(interface{ Unwrap() io.Writer }); ok {
+			if next := unwrapper.Unwrap(); next != nil && next != w {
+				w = next
+				continue
+			}
+		}
+		break
 	}
 	return -1
 }
@@ -309,9 +430,30 @@ func replaceTrackedStreamLine(w io.Writer, line int, content string) bool {
 	if currentLine < line {
 		return false
 	}
-	writer := findPromptPreservingWriter(w)
-	if writer == nil {
-		return false
+	if writer := findPromptPreservingWriter(w); writer != nil {
+		return writer.ReplaceScrollLineBack(currentLine-line, content)
 	}
-	return writer.ReplaceScrollLineBack(currentLine-line, content)
+
+	for curr := w; curr != nil; {
+		if buf, ok := curr.(interface {
+			String() string
+			Reset()
+			WriteString(string) (int, error)
+		}); ok {
+			lines := strings.Split(buf.String(), "\n")
+			if line >= 0 && line < len(lines) {
+				lines[line] = content
+				buf.Reset()
+				buf.WriteString(strings.Join(lines, "\n"))
+				return true
+			}
+			return false
+		}
+		if unwrapper, ok := curr.(interface{ Unwrap() io.Writer }); ok {
+			curr = unwrapper.Unwrap()
+		} else {
+			break
+		}
+	}
+	return false
 }
