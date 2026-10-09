@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/stream"
 	"loop/pkg/ui/style"
 )
 
@@ -1014,7 +1015,7 @@ func TestDetectLangFromContent(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := detectLangFromContent(tc.input)
+		got := stream.DetectLangFromContent(tc.input)
 		if got != tc.expected {
 			t.Errorf("detectLangFromContent(%q) = %q, want %q", tc.input, got, tc.expected)
 		}

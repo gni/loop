@@ -142,14 +142,7 @@ func RegisterPlugins(registry *ToolRegistry, dir string) error {
 		}
 
 		// Enforce alphanumeric characters in the name to prevent any registry injection
-		validName := true
-		for _, r := range functionDef.Name {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-				validName = false
-				break
-			}
-		}
-		if !validName {
+		if !IsSafeIdentifier(functionDef.Name) {
 			continue
 		}
 

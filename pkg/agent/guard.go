@@ -229,51 +229,11 @@ func cmdForTool(toolName, arguments string) string {
 // ExtractTargetFile extracts the file or directory path being inspected by read, list, or bash commands.
 func (g *TurnExecutionGuard) ExtractTargetFile(toolName, arguments string) string {
 	if toolName == "read" {
-		var args struct {
-			Path     string `json:"path"`
-			File     string `json:"file"`
-			FilePath string `json:"file_path"`
-		}
-		if err := json.Unmarshal([]byte(arguments), &args); err == nil {
-			if args.Path != "" {
-				return filepath.Clean(args.Path)
-			}
-			if args.FilePath != "" {
-				return filepath.Clean(args.FilePath)
-			}
-			if args.File != "" {
-				return filepath.Clean(args.File)
-			}
-		}
-		var raw string
-		if err := json.Unmarshal([]byte(arguments), &raw); err == nil && raw != "" {
-			return filepath.Clean(raw)
-		}
-		return ""
+		return extractPathArg(arguments, "")
 	}
 
 	if toolName == "list" || toolName == "ls" {
-		var args struct {
-			Path    string `json:"path"`
-			Dir     string `json:"dir"`
-			DirPath string `json:"dir_path"`
-		}
-		if err := json.Unmarshal([]byte(arguments), &args); err == nil {
-			if args.Path != "" {
-				return filepath.Clean(args.Path)
-			}
-			if args.Dir != "" {
-				return filepath.Clean(args.Dir)
-			}
-			if args.DirPath != "" {
-				return filepath.Clean(args.DirPath)
-			}
-		}
-		var raw string
-		if err := json.Unmarshal([]byte(arguments), &raw); err == nil && raw != "" {
-			return filepath.Clean(raw)
-		}
-		return "."
+		return extractPathArg(arguments, ".")
 	}
 
 	if toolName == "bash" {
@@ -293,6 +253,28 @@ func (g *TurnExecutionGuard) ExtractTargetFile(toolName, arguments string) strin
 	}
 
 	return ""
+}
+
+func extractPathArg(arguments string, fallback string) string {
+	var args struct {
+		Path     string `json:"path"`
+		File     string `json:"file"`
+		FilePath string `json:"file_path"`
+		Dir      string `json:"dir"`
+		DirPath  string `json:"dir_path"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err == nil {
+		for _, candidate := range []string{args.Path, args.FilePath, args.File, args.DirPath, args.Dir} {
+			if candidate != "" {
+				return filepath.Clean(candidate)
+			}
+		}
+	}
+	var raw string
+	if err := json.Unmarshal([]byte(arguments), &raw); err == nil && raw != "" {
+		return filepath.Clean(raw)
+	}
+	return fallback
 }
 
 func extractBashCommand(arguments string) string {

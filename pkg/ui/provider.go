@@ -8,25 +8,16 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
+	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/style"
 )
 
 func cloneProviderConfig(cfg *config.Config) *config.Config {
-	if cfg == nil {
-		return nil
-	}
-
-	cloned := *cfg
-	cloned.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
-	for name, provider := range cfg.Providers {
-		cloned.Providers[name] = provider
-	}
-	return &cloned
+	return interactive.CloneProviderConfig(cfg)
 }
 
 func commitProviderConfig(a *agent.Agent, next *config.Config) error {
@@ -59,15 +50,19 @@ func HandleProviderCommand(
 	kiReader *keyInterceptorReader,
 ) {
 	calcHistoryTokens := func() (int, int, bool) {
-		var mam *agent.MultiAgentManager
+		var mam *swarm.MultiAgentManager
 		if kiReader != nil {
-			mam = kiReader.mam
+			mam = kiReader.MAM
 		}
 		var msgs []db.Message
 		if messages != nil {
 			msgs = *messages
 		}
 		return calculateActiveTokenUsage(a, msgs, activeToolAllowlist(kiReader), mam)
+	}
+
+	syncStatus := func() {
+		syncAgentStatus(a, theme, calcHistoryTokens)
 	}
 
 	if len(parts) < 2 {
@@ -86,7 +81,7 @@ func HandleProviderCommand(
 		}
 
 		if kiReader != nil {
-			redrawScreen(w, a, kiReader, kiReader.rl)
+			redrawScreen(w, a, kiReader, kiReader.RL)
 		} else {
 			redrawScreen(w, a, nil, nil)
 		}
@@ -153,15 +148,8 @@ func HandleProviderCommand(
 			return
 		}
 
-		if name == "" || name == "default" {
-			fmt.Fprintln(w, "Switched to default endpoint settings.")
-		} else {
-			fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, a.Config.Endpoint, a.Config.Model)
-		}
-		pTok, cTok, estimated := calcHistoryTokens()
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		DrawStatusBar(os.Stderr, theme)
+		printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
+		syncStatus()
 	case "model":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider model <model>")
@@ -180,10 +168,7 @@ func HandleProviderCommand(
 		} else {
 			fmt.Fprintf(w, "Updated model to '%s'.\n", model)
 		}
-		pTok, cTok, estimated := calcHistoryTokens()
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		DrawStatusBar(os.Stderr, theme)
+		syncStatus()
 	case "timeout":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider timeout <seconds>")
@@ -206,10 +191,7 @@ func HandleProviderCommand(
 		} else {
 			fmt.Fprintf(w, "Updated default timeout to %ds.\n", sec)
 		}
-		pTok, cTok, estimated := calcHistoryTokens()
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		DrawStatusBar(os.Stderr, theme)
+		syncStatus()
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider remove <name>")
@@ -235,10 +217,7 @@ func HandleProviderCommand(
 			return
 		}
 		fmt.Fprintf(w, "Provider '%s' removed.\n", name)
-		pTok, cTok, estimated := calcHistoryTokens()
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		DrawStatusBar(os.Stderr, theme)
+		syncStatus()
 	default:
 		// Direct provider switch shortcut: /provider <name> [optional-model]
 		if _, ok := a.Config.Providers[sub]; ok || sub == "default" || sub == "none" {
@@ -261,15 +240,8 @@ func HandleProviderCommand(
 				return
 			}
 
-			if name == "" || name == "default" {
-				fmt.Fprintln(w, "Switched to default endpoint settings.")
-			} else {
-				fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, a.Config.Endpoint, a.Config.Model)
-			}
-			pTok, cTok, estimated := calcHistoryTokens()
-			effLimit := a.GetEffectiveContextLimit(pTok)
-			UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-			DrawStatusBar(os.Stderr, theme)
+			printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
+			syncStatus()
 			return
 		}
 
@@ -349,295 +321,11 @@ func printProviderHelp(w io.Writer, theme UITheme) {
 	fmt.Fprintln(w, "  /provider remove <name>                    Remove a provider profile")
 }
 
-func RunInteractiveProviderConfig(
-	cfg *config.Config,
-	theme UITheme,
-	rlInput io.Reader,
-	rlOutput io.Writer,
-	configPath string,
-) (*config.Config, error) {
-	var fd int
-	if f, ok := rlInput.(*os.File); ok {
-		fd = int(f.Fd())
+func printProviderSwitchMessage(w io.Writer, name, endpoint, model string) {
+	if name == "" || name == "default" {
+		fmt.Fprintln(w, "Switched to default endpoint settings.")
 	} else {
-		fd = int(os.Stdin.Fd())
+		fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, endpoint, model)
 	}
-
-	if !term.IsTerminal(fd) {
-		return cfg, nil
-	}
-
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return nil, err
-	}
-	defer term.Restore(fd, oldState)
-
-	EnterAlternateScreen(rlOutput)
-	fmt.Fprint(rlOutput, "\x1b[?25l")
-	defer func() {
-		fmt.Fprint(rlOutput, "\x1b[?25h")
-		ExitAlternateScreen(rlOutput)
-	}()
-
-	clonedConfig := cloneProviderConfig(cfg)
-	if clonedConfig == nil {
-		return nil, fmt.Errorf("provider configuration is unavailable")
-	}
-	cloned := *clonedConfig
-	if cloned.Providers == nil {
-		cloned.Providers = make(map[string]config.ProviderConfig)
-	}
-
-	itemsProvider := func() []*settingItem {
-		var items []*settingItem
-
-		var pNames []string
-		for p := range cloned.Providers {
-			pNames = append(pNames, p)
-		}
-		sort.Strings(pNames)
-
-		for _, pn := range pNames {
-			pName := pn
-
-			// 1. Provider header / activate toggle
-			items = append(items, &settingItem{
-				id:   "prov_act_" + pName,
-				name: "provider: " + pName,
-				value: func() string {
-					if cloned.ActiveProvider == pName {
-						return "➔ ACTIVE"
-					}
-					return "select"
-				},
-				description: fmt.Sprintf("Press Enter to set '%s' as the active provider", pName),
-				onToggle: func() {
-					cloned.ActiveProvider = pName
-				},
-			})
-
-			// 2. Model
-			items = append(items, &settingItem{
-				id:   "prov_model_" + pName,
-				name: "  model",
-				value: func() string {
-					curr := cloned.Providers[pName]
-					if curr.Model != "" {
-						return curr.Model
-					}
-					return "(not set)"
-				},
-				description: fmt.Sprintf("Model identifier to request for '%s'", pName),
-				onEdit: func(newVal string) error {
-					curr := cloned.Providers[pName]
-					curr.Model = strings.TrimSpace(newVal)
-					cloned.Providers[pName] = curr
-					return nil
-				},
-			})
-
-			// 3. Endpoint URL
-			items = append(items, &settingItem{
-				id:   "prov_endpoint_" + pName,
-				name: "  endpoint",
-				value: func() string {
-					return cloned.Providers[pName].Endpoint
-				},
-				description: fmt.Sprintf("Base API endpoint URL for '%s'", pName),
-				onEdit: func(newVal string) error {
-					newVal = strings.TrimSpace(newVal)
-					if newVal == "" {
-						return fmt.Errorf("endpoint URL cannot be empty")
-					}
-					curr := cloned.Providers[pName]
-					curr.Endpoint = newVal
-					cloned.Providers[pName] = curr
-					return nil
-				},
-			})
-
-			// 4. API Key
-			items = append(items, &settingItem{
-				id:   "prov_key_" + pName,
-				name: "  api key",
-				value: func() string {
-					key := cloned.Providers[pName].ApiKey
-					if key == "" {
-						return "(not set)"
-					}
-					if strings.HasPrefix(key, "$") || strings.HasPrefix(key, "env:") {
-						return key
-					}
-					if len(key) <= 8 {
-						return "********"
-					}
-					return key[:4] + "..." + key[len(key)-4:] + " (masked)"
-				},
-				description: fmt.Sprintf("API key or env reference ($VAR) for '%s'", pName),
-				onEdit: func(newVal string) error {
-					curr := cloned.Providers[pName]
-					curr.ApiKey = strings.TrimSpace(newVal)
-					cloned.Providers[pName] = curr
-					return nil
-				},
-			})
-
-			// 5. Timeout
-			items = append(items, &settingItem{
-				id:   "prov_timeout_" + pName,
-				name: "  timeout (s)",
-				value: func() string {
-					if cloned.Providers[pName].Timeout > 0 {
-						return fmt.Sprintf("%ds", cloned.Providers[pName].Timeout)
-					}
-					return "default"
-				},
-				description: fmt.Sprintf("Timeout in seconds for '%s' (0 to use default)", pName),
-				onEdit: func(newVal string) error {
-					newVal = strings.TrimSpace(newVal)
-					if newVal == "" {
-						return nil
-					}
-					sec, err := strconv.Atoi(newVal)
-					if err != nil || sec < 0 {
-						return fmt.Errorf("must be a non-negative integer")
-					}
-					curr := cloned.Providers[pName]
-					curr.Timeout = sec
-					cloned.Providers[pName] = curr
-					return nil
-				},
-			})
-
-			// 6. Delete provider
-			items = append(items, &settingItem{
-				id:   "prov_del_" + pName,
-				name: "  [ delete " + pName + " ]",
-				value: func() string {
-					return ""
-				},
-				description: fmt.Sprintf("Remove the provider '%s'", pName),
-				onToggle: func() {
-					delete(cloned.Providers, pName)
-					if cloned.ActiveProvider == pName {
-						cloned.ActiveProvider = ""
-						if _, ok := cloned.Providers["default"]; ok {
-							cloned.ActiveProvider = "default"
-						}
-					}
-				},
-			})
-		}
-
-		// Action: Add New Provider
-		items = append(items, &settingItem{
-			id:          "action_add",
-			name:        "[ add new provider ]",
-			value:       func() string { return "" },
-			description: "Configure a new endpoint provider profile",
-			onToggle: func() {
-				fmt.Fprint(rlOutput, "\r\n\r\n  === Add New Endpoint Provider ===\r\n")
-				fmt.Fprint(rlOutput, "  Provider name (e.g. brain, ollama, groq): ")
-				pName, err := readInputRaw(rlInput, rlOutput)
-				if err != nil {
-					return
-				}
-				pName = strings.TrimSpace(pName)
-				if pName == "" {
-					return
-				}
-				fmt.Fprint(rlOutput, "  Base endpoint URL: ")
-				pURL, err := readInputRaw(rlInput, rlOutput)
-				if err != nil {
-					return
-				}
-				pURL = strings.TrimSpace(pURL)
-				if pURL == "" {
-					return
-				}
-				fmt.Fprint(rlOutput, "  Model identifier (optional): ")
-				pModel, _ := readInputRaw(rlInput, rlOutput)
-				pModel = strings.TrimSpace(pModel)
-
-				fmt.Fprint(rlOutput, "  API key or $ENV_VAR (optional): ")
-				pKey, _ := readInputRaw(rlInput, rlOutput)
-				pKey = strings.TrimSpace(pKey)
-
-				if cloned.Providers == nil {
-					cloned.Providers = make(map[string]config.ProviderConfig)
-				}
-				cloned.Providers[pName] = config.ProviderConfig{
-					Name:     pName,
-					Endpoint: pURL,
-					Model:    pModel,
-					ApiKey:   pKey,
-					Timeout:  cloned.Timeout,
-				}
-				cloned.ActiveProvider = pName
-			},
-		})
-
-		return items
-	}
-
-	extraRender := func(buf *strings.Builder) {
-		if len(cloned.Providers) == 0 {
-			return
-		}
-		buf.WriteString("\n  ")
-		buf.WriteString(style.NewStyle().Foreground(theme.Primary).Bold(true).Render("provider overview:"))
-		buf.WriteString("\n")
-
-		var keys []string
-		for k := range cloned.Providers {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		for _, name := range keys {
-			p := cloned.Providers[name]
-			marker := "   "
-			if name == cloned.ActiveProvider {
-				marker = " ➔ "
-			}
-
-			nameStyled := style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(fmt.Sprintf("%-12s", name))
-			if name == cloned.ActiveProvider {
-				nameStyled = style.NewStyle().Foreground(theme.Success).Bold(true).Render(fmt.Sprintf("%-12s", name))
-			}
-
-			modelStr := p.Model
-			if modelStr == "" {
-				modelStr = "default"
-			}
-			if len(modelStr) > 20 {
-				modelStr = modelStr[:17] + "..."
-			}
-
-			timeoutStr := ""
-			if p.Timeout > 0 {
-				timeoutStr = fmt.Sprintf(" (%ds)", p.Timeout)
-			}
-
-			buf.WriteString(fmt.Sprintf("  %s%s model: %-20s  url: %s%s\n",
-				marker,
-				nameStyled,
-				modelStr,
-				p.Endpoint,
-				timeoutStr,
-			))
-		}
-	}
-
-	err = runSettingsMenuLoop(rlInput, rlOutput, theme, "endpoint providers config", itemsProvider, extraRender)
-	if err != nil {
-		return nil, err
-	}
-	if cloned.ActiveProvider != "" {
-		if err := cloned.ActivateProvider(cloned.ActiveProvider); err != nil {
-			return nil, err
-		}
-	}
-	return &cloned, nil
 }
+

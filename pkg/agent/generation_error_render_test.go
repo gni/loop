@@ -42,7 +42,7 @@ type recordingUI struct {
 }
 
 func (r *recordingUI) NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) StreamRenderer {
-	return &fallbackStreamRenderer{w: w}
+	return NewFallbackStreamRenderer(w)
 }
 
 func (r *recordingUI) RenderGenerationError(w io.Writer, message string, theme style.UITheme) {

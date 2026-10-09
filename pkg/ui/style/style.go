@@ -3,43 +3,13 @@ package style
 import (
 	"fmt"
 	"image/color"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
-type colorVal struct {
-	R, G, B uint8
-}
-
-func (c colorVal) RGBA() (r, g, b, a uint32) {
-	r = uint32(c.R) * 0x101
-	g = uint32(c.G) * 0x101
-	b = uint32(c.B) * 0x101
-	a = 0xffff
-	return
-}
-
-func Color(hex string) colorVal {
-	if len(hex) > 0 && hex[0] == '#' {
-		hex = hex[1:]
-	}
-	if len(hex) == 3 {
-		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
-	}
-	if len(hex) == 6 {
-		r, _ := strconv.ParseUint(hex[0:2], 16, 8)
-		g, _ := strconv.ParseUint(hex[2:4], 16, 8)
-		b, _ := strconv.ParseUint(hex[4:6], 16, 8)
-		return colorVal{R: uint8(r), G: uint8(g), B: uint8(b)}
-	}
-	return colorVal{255, 255, 255}
-}
-
 const (
 	noBorder = iota
 	roundedBorder
-	normalBorder
 )
 
 func RoundedBorder() int {
@@ -82,13 +52,29 @@ func (s Style) MaxWidth(v int) Style {
 	return s
 }
 
-func (s Style) Foreground(c color.Color) Style {
+func toColorVal(c color.Color) *colorVal {
 	if lc, ok := c.(colorVal); ok {
-		s.fg = &lc
+		return &lc
 	} else if c != nil {
 		r, g, b, _ := c.RGBA()
-		s.fg = &colorVal{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8)}
+		return &colorVal{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8)}
 	}
+	return nil
+}
+
+func parseBoxSpacing(args []int) (top, right, bottom, left int) {
+	if len(args) == 1 {
+		return args[0], args[0], args[0], args[0]
+	} else if len(args) == 2 {
+		return args[0], args[1], args[0], args[1]
+	} else if len(args) == 4 {
+		return args[0], args[1], args[2], args[3]
+	}
+	return 0, 0, 0, 0
+}
+
+func (s Style) Foreground(c color.Color) Style {
+	s.fg = toColorVal(c)
 	return s
 }
 
@@ -137,42 +123,12 @@ func (s Style) MarginLeft(v int) Style {
 }
 
 func (s Style) Margin(args ...int) Style {
-	if len(args) == 1 {
-		s.marginTop = args[0]
-		s.marginRight = args[0]
-		s.marginBottom = args[0]
-		s.marginLeft = args[0]
-	} else if len(args) == 2 {
-		s.marginTop = args[0]
-		s.marginBottom = args[0]
-		s.marginLeft = args[1]
-		s.marginRight = args[1]
-	} else if len(args) == 4 {
-		s.marginTop = args[0]
-		s.marginRight = args[1]
-		s.marginBottom = args[2]
-		s.marginLeft = args[3]
-	}
+	s.marginTop, s.marginRight, s.marginBottom, s.marginLeft = parseBoxSpacing(args)
 	return s
 }
 
 func (s Style) Padding(args ...int) Style {
-	if len(args) == 1 {
-		s.paddingTop = args[0]
-		s.paddingRight = args[0]
-		s.paddingBottom = args[0]
-		s.paddingLeft = args[0]
-	} else if len(args) == 2 {
-		s.paddingTop = args[0]
-		s.paddingBottom = args[0]
-		s.paddingLeft = args[1]
-		s.paddingRight = args[1]
-	} else if len(args) == 4 {
-		s.paddingTop = args[0]
-		s.paddingRight = args[1]
-		s.paddingBottom = args[2]
-		s.paddingLeft = args[3]
-	}
+	s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft = parseBoxSpacing(args)
 	return s
 }
 
@@ -186,12 +142,7 @@ func (s Style) Border(b interface{}, args ...bool) Style {
 }
 
 func (s Style) BorderForeground(c color.Color) Style {
-	if lc, ok := c.(colorVal); ok {
-		s.borderColor = &lc
-	} else if c != nil {
-		r, g, b, _ := c.RGBA()
-		s.borderColor = &colorVal{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8)}
-	}
+	s.borderColor = toColorVal(c)
 	return s
 }
 
@@ -281,9 +232,9 @@ func (s Style) Render(args ...string) string {
 		top := borderStart + tl + strings.Repeat(h, paddedWidth) + tr + borderEnd
 		borderedLines = append(borderedLines, top)
 
+		padLine := borderStart + v + borderEnd + strings.Repeat(" ", paddedWidth) + borderStart + v + borderEnd
 		for i := 0; i < s.paddingTop; i++ {
-			line := borderStart + v + borderEnd + strings.Repeat(" ", paddedWidth) + borderStart + v + borderEnd
-			borderedLines = append(borderedLines, line)
+			borderedLines = append(borderedLines, padLine)
 		}
 
 		for _, line := range formattedLines {
@@ -292,8 +243,7 @@ func (s Style) Render(args ...string) string {
 		}
 
 		for i := 0; i < s.paddingBottom; i++ {
-			line := borderStart + v + borderEnd + strings.Repeat(" ", paddedWidth) + borderStart + v + borderEnd
-			borderedLines = append(borderedLines, line)
+			borderedLines = append(borderedLines, padLine)
 		}
 
 		bottom := borderStart + bl + strings.Repeat(h, paddedWidth) + br + borderEnd
@@ -367,174 +317,3 @@ func JoinHorizontal(pos int, strs ...string) string {
 	return strings.Join(joinedLines, "\n")
 }
 
-// SkipAnsiEscape returns the end index of the ANSI escape sequence starting at start in s.
-func SkipAnsiEscape(s string, start int) int {
-	if start >= len(s) || s[start] != '\x1b' {
-		return start
-	}
-	i := start + 1
-	if i >= len(s) {
-		return i
-	}
-
-	switch s[i] {
-	case '[':
-		i++
-		for i < len(s) {
-			final := s[i] >= 0x40 && s[i] <= 0x7e
-			i++
-			if final {
-				return i
-			}
-		}
-	case ']', 'P', 'X', '^', '_':
-		i++
-		for i < len(s) {
-			if s[i] == '\a' {
-				return i + 1
-			}
-			if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' {
-				return i + 2
-			}
-			i++
-		}
-	default:
-		_, size := utf8.DecodeRuneInString(s[i:])
-		return i + size
-	}
-	return i
-}
-
-func StripAnsi(str string) string {
-	var sb strings.Builder
-	for i := 0; i < len(str); {
-		if str[i] == '\x1b' {
-			i = SkipAnsiEscape(str, i)
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(str[i:])
-		sb.WriteRune(r)
-		i += size
-	}
-	return sb.String()
-}
-
-// TruncateRunes safely truncates a string to maxRunes without slicing multi-byte UTF-8 runes.
-func TruncateRunes(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	if maxRunes <= 3 {
-		return string(runes[:maxRunes])
-	}
-	return string(runes[:maxRunes-3]) + "..."
-}
-
-func wrapSingleAnsiLine(line string, limit int) []string {
-	if limit <= 0 {
-		return []string{line}
-	}
-	if line == "" {
-		return []string{""}
-	}
-
-	var lines []string
-	var curLine strings.Builder
-	curLineVisible := 0
-
-	var curWord strings.Builder
-	curWordVisible := 0
-
-	var spaces strings.Builder
-
-	flushWord := func() {
-		wordLen := curWordVisible
-		spacesLen := spaces.Len()
-
-		if wordLen == 0 {
-			if spacesLen > 0 {
-				if curLineVisible+spacesLen <= limit {
-					curLine.WriteString(spaces.String())
-					curLineVisible += spacesLen
-				} else {
-					if curLineVisible == 0 {
-						curLine.WriteString(spaces.String())
-						curLineVisible += spacesLen
-					} else {
-						lines = append(lines, curLine.String())
-						curLine.Reset()
-						curLine.WriteString(spaces.String())
-						curLineVisible = spacesLen
-					}
-				}
-				spaces.Reset()
-			}
-			return
-		}
-
-		if curLineVisible == 0 {
-			if spacesLen > 0 {
-				curLine.WriteString(spaces.String())
-				curLineVisible += spacesLen
-				spaces.Reset()
-			}
-			curLine.WriteString(curWord.String())
-			curLineVisible += wordLen
-		} else {
-			needed := spacesLen + wordLen
-			if curLineVisible+needed <= limit {
-				curLine.WriteString(spaces.String())
-				curLine.WriteString(curWord.String())
-				curLineVisible += needed
-				spaces.Reset()
-			} else {
-				lines = append(lines, curLine.String())
-				curLine.Reset()
-				curLine.WriteString(curWord.String())
-				curLineVisible = wordLen
-				spaces.Reset()
-			}
-		}
-		curWord.Reset()
-		curWordVisible = 0
-	}
-
-	i := 0
-	for i < len(line) {
-		r, size := utf8.DecodeRuneInString(line[i:])
-		if r == '\x1b' {
-			escEnd := SkipAnsiEscape(line, i)
-			curWord.WriteString(line[i:escEnd])
-			i = escEnd
-			continue
-		}
-
-		if r == ' ' {
-			if curWordVisible > 0 {
-				flushWord()
-			}
-			spaces.WriteRune(' ')
-			i += size
-			continue
-		}
-
-		if curWordVisible >= limit {
-			flushWord()
-		}
-
-		curWord.WriteRune(r)
-		curWordVisible++
-		i += size
-	}
-
-	flushWord()
-	if curLineVisible > 0 || len(lines) == 0 {
-		lines = append(lines, curLine.String())
-	}
-
-	return lines
-}

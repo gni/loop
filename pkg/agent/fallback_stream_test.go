@@ -15,7 +15,7 @@ import (
 
 func filterFallbackChunks(chunks ...string) string {
 	var output strings.Builder
-	filter := newFallbackToolTextFilter(func(text string) {
+	filter := NewFallbackToolTextFilter(func(text string) {
 		output.WriteString(text)
 	})
 	for _, chunk := range chunks {
@@ -236,7 +236,7 @@ func TestParseFallbackToolCallsBareFunctionDialect(t *testing.T) {
 func TestFallbackToolTextFilterEmitsToolCallbacks(t *testing.T) {
 	var names []string
 	var calls []string
-	filter := newFallbackToolTextFilter(func(text string) {})
+	filter := NewFallbackToolTextFilter(func(text string) {})
 	filter.SetToolCallbacks(
 		func(toolName string, idx int) {
 			names = append(names, fmt.Sprintf("%d:%s", idx, toolName))

@@ -23,14 +23,8 @@ func parseTaskID(arguments string) (string, error) {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.TaskID != "" {
-			trimmed = args.TaskID
-		} else if args.TaskIDAlt != "" {
-			trimmed = args.TaskIDAlt
-		} else if args.ID != "" {
-			trimmed = args.ID
-		} else if args.Task != "" {
-			trimmed = args.Task
+		if v := FirstNonEmpty(args.TaskID, args.TaskIDAlt, args.ID, args.Task); v != "" {
+			trimmed = v
 		}
 	}
 	trimmed = strings.TrimSpace(trimmed)
@@ -53,23 +47,17 @@ func (t *taskStatusTool) PromptSnippet() string {
 }
 
 func (t *taskStatusTool) Definition() Tool {
-	return Tool{
-		Type: "function",
-		Function: FunctionDefinition{
-			Name:        "task_status",
-			Description: "Retrieve the execution status and buffered stdout/stderr output of a background task.",
-			Parameters: JSONSchema{
-				Type: "object",
-				Properties: map[string]SchemaProp{
-					"task_id": {
-						Type:        "string",
-						Description: "The ID of the background task (e.g. 'task_1').",
-					},
-				},
-				Required: []string{"task_id"},
+	return NewFunctionTool(
+		"task_status",
+		"Retrieve the execution status and buffered stdout/stderr output of a background task.",
+		map[string]SchemaProp{
+			"task_id": {
+				Type:        "string",
+				Description: "The ID of the background task (e.g. 'task_1').",
 			},
 		},
-	}
+		"task_id",
+	)
 }
 
 func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, error) {
@@ -99,23 +87,17 @@ func (t *taskKillTool) PromptSnippet() string {
 }
 
 func (t *taskKillTool) Definition() Tool {
-	return Tool{
-		Type: "function",
-		Function: FunctionDefinition{
-			Name:        "task_kill",
-			Description: "Terminate a running background task.",
-			Parameters: JSONSchema{
-				Type: "object",
-				Properties: map[string]SchemaProp{
-					"task_id": {
-						Type:        "string",
-						Description: "The ID of the task to terminate.",
-					},
-				},
-				Required: []string{"task_id"},
+	return NewFunctionTool(
+		"task_kill",
+		"Terminate a running background task.",
+		map[string]SchemaProp{
+			"task_id": {
+				Type:        "string",
+				Description: "The ID of the task to terminate.",
 			},
 		},
-	}
+		"task_id",
+	)
 }
 
 func (t *taskKillTool) Execute(ctx AgentContext, arguments string) (string, error) {

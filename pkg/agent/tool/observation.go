@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	domaintool "loop/pkg/domain/tool"
 )
+
 
 // FileObservation holds the content hash and timestamps of a file inspected during the session.
 type FileObservation struct {
@@ -43,8 +46,7 @@ func (fot *FileObservationTracker) SetDisabled(disabled bool) {
 	fot.disabled = disabled
 }
 
-// RecordRead records that the agent has inspected the content of absPath.
-func (fot *FileObservationTracker) RecordRead(absPath string, data []byte) {
+func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
 	if fot == nil {
 		return
 	}
@@ -69,6 +71,11 @@ func (fot *FileObservationTracker) RecordRead(absPath string, data []byte) {
 		ModTime: modTime,
 		ReadAt:  time.Now(),
 	}
+}
+
+// RecordRead records that the agent has inspected the content of absPath.
+func (fot *FileObservationTracker) RecordRead(absPath string, data []byte) {
+	fot.recordFile(absPath, data)
 }
 
 // CheckMutationAllowed verifies that a mutation (write/edit) adheres to the read-before-edit
@@ -124,36 +131,10 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 
 // RecordMutation updates the observation record after a successful write or edit.
 func (fot *FileObservationTracker) RecordMutation(absPath string, data []byte) {
-	if fot == nil {
-		return
-	}
-	fot.mu.Lock()
-	defer fot.mu.Unlock()
-	if fot.disabled {
-		return
-	}
-
-	cleanPath := filepath.Clean(absPath)
-	hash := sha256.Sum256(data)
-	hashStr := hex.EncodeToString(hash[:])
-
-	modTime := time.Now()
-	if fi, err := os.Stat(cleanPath); err == nil {
-		modTime = fi.ModTime()
-	}
-
-	fot.observations[cleanPath] = FileObservation{
-		Path:    cleanPath,
-		SHA256:  hashStr,
-		ModTime: modTime,
-		ReadAt:  time.Now(),
-	}
+	fot.recordFile(absPath, data)
 }
 
 // FileObserver is an optional interface implemented by AgentContext to enforce
 // read-before-edit and CAS policies on file operations.
-type FileObserver interface {
-	RecordRead(absPath string, data []byte)
-	CheckMutationAllowed(absPath string, isEdit bool) error
-	RecordMutation(absPath string, data []byte)
-}
+type FileObserver = domaintool.FileObserver
+

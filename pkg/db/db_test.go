@@ -181,3 +181,36 @@ func TestLatestSessionTracking(t *testing.T) {
 		t.Fatalf("expected fallback to %s after clearing session 1, got %s", session2, latest)
 	}
 }
+
+func TestJSONLStoreDirectInstance(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := NewJSONLStore(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create JSONLStore: %v", err)
+	}
+
+	sessionID := "direct-session-123"
+	msg := Message{Role: "user", Content: "modular domain message"}
+	if err := store.SaveMessage(sessionID, msg); err != nil {
+		t.Fatalf("failed to save message: %v", err)
+	}
+
+	msgs, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("failed to load messages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "modular domain message" {
+		t.Fatalf("unexpected loaded messages: %+v", msgs)
+	}
+
+	if err := store.RenameSession(sessionID, "renamed-session-456"); err != nil {
+		t.Fatalf("failed to rename session: %v", err)
+	}
+
+	if store.HasMessages(sessionID) {
+		t.Fatal("expected old session ID to no longer have messages")
+	}
+	if !store.HasMessages("renamed-session-456") {
+		t.Fatal("expected renamed session ID to have messages")
+	}
+}

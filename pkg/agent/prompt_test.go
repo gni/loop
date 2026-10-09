@@ -73,6 +73,17 @@ func TestSystemPromptIsDeterministic(t *testing.T) {
 	}
 }
 
+type dummyCreateSubagentTool struct{}
+
+func (d *dummyCreateSubagentTool) Name() string          { return "create_subagent" }
+func (d *dummyCreateSubagentTool) PromptSnippet() string { return "Create a specialized subagent" }
+func (d *dummyCreateSubagentTool) Definition() tool.Tool {
+	return tool.Tool{Function: tool.FunctionDefinition{Name: "create_subagent"}}
+}
+func (d *dummyCreateSubagentTool) Execute(ctx tool.AgentContext, args string) (string, error) {
+	return "", nil
+}
+
 // The skill catalog reaches every agent because load_skill resolves names from the
 // same registry, but delegation rules are only stated to agents whose effective
 // tool catalog actually contains spawn_subagent.
@@ -82,7 +93,7 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 		Registry:      promptTestRegistry(),
 		WorkspaceRoot: "/workspace",
 	}
-	spawner.Registry.Register(&createSubagentTool{mam: &MultiAgentManager{}})
+	spawner.Registry.Register(&dummyCreateSubagentTool{})
 
 	prompt := spawner.GetSystemPrompt()
 	for _, expected := range []string{
@@ -107,5 +118,23 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 	}
 	if strings.Contains(child, "use 'create_subagent'") || strings.Contains(child, "use 'spawn_subagent'") || strings.Contains(child, "audit_subagent") || strings.Contains(child, "swarm_audit") {
 		t.Fatalf("non-spawning agent was given delegation rules it cannot execute:\n%s", child)
+	}
+}
+
+func TestCompactPromptExplainsEmptySkillCatalog(t *testing.T) {
+	baseAgent := &Agent{
+		Config: &config.Config{
+			CompactPrompt:     true,
+			SystemInstruction: "base",
+		},
+		WorkspaceRoot: t.TempDir(),
+	}
+
+	prompt := baseAgent.GetSystemPrompt()
+	if !strings.Contains(prompt, "No registered reference skills are currently installed") {
+		t.Fatalf("compact prompt omits the empty skill catalog: %q", prompt)
+	}
+	if !strings.Contains(prompt, "inline_skills") {
+		t.Fatalf("compact prompt omits inline skill guidance: %q", prompt)
 	}
 }

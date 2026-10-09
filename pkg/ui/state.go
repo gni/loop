@@ -5,6 +5,8 @@ import (
 	"io"
 	"sync"
 
+	"loop/pkg/agent"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -21,16 +23,15 @@ func getUI() *AgentUIImpl {
 	return fallbackUI
 }
 
+func GetUI() *AgentUIImpl {
+	return getUI()
+}
+
 // TerminalMu protects terminal output operations.
 var TerminalMu sync.Mutex
 
 // IsInteractive indicates if the interactive REPL session is currently running.
 var IsInteractive bool
-
-// CancelActiveOperation safely cancels the currently running agent turn.
-func CancelActiveOperation() bool {
-	return getUI().CancelActiveOperation()
-}
 
 // SetCollapseStatus updates the results collapsing state in the status bar.
 func SetCollapseStatus(collapsed bool) {
@@ -52,6 +53,10 @@ func ShutdownStatusBar(w io.Writer) {
 	getUI().ShutdownStatusBar(w)
 }
 
+func StripAnsi(str string) string {
+	return style.StripAnsi(str)
+}
+
 func stripAnsi(str string) string {
 	return style.StripAnsi(str)
 }
@@ -68,7 +73,7 @@ func EnterAlternateScreen(w io.Writer) {
 	alternateScreenMu.Lock()
 	defer alternateScreenMu.Unlock()
 	if alternateScreenDepth == 0 {
-		fmt.Fprint(w, "\x1b[?1049h\x1b[r\x1b[2J\x1b[H")
+		fmt.Fprint(w, terminal.EnterAlternateScreen)
 	}
 	alternateScreenDepth++
 }
@@ -81,7 +86,7 @@ func ExitAlternateScreen(w io.Writer) {
 	if alternateScreenDepth > 0 {
 		alternateScreenDepth--
 		if alternateScreenDepth == 0 {
-			fmt.Fprint(w, "\x1b[?1049l\x1b[?25h")
+			fmt.Fprint(w, terminal.ExitAlternateScreen)
 		}
 	}
 }
@@ -93,6 +98,14 @@ func ForceExitAlternateScreen(w io.Writer) {
 	defer alternateScreenMu.Unlock()
 	if alternateScreenDepth > 0 {
 		alternateScreenDepth = 0
-		fmt.Fprint(w, "\x1b[?1049l\x1b[?25h")
+		fmt.Fprint(w, terminal.ExitAlternateScreen)
 	}
+}
+
+// GetActiveTasks returns the count of active tasks for an agent.
+func GetActiveTasks(a *agent.Agent) int {
+	if a == nil {
+		return 0
+	}
+	return a.CountActiveTasks()
 }

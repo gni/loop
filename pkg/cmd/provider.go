@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -20,15 +19,7 @@ var providerCmd = &cobra.Command{
 var providerListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured endpoint providers",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
-		}
-		theme := ui.GetConfiguredTheme(cfg)
-		ui.RenderProviders(os.Stdout, cfg, theme)
-	},
+	Run:   runRenderCmd(ui.RenderProviders),
 }
 
 var providerAddCmd = &cobra.Command{
@@ -36,9 +27,8 @@ var providerAddCmd = &cobra.Command{
 	Short: "Add a new endpoint provider profile",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		name := args[0]
@@ -61,7 +51,7 @@ var providerAddCmd = &cobra.Command{
 			ApiKey:   key,
 			Model:    model,
 		}
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return
@@ -75,9 +65,8 @@ var providerSelectCmd = &cobra.Command{
 	Short: "Select active endpoint provider",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		name := args[0]
@@ -98,7 +87,7 @@ var providerSelectCmd = &cobra.Command{
 
 		cfg.ActiveProvider = name
 		cfg.SyncActiveProvider()
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return
@@ -112,15 +101,14 @@ var providerModelCmd = &cobra.Command{
 	Short: "Set model for the currently active endpoint provider",
 	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		model := strings.Join(args, " ")
 		cfg.Model = model
 		cfg.UpdateActiveProvider()
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return
@@ -138,9 +126,8 @@ var providerRemoveCmd = &cobra.Command{
 	Short: "Remove an endpoint provider profile",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		name := args[0]
@@ -156,7 +143,7 @@ var providerRemoveCmd = &cobra.Command{
 		if cfg.ActiveProvider == name {
 			cfg.ActiveProvider = ""
 		}
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return
@@ -170,9 +157,8 @@ var providerTimeoutCmd = &cobra.Command{
 	Short: "Set timeout in seconds for the currently active endpoint provider",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		sec, err := strconv.Atoi(args[0])

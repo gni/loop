@@ -4,32 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"strings"
-	"time"
-	"unicode/utf8"
 
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
-type StatusBarState struct {
-	Model                   string
-	PromptTokens            int
-	CompletionTokens        int
-	CurrentCompletionTokens int // Used to calculate current t/s speed
-	ContextLimit            int
-	StartTime               time.Time
-	IsGenerating            bool
-	TokenEstimate           bool
-	LastTps                 float64
-	HasLastTps              bool
-	ActiveTasksCount        int
-	PlanCompleted           int
-	PlanTotal               int
-	ShowTokens              bool
-	QueuedPromptsCount      int
-}
+type StatusBarState = render.StatusBarState
 
-func getTerminalSize() (int, int) {
+func GetTerminalSize() (int, int) {
 	return style.GetTerminalSize()
 }
 
@@ -84,7 +66,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 		return
 	}
 
-	width, height := getTerminalSize()
+	width, height := GetTerminalSize()
 	if height <= 3 {
 		return
 	}
@@ -106,18 +88,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	// Save cursor
 	fmt.Fprint(&buf, "\x1b7")
 
-	leftPart := formatLeft(theme, width)
-	rightPart := formatRight(theme, width)
-
-	leftLen := len(stripAnsi(leftPart))
-	rightLen := len(stripAnsi(rightPart))
-
-	padding := (width - 1) - leftLen - rightLen
-	if padding < 1 {
-		padding = 1
-	}
-
-	newStatusBarText := fmt.Sprintf("%s%s%s", leftPart, strings.Repeat(" ", padding), rightPart)
+	newStatusBarText := render.FormatStatusBarLine(getUI().State, theme, width)
 
 	indicator := "▾"
 	if getUI().CollapseResults {
@@ -137,15 +108,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	// Draw separator line at height-1
 	fmt.Fprintf(&buf, "\x1b[%d;1H", height-1)
 	fmt.Fprint(&buf, "\x1b[2K")
-	borderStyle := style.NewStyle().Foreground(theme.Border)
-	collapseStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-
-	indicatorLen := utf8.RuneCountInString(indicator)
-	dashesCount := (width - 1) - indicatorLen - 1 // space + indicator
-	if dashesCount < 1 {
-		dashesCount = 1
-	}
-	borderLine := borderStyle.Render(strings.Repeat("─", dashesCount)) + " " + collapseStyle.Render(indicator)
+	borderLine := render.FormatStatusBarSeparator(width, indicator, theme)
 	fmt.Fprint(&buf, borderLine)
 
 	// Draw status bar content at height
@@ -161,136 +124,9 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 }
 
 func formatLeft(theme UITheme, width int) string {
-	if !getUI().State.ShowTokens {
-		return ""
-	}
-	pStrCompact := fmt.Sprintf("%d↓", getUI().State.PromptTokens)
-	if getUI().State.PromptTokens >= 1000 {
-		pStrCompact = fmt.Sprintf("%.1fk↓", float64(getUI().State.PromptTokens)/1000.0)
-	}
-
-	cStrCompact := fmt.Sprintf("%d↑", getUI().State.CompletionTokens)
-	if getUI().State.CompletionTokens >= 1000 {
-		cStrCompact = fmt.Sprintf("%.1fk↑", float64(getUI().State.CompletionTokens)/1000.0)
-	}
-
-	pStr := fmt.Sprintf("%d in", getUI().State.PromptTokens)
-	if getUI().State.PromptTokens >= 1000 {
-		pStr = fmt.Sprintf("%.1fk in", float64(getUI().State.PromptTokens)/1000.0)
-	}
-
-	cStr := fmt.Sprintf("%d out", getUI().State.CompletionTokens)
-	if getUI().State.CompletionTokens >= 1000 {
-		cStr = fmt.Sprintf("%.1fk out", float64(getUI().State.CompletionTokens)/1000.0)
-	}
-	if (getUI().State.IsGenerating || getUI().State.HasLastTps) && getUI().State.LastTps > 0 {
-		cStr += fmt.Sprintf(" (%.1f t/s)", getUI().State.LastTps)
-	}
-
-	contextTokens := getUI().State.PromptTokens + getUI().State.CurrentCompletionTokens
-	if getUI().State.CurrentCompletionTokens == 0 {
-		contextTokens = getUI().State.PromptTokens
-	}
-	if contextTokens == 0 {
-		contextTokens = getUI().State.CompletionTokens
-	}
-	var pct float64
-	if getUI().State.ContextLimit > 0 {
-		pct = (float64(contextTokens) / float64(getUI().State.ContextLimit)) * 100.0
-	}
-
-	totStr := fmt.Sprintf("%d", contextTokens)
-	if contextTokens >= 1000 {
-		totStr = fmt.Sprintf("%.1fk", float64(contextTokens)/1000.0)
-	}
-	pctStr := fmt.Sprintf("%.1f%%", pct)
-	if getUI().State.IsGenerating || getUI().State.TokenEstimate {
-		totStr = "~" + totStr
-		pctStr = "~" + pctStr
-	}
-
-	limitStr := fmt.Sprintf("%d", getUI().State.ContextLimit)
-	if getUI().State.ContextLimit >= 1000 {
-		limitStr = fmt.Sprintf("%dk", getUI().State.ContextLimit/1000)
-	}
-
-	var ctxStr string
-	if width < 70 {
-		ctxStr = fmt.Sprintf("%s/%s", totStr, limitStr)
-	} else {
-		ctxStr = fmt.Sprintf("%s/%s (%s)", totStr, limitStr, pctStr)
-	}
-
-	if width < 40 {
-		pStyled := style.NewStyle().Foreground(theme.Secondary).Render(pStrCompact)
-		cStyled := style.NewStyle().Foreground(theme.Highlight).Render(cStrCompact)
-		return fmt.Sprintf(" %s %s", pStyled, cStyled)
-	} else if width < 55 {
-		pStyled := style.NewStyle().Foreground(theme.Secondary).Render(pStr)
-		cStyled := style.NewStyle().Foreground(theme.Highlight).Render(cStr)
-		return fmt.Sprintf(" %s  %s", pStyled, cStyled)
-	} else if width < 75 {
-		pStyled := style.NewStyle().Foreground(theme.Secondary).Render(pStr)
-		cStyled := style.NewStyle().Foreground(theme.Highlight).Render(cStr)
-		ctxStyled := style.NewStyle().Foreground(theme.Primary).Render(ctxStr)
-		return fmt.Sprintf(" %s   %s   %s", pStyled, cStyled, ctxStyled)
-	} else {
-		pStr = fmt.Sprintf("%-9s", pStr)
-		cStr = fmt.Sprintf("%-21s", cStr)
-		ctxStr = fmt.Sprintf("%-28s", ctxStr)
-
-		pStyled := style.NewStyle().Foreground(theme.Secondary).Render(pStr)
-		cStyled := style.NewStyle().Foreground(theme.Highlight).Render(cStr)
-		ctxStyled := style.NewStyle().Foreground(theme.Primary).Render(ctxStr)
-		return fmt.Sprintf(" %s   %s   %s", pStyled, cStyled, ctxStyled)
-	}
+	return render.FormatStatusBarLeft(getUI().State, theme, width)
 }
 
 func formatRight(theme UITheme, width int) string {
-	if getUI().State.Model == "" {
-		return ""
-	}
-	modelStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-
-	queueStr := ""
-	if getUI().State.QueuedPromptsCount > 0 {
-		queueStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-		if width < 50 {
-			queueStr = queueStyle.Render(fmt.Sprintf("q:%d", getUI().State.QueuedPromptsCount)) + " "
-		} else {
-			queueStr = queueStyle.Render(fmt.Sprintf("[queue:%d]", getUI().State.QueuedPromptsCount)) + " "
-		}
-	}
-
-	taskStr := ""
-	if getUI().State.ActiveTasksCount > 0 {
-		taskStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
-		if width < 40 {
-			taskStr = taskStyle.Render(fmt.Sprintf("t:%d", getUI().State.ActiveTasksCount)) + " "
-		} else if width < 60 {
-			taskStr = taskStyle.Render(fmt.Sprintf("[t:%d]", getUI().State.ActiveTasksCount)) + " "
-		} else {
-			taskStr = taskStyle.Render(fmt.Sprintf("[tasks:%d]", getUI().State.ActiveTasksCount)) + " "
-		}
-	}
-
-	planStr := ""
-	if getUI().State.PlanTotal > 0 {
-		planStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-		if width < 50 {
-			planStr = planStyle.Render(fmt.Sprintf("[%d/%d]", getUI().State.PlanCompleted, getUI().State.PlanTotal)) + " "
-		} else {
-			planStr = planStyle.Render(fmt.Sprintf("[plan:%d/%d]", getUI().State.PlanCompleted, getUI().State.PlanTotal)) + " "
-		}
-	}
-
-	rightInfo := queueStr + planStr + taskStr
-	if width < 45 {
-		return rightInfo
-	} else if width < 65 {
-		modelName := style.TruncateRunes(getUI().State.Model, 13)
-		return rightInfo + modelStyle.Render(modelName) + " "
-	} else {
-		return rightInfo + modelStyle.Render(getUI().State.Model) + " "
-	}
+	return render.FormatStatusBarRight(getUI().State, theme, width)
 }

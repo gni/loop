@@ -8,9 +8,8 @@ import (
 type UITheme = style.UITheme
 
 func GetConfiguredTheme(cfg *config.Config) UITheme {
-	theme := style.GetTheme(cfg.Theme)
-	if cfg.SyntaxTheme != "" && cfg.SyntaxTheme != "auto" {
-		theme.ChromaStyle = cfg.SyntaxTheme
+	if cfg == nil {
+		return style.ResolveConfiguredTheme("", "")
 	}
-	return theme
+	return style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
 }

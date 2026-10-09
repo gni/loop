@@ -1,6 +1,7 @@
 package style
 
 import (
+	"fmt"
 	"image/color"
 	"strings"
 )
@@ -30,189 +31,174 @@ type UITheme struct {
 	ChromaStyle string
 }
 
+func makeTheme(
+	primary, secondary, highlight,
+	text, textMuted, bg,
+	border, borderActive, borderInactive,
+	success, warning, errColor, chroma string,
+) UITheme {
+	if borderInactive == "" {
+		borderInactive = border
+	}
+	return UITheme{
+		Primary:        Color(primary),
+		Secondary:      Color(secondary),
+		Highlight:      Color(highlight),
+		Text:           Color(text),
+		TextMuted:      Color(textMuted),
+		Background:     Color(bg),
+		Border:         Color(border),
+		BorderActive:   Color(borderActive),
+		BorderInactive: Color(borderInactive),
+		Success:        Color(success),
+		Warning:        Color(warning),
+		Error:          Color(errColor),
+		ChromaStyle:    chroma,
+	}
+}
+
 func GetTheme(themeName string) UITheme {
 	switch strings.ToLower(themeName) {
-
-	// Modern low-contrast pastel standard (Extremely popular in Neovim/Tmux)
 	case "catppuccin", "catppuccin-mocha":
-		return UITheme{
-			Primary:        Color("#89B4FA"), // Pastel Sky Blue
-			Secondary:      Color("#CBA6F7"), // Soft Mauve
-			Highlight:      Color("#FAB387"), // Soft Peach
-			Text:           Color("#CDD6F4"), // Off-white lavender
-			TextMuted:      Color("#6C7086"), // Muted slate gray
-			Background:     Color("#1E1E2E"), // Deep charcoal base
-			Border:         Color("#313244"), // Subtle surface border
-			BorderActive:   Color("#89B4FA"), // Focused cyan-blue
-			BorderInactive: Color("#313244"), // Subtle surface border
-			Success:        Color("#A6E3A1"), // Muted pastel green
-			Warning:        Color("#F9E2AF"), // Soft cream yellow
-			Error:          Color("#F38BA8"), // Soft rose red
-			ChromaStyle:    "catppuccin-mocha",
-		}
-
-	// Deep blue slate with balanced high-legibility pastels
+		return makeTheme(
+			"#89B4FA", "#CBA6F7", "#FAB387",
+			"#CDD6F4", "#6C7086", "#1E1E2E",
+			"#313244", "#89B4FA", "",
+			"#A6E3A1", "#F9E2AF", "#F38BA8",
+			"catppuccin-mocha",
+		)
 	case "tokyonight", "tokyo-night", "neon":
-		return UITheme{
-			Primary:        Color("#7AA2F7"), // Slate Blue
-			Secondary:      Color("#BB9AF7"), // Muted Purple
-			Highlight:      Color("#7DCFFF"), // Pale Cyan
-			Text:           Color("#C0CAF5"), // Cool White
-			TextMuted:      Color("#565F89"), // Slate Gray
-			Background:     Color("#1A1B26"), // Deep Storm Blue
-			Border:         Color("#292E42"), // Low-contrast navy
-			BorderActive:   Color("#7AA2F7"), // Bright slate blue
-			BorderInactive: Color("#292E42"), // Low-contrast navy
-			Success:        Color("#9ECE6A"), // Olive-tinted green
-			Warning:        Color("#E0AF68"), // Warm ochre
-			Error:          Color("#F7768E"), // Muted coral
-			ChromaStyle:    "tokyonight-night",
-		}
-
-	// Calming natural, earth-toned scheme (Zero eye-strain for dark rooms)
+		return makeTheme(
+			"#7AA2F7", "#BB9AF7", "#7DCFFF",
+			"#C0CAF5", "#565F89", "#1A1B26",
+			"#292E42", "#7AA2F7", "",
+			"#9ECE6A", "#E0AF68", "#F7768E",
+			"tokyonight-night",
+		)
 	case "everforest":
-		return UITheme{
-			Primary:        Color("#83C092"), // Muted Sage Aqua
-			Secondary:      Color("#E69875"), // Warm Terracotta
-			Highlight:      Color("#DBBC7F"), // Warm Sand
-			Text:           Color("#D3C6AA"), // Soft Cream Fg
-			TextMuted:      Color("#859289"), // Moss Gray
-			Background:     Color("#272E33"), // Deep Olive Charcoal
-			Border:         Color("#3D484D"), // Muted Deep Slate
-			BorderActive:   Color("#A7C080"), // Soft Grass Green
-			BorderInactive: Color("#3D484D"), // Muted Deep Slate
-			Success:        Color("#A7C080"), // Grass Green
-			Warning:        Color("#DBBC7F"), // Earth Yellow
-			Error:          Color("#E67E80"), // Muted Terracotta Red
-			ChromaStyle:    "everforest",
-		}
-
-	// Classic earthy warm palette
+		return makeTheme(
+			"#83C092", "#E69875", "#DBBC7F",
+			"#D3C6AA", "#859289", "#272E33",
+			"#3D484D", "#A7C080", "",
+			"#A7C080", "#DBBC7F", "#E67E80",
+			"everforest",
+		)
 	case "gruvbox":
-		return UITheme{
-			Primary:        Color("#8EC07C"), // Aqua
-			Secondary:      Color("#D3869B"), // Muted Purple
-			Highlight:      Color("#FE8019"), // Gruvbox Orange
-			Text:           Color("#EBDBB2"), // Warm Sand Parchment
-			TextMuted:      Color("#928374"), // Neutral Gray
-			Background:     Color("#282828"), // Dark Cocoa Base
-			Border:         Color("#504945"), // Dark Gray Brown
-			BorderActive:   Color("#FABD2F"), // Warm Yellow
-			BorderInactive: Color("#504945"), // Dark Gray Brown
-			Success:        Color("#B8BB26"), // Earth Green
-			Warning:        Color("#FABD2F"), // Warm Ochre
-			Error:          Color("#FB4934"), // Soft Vermilion
-			ChromaStyle:    "gruvbox",
-		}
-
-	// Clean, anti-glare monochrome without blinding pure-whites
+		return makeTheme(
+			"#8EC07C", "#D3869B", "#FE8019",
+			"#EBDBB2", "#928374", "#282828",
+			"#504945", "#FABD2F", "",
+			"#B8BB26", "#FABD2F", "#FB4934",
+			"gruvbox",
+		)
 	case "mono", "plain", "minimal":
-		return UITheme{
-			Primary:        Color("#D4D4D4"), // Crisp medium light gray
-			Secondary:      Color("#9E9E9E"), // Balanced mid-tone gray
-			Highlight:      Color("#FFFFFF"), // Reserved solely for search matches
-			Text:           Color("#E0E0E0"), // 85% off-white (prevents halation)
-			TextMuted:      Color("#666666"), // Subdued reading gray
-			Background:     Color("#121212"), // OLED/Dark neutral
-			Border:         Color("#2E2E2E"), // Receded quiet border
-			BorderActive:   Color("#A0A0A0"), // Visible active focus border
-			BorderInactive: Color("#2E2E2E"), // Receded quiet border
-			Success:        Color("#87AF87"), // Low-saturation sage
-			Warning:        Color("#D7AF87"), // Low-saturation sand
-			Error:          Color("#D75F5F"), // Low-saturation brick red
-			ChromaStyle:    "bw",
-		}
-
-	// Light / solarized theme
+		return makeTheme(
+			"#D4D4D4", "#9E9E9E", "#FFFFFF",
+			"#E0E0E0", "#666666", "#121212",
+			"#2E2E2E", "#A0A0A0", "",
+			"#87AF87", "#D7AF87", "#D75F5F",
+			"bw",
+		)
 	case "light":
-		return UITheme{
-			Primary:        Color("#268BD2"), // Solarized Blue
-			Secondary:      Color("#D33682"), // Solarized Magenta
-			Highlight:      Color("#B58900"), // Warm Ochre
-			Text:           Color("#475B62"), // Solarized Dark Slate
-			TextMuted:      Color("#93A1A1"), // Muted Silver Gray
-			Background:     Color("#FDF6E3"), // Solarized Base
-			Border:         Color("#93A1A1"), // Muted Silver
-			BorderActive:   Color("#268BD2"), // Blue Border
-			BorderInactive: Color("#EEE8D5"), // Light Inactive Border
-			Success:        Color("#859900"), // Warm Green
-			Warning:        Color("#B58900"), // Warm Ochre
-			Error:          Color("#DC322F"), // Muted Red
-			ChromaStyle:    "solarized-light",
-		}
-
-	// Japanese mineral pigments (Ultra-low eye fatigue, zero glare)
+		return makeTheme(
+			"#268BD2", "#D33682", "#B58900",
+			"#475B62", "#93A1A1", "#FDF6E3",
+			"#93A1A1", "#268BD2", "#EEE8D5",
+			"#859900", "#B58900", "#DC322F",
+			"solarized-light",
+		)
 	case "kanagawa", "kanagawa-wave":
-		return UITheme{
-			Primary:        Color("#7E9CD8"), // Crystal Blue (Muted, anti-glare)
-			Secondary:      Color("#957FB8"), // Spring Violet (Low-saturation iris)
-			Highlight:      Color("#DCA561"), // Autumn Ochre (Warm desaturated sand)
-			Text:           Color("#DCD7BA"), // Fuji White (Warm parchment, zero eye strain)
-			TextMuted:      Color("#727169"), // Sumi Gray (Balanced readable neutral)
-			Background:     Color("#1F1F28"), // Sumi Ink (Deep matte charcoal)
-			Border:         Color("#2A2A37"), // Subdued ink divider
-			BorderActive:   Color("#7E9CD8"), // Focused crystal blue
-			BorderInactive: Color("#2A2A37"), // Subdued ink divider
-			Success:        Color("#76946A"), // Forest Moss (Calm organic green)
-			Warning:        Color("#E6C384"), // Pale Ochre (Soft natural caution)
-			Error:          Color("#C34043"), // Lacquer Red (Deep brick red, not neon)
-			ChromaStyle:    "dracula",
-		}
-
-	// Nocturnal foam & desaturated mauve (Zero retina burn)
+		return makeTheme(
+			"#7E9CD8", "#957FB8", "#DCA561",
+			"#DCD7BA", "#727169", "#1F1F28",
+			"#2A2A37", "#7E9CD8", "",
+			"#76946A", "#E6C384", "#C34043",
+			"dracula",
+		)
 	case "rose-pine", "rose-pine-moon", "rosepine":
-		return UITheme{
-			Primary:        Color("#9CCFD8"), // Foam Aqua (Calm sea foam)
-			Secondary:      Color("#C4A7E7"), // Iris Mauve (Gentle desaturated lilac)
-			Highlight:      Color("#F6C177"), // Desert Gold (Warm honey sand)
-			Text:           Color("#E0DEF4"), // Soft White (Gentle lavender-tinted foreground)
-			TextMuted:      Color("#6E6A86"), // Muted Slate (Low-contrast background text)
-			Background:     Color("#232136"), // Dark Plum Navy (Restful midnight canvas)
-			Border:         Color("#393552"), // Subtle plum border
-			BorderActive:   Color("#9CCFD8"), // Focused foam border
-			BorderInactive: Color("#393552"), // Subtle plum border
-			Success:        Color("#3E8FB0"), // Pine Cyan (Cool oceanic green-blue)
-			Warning:        Color("#F6C177"), // Desert Gold (Warm honey caution)
-			Error:          Color("#EB6F92"), // Muted Berry (Soft rose, no retina burn)
-			ChromaStyle:    "dracula",
-		}
-
-	// Natural earth & paper tone (Zero blue-light fatigue, warm incandescence)
+		return makeTheme(
+			"#9CCFD8", "#C4A7E7", "#F6C177",
+			"#E0DEF4", "#6E6A86", "#232136",
+			"#393552", "#9CCFD8", "",
+			"#3E8FB0", "#F6C177", "#EB6F92",
+			"dracula",
+		)
 	case "zenburn", "earth-calm", "earth":
-		return UITheme{
-			Primary:        Color("#8CD0D3"), // Sea Green (Low-contrast aqua)
-			Secondary:      Color("#DC8CC3"), // Muted Plum (Subdued lavender)
-			Highlight:      Color("#DFAF8F"), // Peach Tan (Warm earthen accent)
-			Text:           Color("#DCDCCC"), // Bleached Parchment (Zero glare paper tone)
-			TextMuted:      Color("#7F9F7F"), // Lichen Sage (Soft green-gray secondary)
-			Background:     Color("#2B2B2B"), // Warm Charcoal (No pure black eye strain)
-			Border:         Color("#3F3F3F"), // Subdued charcoal border
-			BorderActive:   Color("#8CD0D3"), // Focused aqua border
-			BorderInactive: Color("#3F3F3F"), // Subdued charcoal border
-			Success:        Color("#7F9F7F"), // Lichen Green (Restful organic green)
-			Warning:        Color("#DFAF8F"), // Peach Tan (Low-saturation warning)
-			Error:          Color("#CC9393"), // Muted Brick (Dusty terracotta red)
-			ChromaStyle:    "friendly",
-		}
-
-	// Arctic, clean, blue-gray tone
+		return makeTheme(
+			"#8CD0D3", "#DC8CC3", "#DFAF8F",
+			"#DCDCCC", "#7F9F7F", "#2B2B2B",
+			"#3F3F3F", "#8CD0D3", "",
+			"#7F9F7F", "#DFAF8F", "#CC9393",
+			"friendly",
+		)
 	case "dark", "nord", "nord-calm":
 		fallthrough
 	default:
-		return UITheme{
-			Primary:        Color("#88C0D0"), // Frost Cyan
-			Secondary:      Color("#81A1C1"), // Glacier Slate (Balanced auxiliary tone)
-			Highlight:      Color("#8FBCBB"), // Soft Sea Green
-			Text:           Color("#D8DEE9"), // Snow Mist (Subdued gray-white, prevents halation)
-			TextMuted:      Color("#616E88"), // Polar Twilight Gray
-			Background:     Color("#2E3440"), // Deep Polar Blue
-			Border:         Color("#3B4252"), // Subdued Dark Polar
-			BorderActive:   Color("#88C0D0"), // Bright Ice Blue
-			BorderInactive: Color("#3B4252"), // Subdued Dark Polar
-			Success:        Color("#A3BE8C"), // Sage Green
-			Warning:        Color("#EBCB8B"), // Soft Ochre
-			Error:          Color("#BF616A"), // Rust Red
-			ChromaStyle:    "nord",
-		}
+		return makeTheme(
+			"#88C0D0", "#81A1C1", "#8FBCBB",
+			"#D8DEE9", "#616E88", "#2E3440",
+			"#3B4252", "#88C0D0", "",
+			"#A3BE8C", "#EBCB8B", "#BF616A",
+			"nord",
+		)
 	}
 }
+
+// ResolveConfiguredTheme returns the UITheme configured by theme name and syntax highlighting theme.
+func ResolveConfiguredTheme(themeName, syntaxTheme string) UITheme {
+	theme := GetTheme(themeName)
+	if syntaxTheme != "" && syntaxTheme != "auto" {
+		theme.ChromaStyle = syntaxTheme
+	}
+	return theme
+}
+
+// GetThemeNames returns all supported UI theme identifiers.
+func GetThemeNames() []string {
+	return []string{
+		"catppuccin-mocha",
+		"tokyo-night",
+		"everforest",
+		"gruvbox",
+		"minimal",
+		"light",
+		"kanagawa",
+		"rose-pine",
+		"zenburn",
+		"nord",
+	}
+}
+
+// GetSyntaxThemeNames returns standard supported chroma syntax highlighting styles.
+func GetSyntaxThemeNames() []string {
+	return []string{
+		"catppuccin-mocha",
+		"tokyonight-night",
+		"everforest",
+		"gruvbox",
+		"bw",
+		"solarized-light",
+		"dracula",
+		"friendly",
+		"nord",
+		"monokai",
+	}
+}
+
+// PromptStyle returns the style for input prompts.
+func (t UITheme) PromptStyle() Style {
+	return NewStyle().Foreground(t.Primary).Bold(true)
+}
+
+// FormatPromptWithQueue formats the prompt prefix with optional queue indicator and theme colors.
+func FormatPromptWithQueue(theme UITheme, promptPrefix string, qLen int) (promptStr, fullPrefixPlain string) {
+	queuePrefix := ""
+	fullPrefixPlain = promptPrefix
+	if qLen > 0 {
+		queuePrefix = NewStyle().Foreground(theme.Highlight).Bold(true).Render(fmt.Sprintf("[queue: %d] ", qLen))
+		fullPrefixPlain = fmt.Sprintf("[queue: %d] %s", qLen, promptPrefix)
+	}
+	promptStr = queuePrefix + theme.PromptStyle().Render(promptPrefix)
+	return promptStr, fullPrefixPlain
+}
+

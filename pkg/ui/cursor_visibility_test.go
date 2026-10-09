@@ -53,12 +53,12 @@ func TestRedrawTypeAheadLeavesCursorAtLiveInputPosition(t *testing.T) {
 		CurrentWriter: writer,
 	}
 	reader := &keyInterceptorReader{
-		agent:           a,
-		w:               &output,
-		typeAheadBuffer: []byte("hello"),
+		Agent:           a,
+		W:               &output,
+		TypeAheadBuffer: []byte("hello"),
 	}
 
-	reader.redrawTypeAhead()
+	reader.RedrawTypeAhead()
 
 	got := output.String()
 	if strings.Contains(got, "\x1b[?25") {
@@ -139,9 +139,9 @@ func TestDrawConsoleStaticControlsCursorPosition(t *testing.T) {
 	useIsolatedCursorTestUI(t)
 	a := &agent.Agent{Config: &config.Config{}}
 	ki := &keyInterceptorReader{
-		agent:            a,
-		currentInputLine: "hello",
-		currentInputPos:  5,
+		Agent:            a,
+		CurrentInputLine: "hello",
+		CurrentInputPos:  5,
 	}
 
 	var buf bytes.Buffer

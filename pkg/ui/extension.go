@@ -14,6 +14,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/domain/tool"
 )
 
 // RunExtension checks for a custom executable script matching the slash command and runs it securely.
@@ -30,15 +31,8 @@ func RunExtension(
 
 	// Strip leading slash (e.g. "/stats" -> "stats")
 	name := strings.TrimPrefix(cmdName, "/")
-	if name == "" {
+	if !tool.IsSafeIdentifier(name) {
 		return false, nil
-	}
-
-	// Validate name characters to prevent directory traversal
-	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-			return false, nil
-		}
 	}
 
 	// Define extension directories (both global and workspace-local)

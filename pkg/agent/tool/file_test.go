@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	filetool "loop/pkg/agent/tool/file"
 )
 
 type fileTestContext struct {
@@ -588,7 +590,7 @@ func TestAtomicWriteFile(t *testing.T) {
 	targetFile := filepath.Join(tmpDir, "sub", "test_atomic.txt")
 
 	data := []byte("hello atomic world")
-	if err := atomicWriteFile(targetFile, data, 0644); err != nil {
+	if err := filetool.AtomicWriteFile(targetFile, data, 0644); err != nil {
 		t.Fatalf("atomicWriteFile failed: %v", err)
 	}
 
@@ -602,7 +604,7 @@ func TestAtomicWriteFile(t *testing.T) {
 
 	// Overwrite atomically
 	newData := []byte("overwritten atomically")
-	if err := atomicWriteFile(targetFile, newData, 0644); err != nil {
+	if err := filetool.AtomicWriteFile(targetFile, newData, 0644); err != nil {
 		t.Fatalf("atomicWriteFile overwrite failed: %v", err)
 	}
 

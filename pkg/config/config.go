@@ -130,31 +130,21 @@ func DefaultConfig() *Config {
 	}
 }
 
-var defaultTemplate []byte
-var defaultProvidersTemplate []byte
-var defaultMCPTemplate []byte
-
-func SetDefaultTemplate(template []byte, providers []byte, mcp []byte) {
-	defaultTemplate = template
-	defaultProvidersTemplate = providers
-	defaultMCPTemplate = mcp
-}
-
 func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		var conf *Config
-		if len(defaultTemplate) > 0 {
+		if len(embeddedDefaultConfig) > 0 {
 			conf = DefaultConfig()
-			if err := json.Unmarshal(defaultTemplate, conf); err != nil {
+			if err := json.Unmarshal(embeddedDefaultConfig, conf); err != nil {
 				conf = DefaultConfig()
 			}
 		} else {
 			conf = DefaultConfig()
 		}
 
-		if len(defaultProvidersTemplate) > 0 {
+		if len(embeddedDefaultProviders) > 0 {
 			var provFile ProvidersFile
-			if err := json.Unmarshal(defaultProvidersTemplate, &provFile); err == nil && provFile.Providers != nil {
+			if err := json.Unmarshal(embeddedDefaultProviders, &provFile); err == nil && provFile.Providers != nil {
 				conf.Providers = provFile.Providers
 				if provFile.ActiveProvider != "" {
 					conf.ActiveProvider = provFile.ActiveProvider
@@ -162,9 +152,9 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
-		if len(defaultMCPTemplate) > 0 {
+		if len(embeddedDefaultMCP) > 0 {
 			var mcpMap map[string]MCPServerConfig
-			if err := json.Unmarshal(defaultMCPTemplate, &mcpMap); err == nil && mcpMap != nil {
+			if err := json.Unmarshal(embeddedDefaultMCP, &mcpMap); err == nil && mcpMap != nil {
 				conf.MCPServers = mcpMap
 			}
 		}
@@ -455,4 +445,19 @@ func GetTLSConfig(config *Config) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// ParseHeaderArgs parses key:value or key=value header arguments into a map.
+func ParseHeaderArgs(args []string) map[string]string {
+	headers := make(map[string]string)
+	for _, arg := range args {
+		parts := strings.SplitN(arg, ":", 2)
+		if len(parts) != 2 {
+			parts = strings.SplitN(arg, "=", 2)
+		}
+		if len(parts) == 2 {
+			headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return headers
 }

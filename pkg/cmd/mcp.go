@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,15 +17,7 @@ var mcpCmd = &cobra.Command{
 var mcpListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured MCP servers",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
-		}
-		theme := ui.GetConfiguredTheme(cfg)
-		ui.RenderMCPServers(os.Stdout, cfg, theme)
-	},
+	Run:   runRenderCmd(ui.RenderMCPServers),
 }
 
 var mcpAddCmd = &cobra.Command{
@@ -35,23 +25,13 @@ var mcpAddCmd = &cobra.Command{
 	Short: "Add a new MCP server configuration",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		name := args[0]
 		url := args[1]
-		headers := make(map[string]string)
-		for _, arg := range args[2:] {
-			parts := strings.SplitN(arg, ":", 2)
-			if len(parts) != 2 {
-				parts = strings.SplitN(arg, "=", 2)
-			}
-			if len(parts) == 2 {
-				headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
+		headers := config.ParseHeaderArgs(args[2:])
 
 		if cfg.MCPServers == nil {
 			cfg.MCPServers = make(map[string]config.MCPServerConfig)
@@ -60,7 +40,7 @@ var mcpAddCmd = &cobra.Command{
 			URL:     url,
 			Headers: headers,
 		}
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return
@@ -74,9 +54,8 @@ var mcpRemoveCmd = &cobra.Command{
 	Short: "Remove an MCP server configuration",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig(configPath)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
 			return
 		}
 		name := args[0]
@@ -89,7 +68,7 @@ var mcpRemoveCmd = &cobra.Command{
 		}
 
 		delete(cfg.MCPServers, name)
-		err = config.SaveConfig(configPath, cfg)
+		err := config.SaveConfig(configPath, cfg)
 		if err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
 			return

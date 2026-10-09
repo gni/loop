@@ -19,23 +19,17 @@ func (t *loadSkillTool) PromptSnippet() string {
 }
 
 func (t *loadSkillTool) Definition() Tool {
-	return Tool{
-		Type: "function",
-		Function: FunctionDefinition{
-			Name:        "load_skill",
-			Description: "Retrieve the detailed instructions, tools, or references for a specific skill from the available skills list.",
-			Parameters: JSONSchema{
-				Type: "object",
-				Properties: map[string]SchemaProp{
-					"name": {
-						Type:        "string",
-						Description: "The name of the skill to load (e.g. 'agent-isolation').",
-					},
-				},
-				Required: []string{"name"},
+	return NewFunctionTool(
+		"load_skill",
+		"Retrieve the detailed instructions, tools, or references for a specific skill from the available skills list.",
+		map[string]SchemaProp{
+			"name": {
+				Type:        "string",
+				Description: "The name of the skill to load (e.g. 'agent-isolation').",
 			},
 		},
-	}
+		"name",
+	)
 }
 
 func (t *loadSkillTool) Execute(ctx AgentContext, arguments string) (string, error) {

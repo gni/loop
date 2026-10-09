@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -9,10 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alecthomas/chroma/v2/quick"
 	"loop/pkg/agent"
+	"loop/pkg/ui/render"
+	"loop/pkg/ui/stream"
 	"loop/pkg/ui/style"
 )
+
 
 type StreamRenderer struct {
 	mu                        sync.Mutex
@@ -33,22 +34,8 @@ type StreamRenderer struct {
 	lastEndedWithNewline bool
 	hasWrittenText       bool
 	hasWrittenThoughts   bool
-	parser               *jsonStreamParser
-	live                 *liveMarkdownRenderer
-}
-
-func findPromptPreservingWriter(w io.Writer) *PromptPreservingWriter {
-	for w != nil {
-		if ppw, ok := w.(*PromptPreservingWriter); ok {
-			return ppw
-		}
-		if unwrapper, ok := w.(interface{ Unwrap() io.Writer }); ok {
-			w = unwrapper.Unwrap()
-		} else {
-			break
-		}
-	}
-	return nil
+	parser               *stream.JSONStreamParser
+	live                 *stream.LiveMarkdownRenderer
 }
 
 func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrites bool, _ string) *StreamRenderer {
@@ -57,11 +44,9 @@ func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrit
 		theme:                theme,
 		showThinking:         showThinking,
 		lastEndedWithNewline: true,
-		live:                 newLiveMarkdownRenderer(w, theme),
+		live:                 stream.NewLiveMarkdownRenderer(w, theme),
 	}
-	sr.parser = &jsonStreamParser{
-		streamWrites: streamWrites,
-	}
+	sr.parser = stream.NewJSONStreamParser(streamWrites)
 	return sr
 }
 
@@ -77,11 +62,6 @@ func (sr *StreamRenderer) getThinkingStyle() style.Style {
 		border = style.Color("#4C566A")
 	}
 	return style.NewStyle().Foreground(border).Italic(true)
-}
-
-func (sr *StreamRenderer) printReasoningLine(line string) {
-	dimStyle := sr.getThinkingStyle()
-	fmt.Fprint(sr.w, dimStyle.Render(line))
 }
 
 func (sr *StreamRenderer) SetPrompt(prompt string) {
@@ -114,6 +94,10 @@ func (sr *StreamRenderer) WriteReasoning(chunk string) {
 		return
 	}
 
+	sr.writeReasoningChunk(chunk)
+}
+
+func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 	sr.checkFirstWrite()
 
 	dimStyle := sr.getThinkingStyle()
@@ -145,21 +129,7 @@ func (sr *StreamRenderer) endThinking() {
 		rem := sr.echoFilter.Flush()
 		sr.echoFilter = nil
 		if rem != "" && strings.TrimSpace(rem) != "" {
-			sr.checkFirstWrite()
-			dimStyle := sr.getThinkingStyle()
-			startSeq, resetSeq := dimStyle.GetSequence()
-			if !sr.inThinking {
-				sr.inThinking = true
-				sr.reasoningStart = time.Now()
-				sr.reasoningHasText = false
-				sr.reasoningEndedWithNewline = false
-				sr.pendingThoughtTextGap = false
-				sr.reasoningResetSequence = resetSeq
-			}
-			sr.hasWrittenThoughts = true
-			sr.reasoningHasText = true
-			sr.reasoningEndedWithNewline = strings.HasSuffix(rem, "\n")
-			fmt.Fprint(sr.w, startSeq+rem+resetSeq)
+			sr.writeReasoningChunk(rem)
 		}
 	}
 
@@ -229,7 +199,7 @@ func (sr *StreamRenderer) Flush() {
 
 func (sr *StreamRenderer) flushLocked() {
 	sr.endThinking()
-	if sr.pendingThoughtTextGap && sr.parser != nil && sr.parser.activeToolName != "" {
+	if sr.pendingThoughtTextGap && sr.parser != nil && sr.parser.ActiveToolName != "" {
 		fmt.Fprint(sr.w, "\n")
 		sr.pendingThoughtTextGap = false
 	}
@@ -239,189 +209,29 @@ func (sr *StreamRenderer) flushLocked() {
 }
 
 func (sr *StreamRenderer) flushActiveToolLocked() {
-	if sr.parser != nil && sr.parser.activeToolName != "" {
-		if !sr.parser.titlePrinted {
-			if sr.parser.activeToolName != "bash" || strings.TrimSpace(sr.parser.path) != "" {
-				sr.parser.printStreamTitle(sr.w, sr.theme)
+	if sr.parser != nil && sr.parser.ActiveToolName != "" {
+		if !sr.parser.TitlePrinted {
+			if sr.parser.ActiveToolName != "bash" || strings.TrimSpace(sr.parser.Path) != "" {
+				sr.parser.PrintStreamTitle(sr.w, sr.theme)
 			}
 		}
-		sr.parser.flushOutputBuf(sr.w, sr.theme)
-		if sr.parser.lineBuffer.Len() > 0 {
-			sr.parser.emitLine(sr.w, sr.theme)
+		sr.parser.FlushOutputBuf(sr.w, sr.theme)
+		if sr.parser.LineBuffer.Len() > 0 {
+			sr.parser.EmitLine(sr.w, sr.theme)
 		}
 	}
 }
 
 func (sr *StreamRenderer) printNormalLine(line string) {
-	trimmed := strings.TrimSpace(line)
-
-	// 0. Handle delimiter: make a space instead of "----"
-	if trimmed == "----" {
-		fmt.Fprint(sr.w, " ")
-		return
-	}
-
-	// 1. Handle headers: e.g. "# Header", "## Header", etc.
-	if strings.HasPrefix(trimmed, "#") {
-		hashes := 0
-		for hashes < len(trimmed) && trimmed[hashes] == '#' {
-			hashes++
-		}
-		headerText := strings.TrimSpace(trimmed[hashes:])
-		var styled string
-		if hashes == 1 {
-			styled = style.NewStyle().Foreground(sr.theme.Secondary).Bold(true).Underline(true).Render(headerText)
-		} else {
-			styled = style.NewStyle().Foreground(sr.theme.Secondary).Bold(true).Render(headerText)
-		}
-		fmt.Fprint(sr.w, styled)
-		return
-	}
-
-	// 2. Handle blockquotes: e.g. "> text"
-	if strings.HasPrefix(trimmed, ">") {
-		quoteText := strings.TrimSpace(trimmed[1:])
-		styled := style.NewStyle().Foreground(sr.theme.Border).Italic(true).Render("┃ " + quoteText)
-		fmt.Fprint(sr.w, styled)
-		return
-	}
-
-	// 3. Handle bullet points: e.g. "- item" or "* item"
-	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "• ") {
-		bulletText := trimmed[2:]
-		bulletSymbol := style.NewStyle().Foreground(sr.theme.Primary).Render("•")
-		fmt.Fprintf(sr.w, "  %s %s", bulletSymbol, sr.renderInlineMarkdown(bulletText))
-		return
-	}
-
-	// 3.5 Handle numbered lists: e.g. "1. item"
-	if ok, numPrefix, listText := isNumberedList(trimmed); ok {
-		numSymbol := style.NewStyle().Foreground(sr.theme.Primary).Render(numPrefix)
-		fmt.Fprintf(sr.w, "  %s %s", numSymbol, sr.renderInlineMarkdown(listText))
-		return
-	}
-
-	// 4. Standard text line: parse inline styles (bold, code, italic)
-	fmt.Fprint(sr.w, sr.renderInlineMarkdown(line))
+	render.PrintNormalMarkdownLine(sr.w, line, sr.theme)
 }
 
 func (sr *StreamRenderer) renderInlineMarkdown(text string) string {
-	var result strings.Builder
-	runes := []rune(text)
-	n := len(runes)
-
-	for i := 0; i < n; {
-		// 1. Inline code: `code`
-		if runes[i] == '`' {
-			j := i + 1
-			for j < n && runes[j] != '`' {
-				j++
-			}
-			if j < n {
-				codeVal := string(runes[i+1 : j])
-				var styled string
-				if sr.inThinking {
-					styled = style.NewStyle().Foreground(sr.theme.Border).Underline(true).Italic(true).Render(codeVal)
-				} else {
-					styled = style.NewStyle().Foreground(sr.theme.Highlight).Render(codeVal)
-				}
-				result.WriteString(styled)
-				i = j + 1
-				continue
-			}
-		}
-
-		// 2. Bold: **bold**
-		if i+1 < n && runes[i] == '*' && runes[i+1] == '*' {
-			j := i + 2
-			found := false
-			for j+1 < n {
-				if runes[j] == '*' && runes[j+1] == '*' {
-					found = true
-					break
-				}
-				j++
-			}
-			if found {
-				boldVal := string(runes[i+2 : j])
-				var styled string
-				if sr.inThinking {
-					styled = style.NewStyle().Foreground(sr.theme.Border).Bold(true).Italic(true).Render(sr.renderInlineMarkdown(boldVal))
-				} else {
-					styled = style.NewStyle().Foreground(sr.theme.Primary).Bold(true).Render(sr.renderInlineMarkdown(boldVal))
-				}
-				result.WriteString(styled)
-				i = j + 2
-				continue
-			}
-		}
-
-		// 3. Italic: *italic*
-		if runes[i] == '*' {
-			j := i + 1
-			for j < n && runes[j] != '*' {
-				j++
-			}
-			if j < n {
-				italicVal := string(runes[i+1 : j])
-				var styled string
-				if sr.inThinking {
-					styled = style.NewStyle().Foreground(sr.theme.Border).Italic(true).Render(sr.renderInlineMarkdown(italicVal))
-				} else {
-					styled = style.NewStyle().Italic(true).Render(sr.renderInlineMarkdown(italicVal))
-				}
-				result.WriteString(styled)
-				i = j + 1
-				continue
-			}
-		}
-
-		result.WriteRune(runes[i])
-		i++
-	}
-
-	return result.String()
+	return render.RenderInlineMarkdown(text, sr.inThinking, sr.theme)
 }
 
 func HighlightWithoutTrailingNewline(w io.Writer, source, lang, chromaStyle string) error {
-	if strings.Contains(source, "\x1b") {
-		source = style.StripAnsi(source)
-	}
-	switch strings.ToLower(lang) {
-	case "md":
-		lang = "markdown"
-	case "yml":
-		lang = "yaml"
-	case "js":
-		lang = "javascript"
-	case "ts":
-		lang = "typescript"
-	case "py":
-		lang = "python"
-	case "sh":
-		lang = "bash"
-	}
-	if chromaStyle == "" {
-		chromaStyle = "friendly"
-	}
-	var buf bytes.Buffer
-	err := quick.Highlight(&buf, source, lang, "terminal16", chromaStyle)
-	if err != nil {
-		_, writeErr := io.WriteString(w, source)
-		return writeErr
-	}
-	data := buf.Bytes()
-	if !strings.Contains(source, "\n") {
-		var stripped []byte
-		for _, b := range data {
-			if b != '\n' && b != '\r' {
-				stripped = append(stripped, b)
-			}
-		}
-		data = stripped
-	}
-	_, err = w.Write(data)
-	return err
+	return render.HighlightWithoutTrailingNewline(w, source, lang, chromaStyle)
 }
 
 func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
@@ -441,33 +251,33 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	}
 
 	if sr.parser != nil {
-		if sr.parser.activeToolName != "" && sr.parser.activeToolIndex == toolCallIndex {
-			sr.parser.activeToolName = toolName
+		if sr.parser.ActiveToolName != "" && sr.parser.ActiveToolIndex == toolCallIndex {
+			sr.parser.ActiveToolName = toolName
 			return
 		}
-		if sr.parser.activeToolName != "" {
+		if sr.parser.ActiveToolName != "" {
 			sr.flushActiveToolLocked()
 		}
-		sr.parser.activeToolIndex = toolCallIndex
-		sr.parser.ensureTrackingIndex()
-		sr.parser.toolTitleLineNumbers[toolCallIndex] = -1
-		sr.parser.toolBodyStreamed[toolCallIndex] = false
-		sr.parser.activeToolName = toolName
-		sr.parser.titlePrinted = false
-		sr.parser.path = ""
-		sr.parser.pathPrinted = false
-		sr.parser.isContent = false
-		sr.parser.isPath = false
-		sr.parser.outputBuf.Reset()
-		sr.parser.lineBuffer.Reset()
-		sr.parser.inString = false
-		sr.parser.inEscape = false
-		sr.parser.currentKey = ""
-		sr.parser.inValue = false
-		sr.parser.buf.Reset()
+		sr.parser.ActiveToolIndex = toolCallIndex
+		sr.parser.EnsureTrackingIndex()
+		sr.parser.ToolTitleLineNumbers[toolCallIndex] = -1
+		sr.parser.ToolBodyStreamed[toolCallIndex] = false
+		sr.parser.ActiveToolName = toolName
+		sr.parser.TitlePrinted = false
+		sr.parser.Path = ""
+		sr.parser.PathPrinted = false
+		sr.parser.IsContent = false
+		sr.parser.IsPath = false
+		sr.parser.OutputBuf.Reset()
+		sr.parser.LineBuffer.Reset()
+		sr.parser.InString = false
+		sr.parser.InEscape = false
+		sr.parser.CurrentKey = ""
+		sr.parser.InValue = false
+		sr.parser.Buf.Reset()
 
-		if sr.parser.streamWrites && !sr.parser.needsPath() {
-			sr.parser.printStreamTitle(sr.w, sr.theme)
+		if sr.parser.StreamWrites && !sr.parser.NeedsPath() {
+			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
 	}
 }
@@ -481,7 +291,7 @@ func (sr *StreamRenderer) WriteToolCall(content string) {
 	}
 
 	if sr.parser != nil {
-		sr.parser.feed(content, sr.w, sr.theme)
+		sr.parser.Feed(content, sr.w, sr.theme)
 	}
 }
 
@@ -496,32 +306,32 @@ func (sr *StreamRenderer) GetToolTitleLineNumber(index int) int {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if sr.parser == nil || index < 0 || index >= len(sr.parser.toolTitleLineNumbers) {
+	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return -1
 	}
-	return sr.parser.toolTitleLineNumbers[index]
+	return sr.parser.ToolTitleLineNumbers[index]
 }
 
 func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	return sr.parser != nil && index >= 0 && index < len(sr.parser.toolBodyStreamed) && sr.parser.toolBodyStreamed[index]
+	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
 }
 
 func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs string, isError bool) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if sr.parser == nil || index < 0 || index >= len(sr.parser.toolTitleLineNumbers) {
+	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return
 	}
-	if sr.parser.toolTitleLineNumbers[index] < 0 {
+	if sr.parser.ToolTitleLineNumbers[index] < 0 {
 		return
 	}
 	target := extractToolTarget(toolName, toolArgs)
-	if target == "" && sr.parser.path != "" {
-		target = sr.parser.path
+	if target == "" && sr.parser.Path != "" {
+		target = sr.parser.Path
 	}
 	if strings.TrimSpace(target) == "" {
 		return
@@ -532,103 +342,14 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 	}
 	symbol := renderToolSymbol(toolName, status, sr.theme)
 	if toolName == "bash" {
-		replaceTrackedStreamLine(sr.w, sr.parser.toolTitleLineNumbers[index], FormatBashCommandLine(symbol, target, sr.theme))
+		stream.ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatBashCommandLine(symbol, target, sr.theme))
 		return
 	}
-	replaceTrackedStreamLine(sr.w, sr.parser.toolTitleLineNumbers[index], FormatToolTitle(symbol, toolName, target, sr.theme))
+	stream.ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatToolTitle(symbol, toolName, target, sr.theme))
 }
 
 func (sr *StreamRenderer) GetReasoningDuration() float64 {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	return sr.reasoningDuration
-}
-
-func isNumberedList(trimmed string) (bool, string, string) {
-	if len(trimmed) < 3 {
-		return false, "", ""
-	}
-	spIdx := strings.Index(trimmed, " ")
-	if spIdx == -1 {
-		return false, "", ""
-	}
-	prefix := trimmed[:spIdx]
-	if len(prefix) < 2 || !strings.HasSuffix(prefix, ".") {
-		return false, "", ""
-	}
-	numPart := prefix[:len(prefix)-1]
-	for _, r := range numPart {
-		if r < '0' || r > '9' {
-			return false, "", ""
-		}
-	}
-	return true, prefix, trimmed[spIdx+1:]
-}
-
-func wrapMarkdownLine(line string, width int) []string {
-	if width <= 10 {
-		return []string{line}
-	}
-	trimmed := strings.TrimSpace(line)
-	var prefix string
-	var content string
-
-	if strings.HasPrefix(trimmed, ">") {
-		prefix = "> "
-		content = strings.TrimSpace(trimmed[1:])
-	} else if strings.HasPrefix(trimmed, "- ") {
-		prefix = "- "
-		content = trimmed[2:]
-	} else if strings.HasPrefix(trimmed, "* ") {
-		prefix = "* "
-		content = trimmed[2:]
-	} else if strings.HasPrefix(trimmed, "• ") {
-		prefix = "• "
-		content = trimmed[2:]
-	} else if ok, numPrefix, listText := isNumberedList(trimmed); ok {
-		prefix = numPrefix + " "
-		content = listText
-	} else {
-		content = line
-	}
-
-	var leadingSpaces string
-	if prefix == "" {
-		for _, r := range line {
-			if r == ' ' {
-				leadingSpaces += " "
-			} else {
-				break
-			}
-		}
-	}
-
-	words := strings.Split(content, " ")
-	var lines []string
-	var currentLine strings.Builder
-
-	effectiveWidth := width - len(prefix) - len(leadingSpaces)
-	if effectiveWidth < 15 {
-		effectiveWidth = 15
-	}
-
-	for _, word := range words {
-		if currentLine.Len() == 0 {
-			currentLine.WriteString(word)
-		} else if currentLine.Len()+1+len(word) <= effectiveWidth {
-			currentLine.WriteByte(' ')
-			currentLine.WriteString(word)
-		} else {
-			lines = append(lines, prefix+leadingSpaces+currentLine.String())
-			currentLine.Reset()
-			currentLine.WriteString(word)
-		}
-	}
-	if currentLine.Len() > 0 {
-		lines = append(lines, prefix+leadingSpaces+currentLine.String())
-	}
-	if len(lines) == 0 {
-		lines = append(lines, line)
-	}
-	return lines
 }
