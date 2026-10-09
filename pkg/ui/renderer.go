@@ -241,7 +241,9 @@ func (sr *StreamRenderer) flushLocked() {
 func (sr *StreamRenderer) flushActiveToolLocked() {
 	if sr.parser != nil && sr.parser.activeToolName != "" {
 		if !sr.parser.titlePrinted {
-			sr.parser.printStreamTitle(sr.w, sr.theme)
+			if sr.parser.activeToolName != "bash" || strings.TrimSpace(sr.parser.path) != "" {
+				sr.parser.printStreamTitle(sr.w, sr.theme)
+			}
 		}
 		sr.parser.flushOutputBuf(sr.w, sr.theme)
 		if sr.parser.lineBuffer.Len() > 0 {
@@ -463,6 +465,10 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.currentKey = ""
 		sr.parser.inValue = false
 		sr.parser.buf.Reset()
+
+		if sr.parser.streamWrites && !sr.parser.needsPath() {
+			sr.parser.printStreamTitle(sr.w, sr.theme)
+		}
 	}
 }
 
@@ -510,12 +516,21 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.toolTitleLineNumbers) {
 		return
 	}
+	if sr.parser.toolTitleLineNumbers[index] < 0 {
+		return
+	}
+	target := extractToolTarget(toolName, toolArgs)
+	if target == "" && sr.parser.path != "" {
+		target = sr.parser.path
+	}
+	if strings.TrimSpace(target) == "" {
+		return
+	}
 	status := toolStatusSuccess
 	if isError {
 		status = toolStatusError
 	}
 	symbol := renderToolSymbol(toolName, status, sr.theme)
-	target := extractToolTarget(toolName, toolArgs)
 	if toolName == "bash" {
 		replaceTrackedStreamLine(sr.w, sr.parser.toolTitleLineNumbers[index], FormatBashCommandLine(symbol, target, sr.theme))
 		return

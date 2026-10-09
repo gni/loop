@@ -40,14 +40,17 @@ type jsonStreamParser struct {
 }
 
 func isToolTargetPathKey(key string, toolName string) bool {
+	if toolName == "todo" {
+		return false
+	}
 	switch key {
 	case "path", "file_path", "filePath", "file", "target", "Target", "target_file", "targetFile", "TargetFile",
 		"filename", "fileName", "file_name", "write_path", "writePath", "AbsolutePath", "absolute_path",
 		"SearchPath", "searchPath", "DirectoryPath", "dirPath", "directory_path", "pattern", "query", "Query",
 		"prompt", "Prompt", "name", "id", "task_id", "url", "URL", "uri", "URI":
 		return true
-	case "command", "CommandLine", "cmd":
-		return toolName == "bash" || toolName == "ls" || strings.Contains(toolName, "command") || strings.Contains(toolName, "exec") || strings.Contains(toolName, "run")
+	case "command", "CommandLine", "cmd", "script", "code", "input", "arguments", "args":
+		return toolName == "bash" || toolName == "ls" || strings.Contains(toolName, "command") || strings.Contains(toolName, "exec") || strings.Contains(toolName, "run") || strings.Contains(toolName, "shell")
 	}
 	return false
 }
@@ -57,6 +60,9 @@ func isToolContentKey(key string, toolName string) bool {
 		return false
 	}
 	lower := strings.ToLower(key)
+	if toolName == "todo" {
+		return lower == "task" || lower == "title" || lower == "description" || lower == "content"
+	}
 	if lower == "description" || lower == "summary" || lower == "explanation" || lower == "overwrite" || lower == "encoding" || lower == "background" {
 		return false
 	}
@@ -152,6 +158,27 @@ func detectLangFromContent(content string) string {
 	return ""
 }
 
+func detectLangFromPath(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case "dockerfile":
+		return "dockerfile"
+	case "makefile":
+		return "makefile"
+	case "go.mod", "go.sum":
+		return "go"
+	case "cargo.toml", "cargo.lock":
+		return "toml"
+	case ".gitignore", ".env":
+		return "bash"
+	}
+	ext := filepath.Ext(path)
+	if len(ext) > 1 {
+		return ext[1:]
+	}
+	return "plaintext"
+}
+
 func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {
 	line := p.lineBuffer.String()
 	p.lineBuffer.Reset()
@@ -162,13 +189,13 @@ func (p *jsonStreamParser) emitLine(w io.Writer, theme UITheme) {
 		return
 	}
 
+	if !p.titlePrinted {
+		p.printStreamTitle(w, theme)
+		p.flushOutputBuf(w, theme)
+	}
+
 	if p.guessedLang == "" && p.path != "" {
-		ext := filepath.Ext(p.path)
-		if len(ext) > 1 {
-			p.guessedLang = ext[1:]
-		} else {
-			p.guessedLang = "plaintext"
-		}
+		p.guessedLang = detectLangFromPath(p.path)
 	}
 	if p.guessedLang == "" || p.guessedLang == "plaintext" {
 		if detected := detectLangFromContent(line); detected != "" {
@@ -191,12 +218,7 @@ func (p *jsonStreamParser) flushOutputBuf(w io.Writer, theme UITheme) {
 	p.outputBuf.Reset()
 
 	if p.guessedLang == "" && p.path != "" {
-		ext := filepath.Ext(p.path)
-		if len(ext) > 1 {
-			p.guessedLang = ext[1:]
-		} else {
-			p.guessedLang = "plaintext"
-		}
+		p.guessedLang = detectLangFromPath(p.path)
 	}
 	if p.guessedLang == "" || p.guessedLang == "plaintext" {
 		if detected := detectLangFromContent(raw); detected != "" {
@@ -216,6 +238,15 @@ func (p *jsonStreamParser) flushOutputBuf(w io.Writer, theme UITheme) {
 		_ = HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
 		fmt.Fprint(w, "\n")
 	}
+}
+
+func (p *jsonStreamParser) emitContent(s string, w io.Writer, theme UITheme) {
+	if !p.titlePrinted {
+		p.printStreamTitle(w, theme)
+		p.flushOutputBuf(w, theme)
+	}
+
+	fmt.Fprint(w, s)
 }
 
 func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
@@ -241,10 +272,14 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 
 				if p.inValue {
 					if p.isContent {
-						if unescaped == "\n" {
-							p.emitLine(w, theme)
+						if p.activeToolName == "todo" {
+							p.emitContent(unescaped, w, theme)
 						} else {
-							p.lineBuffer.WriteString(unescaped)
+							if unescaped == "\n" {
+								p.emitLine(w, theme)
+							} else {
+								p.lineBuffer.WriteString(unescaped)
+							}
 						}
 					} else if p.isPath {
 						p.path += unescaped
@@ -266,19 +301,20 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 						if !p.titlePrinted {
 							p.pathPrinted = true
 							if p.guessedLang == "" && p.path != "" {
-								ext := filepath.Ext(p.path)
-								if len(ext) > 1 {
-									p.guessedLang = ext[1:]
-								} else {
-									p.guessedLang = "plaintext"
-								}
+								p.guessedLang = detectLangFromPath(p.path)
 							}
 							p.printStreamTitle(w, theme)
 							p.flushOutputBuf(w, theme)
 						} else if !p.pathPrinted {
 							p.pathPrinted = true
+							if p.guessedLang == "" && p.path != "" {
+								p.guessedLang = detectLangFromPath(p.path)
+							}
 							p.updateStreamTitleWithPath(w, theme)
 						}
+					}
+					if p.activeToolName == "todo" && p.isContent {
+						fmt.Fprintln(w)
 					}
 					if p.isContent {
 						if p.lineBuffer.Len() > 0 {
@@ -293,10 +329,14 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 				if p.inValue {
 					charStr := string(char)
 					if p.isContent {
-						if char == '\n' {
-							p.emitLine(w, theme)
+						if p.activeToolName == "todo" {
+							p.emitContent(charStr, w, theme)
 						} else {
-							p.lineBuffer.WriteString(charStr)
+							if char == '\n' {
+								p.emitLine(w, theme)
+							} else {
+								p.lineBuffer.WriteString(charStr)
+							}
 						}
 					} else if p.isPath {
 						p.path += charStr
@@ -319,13 +359,11 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 				} else if p.activeToolName != "edit" && isToolContentKey(p.currentKey, p.activeToolName) {
 					if p.streamWrites {
 						p.isContent = true
+						if p.activeToolName == "todo" && (p.currentKey == "task" || p.currentKey == "title" || p.currentKey == "description" || p.currentKey == "content") {
+							fmt.Fprint(w, "  • ")
+						}
 						if p.guessedLang == "" && p.path != "" {
-							ext := filepath.Ext(p.path)
-							if len(ext) > 1 {
-								p.guessedLang = ext[1:]
-							} else {
-								p.guessedLang = "plaintext"
-							}
+							p.guessedLang = detectLangFromPath(p.path)
 						}
 						p.markBodyStreamed()
 						if !p.titlePrinted {
@@ -361,6 +399,9 @@ func (p *jsonStreamParser) feed(chunk string, w io.Writer, theme UITheme) {
 
 func (p *jsonStreamParser) printStreamTitle(w io.Writer, theme UITheme) {
 	if p.titlePrinted {
+		return
+	}
+	if p.activeToolName == "bash" && strings.TrimSpace(p.path) == "" {
 		return
 	}
 	p.titlePrinted = true

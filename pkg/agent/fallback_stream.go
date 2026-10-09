@@ -21,10 +21,22 @@ type fallbackToolTextFilter struct {
 	discardLeadingWhitespace bool
 	emit                     func(string)
 	flushed                  bool
+	emitToolName             func(string, int)
+	emitToolCall             func(string, int)
+	toolCallIndex            int
+	activeToolName           string
 }
 
 func newFallbackToolTextFilter(emit func(string)) *fallbackToolTextFilter {
 	return &fallbackToolTextFilter{emit: emit}
+}
+
+func (f *fallbackToolTextFilter) SetToolCallbacks(emitToolName func(string, int), emitToolCall func(string, int)) {
+	if f == nil {
+		return
+	}
+	f.emitToolName = emitToolName
+	f.emitToolCall = emitToolCall
 }
 
 func (f *fallbackToolTextFilter) Write(chunk string) {
@@ -43,31 +55,94 @@ func (f *fallbackToolTextFilter) Flush() {
 	f.process(true)
 }
 
+func extractFallbackToolName(opening string) string {
+	for _, attr := range []string{`name="`, `name='`} {
+		if idx := strings.Index(opening, attr); idx >= 0 {
+			rest := opening[idx+len(attr):]
+			quote := attr[len(attr)-1]
+			if end := strings.IndexByte(rest, quote); end >= 0 {
+				return rest[:end]
+			}
+		}
+	}
+	if strings.HasPrefix(opening, "<tool:") {
+		name := opening[len("<tool:"):]
+		name = strings.TrimRight(name, ">\n\r ")
+		return name
+	}
+	if strings.HasPrefix(opening, "<function=") {
+		name := opening[len("<function="):]
+		name = strings.TrimRight(name, ">\n\r ")
+		return name
+	}
+	return ""
+}
+
+func extractHermesFunctionName(text string) string {
+	idx := strings.Index(text, "<function=")
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len("<function="):]
+	end := strings.IndexAny(rest, ">\n\r ")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
 func (f *fallbackToolTextFilter) process(final bool) {
 	for {
 		if f.closingTag != "" {
+			if f.activeToolName == "" {
+				if name := extractHermesFunctionName(f.pending); name != "" {
+					f.activeToolName = name
+					if f.emitToolName != nil {
+						f.emitToolName(name, f.toolCallIndex)
+					}
+				}
+			}
+
 			closeIndex := closingBoundaryIndex(f.pending, f.closingTag)
 			if closeIndex >= 0 {
+				body := f.pending[:closeIndex]
+				if f.emitToolCall != nil && body != "" {
+					f.emitToolCall(body, f.toolCallIndex)
+				}
 				f.pending = f.pending[closeIndex+len(f.closingTag):]
 				// Tolerate a missing '>' after the closing tag (degraded dialect).
 				if strings.HasPrefix(f.pending, ">") {
 					f.pending = f.pending[1:]
 				}
 				f.closingTag = ""
+				f.activeToolName = ""
+				f.toolCallIndex++
 				f.discardLeadingWhitespace = true
 				continue
 			}
 
 			if final {
+				if f.emitToolCall != nil && f.pending != "" {
+					f.emitToolCall(f.pending, f.toolCallIndex)
+				}
 				f.pending = ""
 				f.closingTag = ""
+				f.activeToolName = ""
+				f.toolCallIndex++
 				return
 			}
 
 			keep := longestSuffixMatchingPrefix(f.pending, f.closingTag)
 			if keep == 0 {
+				if f.emitToolCall != nil && f.pending != "" {
+					f.emitToolCall(f.pending, f.toolCallIndex)
+				}
 				f.pending = ""
 			} else {
+				emitPart := f.pending[:len(f.pending)-keep]
+				if f.emitToolCall != nil && emitPart != "" {
+					f.emitToolCall(emitPart, f.toolCallIndex)
+				}
 				f.pending = f.pending[len(f.pending)-keep:]
 			}
 			return
@@ -134,6 +209,13 @@ func (f *fallbackToolTextFilter) process(final bool) {
 
 		f.pending = f.pending[openEnd+1:]
 		f.closingTag = closingTag
+		toolName := extractFallbackToolName(opening)
+		if toolName != "" {
+			f.activeToolName = toolName
+			if f.emitToolName != nil {
+				f.emitToolName(toolName, f.toolCallIndex)
+			}
+		}
 	}
 }
 

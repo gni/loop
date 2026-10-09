@@ -600,6 +600,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textBuilder.WriteString(text)
 		emitChunk(ctx, chunkChan, StreamChunk{Type: "text", Content: text})
 	})
+	textFilter.SetToolCallbacks(
+		func(toolName string, idx int) {
+			normName := tool.NormalizeName(toolName)
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx})
+		},
+		func(chunk string, idx int) {
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx})
+		},
+	)
 	emitText := func(text string) {
 		if text == "" {
 			return
@@ -611,6 +620,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		cleanReasoningBuilder.WriteString(text)
 		emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text})
 	})
+	reasoningFilter.SetToolCallbacks(
+		func(toolName string, idx int) {
+			normName := tool.NormalizeName(toolName)
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx})
+		},
+		func(chunk string, idx int) {
+			emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx})
+		},
+	)
 	emitReasoning := func(text string) {
 		if text == "" {
 			return

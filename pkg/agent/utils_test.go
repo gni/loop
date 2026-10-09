@@ -29,6 +29,20 @@ func TestFormatDefensiveErrorExplainsOldTextMismatch(t *testing.T) {
 	}
 }
 
+func TestFormatDefensiveErrorExplainsNotUnique(t *testing.T) {
+	formatted := FormatDefensiveError(
+		"edit",
+		errors.New("edit[1]: oldText block is not unique; found 13 occurrences in file"),
+	)
+
+	if !strings.Contains(formatted, "matches multiple locations") {
+		t.Fatalf("expected multiple locations guidance, got: %q", formatted)
+	}
+	if !strings.Contains(formatted, "surrounding lines") {
+		t.Fatalf("expected surrounding lines guidance, got: %q", formatted)
+	}
+}
+
 func TestFormatDefensiveErrorStillExplainsMissingPath(t *testing.T) {
 	formatted := FormatDefensiveError("read", errors.New("no such file: missing.py"))
 	if !strings.Contains(formatted, "directory structure") {

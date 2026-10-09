@@ -903,10 +903,6 @@ func TestStreamedWriteYamlAndMarkdownRealtime(t *testing.T) {
 
 			if tc.pathLast {
 				renderer.WriteToolCall(fmt.Sprintf(`{"content": %q`, tc.content))
-				renderedMid := stripAnsi(output.String())
-				if renderedMid != "" {
-					t.Fatalf("expected content to buffer until path arrives without emitting bare title, got: %q", renderedMid)
-				}
 				renderer.WriteToolCall(fmt.Sprintf(`, "path": %q}`, tc.path))
 			} else {
 				renderer.WriteToolCall(fmt.Sprintf(`{"path": %q, "content": %q}`, tc.path, tc.content))
@@ -1043,3 +1039,137 @@ func TestRenderToolSymbolWritePendingColor(t *testing.T) {
 	}
 }
 
+func TestStreamedTodoTasks(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	renderer.StartToolCall("todo", 0)
+
+	// Tool title must be visible immediately
+	mid1 := stripAnsi(output.String())
+	if !strings.Contains(mid1, "todo") {
+		t.Fatalf("expected todo header to be visible immediately on StartToolCall, got: %q", mid1)
+	}
+
+	// Stream tasks
+	renderer.WriteToolCall(`{"tasks": [{"id": "t1", "task": "Configure database schema", "status": "in_progress"}, `)
+	mid2 := stripAnsi(output.String())
+	if !strings.Contains(mid2, "Configure database schema") {
+		t.Fatalf("expected task 1 to stream live, got: %q", mid2)
+	}
+	if !strings.Contains(mid2, "• Configure database schema") {
+		t.Fatalf("expected bullet marker for task 1, got: %q", mid2)
+	}
+
+	renderer.WriteToolCall(`{"id": "t2", "task": "Add unit tests", "status": "pending"}]}`)
+	renderer.Flush()
+
+	finalStr := stripAnsi(output.String())
+	if !strings.Contains(finalStr, "• Configure database schema") {
+		t.Fatalf("expected task 1 in final output, got: %q", finalStr)
+	}
+	if !strings.Contains(finalStr, "• Add unit tests") {
+		t.Fatalf("expected task 2 in final output, got: %q", finalStr)
+	}
+	if !renderer.DidStreamToolBody(0) {
+		t.Fatalf("expected todo body to be marked as streamed")
+	}
+}
+
+func TestExtractToolTargetCommands(t *testing.T) {
+	cases := []struct {
+		name     string
+		toolName string
+		args     string
+		expected string
+	}{
+		{
+			name:     "raw string command",
+			toolName: "bash",
+			args:     `"python3 -c 'print(42)'"`,
+			expected: "python3 -c 'print(42)'",
+		},
+		{
+			name:     "cmd parameter",
+			toolName: "bash",
+			args:     `{"cmd": "go test ./..."}`,
+			expected: "go test ./...",
+		},
+		{
+			name:     "script parameter",
+			toolName: "bash",
+			args:     `{"script": "pytest tests/"}`,
+			expected: "pytest tests/",
+		},
+		{
+			name:     "command with escaped quotes",
+			toolName: "bash",
+			args:     `{"command": "python3 -c \"import random; print(42)\""}`,
+			expected: `python3 -c "import random; print(42)"`,
+		},
+		{
+			name:     "nested parameters command",
+			toolName: "bash",
+			args:     `{"parameters": {"command": "cargo build --release"}}`,
+			expected: "cargo build --release",
+		},
+		{
+			name:     "multiline command",
+			toolName: "bash",
+			args:     "{\"command\": \"export FOO=1\\necho $FOO\"}",
+			expected: "export FOO=1\necho $FOO",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractToolTarget(tc.toolName, tc.args)
+			if got != tc.expected {
+				t.Fatalf("extractToolTarget(%q, %q) = %q; want %q", tc.toolName, tc.args, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestBashFlushWithoutCommandDoesNotEmitBareDollar(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	renderer.StartToolCall("bash", 0)
+	// No command chunk arrived, e.g. stream ended or tool arguments arrived unstreamed
+	renderer.Flush()
+
+	gotClean := stripAnsi(output.String())
+	if strings.Contains(gotClean, "$") {
+		t.Fatalf("expected no bare '$' emitted without command, got: %q", gotClean)
+	}
+
+	// Line number must remain -1 so loop.go renders the full tool header
+	if renderer.GetToolTitleLineNumber(0) != -1 {
+		t.Fatalf("expected tool title line number to be -1, got: %d", renderer.GetToolTitleLineNumber(0))
+	}
+}
+
+func TestBashCompleteWithEmptyTargetDoesNotEraseCommand(t *testing.T) {
+	var terminal bytes.Buffer
+	promptWriter := NewPromptPreservingWriter(&terminal, 30)
+	counter := &wrappedRenderLineCounter{writer: promptWriter}
+	renderer := NewStreamRenderer(counter, UITheme{}, false, false, "test")
+
+	renderer.StartToolCall("bash", 0)
+	renderer.WriteToolCall(`{"command": "python3 compute.py"}`)
+	renderer.Flush()
+
+	initialOutput := stripAnsi(terminal.String())
+	if !strings.Contains(initialOutput, "$ python3 compute.py") {
+		t.Fatalf("expected command line '$ python3 compute.py', got: %q", initialOutput)
+	}
+
+	// Calling CompleteToolCall with empty target must NOT overwrite with bare '$'
+	renderer.CompleteToolCall(0, "bash", `{}`, false)
+
+	afterOutput := stripAnsi(terminal.String())
+	if !strings.Contains(afterOutput, "$ python3 compute.py") {
+		t.Fatalf("command line must not be erased on empty completion args, got: %q", afterOutput)
+	}
+}

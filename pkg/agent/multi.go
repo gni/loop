@@ -622,10 +622,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 
 			if !isSubagent {
+				bodyStreamed := sr.DidStreamToolBody(idx) || (ma.BaseAgent != nil && ma.BaseAgent.DidStreamLiveBody())
 				if ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-					ma.BaseAgent.UI.RenderToolOutput(ncw, output, toolErr != nil, ma.BaseAgent.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
+					ma.BaseAgent.UI.RenderToolOutput(ncw, output, toolErr != nil, ma.BaseAgent.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
 				} else {
-					fmt.Fprintln(ncw, output)
+					if !bodyStreamed {
+						fmt.Fprintln(ncw, output)
+					}
 				}
 			}
 
@@ -1259,6 +1262,26 @@ func (mac *multiAgentContext) Context() context.Context {
 		return ctx
 	}
 	return mac.ma.Context
+}
+
+func (mac *multiAgentContext) GetLiveWriter() io.Writer {
+	if low, ok := mac.AgentContext.(tool.LiveOutputWriter); ok {
+		return low.GetLiveWriter()
+	}
+	return nil
+}
+
+func (mac *multiAgentContext) SetLiveBodyStreamed(streamed bool) {
+	if low, ok := mac.AgentContext.(tool.LiveOutputWriter); ok {
+		low.SetLiveBodyStreamed(streamed)
+	}
+}
+
+func (mac *multiAgentContext) DidStreamLiveBody() bool {
+	if low, ok := mac.AgentContext.(tool.LiveOutputWriter); ok {
+		return low.DidStreamLiveBody()
+	}
+	return false
 }
 
 func (mac *multiAgentContext) RecordRead(absPath string, data []byte) {

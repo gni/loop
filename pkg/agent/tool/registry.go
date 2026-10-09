@@ -111,6 +111,16 @@ type AgentContext interface {
 	HasSubagent(name string) bool
 }
 
+// LiveOutputWriter is an optional interface implemented by AgentContext
+// allowing tools (like bash) to stream their standard output and standard error
+// in real time to the user terminal, rather than buffering until completion.
+type LiveOutputWriter interface {
+	GetLiveWriter() io.Writer
+	SetLiveBodyStreamed(bool)
+	DidStreamLiveBody() bool
+}
+
+
 type ToolExecutor interface {
 	Name() string
 	Definition() Tool

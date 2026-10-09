@@ -1050,7 +1050,7 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 	})
 
-	t.Run("chunked streaming buffers write_content until path arrives then displays header and body", func(t *testing.T) {
+	t.Run("chunked streaming buffers write_content until path arrives, then displays header with path and flushes lines", func(t *testing.T) {
 		p := &jsonStreamParser{
 			activeToolName: "write",
 			streamWrites:   true,
@@ -1098,6 +1098,25 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("chunked streaming with path first syntax-highlights code lines", func(t *testing.T) {
+		syntaxTheme := UITheme{ChromaStyle: "friendly"}
+		p := &jsonStreamParser{
+			activeToolName: "write",
+			streamWrites:   true,
+		}
+		var buf bytes.Buffer
+		p.feed(`{"path": "main.py", "content": "`, &buf, syntaxTheme)
+		p.feed("def hello():\n    return 42\n\"}", &buf, syntaxTheme)
+		raw := buf.String()
+		if !strings.Contains(raw, "\x1b[") {
+			t.Fatalf("expected syntax highlighting ANSI escape codes in output, got: %q", raw)
+		}
+		clean := stripAnsi(raw)
+		if !strings.Contains(clean, "write main.py") || !strings.Contains(clean, "def hello():") {
+			t.Fatalf("expected clean content with header and code, got: %q", clean)
+		}
+	})
+
 	t.Run("alternative path keys like file_path and file are recognized", func(t *testing.T) {
 		for _, key := range []string{"file_path", "filePath", "file", "target", "filename"} {
 			p := &jsonStreamParser{
@@ -1119,20 +1138,64 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 
 func TestStreamRendererStartToolCall(t *testing.T) {
 	theme := UITheme{}
-	var buf bytes.Buffer
-	sr := NewStreamRenderer(&buf, theme, false, false, "test-agent")
 
-	sr.StartToolCall("read", 0)
+	t.Run("streamWrites=false", func(t *testing.T) {
+		var buf bytes.Buffer
+		sr := NewStreamRenderer(&buf, theme, false, false, "test-agent")
 
-	gotClean := stripAnsi(buf.String())
-	if gotClean != "" {
-		t.Errorf("expected no output for suppressed tool streaming, got: %q", gotClean)
-	}
+		sr.StartToolCall("read", 0)
 
-	lineNum := sr.GetToolTitleLineNumber(0)
-	if lineNum != -1 {
-		t.Errorf("expected tool title line number to be -1, got: %d", lineNum)
-	}
+		gotClean := stripAnsi(buf.String())
+		if gotClean != "" {
+			t.Errorf("expected no output for suppressed tool streaming, got: %q", gotClean)
+		}
+
+		lineNum := sr.GetToolTitleLineNumber(0)
+		if lineNum != -1 {
+			t.Errorf("expected tool title line number to be -1, got: %d", lineNum)
+		}
+	})
+
+	t.Run("streamWrites=true for tool without path prints immediately", func(t *testing.T) {
+		var buf bytes.Buffer
+		sr := NewStreamRenderer(&buf, theme, false, true, "test-agent")
+
+		sr.StartToolCall("todo", 0)
+
+		gotClean := stripAnsi(buf.String())
+		if !strings.Contains(gotClean, "todo") {
+			t.Fatalf("expected todo title to be visible immediately, got: %q", gotClean)
+		}
+
+		lineNum := sr.GetToolTitleLineNumber(0)
+		if lineNum < 0 {
+			t.Fatalf("expected tool title line number >= 0, got: %d", lineNum)
+		}
+	})
+
+	t.Run("streamWrites=true for tool with path waits until path is parsed", func(t *testing.T) {
+		var buf bytes.Buffer
+		sr := NewStreamRenderer(&buf, theme, false, true, "test-agent")
+
+		sr.StartToolCall("write", 0)
+
+		gotClean := stripAnsi(buf.String())
+		if gotClean != "" {
+			t.Fatalf("expected no premature header without path, got: %q", gotClean)
+		}
+
+		lineNum := sr.GetToolTitleLineNumber(0)
+		if lineNum != -1 {
+			t.Fatalf("expected tool title line number to be -1 before path arrives, got: %d", lineNum)
+		}
+
+		// When path arrives, title should be printed
+		sr.WriteToolCall(`{"path": "service/api.go", "content": "package service\n"}`)
+		gotCleanAfter := stripAnsi(buf.String())
+		if !strings.Contains(gotCleanAfter, "write service/api.go") {
+			t.Fatalf("expected title with path after WriteToolCall, got: %q", gotCleanAfter)
+		}
+	})
 }
 
 func TestHandleConfigAndSetCommands(t *testing.T) {

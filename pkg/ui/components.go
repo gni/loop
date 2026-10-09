@@ -247,37 +247,124 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme UITheme) {
 	fmt.Fprintln(w, borderStyle.Render(configStr))
 }
 
+func repairArgsJSON(js string) string {
+	js = strings.TrimSpace(js)
+	if js == "" {
+		return "{}"
+	}
+	if strings.HasPrefix(js, "```") {
+		lines := strings.Split(js, "\n")
+		var clean []string
+		for _, l := range lines {
+			if !strings.HasPrefix(strings.TrimSpace(l), "```") {
+				clean = append(clean, l)
+			}
+		}
+		js = strings.TrimSpace(strings.Join(clean, "\n"))
+	}
+	var sb strings.Builder
+	inString := false
+	inEscape := false
+	for i := 0; i < len(js); i++ {
+		c := js[i]
+		if inEscape {
+			sb.WriteByte(c)
+			inEscape = false
+			continue
+		}
+		if c == '\\' {
+			sb.WriteByte(c)
+			inEscape = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			sb.WriteByte(c)
+			continue
+		}
+		if inString && c == '\n' {
+			sb.WriteString(`\n`)
+		} else if inString && c == '\t' {
+			sb.WriteString(`\t`)
+		} else if inString && c == '\r' {
+			sb.WriteString(`\r`)
+		} else {
+			sb.WriteByte(c)
+		}
+	}
+	if inString {
+		sb.WriteByte('"')
+	}
+	return sb.String()
+}
+
 func extractToolTarget(toolName string, argsJSON string) string {
-	if argsJSON == "" {
+	trimmed := strings.TrimSpace(argsJSON)
+	if trimmed == "" {
 		return ""
 	}
+	// Direct unquoted JSON string check (e.g. "python3 script.py")
+	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
+		var unquoted string
+		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
+			return strings.TrimSpace(unquoted)
+		}
+	}
+
 	var argsMap map[string]interface{}
-	_ = json.Unmarshal([]byte(argsJSON), &argsMap)
+	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
+		repaired := repairArgsJSON(trimmed)
+		_ = json.Unmarshal([]byte(repaired), &argsMap)
+	}
 
 	getString := func(key string) string {
 		if argsMap != nil {
 			if val, ok := argsMap[key]; ok {
-				if s, ok := val.(string); ok {
-					return s
+				if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+			for _, wrapper := range []string{"parameters", "params", "input", "arguments"} {
+				if subVal, ok := argsMap[wrapper]; ok {
+					if subMap, ok := subVal.(map[string]interface{}); ok {
+						if val, ok := subMap[key]; ok {
+							if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+								return strings.TrimSpace(s)
+							}
+						}
+					}
 				}
 			}
 		}
-		// Fallback for incomplete JSON
-		regex := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]+)"`, regexp.QuoteMeta(key)))
-		matches := regex.FindStringSubmatch(argsJSON)
+		// Fallback regex with escaped quote support
+		regex := regexp.MustCompile(fmt.Sprintf(`"(?i)%s"\s*:\s*"((?:\\.|[^"\\])*)"`, regexp.QuoteMeta(key)))
+		matches := regex.FindStringSubmatch(trimmed)
 		if len(matches) > 1 {
-			return matches[1]
+			var unquoted string
+			if err := json.Unmarshal([]byte(`"`+matches[1]+`"`), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
+				return strings.TrimSpace(unquoted)
+			}
+			return strings.TrimSpace(matches[1])
 		}
 		return ""
 	}
 
 	// 1. Command execution tools (bash, run_command, exec, etc.)
-	if strings.Contains(toolName, "bash") || strings.Contains(toolName, "ls") || strings.Contains(toolName, "command") || strings.Contains(toolName, "run") || strings.Contains(toolName, "exec") {
-		if c := getString("CommandLine"); c != "" {
-			return c
+	if isCommandLikeTool(toolName) {
+		for _, k := range []string{"CommandLine", "command", "cmd", "script", "code", "input", "arguments", "args", "c", "exec", "run", "shell", "sh"} {
+			if c := getString(k); c != "" {
+				return c
+			}
 		}
-		if c := getString("command"); c != "" {
-			return c
+		if argsMap != nil && len(argsMap) == 1 {
+			for _, v := range argsMap {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+			return trimmed
 		}
 	}
 
@@ -414,6 +501,11 @@ func isWriteLikeTool(toolName string) bool {
 	return toolName == "write" || strings.Contains(toolName, "write") || strings.Contains(toolName, "replace")
 }
 
+func isCommandLikeTool(toolName string) bool {
+	lower := strings.ToLower(toolName)
+	return lower == "bash" || lower == "exec" || lower == "sh" || strings.Contains(lower, "command") || strings.Contains(lower, "shell") || strings.Contains(lower, "run")
+}
+
 func getToolGlyph(toolName string) string {
 	lower := strings.ToLower(toolName)
 	switch {
@@ -472,6 +564,9 @@ func renderToolSymbol(toolName string, status toolRenderStatus, theme UITheme) s
 func RenderToolHeader(w io.Writer, theme UITheme, toolName string, argsJSON string) {
 	symbol := renderToolSymbol(toolName, toolStatusPending, theme)
 	pathVal := extractToolTarget(toolName, argsJSON)
+	if pathVal == "" && isCommandLikeTool(toolName) && strings.TrimSpace(argsJSON) != "" && strings.TrimSpace(argsJSON) != "{}" {
+		pathVal = strings.TrimSpace(argsJSON)
+	}
 	if toolName == "bash" {
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
 		return
@@ -481,7 +576,7 @@ func RenderToolHeader(w io.Writer, theme UITheme, toolName string, argsJSON stri
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
-	if !isError && isWriteLikeTool(toolName) && bodyWasStreamed {
+	if !isError && (isWriteLikeTool(toolName) || isCommandLikeTool(toolName)) && bodyWasStreamed {
 		return
 	}
 	status := toolStatusSuccess

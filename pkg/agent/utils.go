@@ -336,7 +336,9 @@ func FormatDefensiveError(toolName string, err error) string {
 	}
 
 	var suggestion string
-	if (strings.Contains(lowerErr, "oldtext block") && strings.Contains(lowerErr, "not found")) ||
+	if strings.Contains(lowerErr, "not unique") {
+		suggestion = "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block."
+	} else if (strings.Contains(lowerErr, "oldtext block") && strings.Contains(lowerErr, "not found")) ||
 		strings.Contains(lowerErr, "targetcontent not found") {
 		suggestion = "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write."
 	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||

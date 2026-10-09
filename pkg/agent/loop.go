@@ -160,6 +160,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		teeWriter := &customTeeWriter{screen: writerToUse, buffer: a.CurrentStreamBuffer}
 		ncw := &newlineCounterWriter{Writer: teeWriter}
+		a.CurrentWriter = ncw
 		effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
 		enableThinking := a.Config.ShowThinking && effort != "off" && effort != "none"
 		var sr StreamRenderer
@@ -381,6 +382,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			if ctx.Err() != nil {
 				return
 			}
+			a.liveBodyStreamed = false
 
 
 			isSubagent := strings.HasPrefix(tc.Function.Name, "subagent__")
@@ -478,10 +480,13 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 				// Render the tool output
 				if !isSubagent {
+					bodyStreamed := sr.DidStreamToolBody(idx) || a.DidStreamLiveBody()
 					if a.UI != nil {
-						a.UI.RenderToolOutput(ncw, prunedOutput, toolErr != nil, a.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
+						a.UI.RenderToolOutput(ncw, prunedOutput, toolErr != nil, a.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
 					} else {
-						fmt.Fprintln(ncw, prunedOutput)
+						if !bodyStreamed {
+							fmt.Fprintln(ncw, prunedOutput)
+						}
 					}
 				}
 

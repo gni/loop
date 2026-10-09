@@ -97,6 +97,7 @@ type Agent struct {
 	lastToolIsError        bool
 	lastToolWasEdit        bool
 	lastGenerationDuration time.Duration
+	liveBodyStreamed       bool
 
 	TurnStartTime time.Time
 	CurrentTheme  style.UITheme
@@ -295,6 +296,18 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 		a.ForceSystemPromptUpdate = true
 	}
 	return a.ActiveSkills
+}
+
+func (a *Agent) GetLiveWriter() io.Writer {
+	return a.CurrentWriter
+}
+
+func (a *Agent) SetLiveBodyStreamed(streamed bool) {
+	a.liveBodyStreamed = streamed
+}
+
+func (a *Agent) DidStreamLiveBody() bool {
+	return a.liveBodyStreamed
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {

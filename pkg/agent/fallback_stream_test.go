@@ -232,3 +232,38 @@ func TestParseFallbackToolCallsBareFunctionDialect(t *testing.T) {
 		t.Fatalf("expected command argument, got %q", calls[0].Function.Arguments)
 	}
 }
+
+func TestFallbackToolTextFilterEmitsToolCallbacks(t *testing.T) {
+	var names []string
+	var calls []string
+	filter := newFallbackToolTextFilter(func(text string) {})
+	filter.SetToolCallbacks(
+		func(toolName string, idx int) {
+			names = append(names, fmt.Sprintf("%d:%s", idx, toolName))
+		},
+		func(chunk string, idx int) {
+			calls = append(calls, chunk)
+		},
+	)
+
+	// Stream a fallback tool call in chunks
+	chunks := []string{
+		"I'll write the file now.\n<tool_call name=\"write\">",
+		`{"path": "hello.txt", `,
+		`"content": "hello world"}`,
+		"</tool_call>\nAll done!",
+	}
+	for _, c := range chunks {
+		filter.Write(c)
+	}
+	filter.Flush()
+
+	if len(names) != 1 || names[0] != "0:write" {
+		t.Fatalf("expected tool name '0:write', got: %v", names)
+	}
+	fullBody := strings.Join(calls, "")
+	if !strings.Contains(fullBody, `"path": "hello.txt"`) || !strings.Contains(fullBody, `"content": "hello world"`) {
+		t.Fatalf("expected streamed tool call chunks, got: %q", fullBody)
+	}
+}
+
