@@ -113,7 +113,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 			name := d.Name()
 			if d.IsDir() {
-				if IsIgnoredDirName(name) || HasIgnoredComponent(path) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
+				if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
 					return filepath.SkipDir
 				}
 				return nil

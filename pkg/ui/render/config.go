@@ -32,6 +32,13 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	approveVal := "disabled (interactive mode)"
 	if cfg.AutoApprove {
 		approveVal = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render("enabled (auto-approve)")
+	} else if cfg.ApprovalAlwaysAnswer {
+		approveVal = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render("always answered (unattended)")
+	}
+
+	askModeVal := valStyle.Render(cfg.AskUserMode)
+	if cfg.AskUserMode == "always_ask" {
+		askModeVal = style.NewStyle().Foreground(theme.Error).Bold(true).Render("always_ask (human required)")
 	}
 
 	directVal := "disabled"
@@ -66,7 +73,10 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			"  %-20s %s\n"+
 			"  %-20s %d\n"+
 			"  %-20s %d\n"+
-			"  %-20s %s\n\n"+
+			"  %-20s %s\n"+
+			"  %-20s %s\n"+
+			"  %-20s %s\n"+
+			"  %-20s %d\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
 		titleStyle.Render("loop runtime settings"),
 		keyStyle.Render("active provider:"), valStyle.Render(cfg.ActiveProvider),
@@ -90,6 +100,9 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		keyStyle.Render("max paste lines:"), cfg.MaxPasteLines,
 		keyStyle.Render("max paste chars:"), cfg.MaxPasteChars,
 		keyStyle.Render("llm timeout:"), valStyle.Render(timeoutVal),
+		keyStyle.Render("approval always:"), valStyle.Render(fmt.Sprintf("%v", cfg.ApprovalAlwaysAnswer)),
+		keyStyle.Render("ask user mode:"), askModeVal,
+		keyStyle.Render("recap interval:"), cfg.RecapInterval,
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))

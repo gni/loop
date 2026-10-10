@@ -12,63 +12,70 @@ import (
 )
 
 type MCPServerConfig struct {
-	Type     string            `json:"type,omitempty"` // "stdio" or "sse" (default)
-	Command  string            `json:"command,omitempty"`
-	Args     []string          `json:"args,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	URL      string            `json:"url,omitempty"`
+	Type       string            `json:"type,omitempty"` // "stdio" or "sse" (default)
+	Command    string            `json:"command,omitempty"`
+	Args       []string          `json:"args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	URL        string            `json:"url,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	Disabled   bool              `json:"disabled,omitempty"`
 	AlwaysLoad bool              `json:"alwaysLoad,omitempty"`
 }
 
 type Config struct {
-	Endpoint             string                     `json:"endpoint,omitempty"`
-	ApiKey               string                     `json:"api_key,omitempty"`
-	Model                string                     `json:"model,omitempty"`
-	Temperature          float64                    `json:"temperature"`
-	FrequencyPenalty     float64                    `json:"frequency_penalty,omitempty"`
-	PresencePenalty      float64                    `json:"presence_penalty,omitempty"`
-	SystemInstruction    string                     `json:"system_instruction"`
-	AutoApprove          bool                       `json:"auto_approve,omitempty"`
-	ShowThinking         bool                       `json:"show_thinking"`
-	CollapseResults      bool                       `json:"collapse_results,omitempty"`
-	ShowTokens           bool                       `json:"show_tokens"`
-	Theme                string                     `json:"theme"`
-	DirectCommands       bool                       `json:"direct_commands"`
-	CertFile             string                     `json:"cert_file,omitempty"`
-	KeyFile              string                     `json:"key_file,omitempty"`
-	CAFile               string                     `json:"ca_file,omitempty"`
-	SkipVerify           bool                       `json:"skip_verify"`
-	SkillsDir            string                     `json:"skills_dir"`
-	MCPServers           map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
-	MaxReasoningSteps    int                        `json:"max_reasoning_steps"`
-	ContextWindowLimit   int                        `json:"context_window_limit"`
-	AutoAdaptContext     bool                       `json:"auto_adapt_context"`
-	MinContextWindow     int                        `json:"min_context_window,omitempty"`
-	CompressionThreshold float64                    `json:"compression_threshold"`
-	ReasoningEffort      string                     `json:"reasoning_effort,omitempty"`
-	BeforeToolHook       string                     `json:"before_tool_hook,omitempty"`
-	AfterToolHook        string                     `json:"after_tool_hook,omitempty"`
-	StreamWrites         bool                       `json:"stream_writes"`
-	SyntaxTheme          string                     `json:"syntax_theme,omitempty"`
-	Providers            map[string]ProviderConfig  `json:"providers,omitempty"`
-	ActiveProvider       string                     `json:"active_provider,omitempty"`
-	MaxCompletionTokens  int                        `json:"max_completion_tokens,omitempty"`
-	CompactPrompt        bool                       `json:"compact_prompt,omitempty"`
-	DisableLocalPlugins  bool                       `json:"disable_local_plugins,omitempty"`
-	DebugLogFile         string                     `json:"debug_log_file,omitempty"`
-	MaxSubagentDepth     int                        `json:"max_subagent_depth,omitempty"`
-	MaxPasteLines        int                        `json:"max_paste_lines,omitempty"`
-	MaxPasteChars        int                        `json:"max_paste_chars,omitempty"`
-	Timeout              int                        `json:"timeout,omitempty"`
+	Endpoint                 string                     `json:"endpoint,omitempty"`
+	ApiKey                   string                     `json:"api_key,omitempty"`
+	Model                    string                     `json:"model,omitempty"`
+	Temperature              float64                    `json:"temperature"`
+	FrequencyPenalty         float64                    `json:"frequency_penalty,omitempty"`
+	PresencePenalty          float64                    `json:"presence_penalty,omitempty"`
+	SystemInstruction        string                     `json:"system_instruction"`
+	AutoApprove              bool                       `json:"auto_approve,omitempty"`
+	ShowThinking             bool                       `json:"show_thinking"`
+	CollapseResults          bool                       `json:"collapse_results,omitempty"`
+	ShowTokens               bool                       `json:"show_tokens"`
+	Theme                    string                     `json:"theme"`
+	DirectCommands           bool                       `json:"direct_commands"`
+	CertFile                 string                     `json:"cert_file,omitempty"`
+	KeyFile                  string                     `json:"key_file,omitempty"`
+	CAFile                   string                     `json:"ca_file,omitempty"`
+	SkipVerify               bool                       `json:"skip_verify"`
+	SkillsDir                string                     `json:"skills_dir"`
+	MCPServers               map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+	MaxReasoningSteps        int                        `json:"max_reasoning_steps"`
+	ContextWindowLimit       int                        `json:"context_window_limit"`
+	AutoAdaptContext         bool                       `json:"auto_adapt_context"`
+	MinContextWindow         int                        `json:"min_context_window,omitempty"`
+	CompressionThreshold     float64                    `json:"compression_threshold"`
+	ReasoningEffort          string                     `json:"reasoning_effort,omitempty"`
+	BeforeToolHook           string                     `json:"before_tool_hook,omitempty"`
+	AfterToolHook            string                     `json:"after_tool_hook,omitempty"`
+	StreamWrites             bool                       `json:"stream_writes"`
+	SyntaxTheme              string                     `json:"syntax_theme,omitempty"`
+	Providers                map[string]ProviderConfig  `json:"providers,omitempty"`
+	ActiveProvider           string                     `json:"active_provider,omitempty"`
+	MaxCompletionTokens      int                        `json:"max_completion_tokens,omitempty"`
+	CompactPrompt            bool                       `json:"compact_prompt,omitempty"`
+	DisableLocalPlugins      bool                       `json:"disable_local_plugins,omitempty"`
+	DebugLogFile             string                     `json:"debug_log_file,omitempty"`
+	MaxSubagentDepth         int                        `json:"max_subagent_depth,omitempty"`
+	MaxPasteLines            int                        `json:"max_paste_lines,omitempty"`
+	MaxPasteChars            int                        `json:"max_paste_chars,omitempty"`
+	Timeout                  int                        `json:"timeout,omitempty"`
 	MaxToolOutputBytes       int                        `json:"max_tool_output_bytes,omitempty"`
 	RepeatReminderThresholds []int                      `json:"repeat_reminder_thresholds,omitempty"`
 	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
-	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
-	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
+	// AskUserMode: "interactive" (default), "auto_recommended", "disabled", or
+	// "always_ask" — every ask_user prompt must reach a human, never auto-answered.
+	AskUserMode string `json:"ask_user_mode,omitempty"`
+	// ApprovalAlwaysAnswer: when true the approval modal is skipped and treated as if the
+	// user answered "always" up front (unattended loop runs). Default false: every action
+	// tool prompts on each call.
+	ApprovalAlwaysAnswer bool `json:"approval_always_answer,omitempty"`
+	ParallelToolCalls    bool `json:"parallel_tool_calls"`
+	RecapInterval        int  `json:"recap_interval,omitempty"`
 }
 
 func DefaultConfig() *Config {
@@ -93,37 +100,37 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		Endpoint:            endpoint,
-		ApiKey:              apiKey,
-		Model:               model,
-		Temperature:         0.7,
-		SystemInstruction:   DefaultSystemInstruction,
-		AutoApprove:         false,
-		ShowThinking:        true,
-		CollapseResults:     false,
-		ShowTokens:          false,
-		Theme:               "dark",
-		DirectCommands:      true,
-		CertFile:            "",
-		KeyFile:             "",
-		CAFile:              "",
-		SkipVerify:          false,
-		SkillsDir:           skillsDir,
-		MCPServers:          make(map[string]MCPServerConfig),
-		MaxReasoningSteps:   30,
-		MaxCompletionTokens: 16384,
-		ContextWindowLimit:  128000,
-		AutoAdaptContext:    true,
-		MinContextWindow:    32768,
-		CompressionThreshold: 0.80,
-		ReasoningEffort:     "low",
-		StreamWrites:        true,
-		SyntaxTheme:         "auto",
-		Providers:           make(map[string]ProviderConfig),
-		ActiveProvider:      "",
-		CompactPrompt:       false,
-		MaxPasteLines:       80,
-		MaxPasteChars:       8000,
+		Endpoint:                 endpoint,
+		ApiKey:                   apiKey,
+		Model:                    model,
+		Temperature:              0.7,
+		SystemInstruction:        DefaultSystemInstruction,
+		AutoApprove:              false,
+		ShowThinking:             true,
+		CollapseResults:          false,
+		ShowTokens:               false,
+		Theme:                    "dark",
+		DirectCommands:           true,
+		CertFile:                 "",
+		KeyFile:                  "",
+		CAFile:                   "",
+		SkipVerify:               false,
+		SkillsDir:                skillsDir,
+		MCPServers:               make(map[string]MCPServerConfig),
+		MaxReasoningSteps:        30,
+		MaxCompletionTokens:      16384,
+		ContextWindowLimit:       128000,
+		AutoAdaptContext:         true,
+		MinContextWindow:         32768,
+		CompressionThreshold:     0.80,
+		ReasoningEffort:          "low",
+		StreamWrites:             true,
+		SyntaxTheme:              "auto",
+		Providers:                make(map[string]ProviderConfig),
+		ActiveProvider:           "",
+		CompactPrompt:            false,
+		MaxPasteLines:            80,
+		MaxPasteChars:            8000,
 		Timeout:                  120,
 		MaxToolOutputBytes:       8192,
 		RepeatReminderThresholds: []int{3, 5},
@@ -132,6 +139,7 @@ func DefaultConfig() *Config {
 		AtomicWrites:             true,
 		AskUserMode:              "interactive",
 		ParallelToolCalls:        false,
+		RecapInterval:            5,
 	}
 }
 
@@ -223,6 +231,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if config.MaxPasteLines <= 0 {
 		config.MaxPasteLines = 80
+	}
+	if config.RecapInterval == 0 {
+		config.RecapInterval = 5
 	}
 	if config.MaxPasteChars <= 0 {
 		config.MaxPasteChars = 8000

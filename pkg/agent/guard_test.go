@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -253,5 +254,134 @@ func TestGuard_ScatteredIdenticalCallsNeverBlocked(t *testing.T) {
 
 		other := `{"pattern":"x_` + fmt.Sprint(i) + `"}`
 		guard.RecordPostExecution("grep", other, "matches", nil)
+	}
+}
+
+// A read of the same file with a different offset/limit is a genuinely new
+// inspection, so it must never inflate the repetition streak.
+func TestGuard_SameFileDifferentWindowIsNotRepetition(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	file := "pkg/agent/guard.go"
+
+	for i := 1; i <= 30; i++ {
+		args := fmt.Sprintf(`{"path":"%s","offset":%d,"limit":20}`, file, i*20)
+		if err := guard.CheckPreExecution("read", args); err != nil {
+			t.Fatalf("window read %d unexpectedly blocked: %v", i, err)
+		}
+		guard.RecordPostExecution("read", args, "content", nil)
+	}
+
+	// Re-reading an already observed window back-to-back still counts as repetition.
+	args := `{"path":"` + file + `","offset":600,"limit":20}`
+	for i := 1; i <= 11; i++ {
+		err := guard.CheckPreExecution("read", args)
+		if err == nil {
+			guard.RecordPostExecution("read", args, "content", nil)
+			continue
+		}
+		if i < guard.reminderThresholds[0] {
+			t.Fatalf("window read %d unexpectedly blocked early: %v", i, err)
+		}
+		if !strings.Contains(err.Error(), "loop detected") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+	t.Fatal("repeated identical window never triggered the guard")
+}
+
+// Editing a file invalidates prior observations, so the window cache must be cleared.
+func TestGuard_ModificationClearsReadWindows(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	file := "pkg/agent/guard.go"
+	args := `{"path":"` + file + `","offset":10,"limit":20}`
+
+	guard.CheckPreExecution("read", args)
+	guard.RecordPostExecution("read", args, "content", nil)
+	guard.RecordPostExecution("edit", `{"path":"`+file+`","updates":[]}`, "ok", nil)
+
+	if isReadWindowNew("read", args, guard.readWindows) != true {
+		t.Fatal("read window should be fresh after the file was modified")
+	}
+}
+
+// fakeInvalidator records the absolute paths the guard forgets.
+type fakeInvalidator struct {
+	forgotten []string
+}
+
+func (f *fakeInvalidator) Forget(absPath string) {
+	f.forgotten = append(f.forgotten, absPath)
+}
+
+// A successful mutating bash command must invalidate the tracker's observation for the
+// affected file, so the next edit cannot rely on a stale read.
+func TestGuard_BashMutationInvalidatesObservation(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	inv := &fakeInvalidator{}
+	guard.SetObservationInvalidator(inv)
+	guard.SetPathResolver(func(p string) string { return "/workspace/" + p })
+
+	file := "src/config/settings.py"
+	readArgs := `{"path":"` + file + `"}`
+	guard.CheckPreExecution("read", readArgs)
+	guard.RecordPostExecution("read", readArgs, "content", nil)
+
+	bashArgs := `{"command":"sed -i 's/a/b/' src/config/settings.py"}`
+	if err := guard.CheckPreExecution("bash", bashArgs); err != nil {
+		t.Fatalf("mutating bash unexpectedly blocked: %v", err)
+	}
+	guard.RecordPostExecution("bash", bashArgs, "ok", nil)
+
+	if len(inv.forgotten) != 1 || inv.forgotten[0] != "/workspace/src/config/settings.py" {
+		t.Fatalf("expected observation forgotten at resolved path, got %v", inv.forgotten)
+	}
+}
+
+// A failed mutating bash command must NOT invalidate the observation, since the file was
+// not actually changed on disk.
+func TestGuard_FailedBashMutationKeepsObservation(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	inv := &fakeInvalidator{}
+	guard.SetObservationInvalidator(inv)
+
+	bashArgs := `{"command":"sed -i 's/a/b/' src/config/settings.py"}`
+	guard.CheckPreExecution("bash", bashArgs)
+	guard.RecordPostExecution("bash", bashArgs, "", errors.New("sed: no such file"))
+
+	if len(inv.forgotten) != 0 {
+		t.Fatalf("failed mutation must not forget the observation, got %v", inv.forgotten)
+	}
+}
+
+// Non-mutating bash (a plain read via cat) must not invalidate the observation.
+func TestGuard_NonMutatingBashKeepsObservation(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	inv := &fakeInvalidator{}
+	guard.SetObservationInvalidator(inv)
+
+	catArgs := `{"command":"cat src/config/settings.py"}`
+	guard.CheckPreExecution("bash", catArgs)
+	guard.RecordPostExecution("bash", catArgs, "content", nil)
+
+	if len(inv.forgotten) != 0 {
+		t.Fatalf("read-only bash must not forget the observation, got %v", inv.forgotten)
+	}
+}
+
+// The per-target read-window cache must be bounded so a pathological session that inspects
+// many distinct slices of one file cannot grow it without limit.
+func TestGuard_ReadWindowsAreBounded(t *testing.T) {
+	guard := NewTurnExecutionGuard()
+	file := "pkg/agent/guard.go"
+
+	for i := 0; i < maxWindowsPerTarget+20; i++ {
+		args := fmt.Sprintf(`{"path":"%s","offset":%d,"limit":%d}`, file, i, i+1)
+		guard.CheckPreExecution("read", args)
+		guard.RecordPostExecution("read", args, "content", nil)
+	}
+
+	if got := len(guard.readWindows[filepath.Clean(file)]); got > maxWindowsPerTarget {
+		t.Fatalf("read window cache for target exceeded bound: %d > %d", got, maxWindowsPerTarget)
 	}
 }

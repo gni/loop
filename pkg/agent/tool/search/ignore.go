@@ -25,7 +25,24 @@ func IsIgnoredDirName(name string) bool {
 
 // HasIgnoredComponent returns true if any directory in the given path is ignored.
 func HasIgnoredComponent(path string) bool {
+	return HasIgnoredComponentIn(path, "")
+}
+
+// HasIgnoredComponentIn checks ignored directory components within path, relative to
+// root. Segments that belong to the workspace root itself are never treated as ignored,
+// so a workspace living inside a hidden directory (e.g. a temp dir under .gotmp) is still
+// searched.
+func HasIgnoredComponentIn(path, root string) bool {
 	clean := filepath.ToSlash(filepath.Clean(path))
+	if root != "" {
+		cleanRoot := filepath.ToSlash(filepath.Clean(root))
+		if clean == cleanRoot {
+			return false
+		}
+		if strings.HasPrefix(clean, cleanRoot+"/") {
+			clean = strings.TrimPrefix(clean, cleanRoot+"/")
+		}
+	}
 	parts := strings.Split(clean, "/")
 	for _, part := range parts {
 		if IsIgnoredDirName(part) {

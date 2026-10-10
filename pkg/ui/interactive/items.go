@@ -32,6 +32,28 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			},
 		},
 		boolConfigItem("auto_approve", "auto approve", "Execute tool operations directly without interactive approval", &cloned.AutoApprove, formatBool),
+		boolConfigItem("approval_always_answer", "approval always answer", "Skip the approval modal and pre-answer 'always' for unattended loop runs", &cloned.ApprovalAlwaysAnswer, formatBool),
+		{
+			id:          "ask_user_mode",
+			name:        "ask user mode",
+			value:       func() string { return cloned.AskUserMode },
+			description: "How ask_user prompts are handled (interactive, always_ask, auto_recommended, disabled)",
+			options:     []string{"interactive", "always_ask", "auto_recommended", "disabled"},
+			onEdit: func(newVal string) error {
+				v := strings.ToLower(strings.TrimSpace(newVal))
+				switch v {
+				case "interactive", "always_ask", "auto_recommended", "disabled":
+					cloned.AskUserMode = v
+					return nil
+				default:
+					return fmt.Errorf("invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled", newVal)
+				}
+			},
+			onToggle: func() {
+				opts := []string{"interactive", "always_ask", "auto_recommended", "disabled"}
+				cloned.AskUserMode = cycleOption(opts, cloned.AskUserMode)
+			},
+		},
 		{
 			id:          "show_thinking",
 			name:        "show thinking",
@@ -99,6 +121,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		},
 		intConfigItem("max_tool_output_bytes", "max tool output bytes", "Spill threshold in bytes before tool outputs are saved to disk scratch files", &cloned.MaxToolOutputBytes),
 		intConfigItem("repeat_guard_limit", "repeat guard limit", "Loop repetition detection limit preventing cyclical infinite tool invocations", &cloned.RepeatGuardLimit),
+		intListConfigItem("repeat_reminder_thresholds", "repeat reminder thresholds", "Comma-separated repetition counts that inject escalating reminder messages (e.g. 3,5,8)", &cloned.RepeatReminderThresholds),
 		stringConfigItem("before_tool_hook", "before tool hook", "Shell command script invoked prior to running tool commands", &cloned.BeforeToolHook),
 		stringConfigItem("after_tool_hook", "after tool hook", "Shell command script invoked upon successful tool execution", &cloned.AfterToolHook),
 		stringConfigItem("debug_log_file", "debug log file", "Destination file path recording diagnostic agent trace payloads", &cloned.DebugLogFile),
@@ -178,6 +201,55 @@ func boolConfigItem(id, name, desc string, target *bool, formatBool func(bool) s
 	}
 }
 
+func intListConfigItem(id, name, desc string, target *[]int) *settingItem {
+	return &settingItem{
+		id:          id,
+		name:        name,
+		value:       func() string { return joinInts(*target) },
+		description: desc,
+		onEdit: func(newVal string) error {
+			parsed, err := splitInts(newVal)
+			if err != nil {
+				return err
+			}
+			*target = parsed
+			return nil
+		},
+	}
+}
+
+func joinInts(vals []int) string {
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		parts = append(parts, strconv.Itoa(v))
+	}
+	return strings.Join(parts, ",")
+}
+
+func splitInts(raw string) ([]int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	vals := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid threshold %q", p)
+		}
+		vals = append(vals, n)
+	}
+	if len(vals) == 0 {
+		return nil, fmt.Errorf("thresholds must contain at least one positive integer")
+	}
+	return vals, nil
+}
+
 func stringConfigItem(id, name, desc string, target *string) *settingItem {
 	return &settingItem{
 		id:          id,
@@ -190,4 +262,3 @@ func stringConfigItem(id, name, desc string, target *string) *settingItem {
 		},
 	}
 }
-

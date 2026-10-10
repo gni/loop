@@ -20,6 +20,20 @@ var (
 // a turn or session: a call followed by any different call resets the streak.
 const ConsecutiveLimit = 10
 
+// ObservationInvalidator is the narrow contract the guard uses to mark a file's
+// prior read as stale when the file is mutated outside the tracked write/edit path
+// (e.g. a bash command such as `sed -i`, `cat > f`, `touch`, or `rm`). Forgetting an
+// observation forces the next read-before-edit / CAS freshness check to demand a fresh
+// inspection instead of trusting a hash captured before the external mutation.
+type ObservationInvalidator interface {
+	Forget(absPath string)
+}
+
+// maxWindowsPerTarget bounds the number of distinct read windows recorded for a single
+// target, so a pathological session that inspects many slices of one file cannot grow
+// the window cache without limit.
+const maxWindowsPerTarget = 64
+
 // TurnExecutionGuard blocks tool calls that are repeated back-to-back past
 // ConsecutiveLimit. Every counter tracks a consecutive streak, not a total, so
 // a model that inspects the same file ten times across a long session is never
@@ -27,6 +41,12 @@ const ConsecutiveLimit = 10
 type TurnExecutionGuard struct {
 	targetStreaks          map[string]int
 	lastTarget             string
+	// readWindows records which (offset, limit) windows have already been observed for a
+	// target. A read of the same file with a different window is a genuinely new inspection,
+	// so it must not count towards the repetition streak.
+	readWindows            map[string]map[string]bool
+	invalidator            ObservationInvalidator
+	pathResolver           func(string) string
 	callStreaks            map[string]int
 	lastCallKey            string
 	failedStreaks          map[string]int
@@ -52,6 +72,7 @@ func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecution
 	}
 	return &TurnExecutionGuard{
 		targetStreaks:          make(map[string]int),
+		readWindows:            make(map[string]map[string]bool),
 		callStreaks:            make(map[string]int),
 		failedStreaks:          make(map[string]int),
 		maxConsecutiveCalls:    limit,
@@ -67,6 +88,39 @@ func (g *TurnExecutionGuard) ConsecutiveIdenticalCount() int {
 		return 0
 	}
 	return g.callStreaks[g.lastCallKey]
+}
+
+// SetObservationInvalidator wires an observer that the guard notifies when a bash
+// mutation changes a file outside the tracked write/edit path. A nil invalidator leaves
+// the guard as a pure repetition detector.
+func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidator) {
+	if g == nil {
+		return
+	}
+	g.invalidator = inv
+}
+
+// SetPathResolver supplies the function that turns a raw tool path argument into the
+// absolute path key used by the observation tracker. Without it the guard falls back to
+// the cleaned argument as-is.
+func (g *TurnExecutionGuard) SetPathResolver(resolver func(string) string) {
+	if g == nil {
+		return
+	}
+	g.pathResolver = resolver
+}
+
+// resolvePath maps a cleaned tool-target to the absolute key the tracker stores under.
+func (g *TurnExecutionGuard) resolvePath(target string) string {
+	if g == nil || target == "" {
+		return ""
+	}
+	if g.pathResolver != nil {
+		if abs := g.pathResolver(target); abs != "" {
+			return abs
+		}
+	}
+	return filepath.Clean(target)
 }
 
 // FileReadCount returns the current consecutive inspection streak for target.
@@ -184,8 +238,11 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 	}
 
 	// Same target in a row: extend the inspection streak. Any call on a
-	// different target (including targetless work like grep) ends it.
-	if target == g.lastTarget && target != "" {
+	// different target (including targetless work like grep) ends it. A read that
+	// asks for a different slice of the file (different offset/limit) is a new
+	// observation, so it restarts the streak instead of inflating it.
+	newWindow := isReadWindowNew(toolName, arguments, g.readWindows)
+	if target == g.lastTarget && target != "" && !newWindow {
 		g.targetStreaks[target]++
 	} else {
 		g.targetStreaks = make(map[string]int)
@@ -216,7 +273,61 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 	if isModifying {
 		g.targetStreaks = make(map[string]int)
 		g.lastTarget = ""
+		g.readWindows = make(map[string]map[string]bool)
+
+		// A successful mutation invalidates the tracker's record for the affected
+		// target. This closes the gap where a bash command (sed -i, cat > f, touch,
+		// rm) changes a file outside the write/edit path, so the next edit cannot rely
+		// on a stale read observation and must re-inspect the file.
+		if err == nil && g.invalidator != nil && target != "" {
+			g.invalidator.Forget(g.resolvePath(target))
+		}
 	}
+}
+
+// isReadWindowNew records the (offset, limit) window of a read call for its target and
+// reports whether this window has not been observed before. Non-read tools, or reads whose
+// window was already seen, return false so the repetition streak keeps counting.
+func isReadWindowNew(toolName, arguments string, windows map[string]map[string]bool) bool {
+	if toolName != "read" || windows == nil {
+		return false
+	}
+
+	target := extractPathArg(arguments, "")
+	if target == "" {
+		return false
+	}
+
+	var args struct {
+		Offset int `json:"offset"`
+		Limit  int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return false
+	}
+
+	windowKey := fmt.Sprintf("%d:%d", args.Offset, args.Limit)
+	seen, ok := windows[target]
+	if !ok {
+		seen = make(map[string]bool)
+		windows[target] = seen
+	}
+
+	if seen[windowKey] {
+		return false
+	}
+
+	// Bound the per-target window set: once full, evict one recorded window before
+	// recording this one so the cache cannot grow without limit.
+	if len(seen) >= maxWindowsPerTarget {
+		for key := range seen {
+			delete(seen, key)
+			break
+		}
+	}
+
+	seen[windowKey] = true
+	return true
 }
 
 func cmdForTool(toolName, arguments string) string {

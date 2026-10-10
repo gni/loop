@@ -29,6 +29,7 @@ var (
 	debugFileFlag           string
 	maxSubagentDepthFlag    int
 	timeoutFlag             int
+	recapIntervalFlag       int
 )
 
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
@@ -49,6 +50,9 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	}
 	if maxStepsFlag != 0 {
 		cfg.MaxReasoningSteps = maxStepsFlag
+	}
+	if cmd.Flags().Changed("recap") {
+		cfg.RecapInterval = recapIntervalFlag
 	}
 	if reasoningEffortFlag != "" {
 		cfg.ReasoningEffort = reasoningEffortFlag
@@ -115,4 +119,5 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: loop_debug.log in workspace)")
 	cmd.PersistentFlags().IntVar(&maxSubagentDepthFlag, "max-subagent-depth", 0, "Maximum subagent nesting depth (default: 0, leaf subagents cannot spawn further subagents)")
 	cmd.PersistentFlags().IntVar(&timeoutFlag, "timeout", 0, "Override LLM request timeout in seconds (default: 120)")
+	cmd.PersistentFlags().IntVar(&recapIntervalFlag, "recap", 5, "Inject a turn/token recap into the agent history every N reasoning steps (negative disables)")
 }

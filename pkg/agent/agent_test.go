@@ -332,3 +332,42 @@ func TestKillTaskProcessGroup(t *testing.T) {
 		exec.Command("pkill", "-f", "sleep 999").Run()
 	}
 }
+
+// The model sometimes repeats the workspace root folder name in a relative path
+// (e.g. 'tests/fastapi_boilerplate' when the root is already '/workspace/tests').
+func TestSafePathRepeatedRootName(t *testing.T) {
+	root := t.TempDir()
+	testsDir := root + "/tests"
+	if err := os.MkdirAll(testsDir+"/fastapi_boilerplate", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{WorkspaceRoot: testsDir}
+
+	got, err := a.SafePath("tests/fastapi_boilerplate")
+	if err != nil {
+		t.Fatalf("SafePath with repeated root name failed: %v", err)
+	}
+	if got != testsDir+"/fastapi_boilerplate" {
+		t.Fatalf("SafePath = %q; want %q", got, testsDir+"/fastapi_boilerplate")
+	}
+
+	// The bare root name resolves to the root when no literal subdirectory exists.
+	if got, err := a.SafePath("tests"); err != nil || got != testsDir {
+		t.Fatalf("SafePath(\"tests\") = %q, %v; want %q", got, err, testsDir)
+	}
+
+	// A genuine path that happens to start with the root name is left untouched.
+	real := testsDir + "/tests"
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.SafePath("tests"); err != nil || got != real {
+		t.Fatalf("SafePath on real nested dir = %q, %v; want %q", got, err, real)
+	}
+
+	// Escapes must still be rejected.
+	if _, err := a.SafePath("tests/../../etc/passwd"); err == nil {
+		t.Fatal("escape through repeated root name should still be blocked")
+	}
+}

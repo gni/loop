@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -161,12 +162,32 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		maxSteps = 30
 	}
 
-	guard := agent.NewTurnExecutionGuard()
-	consecutiveGuardRejections := 0
+	// Shared pipeline (see pkg/agent/engine.go). Subagent policy is explicit now instead
+	// of being an implicit fork of the main loop: no interactive approval (trust inherited
+	// at spawn), no before/after hooks, name-prefixed rendering.
+	engine := agent.NewTurnEngine(ma.BaseAgent, agent.EnginePolicy{
+		AgentName:     ma.Name,
+		AllowApproval: false,
+		RunHooks:      false,
+		SessionKey:    "subagent:" + ma.Name,
+		ShowRecapLine: ma.Parent == nil,
+		ExecContext: func() tool.AgentContext {
+			return &multiAgentContext{AgentContext: ma.BaseAgent, ma: ma}
+		},
+	})
+	sink := newSwarmSink(ma)
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
 			return db.Message{}, ctx.Err()
 		}
+		engine.BeginTurn()
+
+		if engine.Awareness().ShouldRecap() {
+			promptTokens, totalCompletion := agent.CalculateHistoryTokens(sink.Messages())
+			effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
+			engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
+		}
+
 		ma.compressIfNeeded(ctx, writer, theme)
 
 		ma.HistoryMu.RLock()
@@ -371,109 +392,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
 		}
 
-		for idx, tc := range assistantMsg.ToolCalls {
-			if ctx.Err() != nil {
-				return db.Message{}, ctx.Err()
+		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma, theme), func(tc db.ToolCall, output string, toolErr error) {
+			if ma.BaseAgent != nil {
+				ma.BaseAgent.DebugLogToolExecution("subagent:"+ma.Name, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
 			}
-
-			isSubagent := strings.HasPrefix(tc.Function.Name, "subagent__")
-			wasStreamed := sr.GetToolTitleLineNumber(idx) != -1
-
-			if !wasStreamed {
-				prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-				fmt.Fprintf(ncw, "%s [%s] calling tool:\n",
-					style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
-					prefixStyle.Render(ma.Name),
-				)
-				if ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-					ma.BaseAgent.UI.RenderToolHeader(ncw, theme, tc.Function.Name, tc.Function.Arguments)
-				} else {
-					fmt.Fprintf(ncw, "› %s\n", tc.Function.Name)
-				}
+		})
+		if halted || aborted {
+			haltMsg := engine.HaltNotice()
+			last := sink.Messages()
+			if len(last) > 0 && last[len(last)-1].Role == "assistant" {
+				haltMsg = last[len(last)-1].Content
 			}
-
-			var output string
-			var toolErr error
-
-			if guardErr := guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments); guardErr != nil {
-				toolErr = guardErr
-				output = guardErr.Error()
-				consecutiveGuardRejections++
-				if ma.BaseAgent != nil {
-					ma.BaseAgent.DebugLogRepetition("subagent:"+ma.Name, tc.Function.Name, tc.Function.Arguments, guard.ConsecutiveIdenticalCount(), guardErr.Error())
-				}
-			} else {
-				consecutiveGuardRejections = 0
-				mac := &multiAgentContext{
-					AgentContext: ma.BaseAgent,
-					ma:           ma,
-				}
-				startTool := time.Now()
-				output, toolErr = ma.BaseAgent.Registry.Execute(mac, tc.Function.Name, tc.Function.Arguments)
-				toolDuration := time.Since(startTool)
-				if ma.BaseAgent != nil {
-					ma.BaseAgent.DebugLogToolExecution("subagent:"+ma.Name, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, toolDuration)
-				}
+			if ma.Manager != nil && halted {
+				_ = ma.Manager.SaveAgentState(ma, "failed")
 			}
-
-			guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, toolErr)
-			if reminder := guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
-				output = output + "\n\n[" + reminder + "]"
-			}
-
-			if toolErr != nil {
-				output = agent.FormatToolExecutionFailure(tc.Function.Name, output, toolErr)
-			}
-			if output == "" {
-				output = "(no output)"
-			}
-
-			// Same deterministic pruning and spill-to-disk the main loop applies.
-			output = ma.pruneToolOutput(tc.ID, tc.Function.Name, output)
-
-			if !isSubagent {
-				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
-			}
-
-			if !isSubagent {
-				bodyStreamed := sr.DidStreamToolBody(idx) || (ma.BaseAgent != nil && ma.BaseAgent.DidStreamLiveBody())
-				if ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-					ma.BaseAgent.UI.RenderToolOutput(ncw, output, toolErr != nil, ma.BaseAgent.Config.CollapseResults, theme, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
-				} else {
-					if !bodyStreamed {
-						fmt.Fprintln(ncw, output)
-					}
-				}
-			}
-
-			ma.HistoryMu.Lock()
-			ma.History = append(ma.History, db.Message{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Name:       tc.Function.Name,
-				Content:    output,
-			})
-			ma.HistoryMu.Unlock()
-			if ma.Manager != nil {
-				_ = ma.Manager.SaveAgentState(ma, "running")
-			}
-
-			if consecutiveGuardRejections >= agent.ConsecutiveLimit {
-				haltMsg := fmt.Sprintf("[Subagent '%s' halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", ma.Name, agent.ConsecutiveLimit)
-				ma.HistoryMu.Lock()
-				ma.History = append(ma.History, db.Message{
-					Role:    "assistant",
-					Content: haltMsg,
-				})
-				ma.HistoryMu.Unlock()
-				if ma.Manager != nil {
-					_ = ma.Manager.SaveAgentState(ma, "failed")
-				}
-				return db.Message{
-					Role:    "assistant",
-					Content: haltMsg,
-				}, nil
-			}
+			return db.Message{Role: "assistant", Content: haltMsg}, nil
 		}
 	}
 

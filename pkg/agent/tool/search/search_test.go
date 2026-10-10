@@ -99,3 +99,45 @@ func TestGrepFindListSubpackage(t *testing.T) {
 		t.Errorf("expected list output to contain hello.txt and sub/, got:\n%s", listOut)
 	}
 }
+
+// Regression: a workspace root that lives inside a hidden directory must still be
+// searched, while hidden directories *inside* the workspace remain ignored.
+func TestWorkspaceRootInsideHiddenDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, ".cache", "workspace")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(root, "code.go"), []byte("func HelloWorld() {}\n"), 0644)
+
+	ignored := filepath.Join(root, ".git")
+	if err := os.MkdirAll(ignored, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_ = os.WriteFile(filepath.Join(ignored, "secret.go"), []byte("func HelloWorld() {}\n"), 0644)
+
+	ctx := &mockAgentContext{workspaceRoot: root}
+
+	if HasIgnoredComponentIn(root, root) {
+		t.Errorf("workspace root inside hidden dir should not be considered ignored")
+	}
+	if !HasIgnoredComponentIn(filepath.Join(root, ".git"), root) {
+		t.Errorf("expected .git inside workspace to be ignored")
+	}
+
+	out, err := NewGrepTool().Execute(ctx, `{"pattern": "World", "path": "."}`)
+	if err != nil {
+		t.Fatalf("grep failed: %v", err)
+	}
+	if !strings.Contains(out, "code.go") || strings.Contains(out, "secret.go") {
+		t.Errorf("expected grep to find code.go and skip .git/, got:\n%s", out)
+	}
+
+	findOut, err := NewFindTool().Execute(ctx, `{"pattern": "*.go"}`)
+	if err != nil {
+		t.Fatalf("find failed: %v", err)
+	}
+	if !strings.Contains(findOut, "code.go") || strings.Contains(findOut, "secret.go") {
+		t.Errorf("expected find to return code.go and skip .git/, got:\n%s", findOut)
+	}
+}

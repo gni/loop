@@ -81,6 +81,8 @@ func handleConfigCommand(
 			a.Config.Temperature = t
 		case "auto_approve", "yes", "yolo":
 			a.Config.AutoApprove = val == "true" || val == "yes" || val == "1"
+		case "approval_always_answer", "always_answer":
+			a.Config.ApprovalAlwaysAnswer = parseConfigBool(val)
 		case "show_thinking", "thinking":
 			enabled := val == "true" || val == "yes" || val == "1" || val == "on"
 			a.Config.ShowThinking = enabled
@@ -180,8 +182,8 @@ func handleConfigCommand(
 			a.Config.AtomicWrites = parseConfigBool(val)
 		case "ask_user_mode", "ask_user":
 			mode := strings.ToLower(strings.TrimSpace(val))
-			if mode != "interactive" && mode != "auto_recommended" && mode != "disabled" {
-				fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, auto_recommended, disabled\n", val)
+			if mode != "interactive" && mode != "always_ask" && mode != "auto_recommended" && mode != "disabled" {
+				fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled\n", val)
 				return
 			}
 			a.Config.AskUserMode = mode

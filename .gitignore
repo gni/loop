@@ -37,3 +37,6 @@ loop_debug.log
 .build_result
 *_REPORT.md
 MEMORY.md
+
+.gotmp
+buildtmp

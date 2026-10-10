@@ -92,21 +92,26 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	if maxSteps <= 0 {
 		maxSteps = 30
 	}
-	guard := NewTurnExecutionGuard()
-	if a.Config != nil {
-		guard = NewTurnExecutionGuardWithConfig(a.Config.RepeatGuardLimit, a.Config.RepeatReminderThresholds)
-	}
-	consecutiveGuardRejections := 0
+	// Single shared pipeline: the TurnEngine owns the guard wiring, the tool-call
+	// pipeline and turn awareness (turn count + token budget recap every N turns).
+	engine := NewTurnEngine(a, EnginePolicy{
+		SessionKey:    sessionID,
+		AllowApproval: true,
+		RunHooks:      true,
+		ShowRecapLine: !isNonInteractive,
+	})
+	sink := NewAgentSink(a, messages, sessionID)
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
 			return
 		}
 
-		if iter > 1 {
-			divider := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("╌", 40))
-			fmt.Fprintln(writerToUse, divider)
-		}
+		engine.BeginTurn()
 
+		// Turn awareness: every RecapInterval turns the agent receives a recap of how
+		// many turns it has run and how much of its context window it has consumed, so it
+		// can self-regulate when the window is approached. Injected as a user-role message
+		// (always preserved, never orphaned by pairing invariance).
 		autoAdapt := true
 		if a.Config != nil {
 			autoAdapt = a.Config.AutoAdaptContext
@@ -118,6 +123,17 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
 		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
 		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+
+		if engine.Awareness().ShouldRecap() {
+			engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, writerToUse, theme)
+			globalPromptTokensEst, _ = a.GetGlobalTokens(*messages, allowlist)
+			effectiveLimit = a.GetEffectiveContextLimit(globalPromptTokensEst)
+		}
+
+		if iter > 1 {
+			divider := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("╌", 40))
+			fmt.Fprintln(writerToUse, divider)
+		}
 
 		toolsForLog := a.Registry.GetAvailableTools(allowlist)
 		a.DebugLogLLMRequest(sessionID, iter, a.Config.Model, a.Config.Endpoint, *messages, toolsForLog)
@@ -276,7 +292,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
 		}
 
-
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
 		*messages = append(*messages, *assistantMsg)
@@ -348,18 +363,16 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		syncPostTurnStatus()
 
-		halted, aborted := a.executeToolCalls(
+		halted, aborted := engine.ExecuteToolCalls(
 			ctx,
 			assistantMsg,
-			messages,
+			sink,
 			sr,
 			loader,
 			ncw,
 			theme,
-			guard,
-			sessionID,
-			iter,
-			&consecutiveGuardRejections,
+			NewMainRenderer(a),
+			nil,
 		)
 		if halted || aborted {
 			return

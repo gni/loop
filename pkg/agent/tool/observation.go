@@ -133,6 +133,28 @@ func (fot *FileObservationTracker) RecordMutation(absPath string, data []byte) {
 	fot.recordFile(absPath, data)
 }
 
+// Forget drops the observation record for absPath, marking any prior read of
+// that file as stale. It is used when a file is mutated outside the tracked
+// write/edit path (e.g. a bash command such as `sed -i`, `cat > f`, `touch`, or
+// `rm`), so the next read-before-edit / CAS check forces a fresh inspection
+// instead of trusting a hash captured before the external mutation.
+func (fot *FileObservationTracker) Forget(absPath string) {
+	if fot == nil {
+		return
+	}
+	cleanPath := filepath.Clean(absPath)
+	if cleanPath == "" {
+		return
+	}
+
+	fot.mu.Lock()
+	defer fot.mu.Unlock()
+	if fot.disabled {
+		return
+	}
+	delete(fot.observations, cleanPath)
+}
+
 // FileObserver is an optional interface implemented by AgentContext to enforce
 // read-before-edit and CAS policies on file operations.
 type FileObserver = domaintool.FileObserver

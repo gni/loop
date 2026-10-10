@@ -424,6 +424,12 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 			return "Confirmed", nil
 		} else if a.Config.AskUserMode == "disabled" {
 			return "", fmt.Errorf("ask_user tool is disabled by configuration")
+		} else if a.Config.AskUserMode == "always_ask" {
+			// Never auto-answer: every prompt must reach a human. If no interactive UI is
+			// attached, fail instead of silently picking the recommendation.
+			if a.UI == nil {
+				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
+			}
 		}
 	}
 

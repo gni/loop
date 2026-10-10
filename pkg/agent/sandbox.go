@@ -30,6 +30,15 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		return cleanTarget, nil
 	}
 
+	// Resilient fallback: the model sometimes repeats the workspace root folder name
+	// (e.g. 'tests/fastapi_boilerplate' when the root is already '/workspace/tests').
+	// Resolve that before any containment check so legitimate paths are not rejected.
+	cleanTarget = a.resolveRepeatedRootName(cleanRoot, cleanTarget, inputPath)
+
+	if cleanTarget == cleanRoot {
+		return cleanTarget, nil
+	}
+
 	// Surgical security checks: block modifying active configuration file or session databases
 	if a.ConfigPath != "" {
 		absConfig, errConfig := filepath.Abs(a.ConfigPath)
@@ -59,21 +68,7 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		prefix += string(filepath.Separator)
 	}
 
-	// Resilient fallback: if cleanTarget does not exist, check if inputPath repeated the workspace root folder name
-	// (for example calling 'tests/fastapi_boilerplate' when workspace root is already '/workspace/tests').
-	if _, err := os.Stat(cleanTarget); os.IsNotExist(err) {
-		rootBase := filepath.Base(cleanRoot)
-		slashInput := filepath.ToSlash(inputPath)
-		if strings.HasPrefix(slashInput, rootBase+"/") {
-			stripped := strings.TrimPrefix(slashInput, rootBase+"/")
-			altTarget := filepath.Clean(filepath.Join(cleanRoot, stripped))
-			if _, altErr := os.Stat(altTarget); altErr == nil {
-				cleanTarget = altTarget
-			}
-		}
-	}
-
-	if !strings.HasPrefix(cleanTarget, prefix) {
+	if !withinRoot(cleanRoot, cleanTarget) {
 		if strings.TrimSpace(inputPath) == ".." {
 			return "", fmt.Errorf("path '..' is outside workspace root '%s'. Workspace root is the top-level directory", a.WorkspaceRoot)
 		}
@@ -105,4 +100,61 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	}
 
 	return cleanTarget, nil
+}
+
+func withinRoot(cleanRoot, target string) bool {
+	if target == cleanRoot {
+		return true
+	}
+	prefix := cleanRoot
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return strings.HasPrefix(target, prefix)
+}
+
+// resolveRepeatedRootName repairs inputs that repeat the workspace root folder name as their
+// first segment (e.g. 'tests/fastapi_boilerplate' when the root is already '/workspace/tests').
+// It rewrites the path only when the original form is absent on disk and the de-duplicated form
+// exists, so genuine paths that happen to start with the root name are never mangled.
+func (a *Agent) resolveRepeatedRootName(cleanRoot, cleanTarget, inputPath string) string {
+	if cleanTarget == cleanRoot {
+		return cleanTarget
+	}
+
+	rootBase := filepath.Base(cleanRoot)
+	if rootBase == "." || rootBase == string(filepath.Separator) {
+		return cleanTarget
+	}
+
+	slashInput := filepath.ToSlash(inputPath)
+	if !strings.HasPrefix(slashInput, rootBase+"/") && slashInput != rootBase {
+		return cleanTarget
+	}
+
+	if _, err := os.Stat(cleanTarget); err == nil {
+		return cleanTarget
+	}
+
+	// The input is exactly the root name and no literal subdirectory of that name exists:
+	// it refers to the workspace root itself.
+	if slashInput == rootBase {
+		return cleanRoot
+	}
+
+	stripped := strings.TrimPrefix(slashInput, rootBase+"/")
+	if stripped == "" || stripped == "." {
+		return cleanRoot
+	}
+
+	altTarget := filepath.Clean(filepath.Join(cleanRoot, stripped))
+	// Never let the rewrite escape the workspace root.
+	if !withinRoot(cleanRoot, altTarget) {
+		return cleanTarget
+	}
+	if _, err := os.Stat(altTarget); err == nil {
+		return altTarget
+	}
+
+	return cleanTarget
 }
