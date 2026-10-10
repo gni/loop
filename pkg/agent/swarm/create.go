@@ -21,7 +21,7 @@ type CreateSubagentTool struct {
 
 func (s *CreateSubagentTool) Name() string { return "create_subagent" }
 func (s *CreateSubagentTool) PromptSnippet() string {
-	return "Create a specialized subagent"
+	return tool.FormatToolSnippet(s.Name(), "Create a specialized subagent")
 }
 func (s *CreateSubagentTool) Definition() tool.Tool {
 	availableSkillNames := []string{}
@@ -54,7 +54,7 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 		Type: "function",
 		Function: tool.FunctionDefinition{
 			Name:        "create_subagent",
-			Description: "Create one specialized subagent. Use system_prompt for its role. Assign exact registered skill_names or define new private inline_skills; never invent a registered skill name.",
+			Description: tool.FormatToolDescription("create_subagent", "Create one specialized subagent. Use system_prompt for its role. Assign exact registered skill_names or define new private inline_skills; never invent a registered skill name."),
 			Parameters: tool.JSONSchema{
 				Type: "object",
 				Properties: map[string]tool.SchemaProp{

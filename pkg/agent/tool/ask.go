@@ -22,14 +22,14 @@ func NewAskUserTool() *AskUserTool {
 func (t *AskUserTool) Name() string { return "ask_user" }
 
 func (t *AskUserTool) PromptSnippet() string {
-	return "Ask the user a structured question for clarification, confirmation, or selecting design alternatives"
+	return FormatToolSnippet(t.Name(), "Ask the user a structured question for clarification, confirmation, or selecting design alternatives")
 }
 
 func (t *AskUserTool) PromptGuidelines() []string {
-	return []string{
+	return FormatToolGuidelines(t.Name(), []string{
 		"Call 'ask_user' when you need user input, requirements clarification, or confirmation before destructive actions.",
 		"Provide clear selectable options and specify a 'recommended' choice when appropriate.",
-	}
+	})
 }
 
 func (t *AskUserTool) Definition() Tool {
@@ -37,17 +37,17 @@ func (t *AskUserTool) Definition() Tool {
 		Type: "function",
 		Function: FunctionDefinition{
 			Name:        "ask_user",
-			Description: "Ask the user a structured question for clarification, disambiguation, or confirmation. Returns the user's selected choice or answer.",
+			Description: FormatToolDescription("ask_user", "Ask the user a structured question for clarification, disambiguation, or confirmation. Returns the user's selected choice or answer."),
 			Parameters: JSONSchema{
 				Type: "object",
 				Properties: map[string]SchemaProp{
 					"question": {
 						Type:        "string",
-						Description: "The question or clarification request to present to the user.",
+						Description: FormatParamDescription("ask_user", "question", "The question or clarification request to present to the user."),
 					},
 					"options": {
 						Type:        "array",
-						Description: "List of options for the user to select from. Can be strings or {label, description} objects.",
+						Description: FormatParamDescription("ask_user", "options", "List of options for the user to select from. Can be strings or {label, description} objects."),
 						Items: &SchemaProp{
 							Type: "object",
 							Properties: map[string]SchemaProp{
@@ -64,7 +64,7 @@ func (t *AskUserTool) Definition() Tool {
 					},
 					"recommended": {
 						Type:        "string",
-						Description: "Optional label of the recommended option.",
+						Description: FormatParamDescription("ask_user", "recommended", "Optional label of the recommended option."),
 					},
 				},
 				Required: []string{"question"},

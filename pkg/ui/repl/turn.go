@@ -90,7 +90,7 @@ func executeREPLTurn(
 		} else {
 			select {
 			case <-mam.ActiveAgent.Context.Done():
-				fmt.Fprintln(os.Stderr, "Agent context cancelled.")
+				fmt.Fprintln(os.Stderr, "agent context cancelled.")
 			case <-mam.ActiveAgent.Output:
 			}
 			fmt.Fprint(ppWriter, "\n\n")

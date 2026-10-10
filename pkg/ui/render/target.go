@@ -167,6 +167,24 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 		if p := getString("fileName"); p != "" {
 			return p
 		}
+		if p := getString("file_name"); p != "" {
+			return p
+		}
+		if p := getString("filepath"); p != "" {
+			return p
+		}
+		if p := getString("destination"); p != "" {
+			return p
+		}
+		if p := getString("dest"); p != "" {
+			return p
+		}
+		if p := getString("output_file"); p != "" {
+			return p
+		}
+		if p := getString("outfile"); p != "" {
+			return p
+		}
 	}
 
 	// 4. Subagents / Spawning / Prompts

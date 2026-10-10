@@ -118,17 +118,7 @@ func (a *Agent) CompressHistory(
 	sort.Strings(modifiedFiles)
 
 	transcript := transcriptBuilder.String()
-	summaryPrompt := fmt.Sprintf(
-		"You are a technical context compression engine. Summarize the following developer-agent conversation transcript into a dense, high-signal technical log.\n\n"+
-			"Strict Requirements:\n"+
-			"1. User Goals & Constraints: Exact requirements, architectural preferences, and explicit rules stated by the user.\n"+
-			"2. Actions & Findings: Search results, files located or inspected, and diagnostic findings.\n"+
-			"3. File Modifications: Exact paths modified or created, and key symbols added or updated.\n"+
-			"4. Current State: What is complete, what failed, and immediate pending tasks.\n"+
-			"5. No pleasantries, preambles, or filler. Output only the structured technical summary.\n\n"+
-			"Transcript:\n%s",
-		transcript,
-	)
+	summaryPrompt := fmt.Sprintf(MasterSystemPrompts.CompressionPrompt, transcript)
 
 	summaryMsgs := []db.Message{
 		{
@@ -139,7 +129,7 @@ func (a *Agent) CompressHistory(
 
 	infoStyle := style.NewStyle().Foreground(theme.Primary).Italic(true)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, infoStyle.Render("[System: Context usage threshold reached. Compressing older conversation history...]"))
+	fmt.Fprintln(w, infoStyle.Render("[system: context usage threshold reached. compressing older conversation history...]"))
 
 	// The summarizer has no renderer, so its chunks are discarded. The drain loop
 	// must outlive the call and exit when the channel is closed, otherwise every

@@ -62,8 +62,8 @@ func CompressToolDefinition(t Tool) Tool {
 	case "write":
 		compressed.Function.Description = "Create or overwrite a file. Always specify 'path' first before 'content'. Never use after an edit mismatch."
 		setPropDesc(props, "path", "File path (specify first)")
-		setPropDesc(props, "content", "File content")
-		setPropDesc(props, "write_content", "File content")
+		setPropDesc(props, "content", "File content (specify after path)")
+		setPropDesc(props, "write_content", "File content (specify after path)")
 	case "edit":
 		compressed.Function.Description = "Replace exact unique blocks copied from the latest read. Target only the necessary element using a smaller block. Never overwrite whole files."
 		setPropDesc(props, "path", "File path")

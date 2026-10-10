@@ -20,41 +20,39 @@ func NewEditTool() domaintool.ToolExecutor {
 func (t *editTool) Name() string { return "edit" }
 
 func (t *editTool) PromptSnippet() string {
-	return "Make precise file edits with exact text replacement, including multiple disjoint edits in one call"
+	return domaintool.FormatToolSnippet(t.Name(), "Make precise file edits with exact text replacement, including multiple disjoint edits in one call")
 }
 
 func (t *editTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'edit' for precise changes (updates[].oldText must match uniquely).",
 		"Keep oldText minimal (typically 2-5 lines).",
 		"When modifying multiple separate locations in a file, provide multiple updates in updates[] in a single edit call.",
 		"If edit reports an oldText mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.",
-	}
+	})
 }
 
-var editToolDef = domaintool.NewFunctionTool(
-	"edit",
-	"Edit a file using exact text replacement blocks. Matches unique blocks against current file contents.",
-	map[string]domaintool.SchemaProp{
-		"path": domaintool.StringProp("Path to the file to edit. Always specify path first."),
-		"updates": {
-			Type:        "array",
-			Description: "One or more targeted replacements.",
-			Items: &domaintool.SchemaProp{
-				Type: "object",
-				Properties: map[string]domaintool.SchemaProp{
-					"oldText": domaintool.StringProp("Exact unique current text copied from latest read (typically 2-5 lines)."),
-					"newText": domaintool.StringProp("The replacement text for oldText."),
+func (t *editTool) Definition() domaintool.Tool {
+	return domaintool.NewFunctionTool(
+		"edit",
+		domaintool.FormatToolDescription("edit", "Edit a file using exact text replacement blocks. Matches unique blocks against current file contents."),
+		map[string]domaintool.SchemaProp{
+			"path": domaintool.StringProp(domaintool.FormatParamDescription("edit", "path", "Path to the file to edit. Always specify path first.")),
+			"updates": {
+				Type:        "array",
+				Description: domaintool.FormatParamDescription("edit", "updates", "One or more targeted replacements."),
+				Items: &domaintool.SchemaProp{
+					Type: "object",
+					Properties: map[string]domaintool.SchemaProp{
+						"oldText": domaintool.StringProp(domaintool.FormatParamDescription("edit", "oldText", "Exact unique current text copied from latest read (typically 2-5 lines).")),
+						"newText": domaintool.StringProp(domaintool.FormatParamDescription("edit", "newText", "The replacement text for oldText.")),
+					},
+					Required: []string{"oldText", "newText"},
 				},
-				Required: []string{"oldText", "newText"},
 			},
 		},
-	},
-	"path", "updates",
-)
-
-func (t *editTool) Definition() domaintool.Tool {
-	return editToolDef
+		"path", "updates",
+	)
 }
 
 func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

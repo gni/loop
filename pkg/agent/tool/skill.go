@@ -15,17 +15,17 @@ func NewLoadSkillTool() ToolExecutor {
 func (t *loadSkillTool) Name() string { return "load_skill" }
 
 func (t *loadSkillTool) PromptSnippet() string {
-	return "Load detailed reference skill instructions"
+	return FormatToolSnippet(t.Name(), "Load detailed reference skill instructions")
 }
 
 func (t *loadSkillTool) Definition() Tool {
 	return NewFunctionTool(
 		"load_skill",
-		"Retrieve the detailed instructions, tools, or references for a specific skill from the available skills list.",
+		FormatToolDescription("load_skill", "Retrieve the detailed instructions, tools, or references for a specific skill from the available skills list."),
 		map[string]SchemaProp{
 			"name": {
 				Type:        "string",
-				Description: "The name of the skill to load (e.g. 'agent-isolation').",
+				Description: FormatParamDescription("load_skill", "name", "The name of the skill to load (e.g. 'agent-isolation')."),
 			},
 		},
 		"name",

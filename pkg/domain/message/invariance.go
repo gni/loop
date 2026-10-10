@@ -77,7 +77,7 @@ func closeUnansweredToolCalls(result []Message) []Message {
 					Role:       RoleTool,
 					ToolCallID: tc.ID,
 					Name:       tc.Function.Name,
-					Content:    "[Tool execution was interrupted or cancelled before returning]",
+					Content:    "[tool execution was interrupted or cancelled before returning]",
 				})
 			}
 		}

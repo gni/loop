@@ -328,6 +328,8 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 	w := a.CurrentWriter
 	if w == nil {
 		w = os.Stdout
+	} else {
+		w = unwrapWriter(w)
 	}
 	theme := a.CurrentTheme
 

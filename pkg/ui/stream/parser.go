@@ -59,13 +59,14 @@ func IsToolTargetPathKey(key string, toolName string) bool {
 	if toolName == "todo" {
 		return false
 	}
-	switch key {
-	case "path", "file_path", "filePath", "file", "target", "Target", "target_file", "targetFile", "TargetFile",
-		"filename", "fileName", "file_name", "write_path", "writePath", "AbsolutePath", "absolute_path",
-		"SearchPath", "searchPath", "DirectoryPath", "dirPath", "directory_path", "pattern", "query", "Query",
-		"prompt", "Prompt", "name", "id", "task_id", "url", "URL", "uri", "URI":
+	lower := strings.ToLower(key)
+	switch lower {
+	case "path", "file_path", "filepath", "file", "target", "target_file", "targetfile",
+		"filename", "file_name", "write_path", "writepath", "absolutepath", "absolute_path",
+		"searchpath", "search_path", "directorypath", "directory_path", "dirpath", "dir_path",
+		"pattern", "query", "prompt", "name", "id", "task_id", "url", "uri", "destination", "dest", "outfile", "output_file":
 		return true
-	case "command", "CommandLine", "cmd", "script", "code", "input", "arguments", "args":
+	case "command", "commandline", "cmd", "script", "code", "input", "arguments", "args":
 		return toolName == "bash" || toolName == "ls" || strings.Contains(toolName, "command") || strings.Contains(toolName, "exec") || strings.Contains(toolName, "run") || strings.Contains(toolName, "shell")
 	}
 	return false
@@ -198,12 +199,6 @@ func DetectLangFromPath(path string) string {
 func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 	line := p.LineBuffer.String()
 	p.LineBuffer.Reset()
-
-	if p.NeedsPath() && p.Path == "" && !p.TitlePrinted && !p.IsPath {
-		p.OutputBuf.WriteString(line)
-		p.OutputBuf.WriteByte('\n')
-		return
-	}
 
 	if !p.TitlePrinted {
 		p.PrintStreamTitle(w, theme)

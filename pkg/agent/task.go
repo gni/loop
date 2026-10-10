@@ -137,7 +137,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		a.TasksMu.Lock()
 		if a.StreamingTask == task.ID {
 			a.StreamingTask = ""
-			fmt.Fprintf(w, "\n[Task %s finished with status: %s]\n", task.ID, finalStatus)
+			fmt.Fprintf(w, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
 		}
 		a.TasksMu.Unlock()
 
@@ -278,7 +278,7 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 
 	if a.StreamingTask == id {
 		a.StreamingTask = ""
-		fmt.Fprintf(w, "\n[Stopped streaming output of %s]\n", id)
+		fmt.Fprintf(w, "\n[stopped streaming output of %s]\n", id)
 		return
 	}
 
@@ -289,7 +289,7 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	}
 
 	a.StreamingTask = id
-	fmt.Fprintf(w, "\n[Streaming output of %s...]\n", id)
+	fmt.Fprintf(w, "\n[streaming output of %s...]\n", id)
 
 	task.mu.Lock()
 	outBytes := task.Stdout.Bytes()

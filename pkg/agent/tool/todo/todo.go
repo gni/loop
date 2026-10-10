@@ -27,27 +27,27 @@ func (t *todoTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name: "todo",
-			Description: "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time.",
+			Description: domaintool.FormatToolDescription("todo", "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
 					"tasks": {
 						Type:        "array",
-						Description: "The complete updated list of tasks representing the active plan.",
+						Description: domaintool.FormatParamDescription("todo", "tasks", "The complete updated list of tasks representing the active plan."),
 						Items: &domaintool.SchemaProp{
 							Type: "object",
 							Properties: map[string]domaintool.SchemaProp{
 								"id": {
 									Type:        "string",
-									Description: "Unique identifier for the task (e.g., 'task-1', 'step-1').",
+									Description: domaintool.FormatParamDescription("todo", "id", "Unique identifier for the task (e.g., 'task-1', 'step-1')."),
 								},
 								"task": {
 									Type:        "string",
-									Description: "Clear, concrete description of the task.",
+									Description: domaintool.FormatParamDescription("todo", "task", "Clear, concrete description of the task."),
 								},
 								"status": {
 									Type:        "string",
-									Description: "Task status. Exactly one task may be 'in_progress' at any given moment.",
+									Description: domaintool.FormatParamDescription("todo", "status", "Task status. Exactly one task may be 'in_progress' at any given moment."),
 									Enum:        []string{"pending", "in_progress", "completed"},
 								},
 							},
@@ -62,13 +62,13 @@ func (t *todoTool) Definition() domaintool.Tool {
 }
 
 func (t *todoTool) PromptSnippet() string {
-	return "Manage structured implementation plan. Whole-list replacement; exactly one task in_progress."
+	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement; exactly one task in_progress.")
 }
 
 func (t *todoTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Task Planning: For complex multi-step objectives, use the 'todo' tool to initialize and update your plan. Mark the active task 'in_progress' and check off tasks as 'completed'.",
-	}
+	})
 }
 
 func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

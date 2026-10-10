@@ -219,6 +219,8 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 		if sr.parser.LineBuffer.Len() > 0 {
 			sr.parser.EmitLine(sr.w, sr.theme)
 		}
+		sr.parser.ActiveToolName = ""
+		sr.parser.ActiveToolIndex = -1
 	}
 }
 
@@ -275,6 +277,8 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.CurrentKey = ""
 		sr.parser.InValue = false
 		sr.parser.Buf.Reset()
+		sr.parser.GuessedLang = ""
+		sr.parser.NeedsLeadingNewline = false
 
 		if sr.parser.StreamWrites && !sr.parser.NeedsPath() {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)

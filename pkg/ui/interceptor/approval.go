@@ -99,7 +99,7 @@ func (ki *KeyInterceptorReader) printCancelMessage() {
 		}
 	}
 	if output != nil {
-		fmt.Fprintln(output, "\n[Operation Cancelled by User]")
+		fmt.Fprintln(output, "\n[operation cancelled by user]")
 	}
 }
 
@@ -125,12 +125,12 @@ func (ki *KeyInterceptorReader) handleSubagentCancellation(rawInput <-chan byte,
 
 	switch decision {
 	case agent.SubagentCancellationContinue:
-		fmt.Fprintln(output, "\n[Subagent cancellation dismissed]")
+		fmt.Fprintln(output, "\n[subagent cancellation dismissed]")
 	case agent.SubagentCancellationSkipCurrent:
 		if ki.MAM != nil && ki.MAM.CancelSubagentTurn(agentName) {
-			fmt.Fprintf(output, "\n[Skipped subagent: %s]\n", agentName)
+			fmt.Fprintf(output, "\n[skipped subagent: %s]\n", agentName)
 		} else {
-			fmt.Fprintf(output, "\n[Subagent already finished: %s]\n", agentName)
+			fmt.Fprintf(output, "\n[subagent already finished: %s]\n", agentName)
 		}
 	case agent.SubagentCancellationStopAll:
 		if ki.MAM != nil {
@@ -142,7 +142,7 @@ func (ki *KeyInterceptorReader) handleSubagentCancellation(rawInput <-chan byte,
 		if ki.OnClearCancelFunc != nil {
 			ki.OnClearCancelFunc()
 		}
-		fmt.Fprintln(output, "\n\n[Operation Cancelled by User]")
+		fmt.Fprintln(output, "\n\n[operation cancelled by user]")
 	}
 
 	ki.ResetTypeAheadLocked()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -41,7 +42,13 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
-	if !isError && (IsWriteLikeTool(toolName) || IsCommandLikeTool(toolName)) && bodyWasStreamed {
+	if !isError && IsWriteLikeTool(toolName) {
+		renderWriteSummary(w, theme, toolName, argsJSON, output)
+		if bodyWasStreamed {
+			return
+		}
+	}
+	if !isError && IsCommandLikeTool(toolName) && bodyWasStreamed {
 		return
 	}
 	status := ToolStatusSuccess
@@ -176,3 +183,73 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	}
 	fmt.Fprintln(w)
 }
+
+func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
+	target := ExtractToolTarget(toolName, argsJSON)
+	if target == "" {
+		if idx := strings.Index(output, " to "); idx != -1 {
+			target = strings.TrimSpace(output[idx+4:])
+		}
+	}
+	if target == "" {
+		return
+	}
+
+	absPath := target
+	if !filepath.IsAbs(absPath) {
+		if cwd, err := os.Getwd(); err == nil {
+			absPath = filepath.Join(cwd, target)
+		}
+	}
+
+	var sizeBytes int64 = -1
+	var lineCount int = -1
+	if fi, err := os.Stat(absPath); err == nil && !fi.IsDir() {
+		sizeBytes = fi.Size()
+		if data, err := os.ReadFile(absPath); err == nil {
+			lineCount = bytes.Count(data, []byte{'\n'})
+			if len(data) > 0 && !bytes.HasSuffix(data, []byte{'\n'}) {
+				lineCount++
+			}
+		}
+	}
+
+	sizeDesc := ""
+	if sizeBytes >= 0 {
+		formattedSize := formatByteSize(sizeBytes)
+		if lineCount >= 0 {
+			sizeDesc = fmt.Sprintf("%s, %d lines", formattedSize, lineCount)
+		} else {
+			sizeDesc = formattedSize
+		}
+	} else if len(output) > 0 {
+		sizeDesc = output
+	}
+
+	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
+	pathStyle := style.NewStyle().Foreground(theme.Text)
+	sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
+
+	if sizeDesc != "" {
+		fmt.Fprintf(w, "%s %s %s\n",
+			checkStyle.Render("✓"),
+			pathStyle.Render(absPath),
+			sizeStyle.Render(fmt.Sprintf("(%s)", sizeDesc)),
+		)
+	} else {
+		fmt.Fprintf(w, "%s %s\n",
+			checkStyle.Render("✓"),
+			pathStyle.Render(absPath),
+		)
+	}
+}
+
+func formatByteSize(bytes int64) string {
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	} else if bytes < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
+	}
+	return fmt.Sprintf("%.2f MB", float64(bytes)/(1024*1024))
+}
+

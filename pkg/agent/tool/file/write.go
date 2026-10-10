@@ -19,29 +19,27 @@ func NewWriteTool() domaintool.ToolExecutor {
 func (t *writeTool) Name() string { return "write" }
 
 func (t *writeTool) PromptSnippet() string {
-	return "Create or overwrite complete files"
+	return domaintool.FormatToolSnippet(t.Name(), "Create or overwrite complete files")
 }
 
 func (t *writeTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
 		"Specify the target file in 'path' and the complete file contents in 'content'.",
 		"In tool call arguments, always output 'path' before 'content' to enable real-time streaming preview and syntax highlighting.",
-	}
+	})
 }
 
-var writeToolDef = domaintool.NewFunctionTool(
-	"write",
-	"Create a new file or completely overwrite an existing file. Specify 'path' first before 'content'. Automatically creates parent directories.",
-	map[string]domaintool.SchemaProp{
-		"path":    domaintool.StringProp("Path to the target file. Specify 'path' first before 'content'."),
-		"content": domaintool.StringProp("Complete content to write into the file."),
-	},
-	"path", "content",
-)
-
 func (t *writeTool) Definition() domaintool.Tool {
-	return writeToolDef
+	return domaintool.NewFunctionTool(
+		"write",
+		domaintool.FormatToolDescription("write", "Create a new file or completely overwrite an existing file. Specify 'path' first before 'content'. Automatically creates parent directories."),
+		map[string]domaintool.SchemaProp{
+			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. Specify 'path' first before 'content'.")),
+			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. Specify 'content' after 'path'.")),
+		},
+		"path", "content",
+	)
 }
 
 func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

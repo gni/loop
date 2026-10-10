@@ -21,28 +21,26 @@ func NewFindTool() domaintool.ToolExecutor {
 func (t *findTool) Name() string { return "find" }
 
 func (t *findTool) PromptSnippet() string {
-	return "Find files by glob pattern"
+	return domaintool.FormatToolSnippet(t.Name(), "Find files by glob pattern")
 }
 
 func (t *findTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'find' to locate files by glob pattern instead of running find in bash.",
-	}
+	})
 }
 
-var findToolDef = domaintool.NewFunctionTool(
-	"find",
-	"Find files by glob pattern",
-	map[string]domaintool.SchemaProp{
-		"pattern": domaintool.StringProp("Glob pattern to match files (e.g. *.py, **/*.json)"),
-		"path":    domaintool.StringProp("Directory to search in (default: current directory)"),
-		"limit":   domaintool.NumberProp("Maximum results to return (default: 500)"),
-	},
-	"pattern",
-)
-
 func (t *findTool) Definition() domaintool.Tool {
-	return findToolDef
+	return domaintool.NewFunctionTool(
+		"find",
+		domaintool.FormatToolDescription("find", "Find files by glob pattern"),
+		map[string]domaintool.SchemaProp{
+			"pattern": domaintool.StringProp(domaintool.FormatParamDescription("find", "pattern", "Glob pattern to match files (e.g. *.py, **/*.json)")),
+			"path":    domaintool.StringProp(domaintool.FormatParamDescription("find", "path", "Directory to search in (default: current directory)")),
+			"limit":   domaintool.NumberProp(domaintool.FormatParamDescription("find", "limit", "Maximum results to return (default: 500)")),
+		},
+		"pattern",
+	)
 }
 
 func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

@@ -23,29 +23,27 @@ func NewReadTool() domaintool.ToolExecutor {
 func (t *readTool) Name() string { return "read" }
 
 func (t *readTool) PromptSnippet() string {
-	return "Read file contents"
+	return domaintool.FormatToolSnippet(t.Name(), "Read file contents")
 }
 
 func (t *readTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'read' to examine files instead of cat or sed in bash. Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
 		"In tool call arguments, always output 'path' first.",
-	}
+	})
 }
 
-var readToolDef = domaintool.NewFunctionTool(
-	"read",
-	"Read file contents. Supports text files. Specify 'path' first before offset or limit.",
-	map[string]domaintool.SchemaProp{
-		"path":   domaintool.StringProp("Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees."),
-		"offset": domaintool.NumberProp("Line number to start reading from (1-indexed). Optional"),
-		"limit":  domaintool.NumberProp("Maximum number of lines to read. Optional"),
-	},
-	"path",
-)
-
 func (t *readTool) Definition() domaintool.Tool {
-	return readToolDef
+	return domaintool.NewFunctionTool(
+		"read",
+		domaintool.FormatToolDescription("read", "Read file contents. Supports text files. Specify 'path' first before offset or limit."),
+		map[string]domaintool.SchemaProp{
+			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees.")),
+			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),
+			"limit":  domaintool.NumberProp(domaintool.FormatParamDescription("read", "limit", "Maximum number of lines to read. Optional")),
+		},
+		"path",
+	)
 }
 
 func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

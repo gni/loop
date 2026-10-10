@@ -247,7 +247,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				if !isNonInteractive {
 					fmt.Fprintln(writerToUse)
 					cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
-					fmt.Fprintln(writerToUse, cancelStyle.Render("[Operation Cancelled]"))
+					fmt.Fprintln(writerToUse, cancelStyle.Render("[operation cancelled]"))
 				}
 			} else {
 				if !isNonInteractive {

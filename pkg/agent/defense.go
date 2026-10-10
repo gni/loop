@@ -54,16 +54,16 @@ func FormatToolExecutionFailure(toolName, output string, err error) string {
 			if strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {
 				return diagnostic
 			}
-			if !strings.HasPrefix(diagnostic, "[Command Failed") && !strings.HasPrefix(diagnostic, "Command failed") && !strings.HasPrefix(diagnostic, "Error:") {
+			if !strings.HasPrefix(strings.ToLower(diagnostic), "[command failed") && !strings.HasPrefix(strings.ToLower(diagnostic), "command failed") && !strings.HasPrefix(diagnostic, "Error:") {
 				errMsg := err.Error()
 				if strings.HasPrefix(errMsg, "command failed: ") {
 					errMsg = strings.TrimPrefix(errMsg, "command failed: ")
 				}
-				return fmt.Sprintf("[Command Failed: %s]\n%s", errMsg, diagnostic)
+				return fmt.Sprintf("[command failed: %s]\n%s", errMsg, diagnostic)
 			}
 			return diagnostic
 		}
-		return fmt.Sprintf("[Command Failed: %s]", err.Error())
+		return fmt.Sprintf("[command failed: %s]", err.Error())
 	}
 	alert := FormatDefensiveError(toolName, err)
 	if strings.TrimSpace(diagnostic) == "" || strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {

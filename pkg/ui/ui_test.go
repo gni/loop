@@ -175,7 +175,7 @@ func TestActiveCancellationMessageUsesConversationRegion(t *testing.T) {
 		t.Fatalf("cancellation message bypassed the conversation writeR: %q", rawOutput.String())
 	}
 	rendered := conversationOutput.String()
-	if !strings.Contains(rendered, "[Operation Cancelled by User]") {
+	if !strings.Contains(rendered, "[operation cancelled by user]") {
 		t.Fatalf("conversation region omitted cancellation message: %q", rendered)
 	}
 	for _, destructiveSequence := range []string{"\x1b[2J", "\x1b[H\x1b[J", "\x1b[r\x1b[H"} {

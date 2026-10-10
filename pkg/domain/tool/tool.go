@@ -68,7 +68,28 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 
 	var requiredJSON string
 	if len(j.Required) > 0 {
-		reqBytes, err := json.Marshal(j.Required)
+		var orderedReq []string
+		for _, key := range orderedKeys {
+			for _, rk := range j.Required {
+				if rk == key {
+					orderedReq = append(orderedReq, rk)
+					break
+				}
+			}
+		}
+		for _, rk := range j.Required {
+			isOrdered := false
+			for _, ok := range orderedKeys {
+				if rk == ok {
+					isOrdered = true
+					break
+				}
+			}
+			if !isOrdered {
+				orderedReq = append(orderedReq, rk)
+			}
+		}
+		reqBytes, err := json.Marshal(orderedReq)
 		if err != nil {
 			return nil, err
 		}

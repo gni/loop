@@ -73,8 +73,8 @@ func TestGenerationErrorRendersDiagnosticInsteadOfOperationCancelled(t *testing.
 	a.RunAgentLoop(ctx, &output, &messages, "hi", nil, style.UITheme{}, false, "")
 
 	outStr := output.String()
-	if strings.Contains(outStr, "[Operation Cancelled]") {
-		t.Fatalf("expected generation error not to print '[Operation Cancelled]', got:\n%s", outStr)
+	if strings.Contains(outStr, "[operation cancelled]") {
+		t.Fatalf("expected generation error not to print '[operation cancelled]', got:\n%s", outStr)
 	}
 
 	if len(ui.renderedErrors) != 1 || !strings.Contains(ui.renderedErrors[0], "connection refused") {
@@ -118,8 +118,8 @@ func TestUserCancellationRendersOperationCancelled(t *testing.T) {
 	a.RunAgentLoop(ctx, &output, &messages, "hi", nil, style.UITheme{}, false, "")
 
 	outStr := output.String()
-	if !strings.Contains(outStr, "[Operation Cancelled]") {
-		t.Fatalf("expected cancelled operation to print '[Operation Cancelled]', got:\n%s", outStr)
+	if !strings.Contains(outStr, "[operation cancelled]") {
+		t.Fatalf("expected cancelled operation to print '[operation cancelled]', got:\n%s", outStr)
 	}
 
 	if len(ui.renderedErrors) != 0 {

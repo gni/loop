@@ -61,7 +61,7 @@ func (a *Agent) executeToolCalls(
 				if loader != nil {
 					loader.Pause()
 				}
-				approved, always = a.UI.AskForApproval(ncw, theme)
+				approved, always = a.UI.AskForApproval(unwrapWriter(ncw), theme)
 				if loader != nil {
 					loader.Resume()
 				}
@@ -162,7 +162,7 @@ func (a *Agent) executeToolCalls(
 			}
 
 			if *consecutiveGuardRejections >= ConsecutiveLimit {
-				haltNotice := fmt.Sprintf("[Agent halted: loop protection rejected %d consecutive tool calls. Stopping execution to prevent infinite loop. Proceed with 'edit'/'write' or provide final response.]", ConsecutiveLimit)
+				haltNotice := fmt.Sprintf("[agent halted: loop protection rejected %d consecutive tool calls. stopping execution to prevent infinite loop. proceed with 'edit'/'write' or provide final response.]", ConsecutiveLimit)
 				*messages = append(*messages, db.Message{
 					Role:    "assistant",
 					Content: haltNotice,

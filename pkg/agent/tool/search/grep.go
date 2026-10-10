@@ -30,13 +30,13 @@ func NewGrepTool() domaintool.ToolExecutor {
 func (t *grepTool) Name() string { return "grep" }
 
 func (t *grepTool) PromptSnippet() string {
-	return "Search file contents for patterns or regular expressions"
+	return domaintool.FormatToolSnippet(t.Name(), "Search file contents for patterns or regular expressions")
 }
 
 func (t *grepTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'grep' to search definitions or references across the workspace instead of running grep/find in bash.",
-	}
+	})
 }
 
 func (t *grepTool) Definition() domaintool.Tool {

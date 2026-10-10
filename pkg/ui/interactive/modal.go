@@ -17,6 +17,28 @@ type scrollBlockReplacer interface {
 	ReplaceScrollBlockBack(count int, lines []string) bool
 }
 
+func getScrollBlockReplacer(w io.Writer) scrollBlockReplacer {
+	type unwrapper interface {
+		Unwrap() io.Writer
+	}
+	curr := w
+	for curr != nil {
+		if sbr, ok := curr.(scrollBlockReplacer); ok {
+			return sbr
+		}
+		if u, ok := curr.(unwrapper); ok {
+			next := u.Unwrap()
+			if next == nil || next == curr {
+				break
+			}
+			curr = next
+		} else {
+			break
+		}
+	}
+	return nil
+}
+
 type approvalInputController interface {
 	BeginApprovalInput() io.Reader
 	EndApprovalInput()
@@ -88,7 +110,7 @@ func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, promp
 			return
 		}
 
-		if promptWriter, ok := output.(scrollBlockReplacer); ok {
+		if promptWriter := getScrollBlockReplacer(output); promptWriter != nil {
 			lines := make([]string, len(options))
 			for i := range options {
 				lines[i] = renderOption(i)
@@ -98,11 +120,9 @@ func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, promp
 			}
 		}
 
-		fmt.Fprintf(output, "\x1b[%dA", len(options)+1)
-		fmt.Fprint(output, "\r\x1b[K", promptStyle.Render(prompt+"\r\n"))
+		fmt.Fprintf(output, "\x1b[%dA", len(options))
 		for i := range options {
-			fmt.Fprint(output, "\r\x1b[K")
-			fmt.Fprintf(output, "%s\r\n", renderOption(i))
+			fmt.Fprintf(output, "\r\x1b[2K%s\r\n", renderOption(i))
 		}
 	}
 
@@ -117,7 +137,7 @@ func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, promp
 			continue
 		}
 
-		if n == 3 && buf[0] == 27 && buf[1] == '[' {
+		if n == 3 && buf[0] == 27 && (buf[1] == '[' || buf[1] == 'O') {
 			switch buf[2] {
 			case 'A':
 				selected = (selected - 1 + len(options)) % len(options)
@@ -290,12 +310,12 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 	}
 	selected, dismissed := runModalChoice(w, theme, " "+prompt, menuOptions, defaultIdx)
 	if dismissed {
-		return "Operation cancelled by user", nil
+		return "operation cancelled by user", nil
 	}
 	if selected >= 0 && selected < len(menuOptions) {
 		return menuOptions[selected].Label, nil
 	}
-	return "Operation cancelled by user", nil
+	return "operation cancelled by user", nil
 }
 
 func AskForSubagentCancellation(w io.Writer, theme style.UITheme, agentName string) agent.SubagentCancellationDecision {

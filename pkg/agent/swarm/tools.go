@@ -161,13 +161,13 @@ func singleNameToolDefinition(name, description, paramDesc string) tool.Tool {
 
 func (s *RemoveSubagentTool) Name() string { return "remove_subagent" }
 func (s *RemoveSubagentTool) PromptSnippet() string {
-	return "Terminate a subagent"
+	return tool.FormatToolSnippet(s.Name(), "Terminate a subagent")
 }
 func (s *RemoveSubagentTool) Definition() tool.Tool {
 	return singleNameToolDefinition(
 		"remove_subagent",
-		"Terminate a running subagent.",
-		"The name of the subagent to terminate.",
+		tool.FormatToolDescription("remove_subagent", "Terminate a running subagent."),
+		tool.FormatParamDescription("remove_subagent", "name", "The name of the subagent to terminate."),
 	)
 }
 
@@ -190,14 +190,14 @@ type ListSubagentsTool struct {
 
 func (s *ListSubagentsTool) Name() string { return "list_subagents" }
 func (s *ListSubagentsTool) PromptSnippet() string {
-	return "View active subagents"
+	return tool.FormatToolSnippet(s.Name(), "View active subagents")
 }
 func (s *ListSubagentsTool) Definition() tool.Tool {
 	return tool.Tool{
 		Type: "function",
 		Function: tool.FunctionDefinition{
 			Name:        "list_subagents",
-			Description: "View active subagents, their parent relationships, and their loaded skills.",
+			Description: tool.FormatToolDescription("list_subagents", "View active subagents, their parent relationships, and their loaded skills."),
 			Parameters: tool.JSONSchema{
 				Type:       "object",
 				Properties: map[string]tool.SchemaProp{},

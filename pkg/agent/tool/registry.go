@@ -25,6 +25,13 @@ var ParseToolArguments = domaintool.ParseToolArguments
 var FirstNonEmpty = domaintool.FirstNonEmpty
 var NewFunctionTool = domaintool.NewFunctionTool
 var IsSafeIdentifier = domaintool.IsSafeIdentifier
+var FormatToolSnippet = domaintool.FormatToolSnippet
+var FormatToolGuidelines = domaintool.FormatToolGuidelines
+var FormatToolDescription = domaintool.FormatToolDescription
+var FormatParamDescription = domaintool.FormatParamDescription
+var MasterToolPrompts = domaintool.MasterToolPrompts
+var GetToolPrompt = domaintool.GetToolPrompt
+var SetToolPrompt = domaintool.SetToolPrompt
 
 
 

@@ -106,7 +106,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 						}
 					}
 					qStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
-					fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[Queue cleared: %d item(s)]", cleared)))
+					fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
 				}
 				continue
 			}

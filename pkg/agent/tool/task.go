@@ -43,17 +43,17 @@ func NewTaskStatusTool() ToolExecutor {
 func (t *taskStatusTool) Name() string { return "task_status" }
 
 func (t *taskStatusTool) PromptSnippet() string {
-	return "Retrieve the execution status and output of a background task"
+	return FormatToolSnippet(t.Name(), "Retrieve the execution status and output of a background task")
 }
 
 func (t *taskStatusTool) Definition() Tool {
 	return NewFunctionTool(
 		"task_status",
-		"Retrieve the execution status and buffered stdout/stderr output of a background task.",
+		FormatToolDescription("task_status", "Retrieve the execution status and buffered stdout/stderr output of a background task."),
 		map[string]SchemaProp{
 			"task_id": {
 				Type:        "string",
-				Description: "The ID of the background task (e.g. 'task_1').",
+				Description: FormatParamDescription("task_status", "task_id", "The ID of the background task (e.g. 'task_1')."),
 			},
 		},
 		"task_id",
@@ -83,17 +83,17 @@ func NewTaskKillTool() ToolExecutor {
 func (t *taskKillTool) Name() string { return "task_kill" }
 
 func (t *taskKillTool) PromptSnippet() string {
-	return "Terminate a running background task"
+	return FormatToolSnippet(t.Name(), "Terminate a running background task")
 }
 
 func (t *taskKillTool) Definition() Tool {
 	return NewFunctionTool(
 		"task_kill",
-		"Terminate a running background task.",
+		FormatToolDescription("task_kill", "Terminate a running background task."),
 		map[string]SchemaProp{
 			"task_id": {
 				Type:        "string",
-				Description: "The ID of the task to terminate.",
+				Description: FormatParamDescription("task_kill", "task_id", "The ID of the task to terminate."),
 			},
 		},
 		"task_id",

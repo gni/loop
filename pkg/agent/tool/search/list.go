@@ -21,14 +21,14 @@ func NewListTool() domaintool.ToolExecutor {
 func (t *listTool) Name() string { return "list" }
 
 func (t *listTool) PromptSnippet() string {
-	return "List directory contents"
+	return domaintool.FormatToolSnippet(t.Name(), "List directory contents")
 }
 
 func (t *listTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'list' to inspect directory trees; never call 'read' on a directory path.",
 		"If a listing returns nothing relevant, stop searching and answer from internal knowledge instead of re-listing.",
-	}
+	})
 }
 
 func (t *listTool) Definition() domaintool.Tool {
@@ -36,17 +36,17 @@ func (t *listTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "list",
-			Description: "List directory contents",
+			Description: domaintool.FormatToolDescription("list", "List directory contents"),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
 					"path": {
 						Type:        "string",
-						Description: "Directory to list (default: current directory)",
+						Description: domaintool.FormatParamDescription("list", "path", "Directory to list (default: current directory)"),
 					},
 					"depth": {
 						Type:        "number",
-						Description: "Directory depth (default: 3)",
+						Description: domaintool.FormatParamDescription("list", "depth", "Directory depth (default: 3)"),
 					},
 				},
 			},

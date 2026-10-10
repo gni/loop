@@ -72,7 +72,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		userGuidelines = cfg.UserGuidelines
 	}
 	if baseInstruction == "" {
-		baseInstruction = "You are loop, an elite autonomous software engineering harness. You solve engineering tasks with senior craft, architectural rigor, and direct working deliverables."
+		baseInstruction = MasterSystemPrompts.DefaultIdentity
 	}
 
 	var sb strings.Builder
@@ -99,16 +99,14 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	// 3. Rules section: core rules, then per-tool guidelines, then user guidelines.
 	sb.WriteString("<rules>\n")
-	sb.WriteString(fmt.Sprintf("- Workspace root: `%s`. Any relative file paths resolve relative to this directory.\n", workspaceRoot))
-	sb.WriteString("- Actions over talk: Implement code on disk directly using write and edit tools. Deliver complete working code.\n")
-	sb.WriteString("- Read intent before acting: answer conversational prompts (greetings, questions, clarifications) directly; only call tools when the message asks for work on files or commands.\n")
+	for _, rule := range FormatCoreRules(workspaceRoot) {
+		sb.WriteString(fmt.Sprintf("- %s\n", rule))
+	}
 	for _, entry := range tools {
 		for _, rule := range entry.Guidelines {
 			sb.WriteString(fmt.Sprintf("- %s\n", rule))
 		}
 	}
-	sb.WriteString("- Background Processes: When asked to run a command or service in the background, use the 'bash' tool with \"background\": true.\n")
-	sb.WriteString("- Be concise and direct in your responses.\n")
 	if userGuidelines != "" {
 		sb.WriteString("\n<User Guidelines>\n")
 		sb.WriteString(userGuidelines)

@@ -36,7 +36,7 @@ var configEditCmd = &cobra.Command{
 			_ = config.SaveConfig(configPath, newConfig)
 			fmt.Printf("Configuration successfully updated and saved to %s\n", configPath)
 		} else {
-			fmt.Println("Interactive configuration cancelled.")
+			fmt.Println("interactive configuration cancelled.")
 		}
 	},
 }

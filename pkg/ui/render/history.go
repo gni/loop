@@ -208,13 +208,13 @@ func PrintSessionHistory(
 						if i == len(messages)-1 && isGenerating {
 							runningStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
 							if collapseResults {
-								fmt.Fprintln(w, runningStyle.Render("  [Running... (collapsed)]"))
+								fmt.Fprintln(w, runningStyle.Render("  [running... (collapsed)]"))
 							} else {
-								fmt.Fprintln(w, runningStyle.Render("  [Running...]"))
+								fmt.Fprintln(w, runningStyle.Render("  [running...]"))
 							}
 						} else {
 							cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
-							fmt.Fprintln(w, cancelStyle.Render("  [Operation Cancelled]"))
+							fmt.Fprintln(w, cancelStyle.Render("  [operation cancelled]"))
 						}
 						hasPrintedAnything = true
 						printedUnrespondedToolCount++

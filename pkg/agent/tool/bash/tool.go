@@ -28,30 +28,28 @@ func NewBashTool() domaintool.ToolExecutor {
 func (t *bashTool) Name() string { return "bash" }
 
 func (t *bashTool) PromptSnippet() string {
-	return "Execute shell commands (builds, tests, git, background processes)"
+	return domaintool.FormatToolSnippet(t.Name(), "Execute shell commands (builds, tests, git, background processes)")
 }
 
 func (t *bashTool) PromptGuidelines() []string {
-	return []string{
+	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use dedicated tools for file operations (read, edit, write, grep, find) instead of shell commands.",
 		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
 		"For background processes and long-running services, set 'background': true.",
-	}
+	})
 }
 
-var bashToolDef = domaintool.NewFunctionTool(
-	"bash",
-	"Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands.",
-	map[string]domaintool.SchemaProp{
-		"command":    domaintool.StringProp("The command to run in the terminal"),
-		"dir":        domaintool.StringProp("Optional working directory in which to execute the command. Persists across commands for this session."),
-		"background": domaintool.BoolProp("Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks)."),
-	},
-	"command",
-)
-
 func (t *bashTool) Definition() domaintool.Tool {
-	return bashToolDef
+	return domaintool.NewFunctionTool(
+		"bash",
+		domaintool.FormatToolDescription("bash", "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands."),
+		map[string]domaintool.SchemaProp{
+			"command":    domaintool.StringProp(domaintool.FormatParamDescription("bash", "command", "The command to run in the terminal")),
+			"dir":        domaintool.StringProp(domaintool.FormatParamDescription("bash", "dir", "Optional working directory in which to execute the command. Persists across commands for this session.")),
+			"background": domaintool.BoolProp(domaintool.FormatParamDescription("bash", "background", "Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks).")),
+		},
+		"command",
+	)
 }
 
 func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {

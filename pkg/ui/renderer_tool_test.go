@@ -1174,3 +1174,90 @@ func TestBashCompleteWithEmptyTargetDoesNotEraseCommand(t *testing.T) {
 		t.Fatalf("command line must not be erased on empty completion args, got: %q", afterOutput)
 	}
 }
+
+func TestStreamedWriteMultipleConsecutiveFilesStreaming(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	// 1. First file: path before content
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(`{"path": "file1.py", "content": "import sys\n`)
+	renderer.WriteToolCall(`print('hello 1')\n"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(0, "write", `{"path": "file1.py"}`, false)
+
+	if !renderer.DidStreamToolBody(0) {
+		t.Fatalf("expected tool call index 0 to be marked as streamed")
+	}
+
+	snap1 := stripAnsi(output.String())
+	if !strings.Contains(snap1, "write file1.py") {
+		t.Fatalf("expected file1.py title in output, got: %q", snap1)
+	}
+	if !strings.Contains(snap1, "print('hello 1')") {
+		t.Fatalf("expected file1.py content in output, got: %q", snap1)
+	}
+
+	// 2. Second file in the same session: content before path
+	renderer.StartToolCall("write", 1)
+
+	// Feed first chunk containing only content - buffers until path so header appears before code
+	renderer.WriteToolCall(`{"content": "package main\nfunc main() {\n`)
+
+	// Feed second chunk containing remaining content and path - header appears with filename above code!
+	renderer.WriteToolCall(`}\n", "path": "file2.go"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(1, "write", `{"path": "file2.go"}`, false)
+
+	if !renderer.DidStreamToolBody(1) {
+		t.Fatalf("expected tool call index 1 to be marked as streamed")
+	}
+
+	finalOutput := stripAnsi(output.String())
+	if !strings.Contains(finalOutput, "write file2.go") {
+		t.Fatalf("expected file2.go title in output, got: %q", finalOutput)
+	}
+	if !strings.Contains(finalOutput, "func main()") {
+		t.Fatalf("expected file2.go content in output, got: %q", finalOutput)
+	}
+	header2Idx := strings.Index(finalOutput, "write file2.go")
+	code2Idx := strings.Index(finalOutput, "package main")
+	if header2Idx > code2Idx {
+		t.Fatalf("expected file2 header before code, got header at %d, code at %d", header2Idx, code2Idx)
+	}
+}
+
+func TestStreamedWriteConsecutiveTurnsSameIndexStreaming(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	// Turn 1: tool 0 write file1
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(`{"path": "file1.txt", "content": "hello 1\n"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(0, "write", `{"path": "file1.txt"}`, false)
+
+	snapTurn1 := stripAnsi(output.String())
+	if !strings.Contains(snapTurn1, "file1.txt") || !strings.Contains(snapTurn1, "hello 1") {
+		t.Fatalf("turn 1 write not rendered properly: %s", snapTurn1)
+	}
+
+	// Turn 2: tool 0 write file2 in same session
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(`{"path": "file2.txt", "content": "hello 2\n`)
+
+	// Must stream immediately during Turn 2 before flush!
+	snapTurn2Mid := stripAnsi(output.String())
+	if !strings.Contains(snapTurn2Mid, "file2.txt") {
+		t.Fatalf("expected turn 2 file2.txt title to appear immediately, got: %s", snapTurn2Mid)
+	}
+	if !strings.Contains(snapTurn2Mid, "hello 2") {
+		t.Fatalf("expected turn 2 hello 2 content to stream immediately before flush, got: %s", snapTurn2Mid)
+	}
+
+	renderer.WriteToolCall(`"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(0, "write", `{"path": "file2.txt"}`, false)
+}
+
+

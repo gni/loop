@@ -70,6 +70,15 @@ func (n *NewlineCounterWriter) Unwrap() io.Writer {
 	return n.Writer
 }
 
+func (n *NewlineCounterWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
+	if sbr, ok := n.Writer.(interface {
+		ReplaceScrollBlockBack(int, []string) bool
+	}); ok {
+		return sbr.ReplaceScrollBlockBack(linesBack, lines)
+	}
+	return false
+}
+
 type FallbackStreamRenderer struct {
 	w io.Writer
 }
@@ -112,6 +121,15 @@ func (c *CustomTeeWriter) Write(p []byte) (n int, err error) {
 
 func (c *CustomTeeWriter) Unwrap() io.Writer {
 	return c.screen
+}
+
+func (c *CustomTeeWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
+	if sbr, ok := c.screen.(interface {
+		ReplaceScrollBlockBack(int, []string) bool
+	}); ok {
+		return sbr.ReplaceScrollBlockBack(linesBack, lines)
+	}
+	return false
 }
 
 func UnwrapWriter(w io.Writer) io.Writer {
