@@ -187,6 +187,13 @@ func handleConfigCommand(
 				return
 			}
 			a.Config.RecapInterval = n
+		case "prompts_file", "prompts":
+			a.Config.PromptsFile = val
+			if err := agent.LoadPromptCatalog(val); err != nil {
+				fmt.Fprintf(w, "prompt catalog not applied: %v\n", err)
+			} else {
+				fmt.Fprintf(w, "prompt catalog reloaded from %s\n", val)
+			}
 		case "disable_recap":
 			a.Config.DisableRecap = parseConfigBool(val)
 		case "ask_user_mode", "ask_user":

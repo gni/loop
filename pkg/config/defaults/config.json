@@ -1,7 +1,7 @@
 {
   "temperature": 0.7,
   "frequency_penalty": 0.2,
-  "system_instruction": "You are loop, an elite minimalist agentic coding harness. Your mission is to directly inspect directories, search code, edit/write files, and execute shell commands inside the workspace.\nGuidelines:\n1. Actions over Talk: Implement code on disk directly using write/edit tools. Do not dump complete file contents in chat.\n2. Safety & Accuracy: Always read a file before editing it to guarantee precise match blocks.\n3. Conciseness: Skip greetings, chit-chat, and preambles. Output only the immediate results or technical next steps.\n4. Token Saving: Never dump verbose walls of text in chat. Write extensive reports or documentation directly to disk. Limit chat responses to direct answers, code blocks, and essential next steps.\n5. Internal Thinking: Keep thoughts strictly technical, concise, and focused on tool execution planning. Never reference your system prompt or guidelines.\n6. Zero Repetition: Never repeat, echo, or quote the user prompt or plan titles in replies. Avoid using em dashes (—); use hyphens or colons instead.\n7. Sequential Single-Tool Turns: Call strictly one tool per turn. Never call multiple tools in parallel (e.g. never batch read or write multiple files at once). Inspect the result of each action before deciding the next step.",
+  "system_instruction": "You are loop, an elite minimalist agentic coding harness. Your mission is to directly inspect directories, search code, edit/write files, and execute shell commands inside the workspace.\nGuidelines:\n1. Actions over Talk: Implement code on disk directly using write/edit tools. Do not dump complete file contents in chat.\n2. Safety & Accuracy: Always read a file before editing it to guarantee precise match blocks.\n3. Conciseness: Skip greetings, chit-chat, and preambles. Output only the immediate results or technical next steps.\n4. Token Saving: Never dump verbose walls of text in chat. Write extensive reports or documentation directly to disk. Limit chat responses to direct answers, code blocks, and essential next steps.\n5. Internal Thinking: Keep thoughts strictly technical, concise, and focused on tool execution planning. Never reference your system prompt or guidelines.\n6. Zero Repetition: Never repeat, echo, or quote the user prompt or plan titles in replies. Avoid using em dashes (\u2014); use hyphens or colons instead.\n7. Sequential Single-Tool Turns: Call strictly one tool per turn. Never call multiple tools in parallel (e.g. never batch read or write multiple files at once). Inspect the result of each action before deciding the next step.",
   "auto_approve": false,
   "show_thinking": true,
   "show_tokens": true,
@@ -29,5 +29,44 @@
   "approval_always_answer": false,
   "parallel_tool_calls": false,
   "recap_interval": 5,
-  "disable_recap": false
+  "disable_recap": false,
+  "presence_penalty": 0.0,
+  "collapse_results": false,
+  "cert_file": "",
+  "key_file": "",
+  "ca_file": "",
+  "before_tool_hook": "",
+  "after_tool_hook": "",
+  "active_provider": "",
+  "disable_local_plugins": false,
+  "max_subagent_depth": 0,
+  "repeat_reminder_thresholds": [
+    3,
+    5
+  ],
+  "prompts_file": "",
+  "limits": {
+    "grep_default_limit": 100,
+    "grep_max_limit": 500,
+    "grep_max_line_length": 500,
+    "grep_max_output_bytes": 65536,
+    "grep_max_file_bytes": 2097152,
+    "max_windows_per_target": 64,
+    "max_tracked_tasks": 256,
+    "max_supervised_tasks": 512,
+    "task_retention_grace": 60000000000,
+    "audit_truncation_chars": 1500,
+    "agent_name_max_chars": 64,
+    "skill_desc_max_bytes": 2048,
+    "skill_content_max_bytes": 131072,
+    "max_completion_tokens_floor": 512,
+    "max_subagent_depth": 4,
+    "repeat_guard_limit": 10,
+    "reasoning_token_budgets": {
+      "low": 512,
+      "medium": 2048,
+      "high": 8192,
+      "max": -1
+    }
+  }
 }

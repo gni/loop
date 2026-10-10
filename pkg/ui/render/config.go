@@ -82,6 +82,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			"  %-20s %s\n"+
 			"  %-20s %s\n"+
 			"  %-20s %d\n"+
+			"  %-20s %s\n"+
 			"  %-20s %s\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
 		titleStyle.Render("loop runtime settings"),
@@ -110,6 +111,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		keyStyle.Render("ask user mode:"), askModeVal,
 		keyStyle.Render("recap interval:"), cfg.RecapInterval,
 		keyStyle.Render("recap:"), recapVal,
+		keyStyle.Render("prompts file:"), valStyle.Render(cfg.PromptsFile),
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))

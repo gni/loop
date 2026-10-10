@@ -94,6 +94,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				"max_paste_lines", "max_paste_chars",
 				"auto_adapt_context", "min_context_window",
 				"approval_always_answer", "ask_user_mode", "recap_interval", "disable_recap",
+				"prompts_file",
 			}
 			if !isSet {
 				configCandidates = append(configCandidates, "show", "set")

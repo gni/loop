@@ -140,6 +140,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			},
 		},
 		boolConfigItem("disable_recap", "recap disabled", "Suppress the turn/token recap line entirely, independently of the interval", &cloned.DisableRecap, formatBool),
+		stringConfigItem("prompts_file", "prompts file", "User-editable prompt catalog layered over embedded defaults (empty uses ~/.loop/prompts.json)", &cloned.PromptsFile),
 		stringConfigItem("before_tool_hook", "before tool hook", "Shell command script invoked prior to running tool commands", &cloned.BeforeToolHook),
 		stringConfigItem("after_tool_hook", "after tool hook", "Shell command script invoked upon successful tool execution", &cloned.AfterToolHook),
 		stringConfigItem("debug_log_file", "debug log file", "Destination file path recording diagnostic agent trace payloads", &cloned.DebugLogFile),
