@@ -5,7 +5,46 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"loop/pkg/domain/limits"
 )
+
+func TestConfigLimitsAreClampedAndInstalled(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "loop-limits-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	path := filepath.Join(tmpDir, "config.json")
+	contents := `{"limits":{"grep_max_limit":100000,"repeat_guard_limit":1,"max_tracked_tasks":5000,"reasoning_token_budgets":{"high":99999}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Limits.GrepMaxLimit != limits.AbsoluteMaxGrepLimit {
+		t.Errorf("grep max limit = %d, want clamped %d", cfg.Limits.GrepMaxLimit, limits.AbsoluteMaxGrepLimit)
+	}
+	if cfg.Limits.ConsecutiveLimit != limits.AbsoluteMinConsecutiveLimit {
+		t.Errorf("guard limit = %d, want clamped minimum %d", cfg.Limits.ConsecutiveLimit, limits.AbsoluteMinConsecutiveLimit)
+	}
+	if cfg.Limits.MaxTrackedTasks != limits.AbsoluteMaxTrackedTasks {
+		t.Errorf("tracked tasks = %d, want clamped %d", cfg.Limits.MaxTrackedTasks, limits.AbsoluteMaxTrackedTasks)
+	}
+	// Live lookups must reflect the clamped values, never the raw file.
+	if limits.GrepMaxLimit() != limits.AbsoluteMaxGrepLimit {
+		t.Errorf("live grep limit = %d, want %d", limits.GrepMaxLimit(), limits.AbsoluteMaxGrepLimit)
+	}
+	if limits.ReasoningBudget("high") != limits.AbsoluteMaxReasoningBudget {
+		t.Errorf("live reasoning budget = %d, want %d", limits.ReasoningBudget("high"), limits.AbsoluteMaxReasoningBudget)
+	}
+
+	limits.Set(limits.Defaults())
+}
 
 func TestConfigProviders(t *testing.T) {
 	// Create a temporary directory for config file

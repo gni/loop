@@ -122,6 +122,24 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		intConfigItem("max_tool_output_bytes", "max tool output bytes", "Spill threshold in bytes before tool outputs are saved to disk scratch files", &cloned.MaxToolOutputBytes),
 		intConfigItem("repeat_guard_limit", "repeat guard limit", "Loop repetition detection limit preventing cyclical infinite tool invocations", &cloned.RepeatGuardLimit),
 		intListConfigItem("repeat_reminder_thresholds", "repeat reminder thresholds", "Comma-separated repetition counts that inject escalating reminder messages (e.g. 3,5,8)", &cloned.RepeatReminderThresholds),
+		{
+			id:          "recap_interval",
+			name:        "recap interval",
+			value:       func() string { return strconv.Itoa(cloned.RecapInterval) },
+			description: "Inject a turn/token recap into agent history every N reasoning steps (negative disables)",
+			onEdit: func(newVal string) error {
+				if newVal == "" {
+					return nil
+				}
+				n, err := strconv.Atoi(newVal)
+				if err != nil {
+					return fmt.Errorf("must be an integer (negative disables)")
+				}
+				cloned.RecapInterval = n
+				return nil
+			},
+		},
+		boolConfigItem("disable_recap", "recap disabled", "Suppress the turn/token recap line entirely, independently of the interval", &cloned.DisableRecap, formatBool),
 		stringConfigItem("before_tool_hook", "before tool hook", "Shell command script invoked prior to running tool commands", &cloned.BeforeToolHook),
 		stringConfigItem("after_tool_hook", "after tool hook", "Shell command script invoked upon successful tool execution", &cloned.AfterToolHook),
 		stringConfigItem("debug_log_file", "debug log file", "Destination file path recording diagnostic agent trace payloads", &cloned.DebugLogFile),
@@ -211,6 +229,11 @@ func intListConfigItem(id, name, desc string, target *[]int) *settingItem {
 			parsed, err := splitInts(newVal)
 			if err != nil {
 				return err
+			}
+			// Empty input is a no-op, consistent with parsePositiveInt: pressing
+			// enter without typing must not silently wipe the thresholds.
+			if len(parsed) == 0 {
+				return nil
 			}
 			*target = parsed
 			return nil

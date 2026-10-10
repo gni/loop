@@ -54,11 +54,11 @@ func (t *AskUserTool) Definition() Tool {
 							Properties: map[string]SchemaProp{
 								"label": {
 									Type:        "string",
-									Description: "Option text",
+									Description: FormatParamDescription("ask_user", "options.label", "Option text."),
 								},
 								"description": {
 									Type:        "string",
-									Description: "Optional explanation of the option",
+									Description: FormatParamDescription("ask_user", "options.description", "Optional explanation of the option."),
 								},
 							},
 						},

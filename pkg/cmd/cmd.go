@@ -13,6 +13,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	domaintool "loop/pkg/domain/tool"
 	transporthttp "loop/pkg/transport/http"
 	"loop/pkg/ui"
 	"loop/pkg/ui/repl"
@@ -28,6 +29,10 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			fmt.Printf("Error loading configuration: %v\n", err)
 			os.Exit(1)
+		}
+
+		if err := applyPromptCatalog(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load prompt catalog: %v\n", err)
 		}
 
 		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
@@ -147,7 +152,21 @@ func loadConfigOrPrintErr() *config.Config {
 		fmt.Printf("Error: %v\n", err)
 		return nil
 	}
+	if err := applyPromptCatalog(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load prompt catalog: %v\n", err)
+	}
 	return cfg
+}
+
+// applyPromptCatalog layers the user-editable prompt catalog file over the
+// embedded defaults so instructions, rules, and tool descriptions can be
+// adjusted without recompiling.
+func applyPromptCatalog(cfg *config.Config) error {
+	path := cfg.PromptsFile
+	if path == "" {
+		path = domaintool.DefaultPromptCatalogPath()
+	}
+	return domaintool.LoadPromptCatalog(path)
 }
 
 func runRenderCmd(render func(io.Writer, *config.Config, ui.UITheme)) func(cmd *cobra.Command, args []string) {

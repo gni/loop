@@ -34,9 +34,15 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			Message string `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(prompt), &args); err == nil {
-			if v := tool.FirstNonEmpty(args.Prompt, args.Task, args.Input, args.Message); v != "" {
-				prompt = v
+			v := tool.FirstNonEmpty(args.Prompt, args.Task, args.Input, args.Message)
+			if v == "" {
+				// An argument object that parsed but carried no content (e.g. "{}")
+				// must fail at dispatch. Handing the literal "{}" to the subagent
+				// previously ran a whole turn on a meaningless payload and the model
+				// invented work from its own memory of earlier tasks.
+				return "", fmt.Errorf("missing required argument: prompt")
 			}
+			prompt = v
 		}
 	}
 	prompt = strings.TrimSpace(prompt)

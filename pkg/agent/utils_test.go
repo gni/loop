@@ -326,8 +326,10 @@ func TestCalculateHistoryTokensWithMeasuredAndFallback(t *testing.T) {
 	}
 
 	p, c := CalculateHistoryTokens(history)
-	if p != 115 || c != 35 {
-		t.Fatalf("CalculateHistoryTokens = (%d, %d); want (115, 35)", p, c)
+	// Single calibration: 3.2 chars/token. Prior chars for the estimated turn are
+	// 29 + 12 + 9 + 14 = 64 -> 20 tokens, so total prompt = 100 + 20.
+	if p != 120 || c != 35 {
+		t.Fatalf("CalculateHistoryTokens = (%d, %d); want (120, 35)", p, c)
 	}
 }
 
@@ -345,8 +347,8 @@ func TestGetGlobalTokenUsageEstimatesWhenPromptTokensZero(t *testing.T) {
 	}
 
 	prompt, completion, estimated := a.GetGlobalTokenUsage(messages, nil)
-	if prompt != 8 || completion != 8 {
-		t.Fatalf("expected (8, 8), got (%d, %d)", prompt, completion)
+	if prompt != 10 || completion != 8 {
+		t.Fatalf("expected (10, 8), got (%d, %d)", prompt, completion)
 	}
 	if !estimated {
 		t.Fatalf("expected estimated=true when PromptTokens == 0")
@@ -356,12 +358,12 @@ func TestGetGlobalTokenUsageEstimatesWhenPromptTokensZero(t *testing.T) {
 func TestGetGlobalTokenUsageEstimatesAtStartup(t *testing.T) {
 	a := &Agent{}
 	messages := []db.Message{
-		{Role: "system", Content: strings.Repeat("a", 100)}, // 100 chars -> 25 tokens
+		{Role: "system", Content: strings.Repeat("a", 100)}, // 100 chars -> 31 tokens at 3.2 chars/token
 	}
 
 	prompt, completion, estimated := a.GetGlobalTokenUsage(messages, nil)
-	if prompt != 25 || completion != 0 {
-		t.Fatalf("expected (25, 0), got (%d, %d)", prompt, completion)
+	if prompt != 31 || completion != 0 {
+		t.Fatalf("expected (31, 0), got (%d, %d)", prompt, completion)
 	}
 	if !estimated {
 		t.Fatalf("expected estimated=true at startup")

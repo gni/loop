@@ -6,7 +6,13 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
+	domaintool "loop/pkg/domain/tool"
 )
+
+// tpl returns the live render templates for prompt sections.
+func tpl() domaintool.PromptTemplates {
+	return domaintool.MasterTemplates
+}
 
 // SystemPromptConfig encapsulates all parameters required to generate a
 // consistent, deterministic system prompt across single and multi-agent roles.
@@ -76,57 +82,50 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	var sb strings.Builder
+	t := tpl()
 
 	// 1. Preamble section
 	sb.WriteString(baseInstruction)
 
 	// CWD section
-	sb.WriteString("\n\n<cwd>\n")
-	sb.WriteString(workspaceRoot)
-	sb.WriteString("\n</cwd>\n\n")
+	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
 	// 2. Tools section, generated from the registry so plugins and MCP tools are
 	// never omitted from the model's view of what it can call.
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
-	sb.WriteString("<tools>\n")
+	var toolLines strings.Builder
 	for _, entry := range tools {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", entry.Name, entry.Snippet))
+		toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
 	}
 	for _, name := range cfg.ActiveAgents {
-		sb.WriteString(fmt.Sprintf("- subagent__%s: Delegate task to specialized subagent '%s'\n", name, name))
+		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(domaintool.MasterAgentTemplates.SubagentPrompt, name)))
 	}
-	sb.WriteString("</tools>\n\n")
+	sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))
 
 	// 3. Rules section: core rules, then per-tool guidelines, then user guidelines.
-	sb.WriteString("<rules>\n")
+	var ruleLines strings.Builder
 	for _, rule := range FormatCoreRules(workspaceRoot) {
-		sb.WriteString(fmt.Sprintf("- %s\n", rule))
+		ruleLines.WriteString(fmt.Sprintf(t.RuleLine, rule))
 	}
 	for _, entry := range tools {
 		for _, rule := range entry.Guidelines {
-			sb.WriteString(fmt.Sprintf("- %s\n", rule))
+			ruleLines.WriteString(fmt.Sprintf(t.RuleLine, rule))
 		}
 	}
 	if userGuidelines != "" {
-		sb.WriteString("\n<User Guidelines>\n")
-		sb.WriteString(userGuidelines)
-		sb.WriteString("\n</User Guidelines>")
+		ruleLines.WriteString(fmt.Sprintf(t.UserGuidelinesSection, userGuidelines))
 	}
-	sb.WriteString("</rules>")
+	sb.WriteString(fmt.Sprintf(t.RulesSection, ruleLines.String()))
 
 	// 4. Skills section
 	if len(cfg.Skills) > 0 {
-		sb.WriteString("\n\n<skills>\n")
-		sb.WriteString(fmt.Sprintf("Installed reference skills are stored in `%s`. Use the 'load_skill' tool to read detailed instructions:\n", skillsDir))
+		var skillLines strings.Builder
 		for _, s := range cfg.Skills {
-			sb.WriteString(fmt.Sprintf("- name: %s\n  description: %s\n", s.Name, s.Description))
+			skillLines.WriteString(fmt.Sprintf(t.SkillLine, s.Name, s.Description))
 		}
-		sb.WriteString("</skills>")
+		sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))
 	} else if cfg.CompactPrompt {
-		sb.WriteString("\n\n<skills>\n")
-		sb.WriteString(fmt.Sprintf("No registered reference skills are currently installed in `%s`.\n", skillsDir))
-		sb.WriteString("When spawning a subagent, provide custom inline instructions using `inline_skills` or a role-tailored system prompt.\n")
-		sb.WriteString("</skills>")
+		sb.WriteString(fmt.Sprintf(t.SkillsEmptySection, skillsDir))
 	}
 
 	canSpawnSubagents := false
@@ -137,39 +136,35 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		}
 	}
 
-	sb.WriteString("\n\n<multi-agent-guidelines>\n")
-	sb.WriteString("- Subagent skill assignment:\n")
+	var maLines strings.Builder
+	maLines.WriteString(t.SubagentSkillAssignment)
 	if len(skillsForGuidance) > 0 {
 		validNames := make([]string, 0, len(skillsForGuidance))
 		for _, s := range skillsForGuidance {
 			validNames = append(validNames, s.Name)
 		}
 		sort.Strings(validNames)
-		sb.WriteString(fmt.Sprintf("  Only assign registered skills from this exact list: %s.\n", strings.Join(validNames, ", ")))
-		sb.WriteString("  Do not invent reference skill names. If the capability needs custom guidance, use `inline_skills` instead.\n")
+		maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
 	} else {
-		sb.WriteString("  No registered reference skills are currently installed. Do not invent reference skill names. Use `inline_skills` for custom instructions.\n")
+		maLines.WriteString(t.MultiAgentNoSkills)
 	}
 	if canSpawnSubagents {
-		sb.WriteString("- For tasks requiring parallel or specialized work, use 'create_subagent' to create specialized agents.\n")
-		sb.WriteString("- Subagents are autonomous: give each clear, bounded ownership of an explicit problem.\n")
+		maLines.WriteString(t.MultiAgentSpawnRules)
 	}
-	sb.WriteString("</multi-agent-guidelines>")
+	sb.WriteString(fmt.Sprintf(t.MultiAgentSection, maLines.String()))
 
 	// 5. Memory section
 	if cfg.MemoryContext != "" {
-		sb.WriteString("\n\n<memory>\n")
-		sb.WriteString(cfg.MemoryContext)
-		sb.WriteString("\n</memory>")
+		sb.WriteString(fmt.Sprintf(t.MemorySection, cfg.MemoryContext))
 	}
 
 	// 6. Active tasks section
 	if len(cfg.ActiveTasks) > 0 {
-		sb.WriteString("\n\n<background_tasks>\n")
-		for _, t := range cfg.ActiveTasks {
-			sb.WriteString(fmt.Sprintf("- task_id: %s, command: `%s`, status: %s\n", t.ID, t.Command, t.Status))
+		var taskLines strings.Builder
+		for _, task := range cfg.ActiveTasks {
+			taskLines.WriteString(fmt.Sprintf(t.BackgroundTaskLine, task.ID, task.Command, task.Status))
 		}
-		sb.WriteString("</background_tasks>")
+		sb.WriteString(fmt.Sprintf(t.BackgroundTasksSection, taskLines.String()))
 	}
 
 	return sb.String()

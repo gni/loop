@@ -1,0 +1,306 @@
+{
+  "system_prompts": {
+    "default_identity": "You are loop, an elite autonomous software engineering harness. You solve engineering tasks with senior craft, architectural rigor, and direct working deliverables.",
+    "core_rules": [
+      "Workspace root: `%s`. Any relative file paths resolve relative to this directory.",
+      "Actions over talk: Implement code on disk directly using write and edit tools. Deliver complete working code.",
+      "Tool Call Arguments: When calling file tools (especially 'write'), ALWAYS output 'path' first before 'content' in arguments JSON (e.g. `{\"path\": \"file.ext\", \"content\": \"...\"}`). Never output 'content' before 'path'.",
+      "Read intent before acting: answer conversational prompts (greetings, questions, clarifications) directly; only call tools when the message asks for work on files or commands.",
+      "Background Processes: When asked to run a command or service in the background, use the 'bash' tool with \"background\": true.",
+      "Be concise and direct in your responses."
+    ],
+    "multi_agent_guidelines": "",
+    "compression_prompt": "You are a technical context compression engine. Summarize the following developer-agent conversation transcript into a dense, high-signal technical log.\n\nStrict Requirements:\n1. User Goals & Constraints: Exact requirements, architectural preferences, and explicit rules stated by the user.\n2. Actions & Findings: Search results, files located or inspected, and diagnostic findings.\n3. File Modifications: Exact paths modified or created, and key symbols added or updated.\n4. Current State: What is complete, what failed, and immediate pending tasks.\n5. No pleasantries, preambles, or filler. Output only the structured technical summary.\n\nTranscript:\n%s"
+  },
+  "tool_prompts": {
+    "ask_user": {
+      "name": "ask_user",
+      "description": "Ask the user a structured question for clarification, disambiguation, or confirmation. Returns the user's selected choice or answer.",
+      "snippet": "Ask the user a structured question for clarification, confirmation, or selecting design alternatives",
+      "guidelines": [
+        "Call 'ask_user' when you need user input, requirements clarification, or confirmation before destructive actions.",
+        "Provide clear selectable options and specify a 'recommended' choice when appropriate."
+      ],
+      "param_descriptions": {
+        "options": "List of options for the user to select from. Can be strings or {label, description} objects.",
+        "question": "The question or clarification request to present to the user.",
+        "recommended": "Optional label of the recommended option.",
+        "options.label": "Option text.",
+        "options.description": "Optional explanation of the option."
+      }
+    },
+    "audit_subagent": {
+      "name": "audit_subagent",
+      "description": "Audit the execution history of a spawned subagent to see exactly what actions, tool calls, thoughts, and results it produced. Essential for verifying subagent work.",
+      "snippet": "Review a subagent's action, thought, and tool history",
+      "guidelines": [],
+      "param_descriptions": {
+        "name": "The name of the subagent to audit."
+      }
+    },
+    "bash": {
+      "name": "bash",
+      "description": "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands.",
+      "snippet": "Execute shell commands (builds, tests, git, background processes)",
+      "guidelines": [
+        "Use dedicated tools for file operations (read, edit, write, grep, find) instead of shell commands.",
+        "Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
+        "For background processes and long-running services, set 'background': true."
+      ],
+      "param_descriptions": {
+        "background": "Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks).",
+        "command": "The command to run in the terminal",
+        "dir": "Optional working directory in which to execute the command. Persists across commands for this session."
+      }
+    },
+    "create_subagent": {
+      "name": "create_subagent",
+      "description": "Create one specialized subagent. Use system_prompt for its role. Assign exact registered skill_names or define new private inline_skills; never invent a registered skill name.",
+      "snippet": "Create a specialized subagent",
+      "guidelines": [
+        "For tasks requiring parallel or specialized work, use 'create_subagent' to create specialized agents.",
+        "Subagents are autonomous: give each clear, bounded ownership of an explicit problem."
+      ],
+      "param_descriptions": {
+        "inline_skills": "Optional private skills defined inline with name, description, and instructions.",
+        "name": "Unique name for the subagent (alphanumeric and underscores only).",
+        "skill_names": "Optional list of registered skill names to attach to the subagent.",
+        "system_prompt": "Specific instructions and role definition for the subagent.",
+        "inline_skills.name": "Unique skill name using letters, numbers, underscores, or hyphens.",
+        "inline_skills.description": "Short summary of the specialization.",
+        "inline_skills.instructions": "Complete operational instructions for this skill."
+      }
+    },
+    "edit": {
+      "name": "edit",
+      "description": "Edit a file using exact text replacement blocks. Matches unique blocks against current file contents.",
+      "snippet": "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+      "guidelines": [
+        "Use 'edit' for precise changes (updates[].oldText must match uniquely).",
+        "Keep oldText minimal (typically 2-5 lines).",
+        "When modifying multiple separate locations in a file, provide multiple updates in updates[] in a single edit call.",
+        "If edit reports an oldText mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write."
+      ],
+      "param_descriptions": {
+        "newText": "The replacement text for oldText.",
+        "oldText": "Exact unique current text copied from latest read (typically 2-5 lines).",
+        "path": "Path to the file to edit. Always specify path first.",
+        "updates": "One or more targeted replacements."
+      }
+    },
+    "find": {
+      "name": "find",
+      "description": "Find files by glob pattern",
+      "snippet": "Find files by glob pattern",
+      "guidelines": [
+        "Use 'find' to locate files by glob pattern instead of running find in bash."
+      ],
+      "param_descriptions": {
+        "limit": "Maximum results to return (default: 500)",
+        "path": "Directory to search in (default: current directory)",
+        "pattern": "Glob pattern to match files (e.g. *.py, **/*.json)"
+      }
+    },
+    "grep": {
+      "name": "grep",
+      "description": "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories",
+      "snippet": "Search file contents for patterns or regular expressions",
+      "guidelines": [
+        "Use 'grep' to search definitions or references across the workspace instead of running grep/find in bash."
+      ],
+      "param_descriptions": {
+        "context": "Number of lines of leading and trailing context to show around each match (default: 0).",
+        "glob": "Optional file glob pattern to filter files by name (e.g. '*.go', '*.py').",
+        "limit": "Maximum number of matching lines to return (default: 100, max: 500).",
+        "path": "Directory or file to search in (default: current directory).",
+        "pattern": "Regular expression pattern to search for (or literal string). If empty and glob is provided, matches file names.",
+        "ignore_case": "Case-insensitive search (default: false).",
+        "literal": "Treat pattern as a literal string instead of a regular expression (default: false)."
+      }
+    },
+    "list": {
+      "name": "list",
+      "description": "List directory contents",
+      "snippet": "List directory contents",
+      "guidelines": [
+        "Use 'list' to inspect directory trees; never call 'read' on a directory path.",
+        "If a listing returns nothing relevant, stop searching and answer from internal knowledge instead of re-listing."
+      ],
+      "param_descriptions": {
+        "depth": "Depth to list (1 for flat, 2+ for recursive, default: 1)",
+        "path": "Directory to list (default: current directory)"
+      }
+    },
+    "list_subagents": {
+      "name": "list_subagents",
+      "description": "View active subagents, their parent relationships, and their loaded skills.",
+      "snippet": "View active subagents",
+      "guidelines": [],
+      "param_descriptions": {}
+    },
+    "load_skill": {
+      "name": "load_skill",
+      "description": "Retrieve the detailed instructions, tools, or references for a specific skill from the available skills list.",
+      "snippet": "Load detailed reference skill instructions",
+      "guidelines": [],
+      "param_descriptions": {
+        "name": "The name of the skill to load (e.g. 'agent-isolation')."
+      }
+    },
+    "read": {
+      "name": "read",
+      "description": "Read file contents. Supports text files. Specify 'path' first before offset or limit.",
+      "snippet": "Read file contents",
+      "guidelines": [
+        "Use 'read' to examine files instead of cat or sed in bash. Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
+        "In tool call arguments, always output 'path' first."
+      ],
+      "param_descriptions": {
+        "limit": "Maximum number of lines to read. Optional",
+        "offset": "Line number to start reading from (1-indexed). Optional",
+        "path": "Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees."
+      }
+    },
+    "remove_subagent": {
+      "name": "remove_subagent",
+      "description": "Terminate a running subagent.",
+      "snippet": "Terminate a subagent",
+      "guidelines": [],
+      "param_descriptions": {
+        "name": "The name of the subagent to terminate."
+      }
+    },
+    "task_kill": {
+      "name": "task_kill",
+      "description": "Terminate a running background task.",
+      "snippet": "Terminate a running background task",
+      "guidelines": [],
+      "param_descriptions": {
+        "task_id": "The ID of the task to terminate."
+      }
+    },
+    "task_status": {
+      "name": "task_status",
+      "description": "Retrieve the execution status and buffered stdout/stderr output of a background task.",
+      "snippet": "Retrieve the execution status and output of a background task",
+      "guidelines": [],
+      "param_descriptions": {
+        "task_id": "The ID of the background task (e.g. 'task_1')."
+      }
+    },
+    "todo": {
+      "name": "todo",
+      "description": "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time.",
+      "snippet": "Manage structured implementation plan. Whole-list replacement; exactly one task in_progress.",
+      "guidelines": [
+        "Task Planning: For complex multi-step objectives, use the 'todo' tool to initialize and update your plan. Mark the active task 'in_progress' and check off tasks as 'completed'."
+      ],
+      "param_descriptions": {
+        "id": "Unique identifier for the task (e.g., 'task-1', 'step-1').",
+        "status": "Task status. Exactly one task may be 'in_progress' at any given moment.",
+        "task": "Clear, concrete description of the task.",
+        "tasks": "The complete updated list of tasks representing the active plan."
+      }
+    },
+    "write": {
+      "name": "write",
+      "description": "Create a new file or completely overwrite an existing file. Specify 'path' first before 'content'. Automatically creates parent directories.",
+      "snippet": "Create or overwrite complete files",
+      "guidelines": [
+        "Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
+        "Specify the target file in 'path' and the complete file contents in 'content'.",
+        "In tool call arguments, always output 'path' before 'content' to enable real-time streaming preview and syntax highlighting."
+      ],
+      "param_descriptions": {
+        "content": "Complete content to write into the file. Specify 'content' after 'path'.",
+        "path": "Path to the target file. Specify 'path' first before 'content'."
+      }
+    }
+  },
+  "templates": {
+    "cwd_section": "\n\n<cwd>\n%s\n</cwd>\n\n",
+    "tools_section": "<tools>\n%s</tools>\n\n",
+    "tool_line": "- %s: %s\n",
+    "subagent_line": "- subagent__%s: %s\n",
+    "rules_section": "<rules>\n%s</rules>",
+    "rule_line": "- %s\n",
+    "user_guidelines_section": "\n<User Guidelines>\n%s\n</User Guidelines>",
+    "skills_section": "\n\n<skills>\nInstalled reference skills are stored in `%s`. Use the 'load_skill' tool to read detailed instructions:\n%s</skills>",
+    "skills_empty_section": "\n\n<skills>\nNo registered reference skills are currently installed in `%s`.\nWhen spawning a subagent, provide custom inline instructions using `inline_skills` or a role-tailored system prompt.\n</skills>",
+    "skill_line": "- name: %s\n  description: %s\n",
+    "multi_agent_section": "\n\n<multi-agent-guidelines>\n%s</multi-agent-guidelines>",
+    "multi_agent_skill_list": "  Only assign registered skills from this exact list: %s.\n  Do not invent reference skill names. If the capability needs custom guidance, use `inline_skills` instead.\n",
+    "multi_agent_no_skills": "  No registered reference skills are currently installed. Do not invent reference skill names. Use `inline_skills` for custom instructions.\n",
+    "multi_agent_spawn_rules": "- For tasks requiring parallel or specialized work, use 'create_subagent' to create specialized agents.\n- Subagents are autonomous: give each clear, bounded ownership of an explicit problem.\n",
+    "memory_section": "\n\n<memory>\n%s\n</memory>",
+    "background_tasks_section": "\n\n<background_tasks>\n%s</background_tasks>",
+    "background_task_line": "- task_id: %s, command: `%s`, status: %s\n",
+    "subagent_skill_assignment": "- Subagent skill assignment:\n",
+    "subagent_tool_line": "- subagent__%s: Delegate task to specialized subagent '%s'\n"
+  },
+  "agent_tool_templates": {
+    "subagent_prompt": "Delegate a sub-task or ask a question to agent '%s'. Prompt must be clear and specific.",
+    "subagent_param_prompt": "The specific prompt or instruction for the agent",
+    "skill_names_base": "Optional exact names of registered reference skills.",
+    "skill_names_none": " No reference skills are currently registered. Omit this field or use inline_skills.",
+    "skill_names_available": " Available names: %s.",
+    "skill_names_unknown": " Unknown names are converted into agent-local skills using system_prompt so creation can continue."
+  },
+  "runtime_messages": {
+    "alert_with_recommendation": "System Alert: Your execution of '%s' failed due to: %s\nRecommendation: %s",
+    "alert_blocked": "System Alert: Your execution of '%s' was blocked: %s",
+    "command_failed_header": "[Command Failed: %s]",
+    "suggestion_not_unique": "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block.",
+    "suggestion_old_text_miss": "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.",
+    "suggestion_task_not_found": "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.",
+    "suggestion_path_not_found": "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.",
+    "suggestion_workspace": "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.",
+    "suggestion_command": "Review the command syntax and arguments. If the command depends on specific environment setups or files, verify they are present.",
+    "suggestion_unknown_tool": "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.",
+    "suggestion_default": "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly.",
+    "reminder_first": "Advisory Reminder: You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach, different search query, or different arguments instead of repeating the call.",
+    "warning_second": "Advisory Loop Warning: Repeated tool call detected:\n- tool: %s\n- consecutive_calls: %d\n- arguments: %s\nThe repeated calls are not making progress. Do not repeat this exact call again. Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.",
+    "loop_failing_command": "loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'",
+    "loop_repeated_target": "loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code",
+    "loop_identical_call": "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action",
+    "recap_line": "[recap %s] turn %d/%d | prompt ~%d tokens | completion total ~%d tokens | effective window %d (%.1f%% used) | next recap in %d turn(s). Track your remaining budget before opening new work.",
+    "halt_notice": "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]",
+    "tool_rejected_by_user": "error: tool execution rejected by user.",
+    "hook_blocked": "Error: Tool execution blocked by before-hook: %s",
+    "tool_interrupted": "error: tool execution interrupted (%s)",
+    "task_not_found": "task %s not found",
+    "task_status_output": "Task %s is currently: %s\n\nOutput:\n%s",
+    "task_status_not_found": "task %q not found. The task may have already completed, was killed, or does not exist.",
+    "task_kill_success": "Task %s successfully terminated.",
+    "task_kill_failed": "failed to terminate task %q: %w",
+    "task_missing_arg_status": "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1').",
+    "task_missing_arg_kill": "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1').",
+    "task_spawned": "Task spawned in background with ID: %s. You can monitor its output using 'task_status' or kill it using 'task_kill'. Toggle live stream via Ctrl+O.",
+    "task_spawn_failed": "failed to spawn background task: %w",
+    "user_directives_header": "\n\nUser Directives (%s):\nAdhere to these global preferences and personal mandates strictly:\n%s",
+    "project_memory_header": "\n\nProject Architecture & Learnings (%s):\nFollow these repository conventions and architectural decisions strictly:\n%s",
+    "audit_header": "=== Swarm Audit Trail for Subagent: '%s' ===\n\n",
+    "audit_no_history": "No execution history found for subagent '%s'.",
+    "audit_step_line": "Step %d: [Task Assigned from %s]\n",
+    "name_too_long": "agent name exceeds 64 characters",
+    "name_bad_start": "agent name must start with a letter or number",
+    "name_bad_chars": "agent name may contain only letters, numbers, underscores, and hyphens",
+    "skill_no_instructions": "agent-local skill '%s' has no instructions",
+    "skill_desc_too_long": "agent-local skill '%s' description exceeds 2048 bytes",
+    "spawning_disabled": "subagent spawning is disabled (max depth 0); set max_subagent_depth to allow it",
+    "max_depth_reached": "maximum subagent nesting depth (%d) reached",
+    "ad_hoc_skill_description": "Ad-hoc skill created for requested capability '%s'",
+    "alert_plain": "System Alert: Your execution of '%s' failed due to: %s",
+    "audit_system_line": "[System] %s\n\n",
+    "audit_prompt_line": "Prompt: %s\n\n",
+    "audit_thought_line": "Thought:\n%s\n\n",
+    "audit_response_line": "Response:\n%s\n\n",
+    "audit_action_line": "Action (Tool Call): %s(%s)\n\n",
+    "audit_result_line": "Result (Tool Output - %s):\n%s\n\n",
+    "audit_truncation_notice": "\n... (output truncated for audit readability) ...",
+    "audit_truncation_limit": "1500",
+    "name_empty": "agent name cannot be empty",
+    "skill_invalid_name": "invalid agent-local skill name %q: %w",
+    "skill_content_too_long": "agent-local skill '%s' instructions exceed 128 KiB"
+  }
+}

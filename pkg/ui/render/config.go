@@ -46,6 +46,11 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		directVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("enabled")
 	}
 
+	recapVal := valStyle.Render(fmt.Sprintf("enabled (inject every %d turns)", cfg.RecapInterval))
+	if cfg.DisableRecap || cfg.RecapInterval <= 0 {
+		recapVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("disabled")
+	}
+
 	timeoutVal := "disabled (no timeout)"
 	if cfg.Timeout > 0 {
 		timeoutVal = fmt.Sprintf("%ds", cfg.Timeout)
@@ -76,7 +81,8 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			"  %-20s %s\n"+
 			"  %-20s %s\n"+
 			"  %-20s %s\n"+
-			"  %-20s %d\n\n"+
+			"  %-20s %d\n"+
+			"  %-20s %s\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
 		titleStyle.Render("loop runtime settings"),
 		keyStyle.Render("active provider:"), valStyle.Render(cfg.ActiveProvider),
@@ -103,6 +109,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		keyStyle.Render("approval always:"), valStyle.Render(fmt.Sprintf("%v", cfg.ApprovalAlwaysAnswer)),
 		keyStyle.Render("ask user mode:"), askModeVal,
 		keyStyle.Render("recap interval:"), cfg.RecapInterval,
+		keyStyle.Render("recap:"), recapVal,
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))

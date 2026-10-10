@@ -9,6 +9,7 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/limits"
 	"loop/pkg/ui/style"
 )
 
@@ -117,7 +118,7 @@ func (ta *TurnAwareness) Format(who string, promptTokens, totalCompletion, effec
 	}
 	next := ta.RecapInterval - (ta.Turn % ta.RecapInterval)
 
-	return fmt.Sprintf("[recap %s] turn %d/%d | prompt ~%d tokens | completion total ~%d tokens | effective window %d (%.1f%% used) | next recap in %d turn(s). Track your remaining budget before opening new work.",
+	return RuntimeMessagef("recap_line", "[recap %s] turn %d/%d | prompt ~%d tokens | completion total ~%d tokens | effective window %d (%.1f%% used) | next recap in %d turn(s). Track your remaining budget before opening new work.",
 		who, ta.Turn, ta.MaxTurns, promptTokens, totalCompletion, effectiveLimit, pct, next)
 }
 
@@ -134,13 +135,13 @@ type TurnEngine struct {
 }
 
 func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
-	limit := ConsecutiveLimit
+	limit := limits.ConsecutiveLimit()
 	thresholds := []int{3, 5}
 	maxSteps := 30
 	interval := 5
 	if a != nil && a.Config != nil {
 		if a.Config.RepeatGuardLimit > 0 {
-			limit = a.Config.RepeatGuardLimit
+			limit = limits.ConsecutiveLimitClamped(a.Config.RepeatGuardLimit)
 		}
 		if len(a.Config.RepeatReminderThresholds) > 0 {
 			thresholds = a.Config.RepeatReminderThresholds
@@ -173,6 +174,16 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 func (e *TurnEngine) Guard() *TurnExecutionGuard { return e.guard }
 func (e *TurnEngine) Awareness() *TurnAwareness  { return e.awareness }
 
+// ShouldRecap is the canonical gate: it honours the live config flag so
+// '/config set disable_recap true' takes effect mid-session without rebuilding
+// the engine.
+func (e *TurnEngine) ShouldRecap() bool {
+	if e.agent != nil && e.agent.Config != nil && e.agent.Config.DisableRecap {
+		return false
+	}
+	return e.awareness.ShouldRecap()
+}
+
 // BeginTurn advances the turn counter; called once per reasoning step.
 func (e *TurnEngine) BeginTurn() { e.awareness.Turn++ }
 
@@ -180,7 +191,7 @@ func (e *TurnEngine) BeginTurn() { e.awareness.Turn++ }
 // preserved and never orphaned by EnforceToolPairingInvariance). Returns the content
 // when a recap was emitted, "" otherwise.
 func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion, effectiveLimit int, w io.Writer, theme style.UITheme) string {
-	if !e.awareness.ShouldRecap() {
+	if !e.ShouldRecap() {
 		return ""
 	}
 	who := e.policy.AgentName
@@ -273,7 +284,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 
 		if !approved {
-			output := "error: tool execution rejected by user."
+			output := RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
 			a.stateMu.Lock()
 			a.lastToolOutput = output
 			a.lastToolIsError = true
@@ -302,7 +313,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 				allowed, reason := a.runBeforeToolHook(tc)
 				if !allowed {
 					toolErr = fmt.Errorf("blocked by hook")
-					toolOutput = fmt.Sprintf("Error: Tool execution blocked by before-hook: %s", reason)
+					toolOutput = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
 				}
 			}
 			if toolErr == nil {
@@ -383,7 +394,7 @@ func (e *TurnEngine) HaltNotice() string {
 	if who == "" {
 		who = "agent"
 	}
-	return fmt.Sprintf("[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", who, e.guard.maxConsecutiveCalls)
+	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", who, e.guard.maxConsecutiveCalls)
 }
 
 // RecordInterruption keeps tool_call_id pairing for calls that will never execute;
@@ -395,7 +406,7 @@ func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, r
 			Role:       "tool",
 			ToolCallID: tc.ID,
 			Name:       tc.Function.Name,
-			Content:    fmt.Sprintf("error: tool execution interrupted (%s)", reason),
+			Content:    RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
 		})
 	}
 }

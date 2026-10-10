@@ -5,19 +5,22 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"loop/pkg/domain/limits"
 )
 
-// MaxSubagentDepth defines the maximum allowable nesting depth for subagents.
-const MaxSubagentDepth = 4
+// MaxSubagentDepth is the compiled default ceiling for subagent nesting depth.
+// The live ceiling is resolved from config through limits.SubagentDepth().
+var MaxSubagentDepth = limits.DefaultMaxSubagentDepth
 
 // MaxTrackedTasks bounds the supervisor registry. Without a cap every delegation adds
 // an entry that lives for the process lifetime, and the poll loop takes the lock on
 // every tick.
-const MaxTrackedTasks = 512
+var MaxTrackedTasks = limits.DefaultSupervisedTasks
 
 // TaskRetentionGrace keeps recently finished tasks readable: pollers look up a task
 // right after it completes, so eviction must not clear entries that are still fresh.
-const TaskRetentionGrace = time.Minute
+var TaskRetentionGrace = limits.DefaultTaskRetentionGrace
 
 // TaskSupervisor coordinates task execution tracking across subagents.
 type TaskSupervisor struct {
@@ -49,21 +52,21 @@ func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) {
 }
 
 func (s *TaskSupervisor) evictLocked() {
-	if len(s.tasks) <= MaxTrackedTasks {
+	if len(s.tasks) <= limits.MaxSupervisedTasks() {
 		return
 	}
 
 	var terminal []*SubagentTask
 	now := time.Now()
 	for _, t := range s.tasks {
-		if (t.Status == "completed" || t.Status == "failed") && now.Sub(t.UpdatedAt) > TaskRetentionGrace {
+		if (t.Status == "completed" || t.Status == "failed") && now.Sub(t.UpdatedAt) > limits.TaskRetentionGrace() {
 			terminal = append(terminal, t)
 		}
 	}
 	sort.Slice(terminal, func(i, j int) bool { return terminal[i].UpdatedAt.Before(terminal[j].UpdatedAt) })
 
 	for _, t := range terminal {
-		if len(s.tasks) <= MaxTrackedTasks {
+		if len(s.tasks) <= limits.MaxSupervisedTasks() {
 			return
 		}
 		delete(s.tasks, t.ID)
@@ -105,8 +108,9 @@ func EffectiveMaxDepth(cfgMax int) int {
 	if cfgMax <= 0 {
 		return 0
 	}
-	if cfgMax > MaxSubagentDepth {
-		return MaxSubagentDepth
+	ceiling := limits.SubagentDepth()
+	if cfgMax > ceiling {
+		return ceiling
 	}
 	return cfgMax
 }

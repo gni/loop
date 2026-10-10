@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+
+	"loop/pkg/domain/limits"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,6 +78,17 @@ type Config struct {
 	ApprovalAlwaysAnswer bool `json:"approval_always_answer,omitempty"`
 	ParallelToolCalls    bool `json:"parallel_tool_calls"`
 	RecapInterval        int  `json:"recap_interval,omitempty"`
+	// DisableRecap turns off the turn/token recap that is injected into agent
+	// history every RecapInterval steps. Equivalent to a negative recap_interval.
+	DisableRecap bool `json:"disable_recap,omitempty"`
+	// Limits are the operational ceilings (search caps, guard bounds, task registry
+	// size, skill size caps). Zero fields keep their compiled defaults; every value
+	// is clamped to a safety ceiling so a config file cannot disable a guard.
+	Limits limits.Limits `json:"limits,omitempty"`
+	// PromptsFile is the user-editable prompt catalog (tool descriptions, rules,
+	// section templates) layered over the embedded defaults. Empty disables
+	// runtime overrides.
+	PromptsFile string `json:"prompts_file,omitempty"`
 }
 
 func DefaultConfig() *Config {
@@ -140,6 +153,7 @@ func DefaultConfig() *Config {
 		AskUserMode:              "interactive",
 		ParallelToolCalls:        false,
 		RecapInterval:            5,
+		Limits:                   limits.Defaults(),
 	}
 }
 
@@ -176,6 +190,8 @@ func LoadConfig(path string) (*Config, error) {
 			conf.Providers = make(map[string]ProviderConfig)
 		}
 		conf.SyncActiveProvider()
+		conf.Limits = limits.Resolve(conf.Limits)
+		limits.Set(conf.Limits)
 		_ = SaveConfig(path, conf)
 		return conf, nil
 	}
@@ -226,6 +242,11 @@ func LoadConfig(path string) (*Config, error) {
 	if config.MinContextWindow <= 0 {
 		config.MinContextWindow = 32768
 	}
+	// Resolve the operational ceilings: every value is clamped to its safety
+	// maximum, so a config file can tighten a limit but never disable a guard.
+	config.Limits = limits.Resolve(config.Limits)
+	limits.Set(config.Limits)
+
 	if config.CompressionThreshold == 0.0 {
 		config.CompressionThreshold = 0.80
 	}

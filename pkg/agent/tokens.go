@@ -1,6 +1,10 @@
 package agent
 
 import (
+	"encoding/json"
+	"math"
+
+	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 )
 
@@ -8,6 +12,46 @@ import (
 // EstimateFallbackTokens previously used its own divisor of 4, so the same history
 // produced two different numbers depending on which path ran.
 const charsPerToken = 3.2
+
+// tokensFromChars converts a character count into the calibrated token estimate.
+// Every estimator in the package now routes through this single helper so the same
+// history can never produce two different numbers depending on which path ran.
+// TokensFromChars is the exported form of the single calibration so streaming
+// paths (subagents) report the same number the estimators use.
+func TokensFromChars(chars int) int { return tokensFromChars(chars) }
+
+func tokensFromChars(chars int) int {
+	if chars <= 0 {
+		return 0
+	}
+	// Round rather than truncate: the divisor is not exactly representable in
+	// binary floating point, so truncation could report 19 for an exact 64-char
+	// window at 3.2 chars/token.
+	tokens := int(math.Round(float64(chars) / charsPerToken))
+	if tokens == 0 {
+		return 1
+	}
+	return tokens
+}
+
+// EstimateToolSchemaTokens estimates the token cost of the tool definitions sent with
+// every request. Tool schemas are part of the prompt but were previously invisible to
+// the estimator, so per-agent allowlists (subagents) under-counted their own usage.
+func EstimateToolSchemaTokens(tools []tool.Tool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	chars := 0
+	for _, t := range tools {
+		b, err := json.Marshal(t)
+		if err != nil {
+			chars += len(t.Function.Name) + len(t.Function.Description)
+			continue
+		}
+		chars += len(b)
+	}
+	return tokensFromChars(chars)
+}
 
 func messageChars(m db.Message) int {
 	chars := len(m.Content) + len(m.ReasoningContent)
@@ -20,15 +64,7 @@ func messageChars(m db.Message) int {
 // EstimateMessageTokens provides a calibrated token count estimation for messages.
 // It uses an average of 3.2 characters per token to account for code, JSON, and whitespace.
 func EstimateMessageTokens(m db.Message) int {
-	chars := messageChars(m)
-	if chars == 0 {
-		return 0
-	}
-	tokens := int(float64(chars) / charsPerToken)
-	if tokens == 0 && chars > 0 {
-		return 1
-	}
-	return tokens
+	return tokensFromChars(messageChars(m))
 }
 
 // EstimateMessagesTokens computes the total estimated tokens across a list of messages.
@@ -47,20 +83,14 @@ func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Me
 		for _, msg := range messages {
 			totalChars += messageChars(msg)
 		}
-		promptTokens = int(float64(totalChars) / charsPerToken)
-		if promptTokens == 0 && totalChars > 0 {
-			promptTokens = 1
-		}
+		promptTokens = tokensFromChars(totalChars)
 	}
 	if completionTokens == 0 {
 		completionChars := len(rawText) + len(reasoning)
 		for _, tc := range calls {
 			completionChars += len(tc.Function.Name) + len(tc.Function.Arguments)
 		}
-		completionTokens = int(float64(completionChars) / charsPerToken)
-		if completionTokens == 0 && completionChars > 0 {
-			completionTokens = 1
-		}
+		completionTokens = tokensFromChars(completionChars)
 	}
 	return promptTokens, completionTokens
 }
@@ -123,11 +153,7 @@ func estimateCompletionTokens(m db.Message) int {
 		return m.CompletionTokens
 	}
 	chars := messageChars(m)
-	comp := chars / 4
-	if comp == 0 && chars > 0 {
-		comp = 1
-	}
-	return comp
+	return tokensFromChars(chars)
 }
 
 // CalculateHistoryTokens calculates prompt and completion tokens for a conversation history.
@@ -156,11 +182,7 @@ func CalculateHistoryTokens(history []db.Message) (int, int) {
 			for j := 0; j < i; j++ {
 				priorChars += messageChars(history[j])
 			}
-			p := priorChars / 4
-			if p == 0 && priorChars > 0 {
-				p = 1
-			}
-			totalPrompt += p
+			totalPrompt += tokensFromChars(priorChars)
 		}
 	}
 	return totalPrompt, totalCompletion
@@ -175,7 +197,14 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 // GetGlobalTokenUsage extracts measured token counts returned by the OpenAI API from message history.
 // If the latest assistant turn only reported completion tokens or if no assistant turn exists yet,
 // it computes an estimate based on prompt characters and active tools.
-func (a *Agent) GetGlobalTokenUsage(messages []db.Message, _ []string) (int, int, bool) {
+func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
+	// Tool definitions are sent with every request, so they belong in the prompt
+	// estimate. When no allowlist is supplied the estimate stays message-only.
+	toolTokens := 0
+	if a != nil && a.Registry != nil && len(allowedTools) > 0 {
+		toolTokens = EstimateToolSchemaTokens(a.Registry.GetAvailableTools(allowedTools))
+	}
+
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
 		hasPayload := message.Content != "" || message.ReasoningContent != "" || len(message.ToolCalls) > 0
@@ -191,26 +220,16 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, _ []string) (int, int
 					priorChars += len(tc.Function.Name) + len(tc.Function.Arguments)
 				}
 			}
-			estPrompt := priorChars / 4
-			if estPrompt == 0 && priorChars > 0 {
-				estPrompt = 1
-			}
-			return estPrompt, message.CompletionTokens, true
+			return tokensFromChars(priorChars) + toolTokens, message.CompletionTokens, true
 		}
 	}
 
 	if len(messages) > 0 {
 		totalChars := 0
 		for _, m := range messages {
-			totalChars += len(m.Content) + len(m.ReasoningContent)
-			for _, tc := range m.ToolCalls {
-				totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
-			}
+			totalChars += messageChars(m)
 		}
-		estPrompt := totalChars / 4
-		if estPrompt == 0 && totalChars > 0 {
-			estPrompt = 1
-		}
+		estPrompt := tokensFromChars(totalChars) + toolTokens
 		if estPrompt > 0 {
 			return estPrompt, 0, true
 		}

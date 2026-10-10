@@ -180,6 +180,15 @@ func handleConfigCommand(
 			a.Config.PersistentBash = parseConfigBool(val)
 		case "atomic_writes", "atomic_write":
 			a.Config.AtomicWrites = parseConfigBool(val)
+		case "recap_interval", "recap":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				fmt.Fprintf(w, "Invalid recap interval: %v (must be an integer; negative disables)\n", err)
+				return
+			}
+			a.Config.RecapInterval = n
+		case "disable_recap":
+			a.Config.DisableRecap = parseConfigBool(val)
 		case "ask_user_mode", "ask_user":
 			mode := strings.ToLower(strings.TrimSpace(val))
 			if mode != "interactive" && mode != "always_ask" && mode != "auto_recommended" && mode != "disabled" {

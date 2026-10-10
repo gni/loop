@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +17,7 @@ func (a *Agent) LoadMemoryContext() string {
 		if data, err := os.ReadFile(globalPath); err == nil {
 			trimmed := strings.TrimSpace(string(data))
 			if len(trimmed) > 0 {
-				sb.WriteString(fmt.Sprintf("\n\nUser Directives (%s):\nAdhere to these global preferences and personal mandates strictly:\n%s", globalPath, trimmed))
+				sb.WriteString(RuntimeMessagef("user_directives_header", "\n\nUser Directives (%s):\nAdhere to these global preferences and personal mandates strictly:\n%s", globalPath, trimmed))
 			}
 		}
 	}
@@ -33,7 +32,7 @@ func (a *Agent) LoadMemoryContext() string {
 			for _, p := range []string{filepath.Join(dir, "MEMORY.md"), filepath.Join(dir, ".loop", "MEMORY.md")} {
 				if data, err := os.ReadFile(p); err == nil {
 					if trimmed := strings.TrimSpace(string(data)); len(trimmed) > 0 {
-						sb.WriteString(fmt.Sprintf("\n\nProject Architecture & Learnings (%s):\nFollow these repository conventions and architectural decisions strictly:\n%s", p, trimmed))
+						sb.WriteString(RuntimeMessagef("project_memory_header", "\n\nProject Architecture & Learnings (%s):\nFollow these repository conventions and architectural decisions strictly:\n%s", p, trimmed))
 					}
 					found = true
 					break

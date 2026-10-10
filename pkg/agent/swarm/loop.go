@@ -182,7 +182,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		engine.BeginTurn()
 
-		if engine.Awareness().ShouldRecap() {
+		if engine.ShouldRecap() {
 			promptTokens, totalCompletion := agent.CalculateHistoryTokens(sink.Messages())
 			effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
 			engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
@@ -253,12 +253,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
 
 		var responseHeaderStarted bool
-		var subagentCompletionTokens int
+		// Streaming counts characters, not SSE events: counting chunks reported
+		// chunks/second as if they were tokens/second, which made subagent TPS and
+		// completion counts incomparable with the main loop (which uses measured
+		// usage). One calibration, agent.TokensFromChars, is used by both paths.
+		var subagentStreamChars int
+		subagentCompletionTokens := 0
 		var subagentGenStart time.Time
 		var lastDraw time.Time
 		subagentCtxLimit := 128000
 		if ma.BaseAgent != nil {
-			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(0)
+			// The display must use the same effective limit the compression decision
+			// uses, otherwise an adaptive window shows a headroom the subagent is not
+			// actually compressing against.
+			estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, ma.GetToolAllowlist())
+			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
 		}
 
 		for chunk := range chunkChan {
@@ -267,8 +276,11 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				lastDraw = subagentGenStart
 			}
 
-			if chunk.Type == "reasoning" || chunk.Type == "text" {
-				subagentCompletionTokens++
+			// Tool-call generation is completion output too, so it must count; the
+			// old check skipped it and reported near-zero for tool-heavy turns.
+			if chunk.Type == "reasoning" || chunk.Type == "text" || chunk.Type == "tool_call" {
+				subagentStreamChars += len(chunk.Content)
+				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
 			}
 
 			if chunk.Type == "reasoning" {
@@ -332,6 +344,12 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			sr.WriteReasoning(pending)
 		}
 		sr.Flush()
+
+		// Prefer measured provider usage over the streaming estimate for the final
+		// readout, matching the main loop.
+		if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
+			subagentCompletionTokens = assistantMsg.CompletionTokens
+		}
 
 		if ma.Parent == nil && ma.BaseAgent != nil && !subagentGenStart.IsZero() {
 			elapsed := time.Since(subagentGenStart).Seconds()

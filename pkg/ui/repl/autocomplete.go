@@ -93,7 +93,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				"before_tool_hook", "after_tool_hook", "debug", "debug_file",
 				"max_paste_lines", "max_paste_chars",
 				"auto_adapt_context", "min_context_window",
-				"approval_always_answer", "ask_user_mode", "recap_interval",
+				"approval_always_answer", "ask_user_mode", "recap_interval", "disable_recap",
 			}
 			if !isSet {
 				configCandidates = append(configCandidates, "show", "set")

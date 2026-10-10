@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -12,34 +11,34 @@ func FormatDefensiveError(toolName string, err error) string {
 	lowerErr := strings.ToLower(errStr)
 
 	if strings.Contains(errStr, "Recommendation:") {
-		return fmt.Sprintf("System Alert: Your execution of '%s' failed due to: %s", toolName, errStr)
+		return RuntimeMessagef("alert_plain", "System Alert: Your execution of '%s' failed due to: %s", toolName, errStr)
 	}
 	if strings.Contains(lowerErr, "loop detected") || strings.Contains(lowerErr, "agent halted") {
-		return fmt.Sprintf("System Alert: Your execution of '%s' was blocked: %s", toolName, errStr)
+		return RuntimeMessagef("alert_blocked", "System Alert: Your execution of '%s' was blocked: %s", toolName, errStr)
 	}
 
 	var suggestion string
 	if strings.Contains(lowerErr, "not unique") {
-		suggestion = "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block."
+		suggestion = RuntimeMessage("suggestion_not_unique", "The oldText block matches multiple locations in the file.")
 	} else if (strings.Contains(lowerErr, "oldtext block") && strings.Contains(lowerErr, "not found")) ||
 		strings.Contains(lowerErr, "targetcontent not found") {
-		suggestion = "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write."
+		suggestion = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents.")
 	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||
 		toolName == "task_status" || toolName == "task_kill" {
-		suggestion = "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs."
+		suggestion = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found.")
 	} else if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no such file") {
-		suggestion = "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool."
+		suggestion = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list'.")
 	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "security violation") {
-		suggestion = "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked."
+		suggestion = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace.")
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
-		suggestion = "Review the command syntax and arguments. If the command depends on specific environment setups or files, verify they are present."
+		suggestion = RuntimeMessage("suggestion_command", "Review the command syntax and arguments.")
 	} else if strings.HasPrefix(lowerErr, "unknown tool:") {
-		suggestion = "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'."
+		suggestion = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names.")
 	} else {
-		suggestion = "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly."
+		suggestion = RuntimeMessage("suggestion_default", "Ensure arguments match the schema parameters exactly.")
 	}
 
-	return fmt.Sprintf("System Alert: Your execution of '%s' failed due to: %s\nRecommendation: %s", toolName, errStr, suggestion)
+	return RuntimeMessagef("alert_with_recommendation", "System Alert: Your execution of '%s' failed due to: %s\nRecommendation: %s", toolName, errStr, suggestion)
 }
 
 // FormatToolExecutionFailure preserves useful tool diagnostics while adding the
@@ -56,11 +55,11 @@ func FormatToolExecutionFailure(toolName, output string, err error) string {
 			}
 			if !strings.HasPrefix(strings.ToLower(diagnostic), "[command failed") && !strings.HasPrefix(strings.ToLower(diagnostic), "command failed") && !strings.HasPrefix(diagnostic, "Error:") {
 				errMsg := strings.TrimPrefix(err.Error(), "command failed: ")
-				return fmt.Sprintf("[Command Failed: %s]\n%s", errMsg, diagnostic)
+				return RuntimeMessagef("command_failed_header", "[Command Failed: %s]", errMsg) + "\n" + diagnostic
 			}
 			return diagnostic
 		}
-		return fmt.Sprintf("[Command Failed: %s]", err.Error())
+		return RuntimeMessagef("command_failed_header", "[Command Failed: %s]", err.Error())
 	}
 	alert := FormatDefensiveError(toolName, err)
 	if strings.TrimSpace(diagnostic) == "" || strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {

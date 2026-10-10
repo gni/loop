@@ -33,7 +33,7 @@ func (p *repeatToolProvider) StreamChatCompletions(
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
 	callNum := p.calls.Add(1)
-	if callNum > ConsecutiveLimit+2 {
+	if callNum > int32(ConsecutiveLimit)+2 {
 		return &db.Message{
 			Role:    "assistant",
 			Content: "stopped repeating",
@@ -313,7 +313,7 @@ func (p *alternatingReadProvider) StreamChatCompletions(
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
 	callNum := p.calls.Add(1)
-	if callNum > ConsecutiveLimit+2 {
+	if callNum > int32(ConsecutiveLimit)+2 {
 		return &db.Message{
 			Role:    "assistant",
 			Content: "finished alternating reads",

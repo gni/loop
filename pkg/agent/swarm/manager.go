@@ -191,14 +191,11 @@ func (mam *MultiAgentManager) spawnAgent(
 		Type: "function",
 		Function: tool.FunctionDefinition{
 			Name:        toolName,
-			Description: fmt.Sprintf("Delegate a sub-task or ask a question to agent '%s'. Prompt must be clear and specific.", name),
+			Description: fmt.Sprintf(tool.MasterAgentTemplates.SubagentPrompt, name),
 			Parameters: tool.JSONSchema{
 				Type: "object",
 				Properties: map[string]tool.SchemaProp{
-					"prompt": {
-						Type:        "string",
-						Description: "The specific prompt or instruction for the agent",
-					},
+					"prompt": tool.StringProp(tool.MasterAgentTemplates.SubagentParamPrompt),
 				},
 				Required: []string{"prompt"},
 			},

@@ -9,16 +9,18 @@ import (
 	"sort"
 	"strings"
 
+	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
 
-const (
-	defaultGrepLimit   = 100
-	maxGrepLimit       = 500
-	maxGrepLineLength  = 500
-	maxGrepOutputBytes = 64 * 1024
-	maxGrepFileSize    = 2 * 1024 * 1024 // 2MB
-)
+// The search caps come from the resolved limits (config-overridable, clamped to
+// safety ceilings in pkg/domain/limits). The named wrappers below keep the call
+// sites readable and preserve the historical names.
+func defaultGrepLimit() int    { return limits.GrepDefaultLimit() }
+func maxGrepLimit() int        { return limits.GrepMaxLimit() }
+func maxGrepLineLength() int   { return limits.GrepMaxLineLength() }
+func maxGrepOutputBytes() int  { return limits.GrepMaxOutputBytes() }
+func maxGrepFileSize() int     { return limits.GrepMaxFileBytes() }
 
 type grepTool struct{}
 
@@ -44,38 +46,17 @@ func (t *grepTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "grep",
-			Description: "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories",
+			Description: domaintool.FormatToolDescription("grep", "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories"),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
-					"pattern": {
-						Type:        "string",
-						Description: "The regular expression or literal string to search for in file contents. Required unless glob is provided to find files",
-					},
-					"path": {
-						Type:        "string",
-						Description: "Directory or file path to search within (default: current directory)",
-					},
-					"glob": {
-						Type:        "string",
-						Description: "Optional glob pattern to filter filenames (e.g. *.go, *.py, src/**/*.ts). When pattern is empty, grep lists matching file paths",
-					},
-					"ignore_case": {
-						Type:        "boolean",
-						Description: "Case-insensitive search (default: false)",
-					},
-					"literal": {
-						Type:        "boolean",
-						Description: "Treat pattern as a literal string instead of a regular expression (default: false)",
-					},
-					"context": {
-						Type:        "number",
-						Description: "Number of context lines to display before and after each match (default: 0)",
-					},
-					"limit": {
-						Type:        "number",
-						Description: "Maximum number of matching lines to return (default: 100, max: 500)",
-					},
+					"pattern":     domaintool.StringProp(domaintool.FormatParamDescription("grep", "pattern", "The search pattern")),
+					"path":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "path", "Directory to search in")),
+					"glob":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "glob", "Glob pattern to filter files")),
+					"ignore_case": domaintool.BoolProp(domaintool.FormatParamDescription("grep", "ignore_case", "Case-insensitive search")),
+					"literal":     domaintool.BoolProp(domaintool.FormatParamDescription("grep", "literal", "Literal string search")),
+					"context":     domaintool.NumberProp(domaintool.FormatParamDescription("grep", "context", "Context lines around matches")),
+					"limit":       domaintool.NumberProp(domaintool.FormatParamDescription("grep", "limit", "Maximum matching lines")),
 				},
 			},
 		},
@@ -132,9 +113,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	limit := int(args.Limit)
 	if limit <= 0 {
-		limit = defaultGrepLimit
-	} else if limit > maxGrepLimit {
-		limit = maxGrepLimit
+		limit = defaultGrepLimit()
+	} else if limit > maxGrepLimit() {
+		limit = maxGrepLimit()
 	}
 
 	contextLines := int(args.Context)
@@ -195,7 +176,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 
 		fInfo, err := os.Stat(filePath)
-		if err != nil || fInfo.IsDir() || fInfo.Size() == 0 || fInfo.Size() > maxGrepFileSize {
+		if err != nil || fInfo.IsDir() || fInfo.Size() == 0 || fInfo.Size() > int64(maxGrepFileSize()) {
 			return nil
 		}
 
@@ -252,10 +233,10 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			}
 			sort.Ints(lineNums)
 			for _, idx := range lineNums {
-				lineContent := truncateGrepLine(fileLines[idx], maxGrepLineLength)
+				lineContent := truncateGrepLine(fileLines[idx], maxGrepLineLength())
 				lineStr := fmt.Sprintf("%s:%d: %s\n", relPath, idx+1, lineContent)
 				out.WriteString(lineStr)
-				if out.Len() >= maxGrepOutputBytes {
+				if out.Len() >= maxGrepOutputBytes() {
 					outputSizeReached = true
 					return fs.SkipAll
 				}
@@ -287,14 +268,14 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				if prevLine != -1 && idx > prevLine+1 {
 					out.WriteString("--\n")
 				}
-				lineContent := truncateGrepLine(fileLines[idx], maxGrepLineLength)
+				lineContent := truncateGrepLine(fileLines[idx], maxGrepLineLength())
 				sep := "-"
 				if matchedIndices[idx] {
 					sep = ":"
 				}
 				lineStr := fmt.Sprintf("%s:%d%s %s\n", relPath, idx+1, sep, lineContent)
 				out.WriteString(lineStr)
-				if out.Len() >= maxGrepOutputBytes {
+				if out.Len() >= maxGrepOutputBytes() {
 					outputSizeReached = true
 					return fs.SkipAll
 				}
@@ -353,7 +334,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if limitReached {
 		result += fmt.Sprintf("\n[match limit reached: showing first %d matches. Use 'path' or 'glob' to narrow search.]", limit)
 	} else if outputSizeReached {
-		result += fmt.Sprintf("\n[output size limit reached: %d KB. Use 'path' or 'glob' to narrow search.]", maxGrepOutputBytes/1024)
+		result += fmt.Sprintf("\n[output size limit reached: %d KB. Use 'path' or 'glob' to narrow search.]", maxGrepOutputBytes()/1024)
 	}
 
 	return result, nil

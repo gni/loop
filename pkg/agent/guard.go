@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"loop/pkg/domain/limits"
 )
 
 var (
@@ -18,7 +20,7 @@ var (
 // ConsecutiveLimit is the number of identical calls in a row required before
 // the guard blocks. Streaks are measured back-to-back, never accumulated over
 // a turn or session: a call followed by any different call resets the streak.
-const ConsecutiveLimit = 10
+var ConsecutiveLimit = limits.DefaultConsecutiveLimit
 
 // ObservationInvalidator is the narrow contract the guard uses to mark a file's
 // prior read as stale when the file is mutated outside the tracked write/edit path
@@ -29,18 +31,19 @@ type ObservationInvalidator interface {
 	Forget(absPath string)
 }
 
-// maxWindowsPerTarget bounds the number of distinct read windows recorded for a single
-// target, so a pathological session that inspects many slices of one file cannot grow
-// the window cache without limit.
-const maxWindowsPerTarget = 64
+// maxWindowsPerTarget is the compiled default for the number of distinct read
+// windows recorded for a single target, so a pathological session that inspects
+// many slices of one file cannot grow the window cache without limit. The live
+// value is resolved from config through limits.WindowsPerTarget().
+var maxWindowsPerTarget = limits.DefaultWindowsPerTarget
 
 // TurnExecutionGuard blocks tool calls that are repeated back-to-back past
 // ConsecutiveLimit. Every counter tracks a consecutive streak, not a total, so
 // a model that inspects the same file ten times across a long session is never
 // penalised as long as the calls are interleaved with other work.
 type TurnExecutionGuard struct {
-	targetStreaks          map[string]int
-	lastTarget             string
+	targetStreaks map[string]int
+	lastTarget    string
 	// readWindows records which (offset, limit) windows have already been observed for a
 	// target. A read of the same file with a different window is a genuinely new inspection,
 	// so it must not count towards the repetition streak.
@@ -59,13 +62,13 @@ type TurnExecutionGuard struct {
 
 // NewTurnExecutionGuard creates a new execution guard for an active turn.
 func NewTurnExecutionGuard() *TurnExecutionGuard {
-	return NewTurnExecutionGuardWithConfig(ConsecutiveLimit, []int{3, 5})
+	return NewTurnExecutionGuardWithConfig(limits.ConsecutiveLimit(), []int{3, 5})
 }
 
 // NewTurnExecutionGuardWithConfig creates a new execution guard with customizable limits and reminder thresholds.
 func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecutionGuard {
 	if limit <= 0 {
-		limit = ConsecutiveLimit
+		limit = limits.ConsecutiveLimit()
 	}
 	if len(thresholds) == 0 {
 		thresholds = []int{3, 5}
@@ -163,22 +166,14 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 	}
 
 	if len(thresholds) > 0 && streak == thresholds[0] {
-		return "Advisory Reminder: You are repeating the exact same tool call with identical arguments. " +
-			"Carefully analyze the previous result before calling again: if the task is not complete, try a different approach, " +
-			"different search query, or different arguments instead of repeating the call."
+		return RuntimeMessage("reminder_first", "Advisory Reminder: You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach, different search query, or different arguments instead of repeating the call.")
 	}
 	if len(thresholds) > 1 && streak == thresholds[1] {
 		preview := arguments
 		if len(preview) > 300 {
 			preview = preview[:300] + "..."
 		}
-		return fmt.Sprintf("Advisory Loop Warning: Repeated tool call detected:\n"+
-			"- tool: %s\n"+
-			"- consecutive_calls: %d\n"+
-			"- arguments: %s\n"+
-			"The repeated calls are not making progress. Do not repeat this exact call again. "+
-			"Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.",
-			toolName, streak, preview)
+		return RuntimeMessagef("warning_second", "Advisory Loop Warning: Repeated tool call detected:\n- tool: %s\n- consecutive_calls: %d\n- arguments: %s\nThe repeated calls are not making progress. Do not repeat this exact call again. Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.", toolName, streak, preview)
 	}
 
 	return ""
@@ -198,19 +193,19 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 	if toolName == "bash" {
 		cmd := extractBashCommand(arguments)
 		if cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
-			return fmt.Errorf("loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'", cmd, g.failedStreaks[cmd])
+			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'"), cmd, g.failedStreaks[cmd])
 		}
 	}
 
 	// 2. Same target inspected ConsecutiveLimit times in a row.
 	target := g.ExtractTargetFile(toolName, arguments)
 	if target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads {
-		return fmt.Errorf("loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code", target, g.targetStreaks[target])
+		return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code"), target, g.targetStreaks[target])
 	}
 
 	// 3. Same tool call executed ConsecutiveLimit times in a row.
 	if g.callStreaks[callKey] >= g.maxConsecutiveCalls {
-		return fmt.Errorf("loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action", g.callStreaks[callKey])
+		return fmt.Errorf(RuntimeMessage("loop_identical_call", "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action"), g.callStreaks[callKey])
 	}
 
 	return nil
@@ -319,7 +314,7 @@ func isReadWindowNew(toolName, arguments string, windows map[string]map[string]b
 
 	// Bound the per-target window set: once full, evict one recorded window before
 	// recording this one so the cache cannot grow without limit.
-	if len(seen) >= maxWindowsPerTarget {
+	if len(seen) >= limits.WindowsPerTarget() {
 		for key := range seen {
 			delete(seen, key)
 			break

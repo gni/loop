@@ -2,6 +2,7 @@ package tool
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -63,15 +64,15 @@ func (t *taskStatusTool) Definition() Tool {
 func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	taskID, err := parseTaskID(arguments)
 	if err != nil {
-		return "", fmt.Errorf("missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1').")
+		return "", errors.New(RuntimeMessage("task_missing_arg_status", "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1')."))
 	}
 
 	status, output, err := ctx.GetTaskStatus(taskID)
 	if err != nil {
-		return "", fmt.Errorf("task %q not found. The task may have already completed, was killed, or does not exist.", taskID)
+		return "", errors.New(RuntimeMessagef("task_status_not_found", "task %q not found. The task may have already completed, was killed, or does not exist.", taskID))
 	}
 
-	return fmt.Sprintf("Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output), nil
+	return RuntimeMessagef("task_status_output", "Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output), nil
 }
 
 type taskKillTool struct{}
@@ -103,13 +104,13 @@ func (t *taskKillTool) Definition() Tool {
 func (t *taskKillTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	taskID, err := parseTaskID(arguments)
 	if err != nil {
-		return "", fmt.Errorf("missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1').")
+		return "", errors.New(RuntimeMessage("task_missing_arg_kill", "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1')."))
 	}
 
 	err = ctx.KillTask(taskID)
 	if err != nil {
-		return "", fmt.Errorf("failed to terminate task %q: %w", taskID, err)
+		return "", fmt.Errorf(RuntimeMessage("task_kill_failed", "failed to terminate task %q: %w"), taskID, err)
 	}
 
-	return fmt.Sprintf("Task %s successfully terminated.", taskID), nil
+	return RuntimeMessagef("task_kill_success", "Task %s successfully terminated.", taskID), nil
 }

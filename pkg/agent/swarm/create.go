@@ -43,13 +43,14 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 		sort.Strings(availableSkillNames)
 	}
 
-	skillNamesDescription := "Optional exact names of registered reference skills."
+	tpl := tool.MasterAgentTemplates
+	skillNamesDescription := tpl.SkillNamesBase
 	if len(availableSkillNames) == 0 {
-		skillNamesDescription += " No reference skills are currently registered. Omit this field or use inline_skills."
+		skillNamesDescription += tpl.SkillNamesNone
 	} else {
-		skillNamesDescription += " Available names: " + strings.Join(availableSkillNames, ", ") + "."
+		skillNamesDescription += fmt.Sprintf(tpl.SkillNamesAvailable, strings.Join(availableSkillNames, ", "))
 	}
-	skillNamesDescription += " Unknown names are converted into agent-local skills using system_prompt so creation can continue."
+	skillNamesDescription += tpl.SkillNamesUnknown
 
 	return tool.Tool{
 		Type: "function",
@@ -61,11 +62,11 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 				Properties: map[string]tool.SchemaProp{
 					"name": {
 						Type:        "string",
-						Description: "Unique name for the subagent (e.g. 'coder', 'researcher').",
+						Description: tool.FormatParamDescription("create_subagent", "name", "Unique name for the subagent."),
 					},
 					"system_prompt": {
 						Type:        "string",
-						Description: "The specific role, instructions, and goals for this subagent.",
+						Description: tool.FormatParamDescription("create_subagent", "system_prompt", "Role definition for the subagent."),
 					},
 					"skill_names": {
 						Type:        "array",
@@ -77,22 +78,13 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 					},
 					"inline_skills": {
 						Type:        "array",
-						Description: "Optional private skills for this subagent. Use these when the requested specialization is not a registered reference skill.",
+						Description: tool.FormatParamDescription("create_subagent", "inline_skills", "Optional private skills for this subagent."),
 						Items: &tool.SchemaProp{
 							Type: "object",
 							Properties: map[string]tool.SchemaProp{
-								"name": {
-									Type:        "string",
-									Description: "Unique skill name using letters, numbers, underscores, or hyphens.",
-								},
-								"description": {
-									Type:        "string",
-									Description: "Short summary of the specialization.",
-								},
-								"instructions": {
-									Type:        "string",
-									Description: "Complete operational instructions for this skill.",
-								},
+								"name":         tool.StringProp(tool.FormatParamDescription("create_subagent", "inline_skills.name", "Unique skill name.")),
+								"description":  tool.StringProp(tool.FormatParamDescription("create_subagent", "inline_skills.description", "Short summary of the specialization.")),
+								"instructions": tool.StringProp(tool.FormatParamDescription("create_subagent", "inline_skills.instructions", "Complete operational instructions for this skill.")),
 							},
 							Required: []string{"name", "instructions"},
 						},

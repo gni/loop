@@ -32,6 +32,12 @@ var FormatParamDescription = domaintool.FormatParamDescription
 var MasterToolPrompts = domaintool.MasterToolPrompts
 var GetToolPrompt = domaintool.GetToolPrompt
 var SetToolPrompt = domaintool.SetToolPrompt
+var MasterAgentTemplates = domaintool.MasterAgentTemplates
+var StringProp = domaintool.StringProp
+var NumberProp = domaintool.NumberProp
+var BoolProp = domaintool.BoolProp
+var RuntimeMessage = domaintool.RuntimeMessage
+var RuntimeMessagef = domaintool.RuntimeMessagef
 
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {

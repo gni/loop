@@ -7,6 +7,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/limits"
 )
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
@@ -17,18 +18,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	enableThinking := effort != "off" && effort != "none" && effort != ""
 	budget := -1
 	if enableThinking {
-		switch effort {
-		case "low":
-			budget = 512
-		case "medium":
-			budget = 2048
-		case "high":
-			budget = 8192
-		case "max":
-			budget = -1
-		default:
-			budget = 512
-		}
+		// Per-effort thinking budgets are config-adjustable (limits.reasoning_token_budgets);
+		// -1 means unbounded.
+		budget = limits.ReasoningBudget(effort)
 	}
 
 	autoAdapt := true
@@ -171,7 +163,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		}
 	}
 
-	maxCompTokens := 16384
+	maxCompTokens := limits.DefaultMaxCompletionTokens
 	if p.Config != nil && p.Config.MaxCompletionTokens > 0 {
 		maxCompTokens = p.Config.MaxCompletionTokens
 	}
@@ -180,8 +172,8 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	if remainingTokens > 0 && maxCompTokens > remainingTokens {
 		maxCompTokens = remainingTokens
 	}
-	if maxCompTokens < 512 {
-		maxCompTokens = 512
+	if maxCompTokens < limits.CompletionTokenFloor() {
+		maxCompTokens = limits.CompletionTokenFloor()
 	}
 	if budget > maxCompTokens && maxCompTokens > 0 {
 		budget = maxCompTokens

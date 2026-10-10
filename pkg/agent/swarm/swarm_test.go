@@ -96,6 +96,81 @@ func TestMultiAgentCancellationScopes(t *testing.T) {
 	}
 }
 
+// An argument object that parses but carries no content must be rejected at dispatch.
+// Previously "{}" survived as a literal prompt and the subagent ran a full turn on it,
+// inventing work from its own memory of earlier tasks.
+func TestSubagentDelegationRejectsEmptyPromptObject(t *testing.T) {
+	cases := []struct {
+		name      string
+		arguments string
+		want      string // delivered prompt content
+	}{
+		{"empty object is rejected", `{}`, ""},
+		{"empty prompt field is rejected", `{"prompt":""}`, ""},
+		{"whitespace prompt is rejected", `{"prompt":"   "}`, ""},
+		{"bare whitespace is rejected", `   `, ""},
+		{"prompt field wins over task", `{"prompt":"run the audit","task":"ignored"}`, "run the audit"},
+		{"task field is a fallback", `{"task":"inspect guard.go"}`, "inspect guard.go"},
+		{"plain quoted string works", `"do the review"`, "do the review"},
+	}
+
+	for _, tc := range cases {
+		name := tc.name
+		childLifetime, cancelChild := context.WithCancel(context.Background())
+		childTurn, cancelTurn := context.WithCancel(context.Background())
+		t.Cleanup(cancelChild)
+		t.Cleanup(cancelTurn)
+
+		base := &agent.Agent{}
+		base.SetTurnState(nil, context.Background(), style.UITheme{})
+		mam := &MultiAgentManager{}
+		subagent := &MultiAgent{
+			Name:          "worker-" + name,
+			Manager:       mam,
+			Context:       childLifetime,
+			Input:         make(chan db.Message, 1),
+			ActiveContext: childTurn,
+			ActiveCancel:  cancelTurn,
+			ActiveStarted: time.Now(),
+		}
+		executor := &subagentExecutor{subagent: subagent}
+
+		errChan := make(chan error, 1)
+		delivered := make(chan db.Message, 1)
+		go func() {
+			_, err := executor.Execute(base, tc.arguments)
+			errChan <- err
+		}()
+
+		if tc.want == "" {
+			select {
+			case err := <-errChan:
+				if err == nil {
+					t.Errorf("%s: expected rejection, got nil error", name)
+				} else if err.Error() != "missing required argument: prompt" {
+					t.Errorf("%s: error = %v, want %q", name, err, "missing required argument: prompt")
+				}
+			case msg := <-delivered:
+				t.Errorf("%s: empty prompt was delivered to the subagent as %q", name, msg.Content)
+			case <-time.After(2 * time.Second):
+				t.Errorf("%s: no rejection returned", name)
+			}
+			continue
+		}
+
+		select {
+		case msg := <-subagent.Input:
+			if msg.Content != tc.want {
+				t.Errorf("%s: delivered prompt = %q, want %q", name, msg.Content, tc.want)
+			}
+		case err := <-errChan:
+			t.Errorf("%s: unexpected rejection: %v", name, err)
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s: prompt was not delivered", name)
+		}
+	}
+}
+
 func TestParentCancellationStopsDelegatedSubagentTurn(t *testing.T) {
 	parentContext, cancelParent := context.WithCancel(context.Background())
 	childLifetime, cancelChildLifetime := context.WithCancel(context.Background())

@@ -1,10 +1,12 @@
 package subagent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -41,18 +43,19 @@ func ValidateAgentName(name string) error {
 	if name == "" {
 		return fmt.Errorf("agent name cannot be empty")
 	}
-	if len(name) > 64 {
-		return fmt.Errorf("agent name exceeds 64 characters")
+	max := limits.NameMaxLength()
+	if len(name) > max {
+		return errors.New(domaintool.RuntimeMessagef("name_too_long", "agent name exceeds %d characters", max))
 	}
 	for i, r := range name {
 		isAlphaNumeric := (r >= 'a' && r <= 'z') ||
 			(r >= 'A' && r <= 'Z') ||
 			(r >= '0' && r <= '9')
 		if i == 0 && !isAlphaNumeric {
-			return fmt.Errorf("agent name must start with a letter or number")
+			return errors.New(domaintool.RuntimeMessage("name_bad_start", "agent name must start with a letter or number"))
 		}
 		if !isAlphaNumeric && r != '_' && r != '-' {
-			return fmt.Errorf("agent name may contain only letters, numbers, underscores, and hyphens")
+			return errors.New(domaintool.RuntimeMessage("name_bad_chars", "agent name may contain only letters, numbers, underscores, and hyphens"))
 		}
 	}
 	return nil
@@ -66,16 +69,18 @@ func ValidateAgentLocalSkill(skill domaintool.Skill) (domaintool.Skill, error) {
 	skill.Path = ""
 
 	if err := ValidateAgentName(skill.Name); err != nil {
-		return domaintool.Skill{}, fmt.Errorf("invalid agent-local skill name %q: %w", skill.Name, err)
+		return domaintool.Skill{}, errors.New(domaintool.RuntimeMessagef("skill_invalid_name", "invalid agent-local skill name %q: %v", skill.Name, err))
 	}
+	maxDesc := limits.SkillDescMaxBytes()
+	maxContent := limits.SkillContentMaxBytes()
 	if skill.Content == "" {
-		return domaintool.Skill{}, fmt.Errorf("agent-local skill '%s' has no instructions", skill.Name)
+		return domaintool.Skill{}, errors.New(domaintool.RuntimeMessagef("skill_no_instructions", "agent-local skill '%s' has no instructions", skill.Name))
 	}
-	if len(skill.Description) > 2048 {
-		return domaintool.Skill{}, fmt.Errorf("agent-local skill '%s' description exceeds 2048 bytes", skill.Name)
+	if len(skill.Description) > maxDesc {
+		return domaintool.Skill{}, errors.New(domaintool.RuntimeMessagef("skill_desc_too_long", "agent-local skill '%s' description exceeds %d bytes", skill.Name, maxDesc))
 	}
-	if len(skill.Content) > 128*1024 {
-		return domaintool.Skill{}, fmt.Errorf("agent-local skill '%s' instructions exceed 128 KiB", skill.Name)
+	if len(skill.Content) > maxContent {
+		return domaintool.Skill{}, fmt.Errorf(domaintool.RuntimeMessage("skill_content_too_long", "agent-local skill '%s' instructions exceed %d bytes"), skill.Name, maxContent)
 	}
 	if skill.Description == "" {
 		skill.Description = "Agent-local specialization."

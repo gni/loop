@@ -28,5 +28,6 @@
   "ask_user_mode": "interactive",
   "approval_always_answer": false,
   "parallel_tool_calls": false,
-  "recap_interval": 5
+  "recap_interval": 5,
+  "disable_recap": false
 }

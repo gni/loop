@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,11 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
+
+type noopSink struct{ msgs []db.Message }
+
+func (s *noopSink) Append(m db.Message) { s.msgs = append(s.msgs, m) }
+func (s *noopSink) Messages() []db.Message { return s.msgs }
 
 // fixedIntervalProvider emits tool calls until a cap, then a plain answer.
 type fixedIntervalProvider struct {
@@ -94,6 +100,25 @@ func TestRecapDisabled(t *testing.T) {
 	}
 	if e.Awareness().Turn != 10 {
 		t.Fatalf("turn counter not tracked: %d", e.Awareness().Turn)
+	}
+}
+
+func TestRecapDisabledByConfigFlag(t *testing.T) {
+	a := &Agent{Config: &config.Config{RecapInterval: 5, DisableRecap: true, MaxReasoningSteps: 30}}
+	e := NewTurnEngine(a, EnginePolicy{})
+	if e.ShouldRecap() {
+		t.Fatalf("recap should be suppressed when DisableRecap is true")
+	}
+	if got := e.MaybeRecap(&noopSink{}, 100, 10, 1000, io.Discard, style.UITheme{}); got != "" {
+		t.Fatalf("MaybeRecap must emit nothing when disabled, got: %s", got)
+	}
+	// Turning the flag off mid-session must re-enable recaps.
+	a.Config.DisableRecap = false
+	for i := 0; i < 5; i++ {
+		e.BeginTurn()
+	}
+	if !e.ShouldRecap() {
+		t.Fatalf("recap should resume after DisableRecap is cleared")
 	}
 }
 

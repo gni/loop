@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,12 +12,14 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"loop/pkg/domain/limits"
 )
 
 // MaxTrackedTasks bounds the per-agent task registry. Terminal tasks (completed,
 // failed, killed) are evicted oldest-first once the map exceeds this cap, so a
 // long-running session cannot accumulate finished tasks for its whole lifetime.
-const MaxTrackedTasks = 256
+var MaxTrackedTasks = limits.DefaultMaxTrackedTasks
 
 type Task struct {
 	ID             string
@@ -169,7 +172,7 @@ func (a *Agent) KillTask(id string) error {
 	a.TasksMu.Unlock()
 
 	if !exists {
-		return fmt.Errorf("task %s not found", id)
+		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
 	}
 
 	task.mu.Lock()
@@ -204,7 +207,7 @@ func (a *Agent) GetTaskStatus(id string) (string, string, error) {
 	a.TasksMu.Unlock()
 
 	if !exists {
-		return "", "", fmt.Errorf("task %s not found", id)
+		return "", "", errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
 	}
 
 	task.mu.Lock()
@@ -290,7 +293,7 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 
 	task, exists := a.Tasks[id]
 	if !exists {
-		fmt.Fprintf(w, "\nError: task %s not found\n", id)
+		fmt.Fprintf(w, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", id))
 		return
 	}
 
@@ -391,7 +394,7 @@ func (a *Agent) ClearTasks() int {
 // within MaxTrackedTasks. Must be called with TasksMu held; task.mu is taken per task
 // because status writes happen on that lock.
 func (a *Agent) pruneFinishedTasksLocked() {
-	if a == nil || len(a.Tasks) <= MaxTrackedTasks {
+	if a == nil || len(a.Tasks) <= limits.MaxTrackedTasks() {
 		return
 	}
 
@@ -407,7 +410,7 @@ func (a *Agent) pruneFinishedTasksLocked() {
 	sort.Slice(terminal, func(i, j int) bool { return terminal[i].EndTime.Before(terminal[j].EndTime) })
 
 	for _, t := range terminal {
-		if len(a.Tasks) <= MaxTrackedTasks {
+		if len(a.Tasks) <= limits.MaxTrackedTasks() {
 			return
 		}
 		delete(a.Tasks, t.ID)

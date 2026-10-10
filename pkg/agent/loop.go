@@ -124,7 +124,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
 		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 
-		if engine.Awareness().ShouldRecap() {
+		if engine.ShouldRecap() {
 			engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, writerToUse, theme)
 			globalPromptTokensEst, _ = a.GetGlobalTokens(*messages, allowlist)
 			effectiveLimit = a.GetEffectiveContextLimit(globalPromptTokensEst)
