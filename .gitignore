@@ -31,4 +31,9 @@ loop_ubuntu
 loop_test
 
 .codegraph
+
+.loop/
 loop_debug.log
+.build_result
+*_REPORT.md
+MEMORY.md

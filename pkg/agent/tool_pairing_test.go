@@ -97,4 +97,3 @@ func TestParallelToolCallsSerialization(t *testing.T) {
 		t.Fatalf("expected parallel_tool_calls to be omitted when nil, got %s", string(dataNil))
 	}
 }
-

@@ -127,8 +127,8 @@ func (ki *KeyInterceptorReader) redrawTypeAhead() {
 		cursorCol = termW
 	}
 
-	if ki.Agent != nil && ki.Agent.CurrentWriter != nil {
-		if writer, ok := ki.Agent.CurrentWriter.(interface{ SetPromptCol(int) }); ok {
+	if ki.Agent != nil && ki.Agent.CurrentWriter() != nil {
+		if writer, ok := ki.Agent.CurrentWriter().(interface{ SetPromptCol(int) }); ok {
 			writer.SetPromptCol(cursorCol)
 		}
 	}

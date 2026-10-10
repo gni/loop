@@ -19,7 +19,6 @@ type StreamRenderer struct {
 	mu                        sync.Mutex
 	w                         io.Writer
 	theme                     UITheme
-	inCodeBlock               bool
 	inThinking                bool
 	showThinking              bool
 	reasoningStart            time.Time

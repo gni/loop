@@ -30,14 +30,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	writerToUse := w
 	rawW := unwrapWriter(writerToUse)
-	a.CurrentWriter = writerToUse
-	a.CurrentContext = ctx
-	a.CurrentTheme = theme
-	defer func() {
-		a.CurrentWriter = nil
-		a.CurrentContext = nil
-		a.CurrentTheme = style.UITheme{}
-	}()
+	a.SetTurnState(writerToUse, ctx, theme)
+	defer a.ClearTurnState()
 
 	var loader *turnLoader
 	if a.UI != nil && !isNonInteractive {
@@ -49,13 +43,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}()
 	}
 
-	var totalCompletionTokens int
-	var totalPromptTokens int
-	var totalApiDuration time.Duration
-
 	timePrinted := false
 	defer func() {
-		if !timePrinted && prompt != "" {
+		// prompt is guaranteed non-empty here (the function returns earlier on an empty
+		// prompt), so the old `prompt != ""` guard was unreachable.
+		if !timePrinted {
 			elapsed := time.Since(startTime)
 			timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
 			timeStyled := style.NewStyle().Foreground(theme.Border).Render(timeStr)
@@ -70,7 +62,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			(*messages)[0].Content = currentSysPrompt
 			a.ForceSystemPromptUpdate = false
 			if sessionID != "" {
-				_ = db.RewriteSession(sessionID, *messages)
+				if err := db.RewriteSession(sessionID, *messages); err != nil {
+					a.DebugLogError(sessionID, "db.RewriteSession (system prompt)", err)
+				}
 			}
 		}
 	}
@@ -79,10 +73,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	if sessionID != "" {
 		if !db.HasMessages(sessionID) {
 			if len(*messages) > 1 && (*messages)[0].Role == "system" {
-				_ = db.SaveMessage(sessionID, (*messages)[0])
+				if err := db.SaveMessage(sessionID, (*messages)[0]); err != nil {
+					a.DebugLogError(sessionID, "db.SaveMessage (system prompt)", err)
+				}
 			}
 		}
-		_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
+		if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+			a.DebugLogError(sessionID, "db.SaveMessage (user prompt)", err)
+		}
 	}
 
 	a.DebugLogUserCommand(sessionID, prompt)
@@ -119,16 +117,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
 		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
-
-		thresh := 0.80
-		if a.Config != nil && a.Config.CompressionThreshold > 0 {
-			thresh = a.Config.CompressionThreshold
-		}
-		if len(*messages) > 4 && globalPromptTokensEst >= int(thresh*float64(effectiveLimit)) {
-			a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
-			globalPromptTokensEst, _ = a.GetGlobalTokens(*messages, allowlist)
-			effectiveLimit = a.GetEffectiveContextLimit(globalPromptTokensEst)
-		}
+		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 
 		toolsForLog := a.Registry.GetAvailableTools(allowlist)
 		a.DebugLogLLMRequest(sessionID, iter, a.Config.Model, a.Config.Endpoint, *messages, toolsForLog)
@@ -139,11 +128,15 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		go func() {
 			msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
-			streamErrChan <- err
+			// Assign before signalling: the receiver reads assistantMsg after
+			// receiving from streamErrChan, so the channel send is the happens-before
+			// edge. Sending err first let the receiver observe a nil message for a
+			// successful turn.
 			if msg != nil {
 				assistantMsg = msg
 			}
 			close(chunkChan)
+			streamErrChan <- err
 		}()
 
 		a.CurrentStreamMu.Lock()
@@ -152,7 +145,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: a.CurrentStreamBuffer}
 		ncw := &NewlineCounterWriter{Writer: teeWriter}
-		a.CurrentWriter = ncw
+		a.SetCurrentWriter(ncw)
 		effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
 		enableThinking := a.Config.ShowThinking && effort != "off" && effort != "none"
 		var sr StreamRenderer
@@ -177,11 +170,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}
 		}
 
-		tickerDone := make(chan struct{})
-		var tickerOnce sync.Once
+		// No ticker goroutine exists; stopTicker only needs to run once.
+		var stopOnce sync.Once
 		stopTicker := func() {
-			tickerOnce.Do(func() {
-				close(tickerDone)
+			stopOnce.Do(func() {
 				updateStreamStatus(false)
 			})
 		}
@@ -264,7 +256,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					}
 					*messages = append(*messages, errMsg)
 					if sessionID != "" {
-						_ = db.SaveMessage(sessionID, errMsg)
+						if err := db.SaveMessage(sessionID, errMsg); err != nil {
+							a.DebugLogError(sessionID, "db.SaveMessage (error turn)", err)
+						}
 					}
 				} else {
 					errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
@@ -282,35 +276,26 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
 		}
 
-		totalCompletionTokens += assistantMsg.CompletionTokens
-		totalPromptTokens += assistantMsg.PromptTokens
-		totalApiDuration += a.LastGenerationDuration
 
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
-		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration)
+		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
 		*messages = append(*messages, *assistantMsg)
 		if sessionID != "" {
-			_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
+			if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+				a.DebugLogError(sessionID, "db.SaveMessage (assistant turn)", err)
+			}
 		}
 
 		globalPromptTokens, _ := a.GetGlobalTokens(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 		postEffectiveLimit := a.GetEffectiveContextLimit(globalPromptTokens)
-		if len(*messages) > 4 {
-			thresh := 0.80
-			if a.Config != nil && a.Config.CompressionThreshold > 0 {
-				thresh = a.Config.CompressionThreshold
-			}
-			if totalTokens := globalPromptTokens + assistantMsg.CompletionTokens; totalTokens >= int(thresh*float64(postEffectiveLimit)) {
-				a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
-				globalPromptTokens, _ = a.GetGlobalTokens(*messages, allowlist)
-				postEffectiveLimit = a.GetEffectiveContextLimit(globalPromptTokens)
-			}
-		}
+		// The post-turn check must include the completion tokens just generated, otherwise
+		// the threshold is evaluated against prompt tokens only.
+		globalPromptTokens, postEffectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokens, assistantMsg.CompletionTokens, postEffectiveLimit)
 
 		var finalTps float64
-		if a.LastGenerationDuration > 0 {
-			finalTps = float64(assistantMsg.CompletionTokens) / a.LastGenerationDuration.Seconds()
+		if dur := a.LastGenerationDuration(); dur > 0 {
+			finalTps = float64(assistantMsg.CompletionTokens) / dur.Seconds()
 		}
 
 		syncPostTurnStatus := func() {
@@ -351,6 +336,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				fmt.Fprintln(writerToUse, statsText)
 			}
 
+			// Surface truncated rendering: the persisted message is complete, but the
+			// UI consumer stopped draining within streamSendTimeout.
+			if dropped := a.TurnDroppedChunks(); dropped > 0 && a.UI != nil {
+				a.UI.RenderGenerationError(writerToUse, fmt.Sprintf("output truncated: %d stream chunk(s) could not be delivered to the UI", dropped), theme)
+			}
+
 			syncPostTurnStatus()
 			return
 		}
@@ -381,4 +372,3 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 	fmt.Fprintf(writerToUse, "\n%s reached maximum reasoning steps limit (%d).\n", errStyle.Render("warning:"), maxSteps)
 }
-

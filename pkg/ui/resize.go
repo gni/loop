@@ -66,10 +66,10 @@ func handleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 	cw := crnlWriter{W: w}
 	drawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
 
-	if !activeOp && a.CurrentWriter != nil {
-		if pw, ok := a.CurrentWriter.(*PromptPreservingWriter); ok {
+	if !activeOp && a.CurrentWriter() != nil {
+		if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
 			pw.ForceRepositionLocked()
-		} else if fr, ok := a.CurrentWriter.(interface{ ForceReposition() }); ok {
+		} else if fr, ok := a.CurrentWriter().(interface{ ForceReposition() }); ok {
 			fr.ForceReposition()
 		}
 	}

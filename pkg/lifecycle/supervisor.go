@@ -31,6 +31,8 @@ type Supervisor struct {
 	shutdownHooks []func()
 	lastInterrupt time.Time
 	running       bool
+	shutdownOnce  sync.Once
+	exitCode      int
 }
 
 var defaultSupervisor = NewSupervisor(Config{})
@@ -74,6 +76,25 @@ func (s *Supervisor) OnCancel(handler func() bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cancelHandler = handler
+}
+
+// SetExitFunc replaces the termination function. Installing one that returns instead
+// of calling os.Exit lets the caller run its own deferred cleanup: os.Exit inside
+// executeShutdown skips every defer in main, so terminal state (alt-screen, cursor)
+// can be left dirty on the signal path.
+func (s *Supervisor) SetExitFunc(fn func(code int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fn != nil {
+		s.config.ExitFunc = fn
+	}
+}
+
+// ExitCode returns the code the supervisor decided to terminate with.
+func (s *Supervisor) ExitCode() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitCode
 }
 
 // OnShutdown registers a cleanup hook to be executed on shutdown in LIFO order.
@@ -153,21 +174,34 @@ func (s *Supervisor) handleSignal(sig os.Signal) {
 }
 
 func (s *Supervisor) executeShutdown(exitCode int) {
-	s.cancel()
-
 	s.mu.Lock()
-	hooks := make([]func(), len(s.shutdownHooks))
-	copy(hooks, s.shutdownHooks)
+	s.exitCode = exitCode
+	exitFunc := s.config.ExitFunc
 	s.mu.Unlock()
 
-	// Execute hooks in LIFO order
-	for i := len(hooks) - 1; i >= 0; i-- {
-		if hooks[i] != nil {
-			hooks[i]()
-		}
-	}
+	s.cancel()
 
-	s.config.ExitFunc(exitCode)
+	s.shutdownOnce.Do(func() {
+		s.mu.Lock()
+		hooks := make([]func(), len(s.shutdownHooks))
+		copy(hooks, s.shutdownHooks)
+		s.mu.Unlock()
+
+		// Execute hooks in LIFO order. They run at most once even when shutdown is
+		// re-entered by a double interrupt, so cleanup cannot double-fire.
+		for i := len(hooks) - 1; i >= 0; i-- {
+			if hooks[i] != nil {
+				hooks[i]()
+			}
+		}
+	})
+
+	// ExitFunc is called on every shutdown: the first call can be a non-terminating
+	// recorder so the caller's deferred cleanup still runs, while a second call (the
+	// double-interrupt path) must still terminate the process.
+	if exitFunc != nil {
+		exitFunc(exitCode)
+	}
 }
 
 // TriggerSignal simulates an incoming OS signal for testing or programmatic shutdown.

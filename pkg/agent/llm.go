@@ -9,6 +9,14 @@ import (
 	"loop/pkg/domain/message"
 )
 
+// contextKey is an unexported type for context keys defined in this package,
+// preventing collisions with keys defined elsewhere.
+type contextKey string
+
+// contextKeyGenerationDuration carries the duration callback used by providers
+// to report how long a generation took.
+const contextKeyGenerationDuration = contextKey("generation_duration_callback")
+
 type Tool = tool.Tool
 type FunctionDefinition = tool.FunctionDefinition
 type JSONSchema = tool.JSONSchema
@@ -92,8 +100,9 @@ func (a *Agent) currentLLMProvider() LLMProvider {
 
 	if a.LLMProvider == nil {
 		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:     a.Config,
-			HttpClient: a.HttpClient,
+			Config:            a.Config,
+			HttpClient:        a.HttpClient,
+			ChunkDropObserver: a.recordDroppedChunk,
 		}
 	} else if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok && provider.Config != a.Config {
 		httpClient := provider.HttpClient
@@ -101,8 +110,9 @@ func (a *Agent) currentLLMProvider() LLMProvider {
 			httpClient = a.HttpClient
 		}
 		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:     a.Config,
-			HttpClient: httpClient,
+			Config:            a.Config,
+			HttpClient:        httpClient,
+			ChunkDropObserver: a.recordDroppedChunk,
 		}
 	}
 
@@ -118,7 +128,10 @@ func (a *Agent) CheckThinkingSupport() bool {
 			timeout = t
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Derive from the agent's active context so the supervisor's root cancellation
+	// propagates to the /props probe; fall back to Background only when none is set.
+	parent := a.Context()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	return provider.CheckThinkingSupport(ctx)
 }
@@ -131,13 +144,13 @@ func (a *Agent) StreamChatCompletions(
 ) (*db.Message, error) {
 	provider := a.currentLLMProvider()
 
-	// Capture generation duration via context value
-	durationChan := make(chan time.Duration, 1)
-	ctxWithCallback := context.WithValue(ctx, "generation_duration_callback", func(d time.Duration) {
-		select {
-		case durationChan <- d:
-		default:
-		}
+	// Capture generation duration via context value. The provider invokes the callback
+	// synchronously before returning, so writing to the captured variable is reliable;
+	// the previous size-1 channel with select/default silently dropped the value when
+	// the provider called the callback more than once.
+	var generationDuration time.Duration
+	ctxWithCallback := context.WithValue(ctx, contextKeyGenerationDuration, func(d time.Duration) {
+		generationDuration = d
 	})
 
 	var tools []tool.Tool
@@ -146,12 +159,7 @@ func (a *Agent) StreamChatCompletions(
 	}
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)
 
-	select {
-	case d := <-durationChan:
-		a.LastGenerationDuration = d
-	default:
-		a.LastGenerationDuration = 0
-	}
+	a.SetLastGenerationDuration(generationDuration)
 
 	return msg, err
 }

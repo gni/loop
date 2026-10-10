@@ -17,6 +17,7 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	transporthttp "loop/pkg/transport/http"
 	transportllm "loop/pkg/transport/llm"
 )
 
@@ -28,6 +29,39 @@ type OpenAICompatibleProvider struct {
 	DetectedContextLimit   int
 	ContextLimitChecked    bool
 	ContextLimitMu         sync.RWMutex
+
+	// thinkingMu guards ThinkingSupported/ThinkingSupportChecked: concurrent subagent
+	// loops and the UI commands layer read them while the probe writes them.
+	thinkingMu sync.Mutex
+
+	// ChunkDropObserver is notified for every stream chunk that cannot be delivered to
+	// the UI consumer within streamSendTimeout, so dropped output is observable rather
+	// than silently lost.
+	ChunkDropObserver ChunkDropObserver
+}
+
+// ThinkingEnabled reports whether the backend advertises reasoning support, under the
+// capability lock.
+func (p *OpenAICompatibleProvider) ThinkingEnabled() bool {
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.ThinkingSupported
+}
+
+// ThinkingProbeChecked reports whether the capability probe has already run.
+func (p *OpenAICompatibleProvider) ThinkingProbeChecked() bool {
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.ThinkingSupportChecked
+}
+
+// ResetThinkingCapabilities clears the cached probe result (used when the provider or
+// model changes, so capabilities are re-detected rather than inherited).
+func (p *OpenAICompatibleProvider) ResetThinkingCapabilities() {
+	p.thinkingMu.Lock()
+	p.ThinkingSupported = false
+	p.ThinkingSupportChecked = false
+	p.thinkingMu.Unlock()
 }
 
 func (p *OpenAICompatibleProvider) StreamChatCompletions(
@@ -76,7 +110,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					}
 					timer.Reset(timeoutDuration)
 				case <-timer.C:
-					timedOut.Load()
 					timedOut.Store(true)
 					cancelStream()
 					return
@@ -87,7 +120,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimSuffix(p.Config.Endpoint, "/"))
 
-	if !p.ThinkingSupportChecked {
+	if !p.ThinkingProbeChecked() {
 		p.ProbeServerCapabilities(streamCtx)
 		kickTimer()
 	}
@@ -97,29 +130,30 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return nil, err
 	}
 
-	var resp *http.Response
-	var lastErr error
 	maxRetries := 3
 	client := p.HttpClient
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-streamCtx.Done():
-				if timedOut.Load() && p.Config != nil && p.Config.Timeout > 0 {
-					return nil, fmt.Errorf("LLM request timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
-				}
-				return nil, streamCtx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
-			}
+	// One retry implementation instead of a hand-rolled duplicate of the resilient
+	// client: the shared client now carries the stream watchdog through BeforeAttempt so
+	// a stalled connection still reports as a timeout, and DescribeError keeps the
+	// endpoint hint that the loop used to add inline.
+	resilient := transporthttp.NewResilientClient(transporthttp.RetryConfig{
+		MaxRetries: maxRetries,
+		BaseDelay:  time.Second,
+		Client:     client,
+		BeforeAttempt: func(int) error {
 			kickTimer()
-		}
+			return p.checkContextOrTimeout(ctx, streamCtx, &timedOut, "LLM request timed out after ")
+		},
+		DescribeError: func(err error) error {
+			return fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", err, p.Config.Endpoint)
+		},
+	})
 
+	resp, err := resilient.DoWithRetry(streamCtx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(streamCtx, "POST", url, bytes.NewBuffer(jsonData))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
@@ -127,46 +161,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("loop", "v1.0.0")
-
 		if p.Config.ApiKey != "" {
 			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))
 		}
-
-		var doErr error
-		resp, doErr = client.Do(req)
-		if doErr != nil {
-			if err := p.checkContextOrTimeout(ctx, streamCtx, &timedOut, "HTTP request failed: "); err != nil {
-				return nil, err
-			}
-			lastErr = fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", doErr, p.Config.Endpoint)
-			if isNonRetryableError(doErr) {
-				return nil, lastErr
-			}
-			continue
+		return req, nil
+	})
+	if err != nil {
+		if ctxErr := p.checkContextOrTimeout(ctx, streamCtx, &timedOut, "LLM request timed out after "); ctxErr != nil {
+			return nil, ctxErr
 		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			lastErr = fmt.Errorf("server returned non-200 status: %d. Body: %s", resp.StatusCode, string(body))
-
-			if resp.StatusCode >= 500 {
-				continue
-			}
-			return nil, lastErr
-		}
-
-		lastErr = nil
-		kickTimer()
-		break
+		return nil, err
 	}
-
-	if lastErr != nil {
-		if err := p.checkContextOrTimeout(ctx, streamCtx, &timedOut, ""); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("after %d retries: %w", maxRetries, lastErr)
-	}
+	kickTimer()
 	defer resp.Body.Close()
 
 	reader := bufio.NewReader(resp.Body)
@@ -179,17 +185,17 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		filter.SetToolCallbacks(
 			func(toolName string, idx int) {
 				normName := tool.NormalizeName(toolName)
-				emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx})
+				emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx}, p.ChunkDropObserver)
 			},
 			func(chunk string, idx int) {
-				emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx})
+				emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, p.ChunkDropObserver)
 			},
 		)
 	}
 
 	textFilter := NewFallbackToolTextFilter(func(text string) {
 		textBuilder.WriteString(text)
-		emitChunk(ctx, chunkChan, StreamChunk{Type: "text", Content: text})
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "text", Content: text}, p.ChunkDropObserver)
 	})
 	setupFilterCallbacks(textFilter)
 	emitText := func(text string) {
@@ -201,7 +207,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 	reasoningFilter := NewFallbackToolTextFilter(func(text string) {
 		cleanReasoningBuilder.WriteString(text)
-		emitChunk(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text})
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text}, p.ChunkDropObserver)
 	})
 	setupFilterCallbacks(reasoningFilter)
 	emitReasoning := func(text string) {
@@ -331,7 +337,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					}
 					toolCallsMap[idx] = &newTC
 					if newTC.Function.Name != "" {
-						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: newTC.Function.Name, ToolCallIndex: idx})
+						emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: newTC.Function.Name, ToolCallIndex: idx}, p.ChunkDropObserver)
 					}
 				} else {
 					if tc.ID != "" {
@@ -343,12 +349,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					if tc.Function.Name != "" {
 						tcName := tool.NormalizeName(tc.Function.Name)
 						existing.Function.Name = tcName
-						emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx})
+						emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx}, p.ChunkDropObserver)
 					}
 					existing.Function.Arguments += tc.Function.Arguments
 				}
 				if tc.Function.Arguments != "" {
-					emitChunk(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx})
+					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx}, p.ChunkDropObserver)
 				}
 			}
 		}
@@ -381,7 +387,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	// Store duration in context/metadata or handle via caller setting
-	ctxVal := ctx.Value("generation_duration_callback")
+	ctxVal := ctx.Value(contextKeyGenerationDuration)
 	if callback, ok := ctxVal.(func(time.Duration)); ok {
 		callback(duration)
 	}
@@ -389,9 +395,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	return assistantMsg, nil
 }
 
+// checkContextOrTimeout is the single context/timeout classifier. `prefix` is the full
+// message stem (e.g. "LLM request timed out after "); the stream path reuses it rather
+// than keeping a duplicate copy.
 func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.Context, timedOut *atomic.Bool, prefix string) error {
 	if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
-		return fmt.Errorf("%sLLM request timed out after %d seconds: %w", prefix, p.Config.Timeout, context.DeadlineExceeded)
+		return fmt.Errorf("%s%d seconds: %w", prefix, p.Config.Timeout, context.DeadlineExceeded)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -402,15 +411,8 @@ func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.
 	return nil
 }
 
+// checkStreamContextOrTimeout is the stream-path wrapper of checkContextOrTimeout;
+// the two were previously byte-identical copies that could drift.
 func (p *OpenAICompatibleProvider) checkStreamContextOrTimeout(ctx, streamCtx context.Context, timedOut *atomic.Bool) error {
-	if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
-		return fmt.Errorf("LLM stream timed out after %d seconds: %w", p.Config.Timeout, context.DeadlineExceeded)
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if streamCtx.Err() != nil {
-		return streamCtx.Err()
-	}
-	return nil
+	return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after ")
 }

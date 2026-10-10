@@ -18,6 +18,13 @@ type RetryConfig struct {
 	BaseDelay  time.Duration
 	Client     *http.Client
 	OnAttempt  func(attempt int)
+	// BeforeAttempt runs after the backoff sleep, before the request is issued. It may
+	// return an error to abort the retry loop (used by the streaming provider to report
+	// a watchdog timeout rather than a plain context cancellation).
+	BeforeAttempt func(attempt int) error
+	// DescribeError, when set, wraps a transport error so callers can add context such
+	// as the endpoint that failed.
+	DescribeError func(err error) error
 }
 
 // ResilientClient executes HTTP requests with exponential backoff and error classification.
@@ -45,17 +52,13 @@ func IsNonRetryableError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "no such host") ||
-		strings.Contains(errStr, "network is unreachable") ||
+	return strings.Contains(errStr, "no such host") ||
 		strings.Contains(errStr, "certificate") ||
 		strings.Contains(errStr, "tls:") ||
 		strings.Contains(errStr, "x509:") ||
 		strings.Contains(errStr, "unsupported protocol scheme") ||
 		strings.Contains(errStr, "cannot assign requested address") ||
-		strings.Contains(errStr, "no route to host") ||
-		strings.Contains(errStr, "i/o timeout") ||
-		strings.Contains(errStr, "deadline exceeded")
+		strings.Contains(errStr, "no route to host")
 }
 
 // IsRetryableStatus returns true if an HTTP status code warrants a retry (e.g., 5xx server errors).
@@ -76,6 +79,11 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 				return nil, ctx.Err()
 			case <-time.After(backoff):
 			}
+			if c.config.BeforeAttempt != nil {
+				if err := c.config.BeforeAttempt(attempt); err != nil {
+					return nil, err
+				}
+			}
 			if c.config.OnAttempt != nil {
 				c.config.OnAttempt(attempt)
 			}
@@ -92,6 +100,9 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 				return nil, ctx.Err()
 			}
 			lastErr = fmt.Errorf("HTTP request failed: %w", err)
+			if c.config.DescribeError != nil {
+				lastErr = c.config.DescribeError(err)
+			}
 			if IsNonRetryableError(err) {
 				return nil, lastErr
 			}
@@ -99,9 +110,18 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			// Cap the read so a hostile or runaway error body cannot grow unbounded, and
+			// surface a read failure instead of embedding a possibly empty body.
+			const maxErrorBodyBytes = 4096
+			body, bodyErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 			resp.Body.Close()
-			lastErr = fmt.Errorf("server returned non-200 status: %d. Body: %s", resp.StatusCode, string(body))
+			if bodyErr != nil {
+				lastErr = fmt.Errorf("server returned non-200 status: %d. Body read failed: %v", resp.StatusCode, bodyErr)
+			} else if len(body) == 0 {
+				lastErr = fmt.Errorf("server returned non-200 status: %d. Body: (empty)", resp.StatusCode)
+			} else {
+				lastErr = fmt.Errorf("server returned non-200 status: %d. Body: %s", resp.StatusCode, string(body))
+			}
 
 			if IsRetryableStatus(resp.StatusCode) {
 				continue
@@ -128,7 +148,7 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 
 // NewHTTPClient returns a configured *http.Client with resilient connection pooling and TLS options.
 func NewHTTPClient(tlsConfig *tls.Config, timeoutSeconds int) *http.Client {
-	dialerTimeout := 10 * time.Second
+	dialerTimeout := 30 * time.Second
 	if timeoutSeconds > 0 && time.Duration(timeoutSeconds)*time.Second < dialerTimeout {
 		dialerTimeout = time.Duration(timeoutSeconds) * time.Second
 	}

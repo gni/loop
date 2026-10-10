@@ -21,8 +21,6 @@ type settingItem struct {
 	onEdit      func(newVal string) error
 }
 
-type SettingItem = settingItem
-
 // GetInteractiveIO resolves the appropriate input reader and output writer for
 // interactive modals, falling back to /dev/tty if available, and returning
 // a cleanup callback to close any opened file handles.

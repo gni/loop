@@ -243,7 +243,8 @@ func PrintSessionHistory(
 				toolName = msg.Name
 			}
 
-			isError := strings.HasPrefix(msg.Content, "Error:") || strings.HasPrefix(msg.Content, "error:") || strings.Contains(msg.Content, "command failed:")
+			lowerContent := strings.ToLower(msg.Content)
+			isError := strings.HasPrefix(lowerContent, "error:") || strings.Contains(lowerContent, "command failed")
 
 			status := ToolStatusSuccess
 			if isError {

@@ -31,7 +31,6 @@ func (s *Storage) EnsureDir() error {
 	return os.MkdirAll(s.dir, 0755)
 }
 
-
 // SaveDefinition serializes an AgentDef to disk.
 func (s *Storage) SaveDefinition(def AgentDef) error {
 	if err := s.EnsureDir(); err != nil {

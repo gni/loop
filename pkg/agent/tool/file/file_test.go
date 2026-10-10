@@ -21,15 +21,15 @@ func (c *dummyAgentContext) SafePath(p string) (string, error) {
 	}
 	return filepath.Join(c.root, p), nil
 }
-func (c *dummyAgentContext) GetWorkspaceRoot() string                         { return c.root }
-func (c *dummyAgentContext) GetActiveSkills() []domaintool.Skill              { return nil }
-func (c *dummyAgentContext) ReloadSkills() []domaintool.Skill                 { return nil }
-func (c *dummyAgentContext) SpawnTask(string, io.Writer) (string, error)      { return "", nil }
+func (c *dummyAgentContext) GetWorkspaceRoot() string                    { return c.root }
+func (c *dummyAgentContext) GetActiveSkills() []domaintool.Skill         { return nil }
+func (c *dummyAgentContext) ReloadSkills() []domaintool.Skill            { return nil }
+func (c *dummyAgentContext) SpawnTask(string, io.Writer) (string, error) { return "", nil }
 
 func (c *dummyAgentContext) GetTaskStatus(string) (string, string, error) { return "", "", nil }
-func (c *dummyAgentContext) KillTask(string) error                      { return nil }
-func (c *dummyAgentContext) Context() context.Context                   { return context.Background() }
-func (c *dummyAgentContext) HasSubagent(string) bool                    { return false }
+func (c *dummyAgentContext) KillTask(string) error                        { return nil }
+func (c *dummyAgentContext) Context() context.Context                     { return context.Background() }
+func (c *dummyAgentContext) HasSubagent(string) bool                      { return false }
 
 func TestFileSubpackageReadWriteEdit(t *testing.T) {
 	tmpDir := t.TempDir()

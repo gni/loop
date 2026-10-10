@@ -56,14 +56,21 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 			msg.Content = StripFallbackToolMarkup(msg.Content)
 		}
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			var validTCs []db.ToolCall
-			for _, tc := range msg.ToolCalls {
+			// Chosen option: keep the call with empty arguments instead of dropping it.
+			// Dropping breaks tool-call pairing (the matching tool response becomes an
+			// orphan and EnforceToolPairingInvariance then removes the whole turn), so the
+			// context loss was silent. Normalising unparseable arguments to "{}" keeps the
+			// call, its tool response, and the turn intact.
+			// Copy the slice so the caller's stored message is not mutated.
+			normalisedTCs := make([]db.ToolCall, len(msg.ToolCalls))
+			copy(normalisedTCs, msg.ToolCalls)
+			for i, tc := range normalisedTCs {
 				var dummy map[string]interface{}
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &dummy); err == nil {
-					validTCs = append(validTCs, tc)
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &dummy); err != nil {
+					normalisedTCs[i].Function.Arguments = "{}"
 				}
 			}
-			msg.ToolCalls = validTCs
+			msg.ToolCalls = normalisedTCs
 		}
 		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
 			continue
@@ -203,7 +210,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		reqBody.PresencePenalty = &pp
 	}
 
-	if p.ThinkingSupported {
+	if p.ThinkingEnabled() {
 		reqBody.ReasoningControl = true
 		if enableThinking {
 			strength := effort
@@ -252,4 +259,3 @@ func truncateNonFileToolContent(role, name, content string, maxChars int, suffix
 	}
 	return content
 }
-

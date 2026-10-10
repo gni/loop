@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// MaxTrackedTasks bounds the per-agent task registry. Terminal tasks (completed,
+// failed, killed) are evicted oldest-first once the map exceeds this cap, so a
+// long-running session cannot accumulate finished tasks for its whole lifetime.
+const MaxTrackedTasks = 256
+
 type Task struct {
 	ID             string
 	Command        string
@@ -90,6 +95,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		LastOutputTime: time.Now(),
 	}
 	a.Tasks[id] = task
+	a.pruneFinishedTasksLocked()
 	a.TasksMu.Unlock()
 
 	cmd := exec.Command("bash", "-c", command)
@@ -379,4 +385,34 @@ func (a *Agent) ClearTasks() int {
 	a.StreamingTask = ""
 	a.TasksMu.Unlock()
 	return killed
+}
+
+// pruneFinishedTasksLocked evicts the oldest terminal tasks until the registry fits
+// within MaxTrackedTasks. Must be called with TasksMu held; task.mu is taken per task
+// because status writes happen on that lock.
+func (a *Agent) pruneFinishedTasksLocked() {
+	if a == nil || len(a.Tasks) <= MaxTrackedTasks {
+		return
+	}
+
+	terminal := make([]*Task, 0, len(a.Tasks))
+	for _, t := range a.Tasks {
+		t.mu.Lock()
+		switch t.Status {
+		case "completed", "failed", "killed":
+			terminal = append(terminal, t)
+		}
+		t.mu.Unlock()
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].EndTime.Before(terminal[j].EndTime) })
+
+	for _, t := range terminal {
+		if len(a.Tasks) <= MaxTrackedTasks {
+			return
+		}
+		delete(a.Tasks, t.ID)
+		if a.StreamingTask == t.ID {
+			a.StreamingTask = ""
+		}
+	}
 }

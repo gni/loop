@@ -98,8 +98,8 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				ui.DrawStatusBar(os.Stderr, activeTheme)
 				if cleared > 0 {
 					output := kiReader.W
-					if kiReader.Agent != nil && kiReader.Agent.CurrentWriter != nil {
-						output = kiReader.Agent.CurrentWriter
+					if kiReader.Agent != nil && kiReader.Agent.CurrentWriter() != nil {
+						output = kiReader.Agent.CurrentWriter()
 					} else if kiReader.Agent != nil {
 						if uiImpl, ok := kiReader.Agent.UI.(*ui.AgentUIImpl); ok && uiImpl.PPWriter != nil {
 							output = uiImpl.PPWriter

@@ -251,7 +251,7 @@ func HandleProviderCommand(
 }
 
 func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
-	if cfg.Providers == nil || len(cfg.Providers) == 0 {
+	if len(cfg.Providers) == 0 {
 		fmt.Fprintln(w, "No custom endpoint providers configured.")
 		return
 	}

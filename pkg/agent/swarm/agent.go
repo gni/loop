@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 )
@@ -34,6 +36,13 @@ type MultiAgent struct {
 	ActiveContext context.Context
 	ActiveCancel  context.CancelFunc
 	ActiveStarted time.Time
+
+	// Per-agent stream buffer: the tee writer in executeLoop tees this agent's output
+	// here. It must not be BaseAgent.CurrentStreamBuffer, which the main loop owns and
+	// which pkg/ui/redraw.go reads; sharing it made concurrent subagents overwrite each
+	// other's redraw content.
+	StreamBuffer   *bytes.Buffer
+	StreamBufferMu sync.Mutex
 }
 
 // GetSystemPrompt generates the system instructions and reference guides list for the agent.
@@ -63,7 +72,7 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 
 	canSpawn := false
 	for _, toolName := range ma.GetToolAllowlist() {
-		if toolName == "create_subagent" || toolName == "spawn_subagent" {
+		if tool.IsSpawnTool(toolName) {
 			canSpawn = true
 			break
 		}
@@ -73,7 +82,7 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	if ma.BaseAgent != nil && ma.BaseAgent.Registry != nil {
 		executors := ma.BaseAgent.Registry.GetAllExecutors()
 		for name, executor := range executors {
-			if !canSpawn && (name == "create_subagent" || name == "spawn_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" || name == "swarm_audit" || name == "swarm_topology") {
+			if !canSpawn && tool.IsSubagentTool(name) {
 				continue
 			}
 			tools = append(tools, agent.ToolEntry{
@@ -107,7 +116,14 @@ func newMultiAgentWithSkills(
 	localSkills []tool.Skill,
 	inheritAllSkills bool,
 ) *MultiAgent {
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive from the base agent's active context so the process root context from
+	// lifecycle.Default() propagates to subagents; Ctrl+C then cancels the whole tree
+	// instead of relying on CancelActiveTurn for the active agent only.
+	parentCtx := context.Background()
+	if baseAgent != nil {
+		parentCtx = baseAgent.Context()
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
 	combined := make([]tool.Skill, 0, len(referenceSkills)+len(localSkills))
 	combined = append(combined, referenceSkills...)
 	combined = append(combined, localSkills...)
@@ -165,7 +181,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 		maxDepth = ma.BaseAgent.Config.MaxSubagentDepth
 	}
 
-	canSpawn := depth < maxDepth
+	canSpawn := depth < subagent.EffectiveMaxDepth(maxDepth)
 
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()
 	var allowlist []string
@@ -178,7 +194,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 			if isChild {
 				allowlist = append(allowlist, name)
 			}
-		} else if name == "create_subagent" || name == "spawn_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" || name == "swarm_audit" || name == "swarm_topology" {
+		} else if tool.IsSubagentTool(name) {
 			if canSpawn {
 				allowlist = append(allowlist, name)
 			}

@@ -33,8 +33,6 @@ var MasterToolPrompts = domaintool.MasterToolPrompts
 var GetToolPrompt = domaintool.GetToolPrompt
 var SetToolPrompt = domaintool.SetToolPrompt
 
-
-
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {
 	return domaintool.GetPromptSnippet(t)

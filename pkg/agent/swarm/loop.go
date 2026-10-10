@@ -3,6 +3,7 @@ package swarm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,6 +13,33 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
+
+// streamBufferView returns an io.Writer appending to this agent's own StreamBuffer
+// under StreamBufferMu, so a concurrent redraw can read it safely while another agent's
+// loop writes its own buffer.
+func (ma *MultiAgent) streamBufferView() io.Writer {
+	return &streamBufferWriter{ma: ma}
+}
+
+func (ma *MultiAgent) streamBufferBytes() []byte {
+	ma.StreamBufferMu.Lock()
+	defer ma.StreamBufferMu.Unlock()
+	if ma.StreamBuffer == nil {
+		return nil
+	}
+	return ma.StreamBuffer.Bytes()
+}
+
+type streamBufferWriter struct{ ma *MultiAgent }
+
+func (s *streamBufferWriter) Write(p []byte) (int, error) {
+	s.ma.StreamBufferMu.Lock()
+	defer s.ma.StreamBufferMu.Unlock()
+	if s.ma.StreamBuffer == nil {
+		return len(p), nil
+	}
+	return s.ma.StreamBuffer.Write(p)
+}
 
 // Start initiates the message processing loop for the subagent in a background goroutine.
 func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
@@ -39,8 +67,8 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 
 				if msg.Role == "user" {
 					writer := w
-					if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter != nil {
-						writer = ma.BaseAgent.CurrentWriter
+					if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
+						writer = ma.BaseAgent.CurrentWriter()
 					}
 					fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
 						style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
@@ -72,7 +100,17 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 							_ = ma.Manager.SaveAgentState(ma, "failed")
 						}
 
-						if err != context.Canceled {
+						// errors.Is so wrapped context.Canceled is still treated as a
+						// cancellation; wrapped DeadlineExceeded (provider timeouts) stays
+						// a real error and is printed as a timeout.
+						if errors.Is(err, context.DeadlineExceeded) {
+							errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+							fmt.Fprintf(writer, "\n%s [%s] timed out: %v\n",
+								errStyle.Render("!"),
+								style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+								err,
+							)
+						} else if !errors.Is(err, context.Canceled) {
 							errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 							fmt.Fprintf(writer, "\n%s [%s] error: %v\n",
 								errStyle.Render("!"),
@@ -87,7 +125,8 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 						}
 						select {
 						case ma.Output <- errMsg:
-						default:
+						case <-ma.Context.Done():
+							return
 						}
 						continue
 					}
@@ -101,7 +140,8 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 
 					select {
 					case ma.Output <- response:
-					default:
+					case <-ma.Context.Done():
+						return
 					}
 				}
 			}
@@ -111,8 +151,8 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 
 func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (db.Message, error) {
 	writer := w
-	if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter != nil {
-		writer = ma.BaseAgent.CurrentWriter
+	if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
+		writer = ma.BaseAgent.CurrentWriter()
 	}
 	rawW := agent.UnwrapWriter(writer)
 
@@ -127,6 +167,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		if ctx.Err() != nil {
 			return db.Message{}, ctx.Err()
 		}
+		ma.compressIfNeeded(ctx, writer, theme)
+
 		ma.HistoryMu.RLock()
 		historyCopy := make([]db.Message, len(ma.History))
 		copy(historyCopy, ma.History)
@@ -139,25 +181,30 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		chunkChan := make(chan agent.StreamChunk, 100)
 		errChan := make(chan error, 1)
+		dropsBefore := ma.BaseAgent.DroppedChunks()
 
 		var assistantMsg *db.Message
 		go func() {
 			allowlist := ma.GetToolAllowlist()
 			msg, err := ma.BaseAgent.StreamChatCompletions(ctx, historyCopy, allowlist, chunkChan)
-			errChan <- err
+			// Same ordering as pkg/agent/loop.go: the message must be assigned before
+			// the error is signalled, otherwise the reader can observe a nil message
+			// for a successful turn.
 			if msg != nil {
 				assistantMsg = msg
 			}
 			close(chunkChan)
+			errChan <- err
 		}()
 
-		if ma.BaseAgent != nil {
-			ma.BaseAgent.CurrentStreamMu.Lock()
-			ma.BaseAgent.CurrentStreamBuffer = new(bytes.Buffer)
-			ma.BaseAgent.CurrentStreamMu.Unlock()
-			teeWriter := agent.NewCustomTeeWriter(writer, ma.BaseAgent.CurrentStreamBuffer)
-			writer = teeWriter
-		}
+		// Tee into this agent's own buffer, never BaseAgent.CurrentStreamBuffer: that
+		// buffer belongs to the main loop and is read by pkg/ui/redraw.go, so sharing it
+		// let concurrent subagents overwrite each other's (and the main loop's) output.
+		ma.StreamBufferMu.Lock()
+		ma.StreamBuffer = new(bytes.Buffer)
+		ma.StreamBufferMu.Unlock()
+		teeWriter := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
+		writer = teeWriter
 		var lastUserPrompt string
 		for i := len(historyCopy) - 1; i >= 0; i-- {
 			if historyCopy[i].Role == "user" {
@@ -251,6 +298,11 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				lastDraw = now
 			}
 		}
+		if dropped := ma.BaseAgent.DroppedChunks() - dropsBefore; dropped > 0 && ma.BaseAgent.UI != nil {
+			fmt.Fprintf(ncw, "\n[%s] output truncated: %d stream chunk(s) could not be delivered\n",
+				style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), dropped)
+		}
+
 		if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
 			fmt.Fprintf(ncw, "\n[%s] response: ",
 				style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
@@ -271,11 +323,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 		}
 
-		if ma.BaseAgent != nil {
-			ma.BaseAgent.CurrentStreamMu.Lock()
-			ma.BaseAgent.CurrentStreamBuffer = nil
-			ma.BaseAgent.CurrentStreamMu.Unlock()
-		}
+		ma.StreamBufferMu.Lock()
+		ma.StreamBuffer = nil
+		ma.StreamBufferMu.Unlock()
 
 		err := <-errChan
 		if err != nil {
@@ -299,7 +349,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 		}
 		if ma.BaseAgent != nil {
-			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, ma.BaseAgent.LastGenerationDuration)
+			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, ma.BaseAgent.LastGenerationDuration())
 		}
 		if ma.Manager != nil {
 			_ = ma.Manager.SaveAgentState(ma, "running")
@@ -377,6 +427,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			if output == "" {
 				output = "(no output)"
 			}
+
+			// Same deterministic pruning and spill-to-disk the main loop applies.
+			output = ma.pruneToolOutput(tc.ID, tc.Function.Name, output)
 
 			if !isSubagent {
 				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)

@@ -201,8 +201,8 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 	p.LineBuffer.Reset()
 
 	if !p.TitlePrinted {
-		p.PrintStreamTitle(w, theme)
-		p.FlushOutputBuf(w, theme)
+		p.OutputBuf.WriteString(line + "\n")
+		return
 	}
 
 	if p.GuessedLang == "" && p.Path != "" {
@@ -246,15 +246,19 @@ func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
 		if idx == len(lines)-1 && l == "" {
 			break
 		}
-		_ = render.HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
-		fmt.Fprint(w, "\n")
+		if p.ActiveToolName == "todo" {
+			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Text).Render(l))
+		} else {
+			_ = render.HighlightWithoutTrailingNewline(w, l, lang, theme.ChromaStyle)
+			fmt.Fprint(w, "\n")
+		}
 	}
 }
 
 func (p *JSONStreamParser) EmitContent(s string, w io.Writer, theme style.UITheme) {
 	if !p.TitlePrinted {
-		p.PrintStreamTitle(w, theme)
-		p.FlushOutputBuf(w, theme)
+		p.OutputBuf.WriteString(s)
+		return
 	}
 
 	fmt.Fprint(w, s)
@@ -329,7 +333,11 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 						}
 					}
 					if p.ActiveToolName == "todo" && p.IsContent {
-						fmt.Fprintln(w)
+						if p.TitlePrinted {
+							fmt.Fprintln(w)
+						} else {
+							p.OutputBuf.WriteString("\n")
+						}
 					}
 					if p.IsContent {
 						if p.LineBuffer.Len() > 0 {
@@ -358,7 +366,11 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 					if p.StreamWrites {
 						p.IsContent = true
 						if p.ActiveToolName == "todo" && (p.CurrentKey == "task" || p.CurrentKey == "title" || p.CurrentKey == "description" || p.CurrentKey == "content") {
-							fmt.Fprint(w, "  • ")
+							if p.TitlePrinted {
+								fmt.Fprint(w, "  • ")
+							} else {
+								p.OutputBuf.WriteString("  • ")
+							}
 						}
 						if p.GuessedLang == "" && p.Path != "" {
 							p.GuessedLang = DetectLangFromPath(p.Path)

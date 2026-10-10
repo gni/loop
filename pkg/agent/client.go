@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,9 @@ type mcpClient struct {
 	name        string
 	config      config.MCPServerConfig
 	isSSE       bool
+	isStdio     bool
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
 	postURL     string
 	sseBody     io.ReadCloser
 	requests    map[int64]chan string
@@ -38,8 +42,12 @@ type MCPTool struct {
 }
 
 func (c *mcpClient) start() error {
+	if strings.EqualFold(c.config.Type, "stdio") || (c.config.URL == "" && c.config.Command != "") {
+		c.isStdio = true
+		return c.startStdio()
+	}
 	if c.config.URL == "" {
-		return fmt.Errorf("MCP server '%s' is missing 'url' config; MCP servers must run independently and only URLs are supported", c.name)
+		return fmt.Errorf("MCP server '%s' is missing 'url' or 'command' config", c.name)
 	}
 	c.isSSE = true
 	return c.startSSE()
@@ -130,6 +138,12 @@ func (c *mcpClient) startSSE() error {
 }
 
 func (c *mcpClient) close() {
+	if c.stdin != nil {
+		c.stdin.Close()
+	}
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
 	if c.cancel != nil {
 		c.cancel()
 	}
@@ -184,6 +198,10 @@ func (c *mcpClient) handleMessage(data string) {
 }
 
 func (c *mcpClient) request(method string, params interface{}) (string, error) {
+	if c.isStdio {
+		return c.requestStdio(method, params, 15*time.Second)
+	}
+
 	c.requestMu.Lock()
 	id := c.nextID
 	c.nextID++
@@ -293,6 +311,14 @@ func (c *mcpClient) handshake() error {
 	defer cancel()
 
 	mcpLog("[MCP Tx Notification] %s\n", string(data))
+	if c.isStdio {
+		if err := c.sendStdio(string(data)); err != nil {
+			mcpLog("[MCP] failed to send notifications/initialized: %v\n", err)
+		}
+		c.initialized = true
+		return nil
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")

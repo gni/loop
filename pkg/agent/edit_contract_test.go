@@ -189,7 +189,6 @@ func TestEditMarkdownSoftWrapAndMultiEditBatch(t *testing.T) {
 	}
 }
 
-
 func TestCleanStructuredSystemPromptSections(t *testing.T) {
 	a := &Agent{
 		Config: &config.Config{

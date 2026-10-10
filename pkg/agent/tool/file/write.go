@@ -44,29 +44,29 @@ func (t *writeTool) Definition() domaintool.Tool {
 
 func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
 	var args struct {
-		Path               string  `json:"path"`
-		File               string  `json:"file"`
-		FilePath           string  `json:"file_path"`
-		FilePathCamel      string  `json:"filePath"`
-		Target             string  `json:"target"`
-		TargetFile         string  `json:"target_file"`
-		TargetFileCamel    string  `json:"targetFile"`
-		TargetFilePascal   string  `json:"TargetFile"`
-		FileName           string  `json:"file_name"`
-		FileNameCamel      string  `json:"fileName"`
-		Filename           string  `json:"filename"`
-		WritePath          string  `json:"write_path"`
-		WritePathCamel     string  `json:"writePath"`
-		AbsolutePath       string  `json:"AbsolutePath"`
-		AbsolutePathSnake  string  `json:"absolute_path"`
-		Content            *string `json:"content"`
-		CodeContent        *string `json:"code_content"`
-		CodeContentCamel   *string `json:"codeContent"`
-		CodeContentPascal  *string `json:"CodeContent"`
-		WriteContent       *string `json:"write_content"`
-		Text               *string `json:"text"`
-		Body               *string `json:"body"`
-		Data               *string `json:"data"`
+		Path              string  `json:"path"`
+		File              string  `json:"file"`
+		FilePath          string  `json:"file_path"`
+		FilePathCamel     string  `json:"filePath"`
+		Target            string  `json:"target"`
+		TargetFile        string  `json:"target_file"`
+		TargetFileCamel   string  `json:"targetFile"`
+		TargetFilePascal  string  `json:"TargetFile"`
+		FileName          string  `json:"file_name"`
+		FileNameCamel     string  `json:"fileName"`
+		Filename          string  `json:"filename"`
+		WritePath         string  `json:"write_path"`
+		WritePathCamel    string  `json:"writePath"`
+		AbsolutePath      string  `json:"AbsolutePath"`
+		AbsolutePathSnake string  `json:"absolute_path"`
+		Content           *string `json:"content"`
+		CodeContent       *string `json:"code_content"`
+		CodeContentCamel  *string `json:"codeContent"`
+		CodeContentPascal *string `json:"CodeContent"`
+		WriteContent      *string `json:"write_content"`
+		Text              *string `json:"text"`
+		Body              *string `json:"body"`
+		Data              *string `json:"data"`
 	}
 	_ = json.Unmarshal([]byte(arguments), &args)
 

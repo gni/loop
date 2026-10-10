@@ -26,7 +26,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 	return domaintool.Tool{
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
-			Name: "todo",
+			Name:        "todo",
 			Description: domaintool.FormatToolDescription("todo", "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",

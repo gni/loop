@@ -155,7 +155,11 @@ func (a *Agent) GetMCPServersStatus() map[string]string {
 	status := make(map[string]string)
 	for name, client := range a.McpClients {
 		if client.initialized {
-			status[name] = fmt.Sprintf("Connected (URL: %s)", client.config.URL)
+			if client.isStdio {
+				status[name] = fmt.Sprintf("Connected (stdio: %s)", strings.TrimSpace(client.config.Command+" "+strings.Join(client.config.Args, " ")))
+			} else {
+				status[name] = fmt.Sprintf("Connected (URL: %s)", client.config.URL)
+			}
 		} else {
 			status[name] = "Initializing"
 		}

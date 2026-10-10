@@ -17,6 +17,13 @@ func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
 }
 
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.checkThinkingSupportLocked(ctx)
+}
+
+// checkThinkingSupportLocked performs the probe assuming thinkingMu is already held.
+func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Context) bool {
 	timeout := 5 * time.Second
 	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
 		timeout = time.Duration(p.Config.Timeout) * time.Second
@@ -85,8 +92,10 @@ func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) boo
 // ProbeServerCapabilities queries the backend (/props) to discover
 // reasoning support and the server's native active context window limit.
 func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) {
-	p.ThinkingSupported = p.CheckThinkingSupport(ctx)
+	p.thinkingMu.Lock()
+	p.ThinkingSupported = p.checkThinkingSupportLocked(ctx)
 	p.ThinkingSupportChecked = true
+	p.thinkingMu.Unlock()
 	p.ContextLimitMu.Lock()
 	p.ContextLimitChecked = true
 	p.ContextLimitMu.Unlock()

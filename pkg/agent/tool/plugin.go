@@ -41,8 +41,14 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 		return "", fmt.Errorf("plugin path is a directory")
 	}
 
-	// 10-second execution timeout
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// 10-second execution timeout derived from the caller's context so cancellation
+	// from the supervisor reaches the plugin process. Guard the nil agent context the
+	// same way other call sites do.
+	parent := context.Background()
+	if ctx != nil && ctx.Context() != nil {
+		parent = ctx.Context()
+	}
+	ctxTimeout, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctxTimeout, absPath)
@@ -63,8 +69,16 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 	return stdout.String(), nil
 }
 
-// RegisterPlugins scans the specified directory for executables and registers them
+// RegisterPlugins scans the specified directory for executables and registers them.
+// It is the context-less form of RegisterPluginsContext; prefer the latter so the
+// supervisor's root cancellation reaches the --info probe.
 func RegisterPlugins(registry *ToolRegistry, dir string) error {
+	return RegisterPluginsContext(context.Background(), registry, dir)
+}
+
+// RegisterPluginsContext scans dir and registers plugins, deriving the --info probe
+// timeout from ctx instead of an orphaned context.Background().
+func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil // Plugins directory optional
 	}
@@ -118,7 +132,7 @@ func RegisterPlugins(registry *ToolRegistry, dir string) error {
 
 		if errRead != nil || len(jsonBytes) == 0 {
 			// If no companion json file exists, probe the script with --info flag as documented
-			ctxTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 			cmd := exec.CommandContext(ctxTimeout, pluginPath, "--info")
 			out, err := cmd.Output()
 			cancel()

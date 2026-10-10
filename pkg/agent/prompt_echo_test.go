@@ -167,4 +167,3 @@ func TestPromptEchoFilterSuppressesLiteralUnicodeDashEscapeInHeading(t *testing.
 		t.Fatalf("expected echoed title with unicode escape to be suppressed, got %q", got)
 	}
 }
-

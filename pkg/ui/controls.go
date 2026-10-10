@@ -185,8 +185,8 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		if a != nil {
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
 				uiImpl.PPWriter.AdjustPrintLineLocked(-delta)
-			} else if a.CurrentWriter != nil {
-				if pw, ok := a.CurrentWriter.(*PromptPreservingWriter); ok {
+			} else if a.CurrentWriter() != nil {
+				if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
 					pw.AdjustPrintLineLocked(-delta)
 				}
 			}

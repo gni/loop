@@ -28,7 +28,7 @@ func RenderProviders(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("configured endpoint providers") + "\n\n")
 
-	if cfg.Providers == nil || len(cfg.Providers) == 0 {
+	if len(cfg.Providers) == 0 {
 		sb.WriteString(style.NewStyle().Foreground(theme.Border).Italic(true).Render("  (no endpoint providers configured)") + "\n")
 	} else {
 		var keys []string

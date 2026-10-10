@@ -32,9 +32,13 @@ func (a *Agent) executeToolCalls(
 
 	for idx, tc := range assistantMsg.ToolCalls {
 		if ctx.Err() != nil {
+			// Pairing invariance: an assistant turn with tool calls must have a tool
+			// response for every call, otherwise EnforceToolPairingInvariance drops the
+			// whole turn. Record the interruption for this call and every remaining one.
+			a.recordToolCallInterruption(messages, assistantMsg.ToolCalls[idx:], "cancelled before execution", sessionID)
 			return true, false
 		}
-		a.liveBodyStreamed = false
+		a.SetLiveBodyStreamed(false)
 
 		isSubagent := strings.HasPrefix(tc.Function.Name, "subagent__")
 		wasStreamed := sr.GetToolTitleLineNumber(idx) != -1
@@ -54,7 +58,8 @@ func (a *Agent) executeToolCalls(
 		approved := false
 		always := false
 		approvalRendered := false
-		if !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) {
+		// Same nil guard as the other a.Config reads in this function.
+		if a.Config != nil && !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) {
 			approvalRendered = true
 			sr.Flush()
 			if a.UI != nil {
@@ -70,7 +75,9 @@ func (a *Agent) executeToolCalls(
 			}
 			if always {
 				a.Config.AutoApprove = true
-				_ = config.SaveConfig(a.ConfigPath, a.Config)
+				if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+					a.DebugLogError(sessionID, "config.SaveConfig (auto-approve)", err)
+				}
 			}
 		} else {
 			approved = true
@@ -98,6 +105,9 @@ func (a *Agent) executeToolCalls(
 					}
 					toolOutput, toolErr = a.Registry.Execute(a, tc.Function.Name, tc.Function.Arguments)
 					if ctx.Err() != nil {
+						// Partial execution still needs the tool response for this call so
+						// the assistant turn stays paired.
+						a.recordToolCallInterruption(messages, assistantMsg.ToolCalls[idx:], "cancelled during execution", sessionID)
 						return true, false
 					}
 					toolOutput, toolErr = a.runAfterToolHook(tc, toolOutput, toolErr)
@@ -142,6 +152,7 @@ func (a *Agent) executeToolCalls(
 			}
 
 			// Update agent state
+			a.stateMu.Lock()
 			isReadOnlyTool := IsInspectionTool(tc.Function.Name)
 			isPrevEdit := a.lastToolWasEdit
 			if !isReadOnlyTool || !isPrevEdit || a.lastToolOutput == "" {
@@ -149,6 +160,7 @@ func (a *Agent) executeToolCalls(
 				a.lastToolIsError = toolErr != nil
 				a.lastToolWasEdit = (tc.Function.Name == "edit")
 			}
+			a.stateMu.Unlock()
 
 			// Append message to history
 			*messages = append(*messages, db.Message{
@@ -158,7 +170,9 @@ func (a *Agent) executeToolCalls(
 				Content:    prunedOutput,
 			})
 			if sessionID != "" {
-				_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
+				if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+					a.DebugLogError(sessionID, "db.SaveMessage (tool response)", err)
+				}
 			}
 
 			if *consecutiveGuardRejections >= ConsecutiveLimit {
@@ -168,7 +182,9 @@ func (a *Agent) executeToolCalls(
 					Content: haltNotice,
 				})
 				if sessionID != "" {
-					_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
+					if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+						a.DebugLogError(sessionID, "db.SaveMessage (halt notice)", err)
+					}
 				}
 				if a.UI != nil {
 					fmt.Fprintln(ncw, style.NewStyle().Foreground(theme.Error).Bold(true).Render(haltNotice))
@@ -181,8 +197,10 @@ func (a *Agent) executeToolCalls(
 		} else {
 			// Rejected!
 			toolOutput := "error: tool execution rejected by user."
+			a.stateMu.Lock()
 			a.lastToolOutput = toolOutput
 			a.lastToolIsError = true
+			a.stateMu.Unlock()
 
 			if !approvalRendered {
 				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
@@ -200,7 +218,9 @@ func (a *Agent) executeToolCalls(
 				Content:    toolOutput,
 			})
 			if sessionID != "" {
-				_ = db.SaveMessage(sessionID, (*messages)[len(*messages)-1])
+				if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+					a.DebugLogError(sessionID, "db.SaveMessage (rejected tool)", err)
+				}
 			}
 
 			// Abort execution of subsequent tools in the batch
@@ -208,4 +228,24 @@ func (a *Agent) executeToolCalls(
 		}
 	}
 	return false, false
+}
+
+// recordToolCallInterruption appends a tool response for every tool call that will not
+// be executed, so the assistant turn keeps its required tool_call_id pairing. Without
+// this, EnforceToolPairingInvariance drops the whole turn from the next request.
+func (a *Agent) recordToolCallInterruption(messages *[]db.Message, calls []db.ToolCall, reason, sessionID string) {
+	for _, tc := range calls {
+		content := fmt.Sprintf("error: tool execution interrupted (%s)", reason)
+		*messages = append(*messages, db.Message{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			Name:       tc.Function.Name,
+			Content:    content,
+		})
+		if sessionID != "" {
+			if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+				a.DebugLogError(sessionID, "db.SaveMessage (interrupted tool)", err)
+			}
+		}
+	}
 }

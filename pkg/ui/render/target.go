@@ -67,7 +67,7 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 				return c
 			}
 		}
-		if argsMap != nil && len(argsMap) == 1 {
+		if len(argsMap) == 1 {
 			for _, v := range argsMap {
 				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
 					return strings.TrimSpace(s)

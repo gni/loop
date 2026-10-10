@@ -132,29 +132,24 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 	var line strings.Builder
 	if sr.chanInput != nil {
-		for {
-			select {
-			case b, ok := <-sr.chanInput:
-				if !ok {
-					return "", fmt.Errorf("read error")
-				}
-				if b == '\r' || b == '\n' {
-					fmt.Fprint(rlOutput, "\r\n")
-					return line.String(), nil
-				}
-				if b == 127 || b == 8 {
-					PopRuneFromBuilder(&line, rlOutput)
-					continue
-				}
-				if b == 3 || b == 4 {
-					return "", fmt.Errorf("cancelled")
-				}
-				if b >= 32 {
-					line.WriteByte(b)
-					fmt.Fprint(rlOutput, string(b))
-				}
+		for b := range sr.chanInput {
+			if b == '\r' || b == '\n' {
+				fmt.Fprint(rlOutput, "\r\n")
+				return line.String(), nil
+			}
+			if b == 127 || b == 8 {
+				PopRuneFromBuilder(&line, rlOutput)
+				continue
+			}
+			if b == 3 || b == 4 {
+				return "", fmt.Errorf("cancelled")
+			}
+			if b >= 32 {
+				line.WriteByte(b)
+				fmt.Fprint(rlOutput, string(b))
 			}
 		}
+		return "", fmt.Errorf("read error")
 	}
 
 	for {

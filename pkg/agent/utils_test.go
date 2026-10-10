@@ -171,7 +171,7 @@ func TestGetGlobalTokenUsageTreatsProviderMetadataAsMeasured(t *testing.T) {
 	}
 
 	messages = append(messages, db.Message{Role: "user", Content: "12345678"})
-	prompt, completion, estimated = a.GetGlobalTokenUsage(messages, nil)
+	prompt, completion, _ = a.GetGlobalTokenUsage(messages, nil)
 	if prompt != 1600 || completion != 19 {
 		t.Fatalf("usage with pending input = (%d, %d), want (1600, 19)", prompt, completion)
 	}

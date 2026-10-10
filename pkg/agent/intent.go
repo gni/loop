@@ -13,22 +13,24 @@ import (
 var inspectionTools = map[string]bool{
 	"read": true, "grep": true, "find": true, "list": true, "ls": true,
 	"load_skill": true, "task_status": true,
-	"list_subagents": true, "audit_subagent": true,
-	"swarm_topology": true, "swarm_audit": true,
 }
 
 var actionTools = map[string]bool{
 	"write": true, "edit": true, "bash": true, "task_kill": true,
-	"create_subagent": true, "spawn_subagent": true, "remove_subagent": true,
+	"remove_subagent": true,
 }
 
-// IsInspectionTool reports whether a tool is side-effect free.
-func IsInspectionTool(name string) bool { return inspectionTools[tool.NormalizeName(name)] }
+// IsInspectionTool reports whether a tool is side-effect free. Subagent-family
+// classification comes from the shared table in pkg/agent/tool.
+func IsInspectionTool(name string) bool {
+	norm := tool.NormalizeName(name)
+	return inspectionTools[norm] || tool.IsSubagentInspectionTool(norm)
+}
 
 // IsActionTool reports whether a tool can mutate state.
 func IsActionTool(name string) bool {
 	norm := tool.NormalizeName(name)
-	return actionTools[norm] || strings.HasPrefix(norm, "subagent__")
+	return actionTools[norm] || tool.IsSpawnTool(norm) || strings.HasPrefix(norm, "subagent__")
 }
 
 // NeedsApproval is the approval decision used by the loop: inspection never

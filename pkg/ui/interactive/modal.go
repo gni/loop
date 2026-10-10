@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -47,12 +48,14 @@ type approvalInputController interface {
 type ChoiceMenuOption struct {
 	Label string
 	Keys  string
+	// FreeText marks an option that, when selected, lets the user type a
+	// free-form answer instead of just picking the label.
+	FreeText bool
 }
 
 var (
 	activeReaderMu         sync.RWMutex
 	activeReaderProvider   func() io.Reader
-	inApprovalPrompt       bool
 	onApprovalPromptChange func(bool)
 )
 
@@ -64,7 +67,6 @@ func SetActiveReaderProvider(provider func() io.Reader) {
 
 func SetInApprovalPrompt(in bool) {
 	activeReaderMu.Lock()
-	inApprovalPrompt = in
 	notify := onApprovalPromptChange
 	activeReaderMu.Unlock()
 	if notify != nil {
@@ -79,8 +81,16 @@ func OnApprovalPromptChange(fn func(bool)) {
 }
 
 func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool) {
+	idx, dismissed, _ := runChoiceMenuEx(input, output, theme, prompt, options, selected)
+	return idx, dismissed
+}
+
+// runChoiceMenuEx is the extended choice menu. If a FreeText option is selected,
+// the user is prompted to type an answer; the typed answer is returned in the
+// third result and its index in the first.
+func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool, string) {
 	if len(options) == 0 {
-		return -1, true
+		return -1, true, ""
 	}
 	if selected < 0 || selected >= len(options) {
 		selected = 0
@@ -131,7 +141,7 @@ func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, promp
 	for {
 		n, err := input.Read(buf)
 		if err != nil {
-			return selected, true
+			return selected, true, ""
 		}
 		if n == 0 {
 			continue
@@ -148,23 +158,89 @@ func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, promp
 			continue
 		}
 
-		for _, char := range buf[:n] {
+		for i, char := range buf[:n] {
 			if char == '\r' || char == '\n' {
-				return selected, false
+				if options[selected].FreeText {
+					pending := string(buf[i+1:n])
+					answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
+					return selected, false, answer
+				}
+				return selected, false, ""
 			}
 			if char == 3 || char == 4 || char == 27 {
-				return selected, true
+				return selected, true, ""
 			}
 			for index, option := range options {
 				if strings.ContainsRune(option.Keys, rune(char)) {
-					return index, false
+					if option.FreeText {
+						pending := string(buf[i+1:n]) // bytes already consumed past the keypress
+						answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
+						return index, false, answer
+					}
+					return index, false, ""
 				}
 			}
 		}
 	}
 }
 
+// readFreeTextAnswer reads one line of user input (echoed inline) and returns it.
+// Enter confirms; Ctrl+C/Ctrl+D/Esc dismisses with an empty answer.
+func readFreeTextAnswer(input io.Reader, output io.Writer, theme style.UITheme, promptStyle, activeStyle style.Style, initial string) string {
+	fmt.Fprint(output, "\r\x1b[K", promptStyle.Render("  type your answer (Enter to confirm): "))
+
+	answer := []byte{}
+	for i := 0; i < len(initial); i++ {
+		c := initial[i]
+		if c == '\r' || c == '\n' {
+			if len(answer) > 0 {
+				fmt.Fprint(output, "\r\n")
+				return strings.TrimSpace(string(answer))
+			}
+			// Leading newline confirms the menu selection; skip it.
+			continue
+		}
+		answer = append(answer, c)
+		fmt.Fprint(output, string(c))
+	}
+	line := make([]byte, 1)
+	for {
+		n, err := input.Read(line)
+		if err != nil || n == 0 {
+			if len(answer) > 0 {
+				return strings.TrimSpace(string(answer))
+			}
+			return ""
+		}
+		c := line[0]
+		switch c {
+		case '\r', '\n':
+			fmt.Fprint(output, "\r\n")
+			if len(answer) == 0 {
+				return ""
+			}
+			return strings.TrimSpace(string(answer))
+		case 3, 4, 27:
+			fmt.Fprint(output, "\r\n")
+			return ""
+		case 127, 8:
+			if len(answer) > 0 {
+				answer = answer[:len(answer)-1]
+				fmt.Fprint(output, "\r\x1b[K", activeStyle.Render("  type your answer (Enter to confirm): ")+string(answer))
+			}
+		default:
+			answer = append(answer, c)
+			fmt.Fprint(output, string(c))
+		}
+	}
+}
+
 func runModalChoice(w io.Writer, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool) {
+	idx, dismissed, _ := runModalChoiceEx(w, theme, prompt, options, selected)
+	return idx, dismissed
+}
+
+func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool, string) {
 	var input io.Reader = os.Stdin
 	var output io.Writer = os.Stdout
 	fd := int(os.Stdin.Fd())
@@ -188,7 +264,6 @@ func runModalChoice(w io.Writer, theme style.UITheme, prompt string, options []C
 		input = activeReader
 		output = w
 	}
-	inApprovalPrompt = true
 	notify := onApprovalPromptChange
 	activeReaderMu.Unlock()
 	if notify != nil {
@@ -208,7 +283,6 @@ func runModalChoice(w io.Writer, theme style.UITheme, prompt string, options []C
 			inputController.EndApprovalInput()
 		}
 		activeReaderMu.Lock()
-		inApprovalPrompt = false
 		notifyEnd := onApprovalPromptChange
 		activeReaderMu.Unlock()
 		if notifyEnd != nil {
@@ -250,17 +324,22 @@ func runModalChoice(w io.Writer, theme style.UITheme, prompt string, options []C
 		buf := make([]byte, 1)
 		n, err := input.Read(buf)
 		if err != nil || n == 0 {
-			return selected, true
+			return selected, true, ""
 		}
 		for index, option := range options {
 			if strings.ContainsRune(option.Keys, rune(buf[0])) {
-				return index, false
+				if option.FreeText {
+					reader := bufio.NewReader(input)
+					line, _ := reader.ReadString('\n')
+					return index, false, strings.TrimSpace(line)
+				}
+				return index, false, ""
 			}
 		}
-		return selected, true
+		return selected, true, ""
 	}
 
-	return runChoiceMenu(input, output, theme, prompt, options, selected)
+	return runChoiceMenuEx(input, output, theme, prompt, options, selected)
 }
 
 func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
@@ -308,11 +387,24 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 	if prompt == "" {
 		prompt = "Please select an option:"
 	}
-	selected, dismissed := runModalChoice(w, theme, " "+prompt, menuOptions, defaultIdx)
+	// Always append a free-write entry so the user can type exactly what they want.
+	menuOptions = append(menuOptions, ChoiceMenuOption{
+		Label:    "Other: write what you want",
+		Keys:     fmt.Sprintf("%d", len(menuOptions)+1),
+		FreeText: true,
+	})
+
+	selected, dismissed, freeText := runModalChoiceEx(w, theme, " "+prompt, menuOptions, defaultIdx)
 	if dismissed {
 		return "operation cancelled by user", nil
 	}
 	if selected >= 0 && selected < len(menuOptions) {
+		if menuOptions[selected].FreeText {
+			if freeText == "" {
+				return "other: wrote nothing", nil
+			}
+			return freeText, nil
+		}
 		return menuOptions[selected].Label, nil
 	}
 	return "operation cancelled by user", nil

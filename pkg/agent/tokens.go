@@ -4,6 +4,11 @@ import (
 	"loop/pkg/db"
 )
 
+// charsPerToken is the single calibration used by every estimator in this package.
+// EstimateFallbackTokens previously used its own divisor of 4, so the same history
+// produced two different numbers depending on which path ran.
+const charsPerToken = 3.2
+
 func messageChars(m db.Message) int {
 	chars := len(m.Content) + len(m.ReasoningContent)
 	for _, tc := range m.ToolCalls {
@@ -19,7 +24,7 @@ func EstimateMessageTokens(m db.Message) int {
 	if chars == 0 {
 		return 0
 	}
-	tokens := int(float64(chars) / 3.2)
+	tokens := int(float64(chars) / charsPerToken)
 	if tokens == 0 && chars > 0 {
 		return 1
 	}
@@ -40,12 +45,9 @@ func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Me
 	if promptTokens == 0 {
 		totalChars := 0
 		for _, msg := range messages {
-			totalChars += len(msg.Content) + len(msg.ReasoningContent)
-			for _, tc := range msg.ToolCalls {
-				totalChars += len(tc.Function.Name) + len(tc.Function.Arguments)
-			}
+			totalChars += messageChars(msg)
 		}
-		promptTokens = totalChars / 4
+		promptTokens = int(float64(totalChars) / charsPerToken)
 		if promptTokens == 0 && totalChars > 0 {
 			promptTokens = 1
 		}
@@ -55,7 +57,7 @@ func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Me
 		for _, tc := range calls {
 			completionChars += len(tc.Function.Name) + len(tc.Function.Arguments)
 		}
-		completionTokens = completionChars / 4
+		completionTokens = int(float64(completionChars) / charsPerToken)
 		if completionTokens == 0 && completionChars > 0 {
 			completionTokens = 1
 		}

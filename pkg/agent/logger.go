@@ -293,6 +293,25 @@ func (dl *DebugLogger) LogRepetition(sessionID string, toolName string, argument
 	dl.writeRaw(sb.String())
 }
 
+// LogError records a persistence/config-save failure that the caller cannot surface to
+// the user, so disk/memory divergence is at least observable in the debug log.
+func (dl *DebugLogger) LogError(sessionID string, op string, err error) {
+	if dl == nil || err == nil {
+		return
+	}
+	dl.mu.Lock()
+	defer dl.mu.Unlock()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("~", 80)))
+	sb.WriteString(fmt.Sprintf("[%s] ERROR | Operation: %s | Session: %s\n",
+		time.Now().Format("2006-01-02 15:04:05.000"), op, sessionID))
+	sb.WriteString(fmt.Sprintf("Error: %v\n", err))
+	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("~", 80)))
+
+	dl.writeRaw(sb.String())
+}
+
 // Close flushes and closes the underlying debug log file.
 func (dl *DebugLogger) Close() {
 	if dl == nil {

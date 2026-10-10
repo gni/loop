@@ -266,4 +266,3 @@ func TestFallbackToolTextFilterEmitsToolCallbacks(t *testing.T) {
 		t.Fatalf("expected streamed tool call chunks, got: %q", fullBody)
 	}
 }
-

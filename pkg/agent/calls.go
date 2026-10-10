@@ -11,20 +11,37 @@ import (
 
 var streamSendTimeout = 500 * time.Millisecond
 
-// emitChunk sends a chunk without ever blocking forever.
-func emitChunk(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamChunk) {
+// emitChunk sends a chunk without ever blocking forever. It reports whether the chunk
+// was delivered: a drop means UI output can be truncated while the persisted message
+// still contains everything, so callers must be able to notice it.
+func emitChunk(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamChunk) bool {
 	select {
 	case chunkChan <- chunk:
-		return
+		return true
 	default:
 	}
 	timer := time.NewTimer(streamSendTimeout)
 	defer timer.Stop()
 	select {
 	case chunkChan <- chunk:
+		return true
 	case <-ctx.Done():
 	case <-timer.C:
 	}
+	return false
+}
+
+// ChunkDropObserver, when set, is invoked for every stream chunk that could not be
+// delivered to the UI consumer. The provider layer cannot reach the agent directly, so
+// it is wired through this field on the provider.
+type ChunkDropObserver func()
+
+func emitChunkObserved(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamChunk, observer ChunkDropObserver) bool {
+	delivered := emitChunk(ctx, chunkChan, chunk)
+	if !delivered && observer != nil {
+		observer()
+	}
+	return delivered
 }
 
 func isNonRetryableError(err error) bool {

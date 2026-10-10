@@ -82,20 +82,22 @@ type Agent struct {
 	CurrentStreamBuffer *bytes.Buffer
 	CurrentStreamMu     sync.Mutex
 
-	ThinkingSupported      bool
-	ThinkingSupportChecked bool
-
-	CurrentWriter  io.Writer
-	CurrentContext context.Context
+	// Shared mutable per-turn state. Guarded by stateMu: the main loop writes it
+	// while UI goroutines and concurrent subagent loops read it.
+	stateMu        sync.Mutex
+	currentWriter  io.Writer
+	currentContext context.Context
+	currentTheme   style.UITheme
 
 	lastToolOutput         string
 	lastToolIsError        bool
 	lastToolWasEdit        bool
-	LastGenerationDuration time.Duration
+	lastGenerationDuration time.Duration
 	liveBodyStreamed       bool
+	droppedChunks          int64
+	lastTurnDropped        int64
 
 	TurnStartTime time.Time
-	CurrentTheme  style.UITheme
 	CurrentLoader TurnLoader
 
 	SpawnedAgents   map[string]bool
@@ -135,16 +137,22 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 			Config:     cfg,
 			HttpClient: httpClient,
 		},
-		McpClients:     make(map[string]*mcpClient),
-		McpStartErrors: make(map[string]error),
-		Registry:       tool.NewToolRegistry(),
-		WorkspaceRoot:  absWorkspace,
-		Tasks:          make(map[string]*Task),
-		NextTaskId:     1,
-		SpawnedAgents:  make(map[string]bool),
-		SystemEvents:   make(chan string, 100),
-		DebugLogger:    NewDebugLogger(absWorkspace, debugPath),
+		McpClients:       make(map[string]*mcpClient),
+		McpStartErrors:   make(map[string]error),
+		Registry:         tool.NewToolRegistry(),
+		WorkspaceRoot:    absWorkspace,
+		Tasks:            make(map[string]*Task),
+		NextTaskId:       1,
+		SpawnedAgents:    make(map[string]bool),
+		SystemEvents:     make(chan string, 100),
+		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
 		FileObservations: tool.NewFileObservationTracker(),
+	}
+
+	// Wire the drop observer after the agent exists so provider-side chunk drops are
+	// counted instead of vanishing.
+	if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
+		provider.ChunkDropObserver = a.recordDroppedChunk
 	}
 
 	// Register built-in tools
@@ -162,7 +170,7 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	a.Registry.Register(tool.NewAskUserTool())
 
 	// Only register local executable plugins from the "plugins" directory in the workspace
-	if !a.Config.DisableLocalPlugins {
+	if a.Config != nil && !a.Config.DisableLocalPlugins {
 		pluginsDir := filepath.Join(absWorkspace, "plugins")
 		_ = tool.RegisterPlugins(a.Registry, pluginsDir)
 	}
@@ -245,12 +253,18 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 			httpClient = a.HttpClient
 		}
 		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:     cfg,
-			HttpClient: httpClient,
+			Config:            cfg,
+			HttpClient:        httpClient,
+			ChunkDropObserver: a.recordDroppedChunk,
 		}
 	}
-	a.ThinkingSupported = false
-	a.ThinkingSupportChecked = false
+
+	// Capability caches must not survive a config/provider switch: the new provider
+	// re-probes /props. The Agent-level mirror fields were dead copies of the provider
+	// state (only ever written, never read).
+	if p, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
+		p.ResetThinkingCapabilities()
+	}
 
 	if a.DebugLogger != nil {
 		a.DebugLogger.Close()
@@ -264,10 +278,99 @@ func (a *Agent) GetWorkspaceRoot() string {
 }
 
 func (a *Agent) Context() context.Context {
-	if a.CurrentContext != nil {
-		return a.CurrentContext
+	a.stateMu.Lock()
+	ctx := a.currentContext
+	a.stateMu.Unlock()
+	if ctx != nil {
+		return ctx
 	}
 	return context.Background()
+}
+
+// CurrentWriter returns the live turn writer under the shared-state lock.
+func (a *Agent) CurrentWriter() io.Writer {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.currentWriter
+}
+
+// CurrentTheme returns the active theme under the shared-state lock.
+func (a *Agent) CurrentTheme() style.UITheme {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.currentTheme
+}
+
+// LastGenerationDuration returns the duration recorded by the most recent generation.
+func (a *Agent) LastGenerationDuration() time.Duration {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.lastGenerationDuration
+}
+
+// recordDroppedChunk counts a stream chunk that could not be delivered to the UI
+// within streamSendTimeout. A nonzero count means the rendered output was truncated
+// even though the persisted message contains everything.
+func (a *Agent) recordDroppedChunk() {
+	if a == nil {
+		return
+	}
+	a.stateMu.Lock()
+	a.droppedChunks++
+	a.lastTurnDropped++
+	a.stateMu.Unlock()
+}
+
+// DroppedChunks returns the total number of stream chunks dropped because the UI
+// consumer was not draining them.
+func (a *Agent) DroppedChunks() int64 {
+	if a == nil {
+		return 0
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.droppedChunks
+}
+
+// TurnDroppedChunks returns how many chunks were dropped during the current turn.
+func (a *Agent) TurnDroppedChunks() int64 {
+	if a == nil {
+		return 0
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.lastTurnDropped
+}
+
+// SetTurnState publishes the per-turn state read by the UI and by concurrent
+// subagent loops. All writes go through this or the setter helpers below.
+func (a *Agent) SetTurnState(w io.Writer, ctx context.Context, theme style.UITheme) {
+	a.stateMu.Lock()
+	a.currentWriter = w
+	a.currentContext = ctx
+	a.currentTheme = theme
+	a.lastTurnDropped = 0
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) ClearTurnState() {
+	a.stateMu.Lock()
+	a.currentWriter = nil
+	a.currentContext = nil
+	a.currentTheme = style.UITheme{}
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) SetCurrentWriter(w io.Writer) {
+	a.stateMu.Lock()
+	a.currentWriter = w
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) SetLastGenerationDuration(d time.Duration) {
+	a.stateMu.Lock()
+	a.lastGenerationDuration = d
+	a.stateMu.Unlock()
 }
 
 func (a *Agent) GetActiveSkills() []tool.Skill {
@@ -294,14 +397,18 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 }
 
 func (a *Agent) GetLiveWriter() io.Writer {
-	return a.CurrentWriter
+	return a.CurrentWriter()
 }
 
 func (a *Agent) SetLiveBodyStreamed(streamed bool) {
+	a.stateMu.Lock()
 	a.liveBodyStreamed = streamed
+	a.stateMu.Unlock()
 }
 
 func (a *Agent) DidStreamLiveBody() bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
 	return a.liveBodyStreamed
 }
 
@@ -325,13 +432,13 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 		optStrings = append(optStrings, opt.Label)
 	}
 
-	w := a.CurrentWriter
+	w := a.CurrentWriter()
 	if w == nil {
 		w = os.Stdout
 	} else {
 		w = GetScreenWriter(w)
 	}
-	theme := a.CurrentTheme
+	theme := a.CurrentTheme()
 
 	if a.CurrentLoader != nil {
 		a.CurrentLoader.Pause()
@@ -383,4 +490,3 @@ func (a *Agent) HasSubagent(name string) bool {
 	defer a.SpawnedAgentsMu.RUnlock()
 	return a.SpawnedAgents[name]
 }
-

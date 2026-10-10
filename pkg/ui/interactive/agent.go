@@ -250,10 +250,7 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 							} else {
 								fmt.Fprint(rlOutput, "\x1b[?25l")
 
-								parentOptions := []string{"None (Base)"}
-								for _, name := range agentsList {
-									parentOptions = append(parentOptions, name)
-								}
+								parentOptions := append([]string{"None (Base)"}, agentsList...)
 								parentIdx, errSelect := RunInteractiveSelect(sr, sigChan, rlOutput, "Select Parent Agent (default: None):", parentOptions, theme)
 								if errSelect == nil {
 									parentName := ""

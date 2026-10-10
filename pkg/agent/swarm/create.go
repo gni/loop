@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 )
 
@@ -141,8 +142,8 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		if s.mam.BaseAgent != nil && s.mam.BaseAgent.Config != nil {
 			maxDepth = s.mam.BaseAgent.Config.MaxSubagentDepth
 		}
-		if mac.ma.Depth() >= maxDepth {
-			return "", fmt.Errorf("subagent '%s' is not permitted to spawn further subagents (max depth %d reached); execute the task directly", mac.ma.Name, maxDepth)
+		if err := subagent.MaxDepthAllowed(maxDepth, mac.ma.Depth()); err != nil {
+			return "", fmt.Errorf("subagent '%s' is not permitted to spawn further subagents (%v); execute the task directly", mac.ma.Name, err)
 		}
 		parentName = mac.ma.Name
 	}

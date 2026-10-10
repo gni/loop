@@ -102,8 +102,8 @@ func (ki *KeyInterceptorReader) handleCtrlO() {
 			ki.OnRedrawScreen()
 		}
 
-		if ki.Agent.CurrentWriter != nil {
-			if fr, ok := ki.Agent.CurrentWriter.(interface{ ForceReposition() }); ok {
+		if ki.Agent.CurrentWriter() != nil {
+			if fr, ok := ki.Agent.CurrentWriter().(interface{ ForceReposition() }); ok {
 				fr.ForceReposition()
 			}
 		}

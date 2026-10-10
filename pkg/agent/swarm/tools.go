@@ -67,7 +67,7 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	}:
 	}
 
-	timeout := 10 * time.Minute
+	timeout := 60 * time.Minute
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	timeoutChan := time.After(timeout)
@@ -93,8 +93,8 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 				return "", err
 			}
 			if task.Status == "completed" {
-				if len(task.Response) > 10000 {
-					truncatedResponse := task.Response[:10000] + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at 10000 characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", len(task.Response))
+				if runeCount := len([]rune(task.Response)); runeCount > 10000 {
+					truncatedResponse := string([]rune(task.Response)[:10000]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at 10000 characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", runeCount)
 					return truncatedResponse, nil
 				}
 				return task.Response, nil

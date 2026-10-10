@@ -124,7 +124,10 @@ func TestIsNonRetryableError(t *testing.T) {
 		err      error
 		expected bool
 	}{
-		{errors.New("dial tcp: connection refused"), true},
+		{errors.New("dial tcp: connection refused"), false},
+		{errors.New("dial tcp: i/o timeout"), false},
+		{errors.New("context deadline exceeded"), false},
+		{errors.New("network is unreachable"), false},
 		{errors.New("lookup example.test: no such host"), true},
 		{errors.New("tls: bad certificate"), true},
 		{errors.New("random temporary network blip"), false},

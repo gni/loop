@@ -13,6 +13,29 @@ import (
 	"loop/pkg/ui/style"
 )
 
+// compressionThreshold is the single source of truth for the compression trigger
+// ratio. It was previously hard-coded at 0.80 in three places (main loop pre- and
+// post-iteration blocks and the subagent path), so a config change could not be
+// applied consistently.
+func (a *Agent) CompressionThreshold() float64 {
+	if a != nil && a.Config != nil && a.Config.CompressionThreshold > 0 {
+		return a.Config.CompressionThreshold
+	}
+	return 0.80
+}
+
+// maybeCompress is the single compression call site shared by the pre- and
+// post-iteration blocks of the main loop.
+func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
+	decision := promptTokens + completionTokens
+	if len(*messages) > 4 && decision >= int(a.CompressionThreshold()*float64(effectiveLimit)) {
+		a.CompressHistory(ctx, messages, sessionID, theme, w)
+		recomputed, _ := a.GetGlobalTokens(*messages, allowlist)
+		return recomputed, a.GetEffectiveContextLimit(recomputed), true
+	}
+	return promptTokens, effectiveLimit, false
+}
+
 // CompactHistoricalToolOutputs condenses verbose tool outputs from completed earlier turns,
 // preserving the latest turn's tool outputs in full to protect prefix cache and prevent token explosion.
 func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
@@ -31,7 +54,10 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 	out := make([]db.Message, len(messages))
 	for i, m := range messages {
 		// Only compact historical tool outputs that occur before the latest assistant turn
-		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 {
+		// Idempotency: the main loop compacts *messages in place and request.go runs
+		// again on the same slice, so an already-compact output must not be truncated
+		// a second time (that would fold the omission marker into a new truncation).
+		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 && !strings.Contains(m.Content, "omitted") {
 			msgCopy := m
 			lines := strings.Split(m.Content, "\n")
 			if len(lines) > 20 {
@@ -72,11 +98,19 @@ func (a *Agent) CompressHistory(
 
 	toCompress := (*messages)[1:keepIdx]
 
+	// Cap the transcript: without a global bound a long history produced an
+	// unbounded summarization prompt that could itself exceed the context window.
+	const maxTranscriptChars = 24000
+
 	var transcriptBuilder strings.Builder
 	readFilesMap := make(map[string]bool)
 	modifiedFilesMap := make(map[string]bool)
 
 	for _, m := range toCompress {
+		if transcriptBuilder.Len() >= maxTranscriptChars {
+			transcriptBuilder.WriteString("[transcript truncated: summarization budget reached]\n")
+			break
+		}
 		if m.Role == "user" {
 			transcriptBuilder.WriteString(fmt.Sprintf("User: %s\n\n", m.Content))
 		} else if m.Role == "assistant" {
@@ -177,7 +211,9 @@ func (a *Agent) CompressHistory(
 	newMessages = append(newMessages, keptMessages...) // Add latest messages
 
 	if sessionID != "" {
-		_ = db.RewriteSession(sessionID, newMessages)
+		if err := db.RewriteSession(sessionID, newMessages); err != nil {
+			a.DebugLogError(sessionID, "db.RewriteSession (after compression)", err)
+		}
 	}
 	*messages = newMessages
 

@@ -12,7 +12,6 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-
 // FileObservation holds the content hash and timestamps of a file inspected during the session.
 type FileObservation struct {
 	Path    string
@@ -137,4 +136,3 @@ func (fot *FileObservationTracker) RecordMutation(absPath string, data []byte) {
 // FileObserver is an optional interface implemented by AgentContext to enforce
 // read-before-edit and CAS policies on file operations.
 type FileObserver = domaintool.FileObserver
-

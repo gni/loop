@@ -19,7 +19,6 @@ type ToolFunction = message.ToolFunction
 type ToolCall = message.ToolCall
 type Message = message.Message
 type SessionInfo = session.SessionInfo
-type JSONLRecord = session.Record
 
 // ValidateSessionID checks if the provided session identifier contains only allowed characters.
 func validateSessionID(sessionID string) error {
@@ -223,7 +222,6 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 var (
 	defaultStore *JSONLStore
 	storeMu      sync.RWMutex
-	sessionsDir  string
 )
 
 // InitDB initializes the global session storage directory.
@@ -235,7 +233,6 @@ func InitDB(dirPath string) error {
 
 	storeMu.Lock()
 	defaultStore = store
-	sessionsDir = store.dir
 	storeMu.Unlock()
 
 	return nil

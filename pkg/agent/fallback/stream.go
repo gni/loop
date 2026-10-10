@@ -108,10 +108,7 @@ func (f *ToolTextFilter) process(final bool) {
 				if f.emitToolCall != nil && body != "" {
 					f.emitToolCall(body, f.toolCallIndex)
 				}
-				f.pending = f.pending[closeIndex+len(f.closingTag):]
-				if strings.HasPrefix(f.pending, ">") {
-					f.pending = f.pending[1:]
-				}
+				f.pending = strings.TrimPrefix(f.pending[closeIndex+len(f.closingTag):], ">")
 				f.closingTag = ""
 				f.activeToolName = ""
 				f.toolCallIndex++

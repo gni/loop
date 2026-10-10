@@ -192,8 +192,6 @@ func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
 	return dirs
 }
 
-
-
 func RenderSkills(w io.Writer, skills []Skill, theme style.UITheme) {
 	if len(skills) == 0 {
 		fmt.Fprintln(w, "No reference skills found.")

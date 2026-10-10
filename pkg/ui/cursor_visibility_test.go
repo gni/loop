@@ -49,9 +49,9 @@ func TestRedrawTypeAheadLeavesCursorAtLiveInputPosition(t *testing.T) {
 	var output bytes.Buffer
 	writer := NewPromptPreservingWriter(&output, 24)
 	a := &agent.Agent{
-		Config:        &config.Config{},
-		CurrentWriter: writer,
+		Config: &config.Config{},
 	}
+	a.SetCurrentWriter(writer)
 	reader := &keyInterceptorReader{
 		Agent:           a,
 		W:               &output,

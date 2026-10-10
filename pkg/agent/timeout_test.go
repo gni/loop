@@ -309,7 +309,7 @@ func TestLLMEmptyStreamReturnsError(t *testing.T) {
 	}
 }
 
-func TestLLMNonRetryableConnectionErrorFailsFast(t *testing.T) {
+func TestLLMConnectionErrorIsRetried(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Endpoint = "http://127.0.0.1:54321" // unlistened port -> ECONNREFUSED
 	cfg.Timeout = 120
@@ -328,7 +328,12 @@ func TestLLMNonRetryableConnectionErrorFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected connection refused error, got nil")
 	}
-	if duration > 2*time.Second {
-		t.Fatalf("expected fast failure without 3 retries, took: %v", duration)
+	// Connection refused is now classified as transient and retried with linear
+	// backoff (1s + 2s + 3s = 6s total), matching client_test.go. Verify retries.
+	if duration < 6*time.Second {
+		t.Fatalf("expected connection refused to be retried with backoff, took: %v", duration)
+	}
+	if duration > 8*time.Second {
+		t.Fatalf("retries took unexpectedly long: %v", duration)
 	}
 }

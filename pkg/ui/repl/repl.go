@@ -32,8 +32,11 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	currentSessionID := initialSessionID
 	if currentSessionID == "" {
 		currentSessionID = db.NewUUID()
+		// Persist the pointer immediately so a crash or os.Exit path still leaves
+		// the session resumable via --resume; the graceful-exit write at the end of
+		// RunREPL stays as the authoritative update.
+		_ = db.SetLatestSessionID(currentSessionID)
 	}
-	_ = db.SetLatestSessionID(currentSessionID)
 
 	var messages []db.Message
 	if dbHistory, err := db.LoadMessages(currentSessionID); err == nil && len(dbHistory) > 0 {

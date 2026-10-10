@@ -86,7 +86,7 @@ func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("configured mcp servers") + "\n\n")
 
-	if cfg.MCPServers == nil || len(cfg.MCPServers) == 0 {
+	if len(cfg.MCPServers) == 0 {
 		sb.WriteString(style.NewStyle().Foreground(theme.Border).Italic(true).Render("  (no mcp servers configured)") + "\n")
 	} else {
 		var keys []string
@@ -107,11 +107,19 @@ func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
 				headersDisplay = strings.Join(headerParts, ", ")
 			}
 
-			sb.WriteString(fmt.Sprintf("  %-12s : URL: %s | Headers: %s\n",
-				style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name),
-				srv.URL,
-				headersDisplay,
-			))
+			if srv.Command != "" {
+				sb.WriteString(fmt.Sprintf("  %-12s : stdio: %s | Headers: %s\n",
+					style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name),
+					strings.TrimSpace(srv.Command+" "+strings.Join(srv.Args, " ")),
+					headersDisplay,
+				))
+			} else {
+				sb.WriteString(fmt.Sprintf("  %-12s : URL: %s | Headers: %s\n",
+					style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name),
+					srv.URL,
+					headersDisplay,
+				))
+			}
 		}
 	}
 

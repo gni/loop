@@ -7,6 +7,14 @@ import (
 	"loop/pkg/db"
 )
 
+// DebugLogError records a persistence/config error that would otherwise be discarded.
+func (a *Agent) DebugLogError(sessionID, op string, err error) {
+	if a == nil || a.DebugLogger == nil || err == nil {
+		return
+	}
+	a.DebugLogger.LogError(sessionID, op, err)
+}
+
 // GetDebugLogPath returns the file path of the debug log if enabled.
 func (a *Agent) GetDebugLogPath() string {
 	if a == nil || a.DebugLogger == nil {

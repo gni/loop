@@ -94,8 +94,8 @@ func (ki *KeyInterceptorReader) printCancelMessage() {
 			if w := wh.GetPPWriter(); w != nil {
 				output = w
 			}
-		} else if ki.Agent.CurrentWriter != nil {
-			output = ki.Agent.CurrentWriter
+		} else if ki.Agent.CurrentWriter() != nil {
+			output = ki.Agent.CurrentWriter()
 		}
 	}
 	if output != nil {
@@ -109,8 +109,8 @@ func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte,
 
 func (ki *KeyInterceptorReader) handleSubagentCancellation(rawInput <-chan byte, cancelParent context.CancelFunc, agentName string) {
 	output := ki.W
-	if ki.Agent != nil && ki.Agent.CurrentWriter != nil {
-		output = ki.Agent.CurrentWriter
+	if ki.Agent != nil && ki.Agent.CurrentWriter() != nil {
+		output = ki.Agent.CurrentWriter()
 	}
 	var theme style.UITheme
 	if ki.Agent != nil && ki.Agent.Config != nil {

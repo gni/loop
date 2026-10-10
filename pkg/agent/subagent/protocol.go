@@ -83,4 +83,3 @@ func ValidateAgentLocalSkill(skill domaintool.Skill) (domaintool.Skill, error) {
 
 	return skill, nil
 }
-

@@ -60,7 +60,7 @@ func RunExtension(
 
 			// Match base filename (e.g. "stats" matches "stats.py", "stats.sh", "stats")
 			base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			if strings.ToLower(base) == strings.ToLower(name) {
+			if strings.EqualFold(base, name) {
 				pluginPath := filepath.Join(dir, entry.Name())
 				info, err := os.Stat(pluginPath)
 				if err == nil && info.Mode()&0111 != 0 {

@@ -42,11 +42,11 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
+	if !isError && IsWriteLikeTool(toolName) && bodyWasStreamed {
+		return
+	}
 	if !isError && IsWriteLikeTool(toolName) {
 		renderWriteSummary(w, theme, toolName, argsJSON, output)
-		if bodyWasStreamed {
-			return
-		}
 	}
 	if !isError && IsCommandLikeTool(toolName) && bodyWasStreamed {
 		return

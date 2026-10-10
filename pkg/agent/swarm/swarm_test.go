@@ -104,7 +104,8 @@ func TestParentCancellationStopsDelegatedSubagentTurn(t *testing.T) {
 	t.Cleanup(cancelChildLifetime)
 	t.Cleanup(cancelChildTurn)
 
-	base := &agent.Agent{CurrentContext: parentContext}
+	base := &agent.Agent{}
+	base.SetTurnState(nil, parentContext, style.UITheme{})
 	mam := &MultiAgentManager{}
 	subagent := &MultiAgent{
 		Name:          "worker",
