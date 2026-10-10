@@ -84,26 +84,12 @@ func handleConfigCommand(
 		case "show_thinking", "thinking":
 			enabled := val == "true" || val == "yes" || val == "1" || val == "on"
 			a.Config.ShowThinking = enabled
-			if enabled {
-				if strings.ToLower(a.Config.ReasoningEffort) == "off" || a.Config.ReasoningEffort == "" {
-					a.Config.ReasoningEffort = "low"
-				}
-			} else {
-				a.Config.ReasoningEffort = "off"
-			}
 		case "reasoning_effort", "reasoning":
 			valLower := strings.ToLower(strings.TrimSpace(val))
 			switch valLower {
 			case "off", "none", "false", "0":
-				a.Config.ShowThinking = false
 				a.Config.ReasoningEffort = "off"
-			case "on", "true", "1":
-				a.Config.ShowThinking = true
-				if strings.ToLower(a.Config.ReasoningEffort) == "off" || a.Config.ReasoningEffort == "" {
-					a.Config.ReasoningEffort = "low"
-				}
 			case "low", "medium", "high", "max":
-				a.Config.ShowThinking = true
 				a.Config.ReasoningEffort = valLower
 			default:
 				fmt.Fprintf(w, "Invalid reasoning effort '%s'. Allowed values: off, low, medium, high, max\n", val)

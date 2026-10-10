@@ -14,7 +14,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	tools []tool.Tool,
 ) (ChatCompletionRequest, []db.Message, []byte, error) {
 	effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
-	enableThinking := p.Config.ShowThinking && effort != "off" && effort != "none"
+	enableThinking := effort != "off" && effort != "none" && effort != ""
 	budget := -1
 	if enableThinking {
 		switch effort {

@@ -190,8 +190,8 @@ func TestSlashConfigReasoningOffAndEnable(t *testing.T) {
 	if !handled {
 		t.Fatal("expected handled=true")
 	}
-	if a.Config.ShowThinking || a.Config.ReasoningEffort != "off" {
-		t.Fatalf("expected disabled & off, got showThinking=%v, effort=%s", a.Config.ShowThinking, a.Config.ReasoningEffort)
+	if a.Config.ReasoningEffort != "off" {
+		t.Fatalf("expected off, got effort=%s", a.Config.ReasoningEffort)
 	}
 
 	// Turn reasoning back on via /config reasoning low
@@ -200,20 +200,18 @@ func TestSlashConfigReasoningOffAndEnable(t *testing.T) {
 	if !handled {
 		t.Fatal("expected handled=true")
 	}
-	if !a.Config.ShowThinking || a.Config.ReasoningEffort != "low" {
-		t.Fatalf("expected enabled & low, got showThinking=%v, effort=%s", a.Config.ShowThinking, a.Config.ReasoningEffort)
+	if a.Config.ReasoningEffort != "low" {
+		t.Fatalf("expected low, got effort=%s", a.Config.ReasoningEffort)
 	}
 
-	// Turn reasoning on via /config reasoning on
-	a.Config.ShowThinking = false
-	a.Config.ReasoningEffort = "off"
+	// Turn thinking off via /config thinking off without affecting reasoning effort
 	buf.Reset()
-	handled, _ = HandleSlashCommand(a, "/config reasoning on", nil, nil, &theme, &buf, nil, nil, nil, nil)
+	handled, _ = HandleSlashCommand(a, "/config thinking off", nil, nil, &theme, &buf, nil, nil, nil, nil)
 	if !handled {
 		t.Fatal("expected handled=true")
 	}
-	if !a.Config.ShowThinking || a.Config.ReasoningEffort != "low" {
-		t.Fatalf("expected enabled & low, got showThinking=%v, effort=%s", a.Config.ShowThinking, a.Config.ReasoningEffort)
+	if a.Config.ShowThinking || a.Config.ReasoningEffort != "low" {
+		t.Fatalf("expected showThinking=false and effort=low, got showThinking=%v, effort=%s", a.Config.ShowThinking, a.Config.ReasoningEffort)
 	}
 }
 

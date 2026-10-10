@@ -213,10 +213,6 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 
 	if inApproval {
 		fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
-		fmt.Fprint(&frameBuf, activeTheme.PromptStyle().Render(" Approve tool execution? [y/N/a (always)]: "))
-		if drawPrompt {
-			frameBuf.WriteString("\x1b[?25h")
-		}
 	} else {
 		if hasMultipleLines && len(vRows) > 0 {
 			indent := strings.Repeat(" ", prefixLen)

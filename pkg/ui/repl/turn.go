@@ -28,12 +28,8 @@ func renderTurnPromptHeader(
 	statusStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
 	thinkingText := "off"
 	effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
-	if cfg.ShowThinking && effort != "off" && effort != "none" {
-		if effort == "" {
-			thinkingText = "low"
-		} else {
-			thinkingText = effort
-		}
+	if effort != "off" && effort != "none" && effort != "" {
+		thinkingText = effort
 	}
 	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
 	prefix := "─── prompt "

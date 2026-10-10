@@ -152,3 +152,18 @@ func UnwrapWriter(w io.Writer) io.Writer {
 func unwrapWriter(w io.Writer) io.Writer {
 	return UnwrapWriter(w)
 }
+
+func GetScreenWriter(w io.Writer) io.Writer {
+	for w != nil {
+		if ncw, ok := w.(*NewlineCounterWriter); ok {
+			w = ncw.Writer
+			continue
+		}
+		if tee, ok := w.(*CustomTeeWriter); ok {
+			w = tee.screen
+			continue
+		}
+		break
+	}
+	return w
+}

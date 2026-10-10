@@ -15,12 +15,8 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 
 	thinkingText := "off"
 	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
-	if showThinking && effort != "off" && effort != "none" {
-		if effort == "" {
-			thinkingText = "low"
-		} else {
-			thinkingText = effort
-		}
+	if effort != "off" && effort != "none" && effort != "" {
+		thinkingText = effort
 	}
 
 	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)

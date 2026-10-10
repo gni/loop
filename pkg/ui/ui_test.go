@@ -1631,8 +1631,8 @@ func TestReasoningEffortOffAndEnableCycle(t *testing.T) {
 
 	// 4. max -> off (switched off)
 	ki.HandleCtrlR()
-	if a.Config.ReasoningEffort != "off" || a.Config.ShowThinking {
-		t.Fatalf("expected off & disabled, got effort=%s, showThinking=%v", a.Config.ReasoningEffort, a.Config.ShowThinking)
+	if a.Config.ReasoningEffort != "off" {
+		t.Fatalf("expected off, got effort=%s", a.Config.ReasoningEffort)
 	}
 
 	// Check prompt separator renders [reasoning:off]
@@ -1644,8 +1644,8 @@ func TestReasoningEffortOffAndEnableCycle(t *testing.T) {
 
 	// 5. off -> low (switched back on / enabled)
 	ki.HandleCtrlR()
-	if a.Config.ReasoningEffort != "low" || !a.Config.ShowThinking {
-		t.Fatalf("expected low & enabled, got effort=%s, showThinking=%v", a.Config.ReasoningEffort, a.Config.ShowThinking)
+	if a.Config.ReasoningEffort != "low" {
+		t.Fatalf("expected low, got effort=%s", a.Config.ReasoningEffort)
 	}
 
 	buf.Reset()
@@ -1662,14 +1662,14 @@ func TestReasoningEffortOffAndEnableCycle(t *testing.T) {
 
 	buf.Reset()
 	PrintPromptSeparatorWithSpinner(&buf, a.Config.ShowThinking, a.Config.ReasoningEffort, UITheme{}, "")
-	if !strings.Contains(buf.String(), "[reasoning:off]") {
-		t.Fatalf("expected [reasoning:off] when ShowThinking=false, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "[reasoning:low]") {
+		t.Fatalf("expected [reasoning:low] in separator even when ShowThinking=false, got: %s", buf.String())
 	}
 
-	// 7. Advance with Ctrl+R while ShowThinking=false -> enables reasoning at medium
+	// 7. Advance with Ctrl+R while ShowThinking=false -> advances effort to medium without forcing ShowThinking
 	ki.HandleCtrlR()
-	if a.Config.ReasoningEffort != "medium" || !a.Config.ShowThinking {
-		t.Fatalf("expected medium & enabled after Ctrl+R, got effort=%s, showThinking=%v", a.Config.ReasoningEffort, a.Config.ShowThinking)
+	if a.Config.ReasoningEffort != "medium" {
+		t.Fatalf("expected medium after Ctrl+R, got effort=%s", a.Config.ReasoningEffort)
 	}
 
 	buf.Reset()

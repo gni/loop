@@ -40,13 +40,6 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			isBool:      true,
 			onToggle: func() {
 				cloned.ShowThinking = !cloned.ShowThinking
-				if cloned.ShowThinking {
-					if strings.ToLower(cloned.ReasoningEffort) == "off" || cloned.ReasoningEffort == "" {
-						cloned.ReasoningEffort = "low"
-					}
-				} else {
-					cloned.ReasoningEffort = "off"
-				}
 			},
 		},
 		{
@@ -59,17 +52,9 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				v := strings.ToLower(strings.TrimSpace(newVal))
 				switch v {
 				case "off", "none", "false", "0":
-					cloned.ShowThinking = false
 					cloned.ReasoningEffort = "off"
 					return nil
-				case "on", "true", "1":
-					cloned.ShowThinking = true
-					if strings.ToLower(cloned.ReasoningEffort) == "off" || cloned.ReasoningEffort == "" {
-						cloned.ReasoningEffort = "low"
-					}
-					return nil
 				case "low", "medium", "high", "max":
-					cloned.ShowThinking = true
 					cloned.ReasoningEffort = v
 					return nil
 				default:
@@ -79,7 +64,6 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			onToggle: func() {
 				opts := []string{"off", "low", "medium", "high", "max"}
 				cloned.ReasoningEffort = cycleOption(opts, cloned.ReasoningEffort)
-				cloned.ShowThinking = cloned.ReasoningEffort != "off"
 			},
 		},
 		intConfigItem("context_window_limit", "context window limit", "Maximum prompt context size allocated before compression (tokens)", &cloned.ContextWindowLimit),

@@ -120,11 +120,6 @@ func (ki *KeyInterceptorReader) handleCtrlT() {
 	}
 	activeTheme := style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
 	ki.Agent.Config.ShowThinking = !ki.Agent.Config.ShowThinking
-	if ki.Agent.Config.ShowThinking {
-		if strings.ToLower(ki.Agent.Config.ReasoningEffort) == "off" || ki.Agent.Config.ReasoningEffort == "" {
-			ki.Agent.Config.ReasoningEffort = "low"
-		}
-	}
 	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
 	ki.redrawPromptSeparatorOrFallback(activeTheme)
 }
@@ -144,22 +139,16 @@ func (ki *KeyInterceptorReader) handleCtrlR() {
 	switch currentEffort {
 	case "off", "none", "":
 		nextEffort = "low"
-		ki.Agent.Config.ShowThinking = true
 	case "low":
 		nextEffort = "medium"
-		ki.Agent.Config.ShowThinking = true
 	case "medium":
 		nextEffort = "high"
-		ki.Agent.Config.ShowThinking = true
 	case "high":
 		nextEffort = "max"
-		ki.Agent.Config.ShowThinking = true
 	case "max":
 		nextEffort = "off"
-		ki.Agent.Config.ShowThinking = false
 	default:
 		nextEffort = "low"
-		ki.Agent.Config.ShowThinking = true
 	}
 
 	ki.Agent.Config.ReasoningEffort = nextEffort

@@ -282,6 +282,10 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		ui.GetUI().PasteLinesOffset = 0
 		ui.GetUI().StateMu.Unlock()
 
+		if _, curH := ui.GetTerminalSize(); curH > 0 {
+			height = curH
+		}
+
 		if height > 0 {
 			if prevOffset > 0 {
 				for r := height - 4 - prevOffset; r <= height-2; r++ {
@@ -298,9 +302,9 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 				fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", height-2)
 			}
 
-			// Redraw prompt prefix so it doesn't disappear during stream
+			// Redraw clean prompt prefix so submitted input does not linger on input line
 			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-			fmt.Fprintf(os.Stderr, "\x1b[%d;1H%s", height-2, promptStyle.Render(promptPrefix))
+			fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
 			ppWriter.SetPromptCol(1 + utf8.RuneCountInString(promptPrefix))
 			ui.DrawStatusBar(os.Stderr, theme)
 		}
