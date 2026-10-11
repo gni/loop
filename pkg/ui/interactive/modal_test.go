@@ -194,10 +194,17 @@ func TestRunChoiceMenuExLinesBackTargeting(t *testing.T) {
 	if idx != 1 {
 		t.Fatalf("expected selected index 1, got %d", idx)
 	}
-	if replacer.linesBack != len(options)-1 {
-		t.Fatalf("expected linesBack=%d, got %d", len(options)-1, replacer.linesBack)
+	if replacer.linesBack != len(options) {
+		t.Fatalf("expected linesBack=%d, got %d", len(options), replacer.linesBack)
 	}
 	if len(replacer.lines) != len(options) {
 		t.Fatalf("expected %d replaced lines, got %d", len(options), len(replacer.lines))
 	}
+	if strings.Contains(replacer.lines[0], ">") {
+		t.Fatalf("expected line 0 to be unselected, got: %s", replacer.lines[0])
+	}
+	if !strings.Contains(replacer.lines[1], ">") {
+		t.Fatalf("expected line 1 to be selected, got: %s", replacer.lines[1])
+	}
 }
+

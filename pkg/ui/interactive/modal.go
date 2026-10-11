@@ -18,33 +18,6 @@ type scrollBlockReplacer interface {
 	ReplaceScrollBlockBack(count int, lines []string) bool
 }
 
-type scrollRegionTracker interface {
-	GetPrintLine() int
-	GetScrollBottom() int
-}
-
-func getScrollRegionTracker(w io.Writer) scrollRegionTracker {
-	type unwrapper interface {
-		Unwrap() io.Writer
-	}
-	curr := w
-	for curr != nil {
-		if srt, ok := curr.(scrollRegionTracker); ok {
-			return srt
-		}
-		if u, ok := curr.(unwrapper); ok {
-			next := u.Unwrap()
-			if next == nil || next == curr {
-				break
-			}
-			curr = next
-		} else {
-			break
-		}
-	}
-	return nil
-}
-
 func getScrollBlockReplacer(w io.Writer) scrollBlockReplacer {
 	type unwrapper interface {
 		Unwrap() io.Writer
@@ -152,13 +125,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			for i := range options {
 				lines[i] = renderOption(i)
 			}
-			linesBack := len(options)
-			if tracker := getScrollRegionTracker(output); tracker != nil {
-				if tracker.GetPrintLine() >= tracker.GetScrollBottom() {
-					linesBack = len(options) - 1
-				}
-			}
-			if promptWriter.ReplaceScrollBlockBack(linesBack, lines) {
+			if promptWriter.ReplaceScrollBlockBack(len(options), lines) {
 				return
 			}
 		}
