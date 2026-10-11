@@ -82,6 +82,9 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	if ma.BaseAgent != nil && ma.BaseAgent.Registry != nil {
 		executors := ma.BaseAgent.Registry.GetAllExecutors()
 		for name, executor := range executors {
+			if ma.BaseAgent.Registry.IsDisabled(name) {
+				continue
+			}
 			if !canSpawn && tool.IsSubagentTool(name) {
 				continue
 			}
@@ -186,6 +189,9 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()
 	var allowlist []string
 	for name := range allTools {
+		if ma.BaseAgent.Registry.IsDisabled(name) {
+			continue
+		}
 		if strings.HasPrefix(name, "subagent__") {
 			targetName := strings.TrimPrefix(name, "subagent__")
 			ma.SubagentsMu.RLock()

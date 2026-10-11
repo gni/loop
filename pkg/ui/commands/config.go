@@ -228,6 +228,23 @@ func handleConfigCommand(
 			}
 			a.Config.AskUserMode = mode
 			a.Config.UpdateActiveProvider()
+		case "disabled_tools", "disable_tools", "disable_tool":
+			valTrimmed := strings.TrimSpace(val)
+			if valTrimmed == "none" || valTrimmed == "clear" || valTrimmed == "reset" || valTrimmed == "empty" || valTrimmed == "" {
+				a.EnableAllTools()
+			} else {
+				parts := strings.Split(valTrimmed, ",")
+				var cleaned []string
+				for _, p := range parts {
+					if t := strings.TrimSpace(p); t != "" {
+						cleaned = append(cleaned, t)
+					}
+				}
+				a.EnableAllTools()
+				if len(cleaned) > 0 {
+					a.DisableTools(cleaned...)
+				}
+			}
 		default:
 			fmt.Fprintf(w, "unknown config key: %s\n", key)
 			return

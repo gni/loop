@@ -40,3 +40,19 @@ func TestSubcommandHelpCommands(t *testing.T) {
 		})
 	}
 }
+
+func TestDisableToolsFlag(t *testing.T) {
+	parsed := parseAllowedTools("bash, write,edit")
+	if len(parsed) != 3 || parsed[0] != "bash" || parsed[1] != "write" || parsed[2] != "edit" {
+		t.Fatalf("unexpected parsed tools: %v", parsed)
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetArgs([]string{"--help"})
+	rootCmd.SetOut(&buf)
+	_ = rootCmd.ExecuteContext(context.Background())
+	out := buf.String()
+	if !strings.Contains(out, "--disable-tools") {
+		t.Fatalf("expected --disable-tools flag in help output")
+	}
+}

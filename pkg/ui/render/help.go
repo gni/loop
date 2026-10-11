@@ -30,6 +30,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/provider", "manage ai endpoints, keys, and model profiles"},
 		{"/skills [load <name>]", "list or load reference skills"},
 		{"/mcp [enable|disable]", "manage and toggle mcp servers"},
+		{"/tools [list|enable|disable|reset]", "manage and toggle tool availability"},
 		{"/plugins", "list registered custom tool plugins"},
 		{"/extensions", "list custom slash command extensions"},
 		{"/reload", "hot-reload plugins and extensions"},

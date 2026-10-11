@@ -18,6 +18,7 @@ var (
 	showThinking            bool
 	showTokens              bool
 	allowedToolsStr         string
+	disabledToolsStr        string
 	sessionIDFlag           string
 	maxStepsFlag            int
 	resumeSession           bool
@@ -78,6 +79,9 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if cmd.Flags().Changed("timeout") {
 		cfg.Timeout = timeoutFlag
 	}
+	if cmd.Flags().Changed("disable-tools") || cmd.Flags().Changed("disabled-tools") {
+		cfg.DisabledTools = parseAllowedTools(disabledToolsStr)
+	}
 }
 
 func parseAllowedTools(toolsStr string) []string {
@@ -108,6 +112,8 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVar(&showThinking, "thinking", false, "Show streaming LLM thinking/reasoning process")
 	cmd.PersistentFlags().BoolVarP(&showTokens, "tokens", "t", false, "Show token usage metrics under each LLM response")
 	cmd.PersistentFlags().StringVar(&allowedToolsStr, "tools", "", "Comma-separated list of allowed tools (leave empty for all)")
+	cmd.PersistentFlags().StringVar(&disabledToolsStr, "disable-tools", "", "Comma-separated list of disabled tools (e.g. bash,edit)")
+	cmd.PersistentFlags().StringVar(&disabledToolsStr, "disabled-tools", "", "Comma-separated list of disabled tools (alias for --disable-tools)")
 	cmd.PersistentFlags().StringVarP(&sessionIDFlag, "session", "s", "", "Resume a specific persistent conversation session ID")
 	cmd.PersistentFlags().BoolVarP(&resumeSession, "resume", "r", false, "Resume the latest conversation session instead of starting a new one")
 	cmd.PersistentFlags().StringVar(&reasoningEffortFlag, "reasoning", "", "Override LLM reasoning effort (e.g. low, medium, high)")

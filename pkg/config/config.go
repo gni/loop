@@ -60,6 +60,7 @@ type Config struct {
 	CompactPrompt            bool                       `json:"compact_prompt,omitempty"`
 	ToolProtocol             string                     `json:"tool_protocol,omitempty"`
 	DisableLocalPlugins      bool                       `json:"disable_local_plugins,omitempty"`
+	DisabledTools            []string                   `json:"disabled_tools,omitempty"`
 	DebugLogFile             string                     `json:"debug_log_file,omitempty"`
 	MaxSubagentDepth         int                        `json:"max_subagent_depth,omitempty"`
 	MaxPasteLines            int                        `json:"max_paste_lines,omitempty"`

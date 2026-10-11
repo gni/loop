@@ -141,6 +141,9 @@ func HandleSlashCommand(
 	case "/plugins", "/plugin":
 		handlePluginsCommand(a, theme, w)
 		return true, false
+	case "/tools", "/tool":
+		handleToolsCommand(a, parts, messages, theme, w, kiReader, calcHistoryTokens)
+		return true, false
 	case "/extensions", "/extension":
 		handleExtensionsCommand(a, theme, w)
 		return true, false

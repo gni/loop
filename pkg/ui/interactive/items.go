@@ -33,6 +33,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		},
 		boolConfigItem("auto_approve", "auto approve", "Execute tool operations directly without interactive approval", &cloned.AutoApprove, formatBool),
 		boolConfigItem("approval_always_answer", "approval always answer", "Skip the approval modal and pre-answer 'always' for unattended loop runs", &cloned.ApprovalAlwaysAnswer, formatBool),
+		stringListConfigItem("disabled_tools", "disabled tools", "Comma-separated list of disabled tools (e.g. bash,edit)", &cloned.DisabledTools),
 		{
 			id:          "ask_user_mode",
 			name:        "ask user mode",
@@ -306,6 +307,36 @@ func stringConfigItem(id, name, desc string, target *string) *settingItem {
 		description: desc,
 		onEdit: func(newVal string) error {
 			*target = newVal
+			return nil
+		},
+	}
+}
+
+func stringListConfigItem(id, name, desc string, target *[]string) *settingItem {
+	return &settingItem{
+		id:   id,
+		name: name,
+		value: func() string {
+			if target == nil || len(*target) == 0 {
+				return "none"
+			}
+			return strings.Join(*target, ",")
+		},
+		description: desc,
+		onEdit: func(newVal string) error {
+			trimmed := strings.TrimSpace(newVal)
+			if trimmed == "" || trimmed == "none" || trimmed == "clear" || trimmed == "empty" {
+				*target = nil
+				return nil
+			}
+			parts := strings.Split(trimmed, ",")
+			var result []string
+			for _, p := range parts {
+				if t := strings.TrimSpace(p); t != "" {
+					result = append(result, t)
+				}
+			}
+			*target = result
 			return nil
 		},
 	}

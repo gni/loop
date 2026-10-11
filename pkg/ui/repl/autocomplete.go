@@ -3,6 +3,7 @@ package repl
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"loop/pkg/agent"
@@ -78,6 +79,14 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/context auto",
 		"/context off",
 		"/ctx",
+		"/tools",
+		"/tools list",
+		"/tools disable ",
+		"/tools enable ",
+		"/tools toggle ",
+		"/tools reset",
+		"/tools menu",
+		"/tool",
 	}
 	candidates = append(candidates, templateCandidates...)
 
@@ -103,7 +112,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				"max_paste_lines", "max_paste_chars",
 				"auto_adapt_context", "min_context_window",
 				"approval_always_answer", "ask_user_mode", "recap_interval", "disable_recap",
-				"prompts_file",
+				"prompts_file", "disabled_tools",
 			}
 			if !isSet {
 				configCandidates = append(configCandidates, "show", "set")
@@ -213,6 +222,50 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 			for _, s := range a.ActiveSkills {
 				if strings.HasPrefix(s.Name, filterPrefix) {
 					matches = append(matches, s.Name)
+				}
+			}
+		} else if strings.HasPrefix(prefixToPos, "/tools ") || strings.HasPrefix(prefixToPos, "/tool ") {
+			cmdPrefix := "/tools "
+			if strings.HasPrefix(prefixToPos, "/tool ") {
+				cmdPrefix = "/tool "
+			}
+			filterPrefix := strings.TrimPrefix(prefixToPos, cmdPrefix)
+			if strings.HasPrefix(filterPrefix, "disable ") || strings.HasPrefix(filterPrefix, "enable ") || strings.HasPrefix(filterPrefix, "toggle ") {
+				var subCmd string
+				if strings.HasPrefix(filterPrefix, "disable ") {
+					subCmd = "disable "
+				} else if strings.HasPrefix(filterPrefix, "enable ") {
+					subCmd = "enable "
+				} else {
+					subCmd = "toggle "
+				}
+				toolPrefix := strings.TrimPrefix(filterPrefix, subCmd)
+				if subCmd == "enable " && strings.HasPrefix("all", toolPrefix) {
+					matches = append(matches, "all")
+				}
+				if a != nil && a.Registry != nil {
+					executors := a.Registry.GetAllExecutors()
+					var toolNames []string
+					for name := range executors {
+						toolNames = append(toolNames, name)
+					}
+					sort.Strings(toolNames)
+					for _, name := range toolNames {
+						if strings.HasPrefix(name, toolPrefix) {
+							matches = append(matches, name)
+						}
+					}
+				}
+			} else {
+				toolSubcommands := []string{"list", "disable", "enable", "toggle", "reset", "menu"}
+				for _, c := range toolSubcommands {
+					if strings.HasPrefix(c, filterPrefix) {
+						match := c
+						if c == "disable" || c == "enable" || c == "toggle" {
+							match += " "
+						}
+						matches = append(matches, match)
+					}
 				}
 			}
 		}

@@ -97,6 +97,33 @@ override configuration variables on the fly:
 ./loop --endpoint http://localhost:8080/v1 --model local-model --thinking
 ```
 
+#### tool permissions & controls
+
+enable or disable any tool via CLI flag, config file, or dynamically in the REPL:
+
+```bash
+# disable specific tools at startup
+./loop --disable-tools bash,ask_user
+
+# or restrict execution strictly to an allowlist
+./loop --tools read,write,grep
+```
+
+in the REPL:
+- `/tools`: interactive toggle menu (or full catalog)
+- `/tools list`: print tool list with enabled/disabled status
+- `/tools disable <name...>`: disable specified tool(s)
+- `/tools enable <name...>`: enable specified tool(s) (or `/tools enable all`)
+- `/tools toggle <name>`: toggle tool between enabled and disabled
+- `/tools reset`: re-enable all tools
+
+in `~/.loop/config.json`:
+```json
+{
+  "disabled_tools": ["bash", "ask_user"]
+}
+```
+
 ---
 
 ### AGENT CAPABILITIES

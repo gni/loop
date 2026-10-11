@@ -193,6 +193,10 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		_ = tool.RegisterPlugins(a.Registry, pluginsDir)
 	}
 
+	if a.Config != nil && len(a.Config.DisabledTools) > 0 {
+		a.Registry.Disable(a.Config.DisabledTools...)
+	}
+
 	return a
 }
 
@@ -288,7 +292,66 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 		a.DebugLogger.Close()
 	}
 	a.DebugLogger = NewDebugLogger(a.WorkspaceRoot, cfg.DebugLogFile)
+
+	if a.Registry != nil {
+		a.Registry.EnableAll()
+		if len(cfg.DisabledTools) > 0 {
+			a.Registry.Disable(cfg.DisabledTools...)
+		}
+	}
 	a.ForceSystemPromptUpdate = true
+}
+
+// DisableTools disables one or more tools on the agent registry and updates configuration.
+func (a *Agent) DisableTools(names ...string) {
+	if a == nil || a.Registry == nil {
+		return
+	}
+	a.Registry.Disable(names...)
+	if a.Config != nil {
+		a.Config.DisabledTools = a.Registry.GetDisabledTools()
+	}
+	a.ForceSystemPromptUpdate = true
+}
+
+// EnableTools re-enables one or more tools on the agent registry and updates configuration.
+func (a *Agent) EnableTools(names ...string) {
+	if a == nil || a.Registry == nil {
+		return
+	}
+	a.Registry.Enable(names...)
+	if a.Config != nil {
+		a.Config.DisabledTools = a.Registry.GetDisabledTools()
+	}
+	a.ForceSystemPromptUpdate = true
+}
+
+// EnableAllTools clears all disabled tools on the agent registry.
+func (a *Agent) EnableAllTools() {
+	if a == nil || a.Registry == nil {
+		return
+	}
+	a.Registry.EnableAll()
+	if a.Config != nil {
+		a.Config.DisabledTools = nil
+	}
+	a.ForceSystemPromptUpdate = true
+}
+
+// IsToolDisabled checks whether a tool is currently disabled.
+func (a *Agent) IsToolDisabled(name string) bool {
+	if a == nil || a.Registry == nil {
+		return false
+	}
+	return a.Registry.IsDisabled(name)
+}
+
+// GetDisabledTools returns a list of all currently disabled tools.
+func (a *Agent) GetDisabledTools() []string {
+	if a == nil || a.Registry == nil {
+		return nil
+	}
+	return a.Registry.GetDisabledTools()
 }
 
 func (a *Agent) GetWorkspaceRoot() string {

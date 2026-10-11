@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"loop/pkg/config"
 	"loop/pkg/terminal"
@@ -56,6 +57,11 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		timeoutVal = fmt.Sprintf("%ds", cfg.Timeout)
 	}
 
+	disabledToolsVal := "none"
+	if len(cfg.DisabledTools) > 0 {
+		disabledToolsVal = strings.Join(cfg.DisabledTools, ", ")
+	}
+
 	configStr := fmt.Sprintf(
 		"%s\n\n"+
 			"  %-20s %s\n"+
@@ -82,6 +88,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			"  %-20s %s\n"+
 			"  %-20s %s\n"+
 			"  %-20s %d\n"+
+			"  %-20s %s\n"+
 			"  %-20s %s\n"+
 			"  %-20s %s\n\n"+
 			"tip: change any setting via: /config <key> <value> (e.g. /config yes true)",
@@ -112,6 +119,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		keyStyle.Render("recap interval:"), cfg.RecapInterval,
 		keyStyle.Render("recap:"), recapVal,
 		keyStyle.Render("prompts file:"), valStyle.Render(cfg.PromptsFile),
+		keyStyle.Render("disabled tools:"), valStyle.Render(disabledToolsVal),
 	)
 
 	fmt.Fprintln(w, borderStyle.Render(configStr))

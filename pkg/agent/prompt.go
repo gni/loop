@@ -239,6 +239,9 @@ func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 	executors := registry.GetAllExecutors()
 	entries := make([]ToolEntry, 0, len(executors))
 	for name, executor := range executors {
+		if registry.IsDisabled(name) {
+			continue
+		}
 		entries = append(entries, ToolEntry{
 			Name:       name,
 			Snippet:    tool.GetPromptSnippet(executor),

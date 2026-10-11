@@ -54,6 +54,10 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	render.RenderToolOutput(w, output, isError, collapse, theme, toolName, argsJSON, bodyWasStreamed)
 }
 
+func RenderToolsList(w io.Writer, a *agent.Agent, theme UITheme) {
+	render.RenderToolsList(w, a, theme)
+}
+
 func CalculatePromptLayout(promptPrefix string, inputLine string, pos int, termWidth int) PromptLayout {
 	return render.CalculatePromptLayout(promptPrefix, inputLine, pos, termWidth)
 }
