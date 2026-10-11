@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"loop/pkg/agent/tool/file"
+	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -36,7 +38,7 @@ func (t *listTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "list",
-			Description: domaintool.FormatToolDescription("list", "List directory contents"),
+			Description: domaintool.FormatToolDescription("list", "List directory contents. Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
@@ -46,7 +48,11 @@ func (t *listTool) Definition() domaintool.Tool {
 					},
 					"depth": {
 						Type:        "number",
-						Description: domaintool.FormatParamDescription("list", "depth", "Directory depth (default: 3)"),
+						Description: domaintool.FormatParamDescription("list", "depth", "Depth to list (1 for flat, 2+ for recursive, default: 1)"),
+					},
+					"offset": {
+						Type:        "number",
+						Description: domaintool.FormatParamDescription("list", "offset", file.DefaultLimitTexts["list_param_offset"]),
 					},
 				},
 			},
@@ -60,6 +66,7 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		Dir     string  `json:"dir"`
 		DirPath string  `json:"dir_path"`
 		Depth   float64 `json:"depth"`
+		Offset  float64 `json:"offset"`
 	}
 
 	trimmed := strings.TrimSpace(arguments)
@@ -90,9 +97,14 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	depth := int(args.Depth)
 	if depth <= 0 {
-		depth = 3
-	} else if depth > 4 {
-		depth = 4
+		depth = limits.ListMaxDepth() // documented default, itself clamped
+	} else if depth > limits.ListMaxDepth() {
+		depth = limits.ListMaxDepth()
+	}
+
+	offset := int(args.Offset)
+	if offset < 1 {
+		offset = 1
 	}
 
 	safePath, err := ctx.SafePath(targetPath)
@@ -100,7 +112,7 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		// If path attempts to escape workspace root (e.g. '..' or parent directory),
 		// gracefully list workspace root instead of failing with an error.
 		safePath = ctx.GetWorkspaceRoot()
-		tree, treeErr := ListDirectoryTree(safePath, safePath, depth, 150)
+		tree, treeErr := ListDirectoryTree(safePath, safePath, depth, limits.ListMaxEntries())
 		if treeErr != nil {
 			return "", err
 		}
@@ -115,20 +127,31 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("path '%s' is a file, not a directory. Use the 'read' tool to view its contents", targetPath)
 	}
 
-	return ListDirectoryTree(safePath, ctx.GetWorkspaceRoot(), depth, 150)
+	return ListDirectoryTree(safePath, ctx.GetWorkspaceRoot(), depth, limits.ListMaxEntries())
 }
 
 // ListDirectoryTree traverses and renders a clean visual ASCII tree of the directory,
-// automatically filtering out dependency, cache, and build directories.
+// automatically filtering out dependency, cache, and build directories. Entry counting
+// continues past the cap so the notice can state the exact total entry count and the
+// exact next offset.
 func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error) {
+	return ListDirectoryTreeOffset(dirPath, workspaceRoot, maxDepth, maxEntries, 1)
+}
+
+func ListDirectoryTreeOffset(dirPath string, workspaceRoot string, maxDepth int, maxEntries int, offset int) (string, error) {
 	if maxDepth <= 0 {
 		maxDepth = 2
 	}
-	if maxDepth > 5 {
-		maxDepth = 5
+	if maxDepth > limits.ListMaxDepth() {
+		maxDepth = limits.ListMaxDepth()
 	}
 	if maxEntries <= 0 {
-		maxEntries = 150
+		maxEntries = limits.ListMaxEntries()
+	} else if maxEntries > limits.ListMaxEntries() {
+		maxEntries = limits.ListMaxEntries()
+	}
+	if offset < 1 {
+		offset = 1
 	}
 
 	gitIgnorePatterns := LoadGitIgnore(workspaceRoot)
@@ -141,15 +164,20 @@ func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEn
 		header = filepath.ToSlash(relBase) + "/\n"
 	}
 
-	var sb strings.Builder
-	sb.WriteString(header)
+	var rendered []string
+	rendered = append(rendered, strings.TrimRight(header, "\n"))
 
-	entryCount := 0
+	shown := 0
+	total := 0
+	bytesUsed := 0
 	limitReached := false
+	bytesReached := false
 
 	var walkTree func(currentDir string, prefix string, depth int)
 	walkTree = func(currentDir string, prefix string, depth int) {
-		if depth > maxDepth || limitReached {
+		// Traversal continues after a cap is hit so the notice can state the
+		// exact total entry count and the exact next offset.
+		if depth > maxDepth {
 			return
 		}
 
@@ -183,11 +211,7 @@ func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEn
 		})
 
 		for i, entry := range validEntries {
-			if entryCount >= maxEntries {
-				limitReached = true
-				return
-			}
-			entryCount++
+			total++
 
 			isLast := i == len(validEntries)-1
 			connector := "├── "
@@ -198,20 +222,40 @@ func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEn
 			}
 
 			name := entry.Name()
+			line := prefix + connector + name
 			if entry.IsDir() {
-				sb.WriteString(prefix + connector + name + "/\n")
+				line += "/"
+			}
+
+			if total >= offset && !limitReached && !bytesReached {
+				// Two independent budgets, first hit wins; complete lines only.
+				if shown >= maxEntries {
+					limitReached = true
+				} else if bytesUsed+len(line)+1 > limits.MaxOutputBytes() {
+					bytesReached = true
+				} else {
+					bytesUsed += len(line) + 1
+					rendered = append(rendered, line)
+					shown++
+				}
+			}
+
+			if entry.IsDir() {
 				walkTree(filepath.Join(currentDir, name), childPrefix, depth+1)
-			} else {
-				sb.WriteString(prefix + connector + name + "\n")
 			}
 		}
 	}
 
 	walkTree(dirPath, "", 1)
 
-	if limitReached {
-		sb.WriteString(fmt.Sprintf("\n[Listing capped at %d entries. Use 'path' with a subfolder to view deeper.]", maxEntries))
+	if limitReached || bytesReached {
+		next := shown + offset
+		notice := file.SearchLimitNotice("list", shown, total, next)
+		if bytesReached && !limitReached {
+			notice = file.OutputLimitNotice("list", limits.MaxOutputBytes()/1024, shown, total, next)
+		}
+		rendered = append(rendered, strings.TrimRight(notice, "\n"))
 	}
 
-	return strings.TrimRight(sb.String(), "\n"), nil
+	return strings.Join(rendered, "\n"), nil
 }

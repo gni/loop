@@ -62,11 +62,11 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 				Properties: map[string]tool.SchemaProp{
 					"name": {
 						Type:        "string",
-						Description: tool.FormatParamDescription("create_subagent", "name", "Unique name for the subagent."),
+						Description: tool.FormatParamDescription("create_subagent", "name", "Unique name for the subagent (alphanumeric and underscores only)."),
 					},
 					"system_prompt": {
 						Type:        "string",
-						Description: tool.FormatParamDescription("create_subagent", "system_prompt", "Role definition for the subagent."),
+						Description: tool.FormatParamDescription("create_subagent", "system_prompt", "Specific instructions and role definition for the subagent."),
 					},
 					"skill_names": {
 						Type:        "array",
@@ -78,7 +78,7 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 					},
 					"inline_skills": {
 						Type:        "array",
-						Description: tool.FormatParamDescription("create_subagent", "inline_skills", "Optional private skills for this subagent."),
+						Description: tool.FormatParamDescription("create_subagent", "inline_skills", "Optional private skills defined inline with name, description, and instructions."),
 						Items: &tool.SchemaProp{
 							Type: "object",
 							Properties: map[string]tool.SchemaProp{

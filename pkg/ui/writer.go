@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
+	"loop/pkg/domain/output"
 	"loop/pkg/terminal"
 )
 
@@ -425,4 +427,14 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 func getRealTerminalHeight() int {
 	_, h := terminal.ProbeDimensions()
 	return h
+}
+
+// OutputGuard is the shared single-writer output guard from pkg/domain/output,
+// used in passthrough mode: one writer owns the terminal, extensions can take it
+// over (their output is diverted to stderr while taken over), and Flush drains
+// pending writes before control is handed back.
+type OutputGuard = output.OutputGuard
+
+func NewOutputGuard(w io.Writer) *OutputGuard {
+	return output.NewPassthrough(w, os.Stderr)
 }

@@ -36,10 +36,71 @@ type SessionInfo struct {
 	TotalTokens int
 }
 
+// CurrentSessionVersion is the DAG session format version; v1 files carry no header.
+const CurrentSessionVersion = 3
+
+// SessionHeader is the versioned first line of a session file.
+type SessionHeader struct {
+	Type          string `json:"type"` // "session"
+	Version       int    `json:"version,omitempty"`
+	ID            string `json:"id"`
+	Timestamp     string `json:"timestamp"`
+	Cwd           string `json:"cwd,omitempty"`
+	ParentSession string `json:"parentSession,omitempty"`
+}
+
 // Record represents a single JSONL envelope persisted on disk.
+// Legacy flat lines omit the DAG fields and load as a linear chain (type
+// defaults to "message").
 type Record struct {
+	ID        string          `json:"id,omitempty"`
+	ParentID  string          `json:"parentId,omitempty"`
+	Type      string          `json:"type,omitempty"` // "message" or "branch"
 	Timestamp string          `json:"timestamp"`
-	Message   message.Message `json:"message"`
+	Message   message.Message `json:"message,omitempty"`
+}
+
+// LeafPath walks parent pointers from the leaf (or leafID) back to the root.
+// Legacy entries without IDs resolve to a linear chain.
+func LeafPath(entries []Record, leafID string) []Record {
+	norm := make([]Record, 0, len(entries))
+	byID := make(map[string]*Record, len(entries))
+	var prevID string
+	for i := range entries {
+		e := entries[i]
+		if e.Type == "session" {
+			continue
+		}
+		if e.ID == "" {
+			e = Record{ID: fmt.Sprintf("legacy-%d", i), ParentID: prevID, Type: "message", Timestamp: e.Timestamp, Message: e.Message}
+		}
+		norm = append(norm, e)
+		byID[e.ID] = &norm[len(norm)-1]
+		if e.Type != "branch" {
+			prevID = e.ID
+		}
+	}
+
+	leaf := byID[leafID]
+	if leaf == nil && len(norm) > 0 {
+		leaf = byID[norm[len(norm)-1].ID]
+	}
+	if leaf == nil {
+		return nil
+	}
+	var path []Record
+	cur := leaf
+	for cur != nil {
+		path = append(path, *cur)
+		if cur.ParentID == "" {
+			break
+		}
+		cur = byID[cur.ParentID]
+	}
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	return path
 }
 
 // Store defines the persistent storage boundary for conversation sessions.
@@ -55,4 +116,9 @@ type Store interface {
 	GetLatestSessionID() (string, error)
 	SetLatestSessionID(sessionID string) error
 	RenameSession(oldID, newID string) error
+	// Branch moves the active leaf to entryID by appending a branch marker; history is not rewritten.
+	Branch(sessionID, entryID string) error
+	// ForkSession creates a new session file with a versioned header recording
+	// parentSession and copies the leaf path up to entryID.
+	ForkSession(parentSessionID, entryID string) (string, error)
 }

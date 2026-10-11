@@ -38,6 +38,25 @@ type OpenAICompatibleProvider struct {
 	// the UI consumer within streamSendTimeout, so dropped output is observable rather
 	// than silently lost.
 	ChunkDropObserver ChunkDropObserver
+
+	// PromptCacheSupported gates cache_control emission; providers that do not
+	// accept cache breakpoints leave it false and are unaffected.
+	PromptCacheSupported bool
+}
+
+// activeProviderAuthStatus reports credentials availability for the active
+// provider profile before a request is dispatched.
+func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
+	if p.Config == nil {
+		return fmt.Errorf("provider config is nil")
+	}
+	if p.Config.ActiveProvider != "" && p.Config.Providers != nil {
+		if prof, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
+			return prof.AuthStatus()
+		}
+	}
+	// No active profile: keyless local endpoints remain valid (existing behaviour).
+	return nil
 }
 
 // ThinkingEnabled reports whether the backend advertises reasoning support, under the
@@ -70,6 +89,22 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
+	// Auth-status check before dispatch.
+	if p.Config != nil {
+		if err := p.activeProviderAuthStatus(); err != nil {
+			return nil, err
+		}
+		if resolved := p.Config.ResolveModelAlias(p.Config.Model); resolved != "" && resolved != p.Config.Model {
+			p.Config.Model = resolved
+		}
+	}
+
+	if p.PromptCacheSupported {
+		// Breakpoints on system prompt + tool-catalog prefix; the wire field is
+		// omitempty so non-supporting providers see the byte-identical shape.
+		transportllm.ApplyPromptCacheBreakpoints(messages)
+	}
+
 	timeoutDuration := time.Duration(0)
 	if p.Config != nil && p.Config.Timeout > 0 {
 		timeoutDuration = time.Duration(p.Config.Timeout) * time.Second
@@ -219,6 +254,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	var promptTokens, completionTokens int
+	var cacheReadTokens, cacheWriteTokens int
 	var generationStart time.Time
 
 	thinkingFilter := transportllm.NewThinkingStreamFilter(emitText, emitReasoning)
@@ -238,6 +274,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
 			PromptTokens:     pTokens,
 			CompletionTokens: cTokens,
+			CacheReadTokens:  cacheReadTokens,
+			CacheWriteTokens: cacheWriteTokens,
 			ToolCalls:        calls,
 		}
 	}
@@ -289,6 +327,14 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if chunk.Usage != nil {
 			promptTokens = chunk.Usage.PromptTokens
 			completionTokens = chunk.Usage.CompletionTokens
+		}
+
+		// Cache read/write counts live in transportllm.Usage (owned here) and are
+		// surfaced through agent.CacheTokenTotals over the persisted message.
+		if u, err := transportllm.ParseUsage(data); err == nil && u != nil {
+			if u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
+				cacheReadTokens, cacheWriteTokens = u.CacheReadTokens, u.CacheWriteTokens
+			}
 		}
 
 		if len(chunk.Choices) == 0 {

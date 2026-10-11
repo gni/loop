@@ -22,15 +22,15 @@ func TestRegisterTaskEvictsStaleTerminalEntriesOverCap(t *testing.T) {
 	s.UpdateTaskStatus("active", "running", "", nil)
 
 	// Fill the registry with terminal entries, then age them past the grace window.
-	for i := 0; i < MaxTrackedTasks+10; i++ {
+	for i := 0; i < MaxSupervisedTasks+10; i++ {
 		id := "stale" + time.Now().Format("150405.000000") + string(rune('a'+i%26)) + string(rune('A'+i%26))
 		s.RegisterTask(id, "agent", "prompt")
 		s.UpdateTaskStatus(id, "completed", "done", nil)
 		backdate(s, id, TaskRetentionGrace+time.Second)
 	}
 
-	if len(s.tasks) > MaxTrackedTasks {
-		t.Fatalf("registry grew to %d entries, cap is %d", len(s.tasks), MaxTrackedTasks)
+	if len(s.tasks) > MaxSupervisedTasks {
+		t.Fatalf("registry grew to %d entries, cap is %d", len(s.tasks), MaxSupervisedTasks)
 	}
 	if _, err := s.GetTask("active"); err != nil {
 		t.Fatalf("running task was evicted: %v", err)

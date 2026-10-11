@@ -37,6 +37,11 @@ func HandleMCPCommand(
 		input, output, cleanup := getInteractiveIO(kiReader)
 		defer cleanup()
 
+		// The editor copies the config shallowly, so its MCPServers map aliases this
+		// one and every edit lands on the live config. Snapshot first: without this
+		// there is no way to tell an edited session from one exited with escape.
+		before := config.CopyMCPServers(a.Config.MCPServers)
+
 		ShutdownStatusBar(os.Stderr)
 		newConfig, errInteractive := RunInteractiveMCPConfig(a.Config, theme, input, output, a.ConfigPath)
 		InitStatusBar(os.Stderr)
@@ -45,18 +50,26 @@ func HandleMCPCommand(
 			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
 
-		if errInteractive == nil && newConfig != nil {
-			// Restart MCP servers with the new config
+		// Repaint before reconnecting. Reconnecting costs the child-process boot time
+		// per server (hundreds of milliseconds each), and the user is looking at the
+		// screen while it happens; the prompt must come back first.
+		//
+		// Only the fixed bottom controls are redrawn: the editor drew on the alternate
+		// screen, so the conversation is still where it was, and a full repaint would shove
+		// the chat to the top of the screen.
+		if kiReader != nil {
+			RestoreAfterModal(w, a, kiReader, kiReader.RL)
+		} else {
+			RestoreAfterModal(w, a, nil, nil)
+		}
+
+		changed := errInteractive == nil && newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers)
+		if changed {
 			a.StopMCPServers()
 			if len(a.Config.MCPServers) > 0 {
 				_ = a.StartMCPServers(a.Config.MCPServers)
+				syncStatus()
 			}
-		}
-
-		if kiReader != nil {
-			redrawScreen(w, a, kiReader, kiReader.RL)
-		} else {
-			redrawScreen(w, a, nil, nil)
 		}
 		return
 	}

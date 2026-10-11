@@ -71,8 +71,19 @@ type Agent struct {
 	McpClients     map[string]*mcpClient
 	McpClientsMu   sync.Mutex
 	McpStartErrors map[string]error
-	Registry       *tool.ToolRegistry
-	WorkspaceRoot  string
+
+	// mcpGeneration identifies the current set of connected servers. A connect started
+	// under an older generation must not publish its client or register tools after a
+	// restart, because that would resurrect a server the user removed.
+	mcpGeneration int
+
+	// mcpPending holds configured servers that were not connected at startup. They are
+	// connected on first use, so startup does not pay for a child process the session
+	// may never need.
+	mcpPending map[string]config.MCPServerConfig
+
+	Registry      *tool.ToolRegistry
+	WorkspaceRoot string
 
 	Tasks         map[string]*Task
 	TasksMu       sync.Mutex
@@ -139,6 +150,7 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		},
 		McpClients:       make(map[string]*mcpClient),
 		McpStartErrors:   make(map[string]error),
+		mcpPending:       make(map[string]config.MCPServerConfig),
 		Registry:         tool.NewToolRegistry(),
 		WorkspaceRoot:    absWorkspace,
 		Tasks:            make(map[string]*Task),
@@ -148,6 +160,11 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
 		FileObservations: tool.NewFileObservationTracker(),
 	}
+
+	// Deferred MCP servers have no registered executor until they are connected, so a
+	// call to one of their tools is the thing that must connect it.
+	a.Registry.UnknownToolHook = a.ResolveUnknownTool
+	a.Registry.Register(tool.NewLoadMCPTool())
 
 	// Wire the drop observer after the agent exists so provider-side chunk drops are
 	// counted instead of vanishing.

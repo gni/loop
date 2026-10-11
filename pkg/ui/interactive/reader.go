@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"loop/pkg/domain/limits"
 )
 
 type ReadResult struct {
@@ -97,7 +99,7 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 						} else {
 							return buf, false, nil
 						}
-					case <-time.After(15 * time.Millisecond):
+					case <-time.After(limits.EscapeDisambiguation()):
 						return buf, false, nil
 					}
 				}

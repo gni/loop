@@ -76,6 +76,17 @@ func EstimateMessagesTokens(messages []db.Message) int {
 	return total
 }
 
+// CacheTokenTotals sums provider-reported cache read/write tokens across a
+// history (cache_read_input_tokens / cache_creation_input_tokens).
+func CacheTokenTotals(history []db.Message) (int, int) {
+	var reads, writes int
+	for _, m := range history {
+		reads += m.CacheReadTokens
+		writes += m.CacheWriteTokens
+	}
+	return reads, writes
+}
+
 // EstimateFallbackTokens calculates fallback token usage when the provider omitted token counts.
 func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Message, calls []db.ToolCall, rawText, reasoning string) (int, int) {
 	if promptTokens == 0 {

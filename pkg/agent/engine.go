@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -227,6 +228,10 @@ func (e *TurnEngine) ExecuteToolCalls(
 		assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
 	}
 
+	if len(assistantMsg.ToolCalls) > 1 {
+		return e.executeToolCallsParallel(ctx, assistantMsg, sink, sr, loader, w, theme, render, afterCall)
+	}
+
 	for idx, tc := range assistantMsg.ToolCalls {
 		if ctx.Err() != nil {
 			e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled before execution")
@@ -352,6 +357,11 @@ func (e *TurnEngine) ExecuteToolCalls(
 		if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
 			maxOutputBytes = a.Config.MaxToolOutputBytes
 		}
+		// The resolved limit acts as a safety ceiling: config can lower the pruner
+		// budget but cannot raise it past the clamp.
+		if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
+			maxOutputBytes = ceiling
+		}
 		pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, toolOutput, maxOutputBytes)
 
 		if !isSubagentCall && !approvalRendered {
@@ -387,6 +397,242 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 	}
 	return false, false
+}
+
+// callPlan is one tool call plus the outcome of the parts of the pipeline that
+// must stay sequential: approval (a modal UI decision), the pre-execution guard,
+// and the model-order rendering.
+type callPlan struct {
+	tc          db.ToolCall
+	idx         int
+	output      string
+	toolErr     error
+	guardHit    bool
+}
+
+// executeToolCallsParallel runs the execution step of every planned call through
+// a bounded worker pool (never an unbounded goroutine spawn), then finalises and
+// appends the results in the order the model emitted them so tool_call_id pairing
+// and history order stay exactly as the model expects.
+func (e *TurnEngine) executeToolCallsParallel(
+	ctx context.Context,
+	assistantMsg *db.Message,
+	sink HistorySink,
+	sr StreamRenderer,
+	loader EngineLoader,
+	w io.Writer,
+	theme style.UITheme,
+	render EngineRenderer,
+	afterCall func(tc db.ToolCall, output string, toolErr error),
+) (halted bool, aborted bool) {
+	a := e.agent
+	plans := make([]callPlan, len(assistantMsg.ToolCalls))
+
+	// Phase 1: header rendering, approval and guard checks stay in model order.
+	for idx, tc := range assistantMsg.ToolCalls {
+		plan := &plans[idx]
+		plan.tc = tc
+		plan.idx = idx
+
+		if ctx.Err() != nil {
+			e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled before execution")
+			return true, false
+		}
+
+		if sr.GetToolTitleLineNumber(idx) == -1 && e.policy.AgentName != "" {
+			prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+			fmt.Fprintf(w, "%s [%s] calling tool:\n",
+				style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
+				prefixStyle.Render(e.policy.AgentName))
+		}
+		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
+
+		if e.policy.AllowApproval && a.Config != nil && !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) && !a.Config.ApprovalAlwaysAnswer {
+			if a.UI == nil {
+				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
+			} else {
+				sr.Flush()
+				if loader != nil {
+					loader.Pause()
+				}
+				approved, always := a.UI.AskForApproval(unwrapWriterIfPossible(w), theme)
+				if loader != nil {
+					loader.Resume()
+				}
+				if always {
+					a.Config.AutoApprove = true
+					if a.ConfigPath != "" {
+						if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+							a.DebugLogError(e.policy.SessionKey, "config.SaveConfig (auto-approve)", err)
+						}
+					}
+				}
+				if !approved {
+					sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
+					render.ToolOutput(w, theme, RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user."), true, tc.Function.Name, tc.Function.Arguments, false)
+					sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")})
+					return false, true
+				}
+			}
+		}
+
+		if guardErr := e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments); guardErr != nil {
+			plan.toolErr = guardErr
+			plan.output = guardErr.Error()
+			e.consecutiveGuardRejections++
+			plan.guardHit = true
+			if a.DebugLogger != nil {
+				a.DebugLogRepetition(e.policy.SessionKey, tc.Function.Name, tc.Function.Arguments, e.guard.ConsecutiveIdenticalCount(), guardErr.Error())
+			}
+		} else {
+			e.consecutiveGuardRejections = 0
+		}
+	}
+
+	// Phase 2: bounded concurrent execution. Workers are capped by the resolved
+	// limit so a model that emits a huge fan-out cannot spawn unbounded goroutines.
+	workers := limits.ParallelToolWorkers()
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for i := range plans {
+		plan := &plans[i]
+		if plan.guardHit {
+			continue
+		}
+		if ctx.Err() != nil {
+			e.RecordInterruption(sink, assistantMsg.ToolCalls[i:], "cancelled before execution")
+			return true, false
+		}
+
+		if e.policy.RunHooks {
+			allowed, reason := a.runBeforeToolHook(plan.tc)
+			if !allowed {
+				plan.toolErr = fmt.Errorf("blocked by hook")
+				plan.output = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
+				continue
+			}
+		}
+
+		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
+			// Subagent calls fan out their own workers; running them inside this
+			// pool would double the concurrency and let two subagents mutate the
+			// same workspace at once. Keep them on the sequential path.
+			output, err := a.Registry.Execute(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
+			if e.policy.RunHooks {
+				output, err = a.runAfterToolHook(plan.tc, output, err)
+			}
+			plan.output = output
+			plan.toolErr = err
+			continue
+		}
+
+		wg.Add(1)
+		go func(p *callPlan) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if ctx.Err() != nil {
+				p.toolErr = fmt.Errorf("cancelled during execution")
+				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
+				return
+			}
+
+			a.SetLiveBodyStreamed(false)
+
+			output, err := a.Registry.Execute(executionContext(e, a), p.tc.Function.Name, p.tc.Function.Arguments)
+			if ctx.Err() != nil {
+				p.toolErr = fmt.Errorf("cancelled during execution")
+				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
+				return
+			}
+			if e.policy.RunHooks {
+				output, err = a.runAfterToolHook(p.tc, output, err)
+			}
+			p.output = output
+			p.toolErr = err
+		}(&plans[i])
+	}
+
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		e.RecordInterruption(sink, assistantMsg.ToolCalls, "cancelled during execution")
+		return true, false
+	}
+
+	// Phase 3: finalise and append in model order.
+	for i := range plans {
+		plan := &plans[i]
+		tc := plan.tc
+
+		if plan.output == "" && plan.toolErr == nil {
+			plan.output = "(no output)"
+		}
+
+		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, plan.output, plan.toolErr)
+		if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
+			plan.output += "\n\n[" + reminder + "]"
+		}
+		if plan.toolErr != nil {
+			plan.output = FormatToolExecutionFailure(tc.Function.Name, plan.output, plan.toolErr)
+		}
+
+		maxOutputBytes := tool.DefaultMaxToolOutputBytes
+		if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
+			maxOutputBytes = a.Config.MaxToolOutputBytes
+		}
+		if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
+			maxOutputBytes = ceiling
+		}
+		pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, plan.output, maxOutputBytes)
+
+		isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
+		if !isSubagentCall {
+			sr.CompleteToolCall(i, tc.Function.Name, tc.Function.Arguments, plan.toolErr != nil)
+			render.ToolOutput(w, theme, pruned, plan.toolErr != nil, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(i))
+		}
+
+		a.stateMu.Lock()
+		a.lastToolOutput = pruned
+		a.lastToolIsError = plan.toolErr != nil
+		a.lastToolWasEdit = tc.Function.Name == "edit"
+		a.stateMu.Unlock()
+
+		sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned})
+		if afterCall != nil {
+			afterCall(tc, pruned, plan.toolErr)
+		}
+
+		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
+			haltNotice := e.HaltNotice()
+			sink.Append(db.Message{Role: "assistant", Content: haltNotice})
+			if a.UI != nil {
+				fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(haltNotice))
+			} else {
+				fmt.Fprintln(w, haltNotice)
+			}
+			return true, false
+		}
+	}
+
+	return false, false
+}
+
+// executionContext resolves the AgentContext a tool call runs against. It is read
+// once per call so parallel workers never share a mutating context value.
+func executionContext(e *TurnEngine, a *Agent) tool.AgentContext {
+	if e.policy.ExecContext != nil {
+		if c := e.policy.ExecContext(); c != nil {
+			return c
+		}
+	}
+	return tool.AgentContext(a)
 }
 
 func (e *TurnEngine) HaltNotice() string {

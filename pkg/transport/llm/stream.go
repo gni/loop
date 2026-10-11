@@ -11,11 +11,51 @@ import (
 	"loop/pkg/domain/message"
 )
 
-// Usage reports token consumption metadata from the LLM provider.
+// Usage reports token consumption metadata from the LLM provider, including
+// prompt-cache read/write counts when the provider reports them.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int `json:"prompt_tokens"`
+	CompletionTokens        int `json:"completion_tokens"`
+	TotalTokens             int `json:"total_tokens"`
+	CacheReadTokens         int `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteTokens        int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// PromptCacheKeyMaxLength is the maximum length of a provider-scoped prompt
+// cache key: cache keys are clamped, never expanded.
+const PromptCacheKeyMaxLength = 64
+
+// ClampPromptCacheKey truncates a cache key to PromptCacheKeyMaxLength runes.
+func ClampPromptCacheKey(key string) string {
+	r := []rune(key)
+	if len(r) <= PromptCacheKeyMaxLength {
+		return key
+	}
+	return string(r[:PromptCacheKeyMaxLength])
+}
+
+// ApplyPromptCacheBreakpoints marks the system prompt and the tool-catalog prefix
+// (the message block that carries the catalog, i.e. the first system turn) with an
+// ephemeral cache breakpoint. Non-supporting providers are unaffected: callers only
+// invoke this when the active provider declares prompt-cache support, and the part
+// field is omitempty on the wire.
+func ApplyPromptCacheBreakpoints(messages []message.Message) {
+	for i, m := range messages {
+		if m.IsSystem() {
+			messages[i].CacheControl = []message.CacheBlock{{Type: message.CacheControlEphemeral, Key: ClampPromptCacheKey(m.Content)}}
+			break
+		}
+	}
+}
+
+// ParseUsage extracts usage (including cache read/write counts) from a raw SSE
+// data payload without disturbing the existing chunk parser.
+func ParseUsage(data string) (*Usage, error) {
+	var chunk RawStreamChunk
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return nil, err
+	}
+	return chunk.Usage, nil
 }
 
 // ToolCallDelta represents incremental tool call fragments streamed by the model.

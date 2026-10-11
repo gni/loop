@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"loop/pkg/agent/tool/file"
+	"loop/pkg/domain/limits"
 )
 
 const (
@@ -128,7 +131,11 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxToolOutputBytes
 	}
-
+	// The live resolved limits can lower the pruner budget but never raise it
+	// past the safety ceiling.
+	if ceiling := limits.MaxOutputBytes(); ceiling < maxBytes {
+		maxBytes = ceiling
+	}
 	if len(output) <= maxBytes {
 		return output, "", false
 	}
@@ -184,25 +191,42 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 	lines := strings.Split(output, "\n")
 	headCount := DefaultHeadLines
 	tailCount := DefaultTailLines
+	// The resolved line budget can lower the head window but never raise it past
+	// the safety ceiling.
+	if limits.MaxOutputLines() < headCount {
+		headCount = limits.MaxOutputLines()
+	}
 
-	if len(lines) > (headCount + tailCount + 5) {
-		head := strings.Join(lines[:headCount], "\n")
-		tail := strings.Join(lines[len(lines)-tailCount:], "\n")
-		omittedLines := len(lines) - headCount - tailCount
-		omittedBytes := len(output) - len(head) - len(tail)
-		if omittedBytes < 0 {
-			omittedBytes = len(output) / 2
+	// Multi-line output: head+tail middle truncation. Every retained line is
+	// complete (never a partial line) and each line is capped by the per-line
+	// budget, so the notice can state the exact next offset and the total line
+	// count for continued pagination.
+	if len(lines) > headCount+tailCount+5 {
+		head := make([]string, headCount)
+		for i, line := range lines[:headCount] {
+			head[i] = file.TruncateLine(line, limits.GrepMaxLineLength())
+		}
+		tail := make([]string, tailCount)
+		for i, line := range lines[len(lines)-tailCount:] {
+			tail[i] = file.TruncateLine(line, limits.GrepMaxLineLength())
 		}
 
-		pruned := fmt.Sprintf("%s\n\n[... %d lines (%d bytes) omitted to protect context window ...]\n[Full raw output preserved at: %s]\n[Hint: Call 'read' with offset/limit, or 'grep' on the spill file to inspect omitted sections]\n\n%s",
-			head, omittedLines, omittedBytes, locatorHint, tail)
+		omittedLines := len(lines) - headCount - tailCount
+		omittedChars := file.RuneCount(output) - file.RuneCount(strings.Join(head, "\n")) - file.RuneCount(strings.Join(tail, "\n"))
+
+		pruned := strings.Join(head, "\n") +
+			file.SpillPruneNotice(omittedLines, omittedChars, headCount+1, len(lines)) +
+			file.SpillFullOutputNotice(locatorHint) +
+			file.SpillRetrievalHint() +
+			"\n\n" + strings.Join(tail, "\n")
 		return pruned, locatorHint, true
 	}
 
-	// Single very long line or few long lines.
-	// Head/tail budgets must never exceed maxBytes, otherwise an output that is over
-	// maxBytes but shorter than the default budgets would be returned in full, breaking
-	// the documented contract that oversized output is always pruned.
+	// Single very long line or few long lines: UTF-8-boundary-safe byte cut.
+	// Head/tail budgets must never exceed maxBytes, otherwise an output that is
+	// over maxBytes but shorter than the default budgets would be returned in
+	// full, breaking the documented contract that oversized output is always
+	// pruned.
 	headBytes := 3072
 	tailBytes := 1024
 	if headBytes+tailBytes > maxBytes {
@@ -216,12 +240,12 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 		tailBytes = 1
 	}
 	if len(output) > headBytes+tailBytes {
-		head := output[:headBytes]
-		tail := output[len(output)-tailBytes:]
-		omittedBytes := len(output) - headBytes - tailBytes
+		pruned, omittedChars := file.TruncateMiddle(output, headBytes+tailBytes)
 
-		pruned := fmt.Sprintf("%s\n\n[... %d bytes omitted to protect context window ...]\n[Full raw output preserved at: %s]\n[Hint: Call 'read' with offset/limit, or 'grep' on the spill file to inspect omitted sections]\n\n%s",
-			head, omittedBytes, locatorHint, tail)
+		pruned = pruned +
+			file.SpillBytePruneNotice(omittedChars, file.RuneCount(pruned), len(output), len(lines)) +
+			file.SpillFullOutputNotice(locatorHint) +
+			file.SpillRetrievalHint()
 		return pruned, locatorHint, true
 	}
 

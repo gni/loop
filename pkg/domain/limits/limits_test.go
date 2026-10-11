@@ -98,3 +98,76 @@ func TestClampHelperRejectsDisabledGuard(t *testing.T) {
 		t.Errorf("guard must never be clamped below %d", AbsoluteMinConsecutiveLimit)
 	}
 }
+
+func TestTruncationDefaultsMatchPiContract(t *testing.T) {
+	d := Defaults()
+	if d.MaxOutputLines != 2000 || d.MaxOutputBytes != 50*1024 {
+		t.Errorf("two-limit defaults drifted: %+v", d)
+	}
+	if d.ReadMaxLineLength != 1000 || d.MaxReadFileBytes != 500*1024 {
+		t.Errorf("read defaults drifted: %+v", d)
+	}
+	if d.FindMaxResults != 500 || d.ListMaxEntries != 150 || d.ListMaxDepth != 3 {
+		t.Errorf("search defaults drifted: %+v", d)
+	}
+	if d.ParallelToolWorkers != 4 {
+		t.Errorf("worker default drifted: %d", d.ParallelToolWorkers)
+	}
+	if d.CompactionReserveTokens != 16384 || d.CompactionKeepRecentTokens != 20000 {
+		t.Errorf("compaction defaults drifted: %+v", d)
+	}
+}
+
+func TestTruncationOverridesAreConfigurableButClamped(t *testing.T) {
+	// A config file may lower a budget.
+	lowered := Resolve(Limits{
+		MaxOutputLines:   50,
+		MaxOutputBytes:   2048,
+		ReadMaxLineLength: 120,
+		FindMaxResults:   25,
+		ListMaxEntries:   40,
+		ListMaxDepth:     2,
+		ParallelToolWorkers: 2,
+		CompactionReserveTokens: 4096,
+	})
+	if lowered.MaxOutputLines != 50 || lowered.MaxOutputBytes != 2048 || lowered.ReadMaxLineLength != 120 {
+		t.Errorf("lowered overrides not applied: %+v", lowered)
+	}
+	if lowered.FindMaxResults != 25 || lowered.ListMaxEntries != 40 || lowered.ListMaxDepth != 2 {
+		t.Errorf("lowered search overrides not applied: %+v", lowered)
+	}
+	if lowered.ParallelToolWorkers != 2 || lowered.CompactionReserveTokens != 4096 {
+		t.Errorf("lowered concurrency/compaction overrides not applied: %+v", lowered)
+	}
+
+	// A config file may never raise a budget past the safety ceiling: an
+	// unbounded scanner or an unbounded read is not representable.
+	raised := Resolve(Limits{
+		MaxOutputLines:        1 << 20,
+		MaxOutputBytes:        1 << 30,
+		MaxReadFileBytes:      1 << 30,
+		ReadMaxLineLength:     1 << 20,
+		FindMaxResults:        1 << 20,
+		ListMaxEntries:        1 << 20,
+		ListMaxDepth:          100,
+		ParallelToolWorkers:   1000,
+		CompactionReserveTokens: 1 << 20,
+	})
+	if raised.MaxOutputLines != AbsoluteMaxToolOutputLines || raised.MaxOutputBytes != AbsoluteMaxToolOutputBytes {
+		t.Errorf("output ceilings not enforced: %+v", raised)
+	}
+	if raised.MaxReadFileBytes != AbsoluteMaxReadFileBytes || raised.ReadMaxLineLength != AbsoluteMaxLineLength {
+		t.Errorf("read ceilings not enforced: %+v", raised)
+	}
+	if raised.FindMaxResults != AbsoluteMaxFindResults || raised.ListMaxEntries != AbsoluteMaxListEntries || raised.ListMaxDepth != AbsoluteMaxListDepth {
+		t.Errorf("search ceilings not enforced: %+v", raised)
+	}
+	if raised.ParallelToolWorkers != AbsoluteMaxParallelWorkers || raised.CompactionReserveTokens != AbsoluteMaxCompactionTokens {
+		t.Errorf("concurrency/compaction ceilings not enforced: %+v", raised)
+	}
+
+	// Accessors read the live resolved values.
+	if MaxOutputLines() != Defaults().MaxOutputLines || ParallelToolWorkers() != 4 {
+		t.Errorf("accessors disagree with Defaults(): %d/%d", MaxOutputLines(), ParallelToolWorkers())
+	}
+}

@@ -484,6 +484,78 @@ func GetTLSConfig(config *Config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+// CopyMCPServers deep-copies the server map. The interactive editor does a shallow
+// struct copy, so its map aliases the live config and every edit mutates the
+// original; a caller that wants to know what changed must snapshot first.
+func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConfig {
+	if servers == nil {
+		return nil
+	}
+	out := make(map[string]MCPServerConfig, len(servers))
+	for name, cfg := range servers {
+		copied := cfg
+		if cfg.Args != nil {
+			copied.Args = append([]string(nil), cfg.Args...)
+		}
+		if cfg.Env != nil {
+			copied.Env = make(map[string]string, len(cfg.Env))
+			for k, v := range cfg.Env {
+				copied.Env[k] = v
+			}
+		}
+		if cfg.Headers != nil {
+			copied.Headers = make(map[string]string, len(cfg.Headers))
+			for k, v := range cfg.Headers {
+				copied.Headers[k] = v
+			}
+		}
+		out[name] = copied
+	}
+	return out
+}
+
+// MCPServersEqual reports whether two server maps are identical. The interactive
+// editor works on a clone, so callers need to know whether anything actually
+// changed before paying for a reconnect: reconnecting every server costs the
+// child-process boot time per server, which is far more than the repaint it would
+// replace.
+func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, cfgA := range a {
+		cfgB, exists := b[name]
+		if !exists {
+			return false
+		}
+		if cfgA.Type != cfgB.Type || cfgA.Command != cfgB.Command || cfgA.URL != cfgB.URL || cfgA.Disabled != cfgB.Disabled || cfgA.AlwaysLoad != cfgB.AlwaysLoad {
+			return false
+		}
+		if len(cfgA.Args) != len(cfgB.Args) {
+			return false
+		}
+		for i := range cfgA.Args {
+			if cfgA.Args[i] != cfgB.Args[i] {
+				return false
+			}
+		}
+		if len(cfgA.Env) != len(cfgB.Env) || len(cfgA.Headers) != len(cfgB.Headers) {
+			return false
+		}
+		for k, v := range cfgA.Env {
+			if cfgB.Env[k] != v {
+				return false
+			}
+		}
+		for k, v := range cfgA.Headers {
+			if cfgB.Headers[k] != v {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // ParseHeaderArgs parses key:value or key=value header arguments into a map.
 func ParseHeaderArgs(args []string) map[string]string {
 	headers := make(map[string]string)

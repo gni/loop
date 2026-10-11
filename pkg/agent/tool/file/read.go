@@ -7,8 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
+
+// readDefaultLimit keeps the historical one-call default; the hard cap comes
+// from the resolved limits so a config file can lower it but never exceed the
+// safety ceiling.
+const readDefaultLimit = 1000
 
 // DirectoryTreeLister is an optional hook allowing integration with higher-level directory tree formatters.
 var DirectoryTreeLister func(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
@@ -36,7 +42,8 @@ func (t *readTool) PromptGuidelines() []string {
 func (t *readTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"read",
-		domaintool.FormatToolDescription("read", "Read file contents. Supports text files. Specify 'path' first before offset or limit."),
+		domaintool.FormatToolDescription("read", "Read file contents. Supports text files. Specify 'path' first before offset or limit. Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete."),
+
 		map[string]domaintool.SchemaProp{
 			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees.")),
 			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),
@@ -112,7 +119,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	if hasIgnoredComponent(args.Path) {
+	if HasIgnoredComponent(args.Path) {
 		return "", fmt.Errorf("cannot read: path '%s' is inside a dependency or ignored folder (venv, node_modules, etc.)", args.Path)
 	}
 
@@ -182,8 +189,9 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return fmt.Sprintf("[Path '%s' is a directory. Use 'list' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", args.Path), nil
 		}
 	}
-	if info.Size() > 500*1024 { // 500KB limit
-		return "", fmt.Errorf("file size (%d bytes) is too large; maximum allowed size is 500KB", info.Size())
+	maxReadBytes := limits.MaxReadFileBytes()
+	if info.Size() > int64(maxReadBytes) {
+		return "", fmt.Errorf("file size (%d bytes) is too large; maximum allowed size is %d bytes", info.Size(), maxReadBytes)
 	}
 
 	data, err := os.ReadFile(safePath)
@@ -196,7 +204,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	// Check if file is binary
-	if isBinary(data) {
+	if IsBinary(data) {
 		return "", fmt.Errorf("cannot read binary file; the read tool only supports text files")
 	}
 
@@ -215,33 +223,40 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", nil
 	}
 
+	// Two independent budgets, first hit wins: the line limit and the byte
+	// budget. Neither can return a partial line, so pagination offsets stay
+	// exact for the next call.
 	limit := int(args.Limit)
 	if limit <= 0 {
-		limit = 1000 // default to 1000 lines so normal files are read completely in one call
-	} else if limit > 2000 {
-		limit = 2000 // cap maximum lines per read to 2000
+		limit = readDefaultLimit // default to 1000 lines so normal files are read completely in one call
+	} else if limit > limits.MaxOutputLines() {
+		limit = limits.MaxOutputLines()
 	}
 
 	end := offset + limit - 1
-	truncated := false
 	if end > len(lines) {
 		end = len(lines)
-	} else if end < len(lines) {
-		truncated = true
+	}
+	window := lines[offset-1 : end]
+	cut := TruncateHead(window, limit, limits.MaxOutputBytes())
+	if cut.ShownLines == 0 {
+		// A single line larger than the byte budget cannot be reached by line
+		// pagination; hand the model a runnable command instead.
+		return entryHeader + ReadFirstLineOverBudgetNotice(limits.MaxOutputBytes(), offset, args.Path), nil
 	}
 
-	var resultLines []string
-	for i := offset - 1; i < end; i++ {
-		line := lines[i]
-		if len(line) > 1000 {
-			line = line[:1000] + " ... [line truncated: line is too long] ..."
-		}
-		resultLines = append(resultLines, line)
+	lineCap := limits.ReadMaxLineLength()
+	resultLines := make([]string, 0, cut.ShownLines)
+	for _, line := range window[:cut.ShownLines] {
+		resultLines = append(resultLines, TruncateLine(line, lineCap))
 	}
 
 	result := strings.Join(resultLines, "\n")
-	if truncated {
-		result += fmt.Sprintf("\n\n[Showing lines %d to %d of %d. Use read with offset=%d to view more]", offset, end, len(lines), end+1)
+	shownEnd := offset + cut.ShownLines - 1
+	if cut.Truncated {
+		result += ReadTruncationNotice(offset, shownEnd, len(lines), shownEnd+1)
+	} else if end < len(lines) {
+		result += ReadMoreLinesNotice(len(lines)-end, len(lines), end+1)
 	}
 	return entryHeader + result, nil
 }

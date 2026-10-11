@@ -80,10 +80,12 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "error: provider configuration failed: %v\n", errInteractive)
 		}
 
+		// The provider editor drew on the alternate screen, so the conversation is still
+		// where it was; only the fixed bottom controls need repainting.
 		if kiReader != nil {
-			redrawScreen(w, a, kiReader, kiReader.RL)
+			RestoreAfterModal(w, a, kiReader, kiReader.RL)
 		} else {
-			redrawScreen(w, a, nil, nil)
+			RestoreAfterModal(w, a, nil, nil)
 		}
 		return
 	}

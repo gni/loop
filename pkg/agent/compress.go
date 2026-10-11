@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"loop/pkg/db"
+	"loop/pkg/domain/limits"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
 
@@ -24,16 +26,55 @@ func (a *Agent) CompressionThreshold() float64 {
 	return 0.80
 }
 
+// CompactionTrigger reports whether history should be compressed. The trigger is
+// reserve-based rather than a bare ratio: the window must leave room for the
+// summarizer call itself plus the completion floor, otherwise a ratio trigger
+// fires too late and the next request overflows. The ratio is kept as a
+// secondary ceiling so a low configured ratio still fires early.
+func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
+	if effectiveLimit <= 0 || promptTokens <= 0 {
+		return false
+	}
+	decision := promptTokens + completionTokens
+	reserve := limits.CompactionReserveTokens()
+	if decision >= effectiveLimit-reserve {
+		return true
+	}
+	// The configured ratio is kept as a secondary ceiling so a low ratio still
+	// fires early for large windows.
+	return decision >= int(CompressionThresholdRatio()*float64(effectiveLimit))
+}
+
+func CompressionThresholdRatio() float64 {
+	return 0.80
+}
+
 // maybeCompress is the single compression call site shared by the pre- and
 // post-iteration blocks of the main loop.
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
-	decision := promptTokens + completionTokens
-	if len(*messages) > 4 && decision >= int(a.CompressionThreshold()*float64(effectiveLimit)) {
+	if len(*messages) > 4 && CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
 		a.CompressHistory(ctx, messages, sessionID, theme, w)
 		recomputed, _ := a.GetGlobalTokens(*messages, allowlist)
 		return recomputed, a.GetEffectiveContextLimit(recomputed), true
 	}
 	return promptTokens, effectiveLimit, false
+}
+
+// keepRecentMessageCount returns the size of the recent suffix of history that
+// fits inside the token budget reserved for kept messages.
+func keepRecentMessageCount(messages []db.Message) int {
+	budget := limits.CompactionKeepRecentTokens()
+	kept := 0
+	used := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		cost := EstimateMessageTokens(messages[i])
+		if used+cost > budget && kept >= 2 {
+			break
+		}
+		used += cost
+		kept++
+	}
+	return kept
 }
 
 // CompactHistoricalToolOutputs condenses verbose tool outputs from completed earlier turns,
@@ -85,8 +126,11 @@ func (a *Agent) CompressHistory(
 	theme style.UITheme,
 	w io.Writer,
 ) {
-	keepMsgCount := 4
-	if len(*messages) <= keepMsgCount+2 {
+	// Keep-recent is token-budgeted rather than a fixed message count: the tail
+	// that survives compression is the largest recent suffix that still fits
+	// inside the compaction budget.
+	keepMsgCount := keepRecentMessageCount(*messages)
+	if keepMsgCount < 2 {
 		keepMsgCount = 2
 	}
 
@@ -194,9 +238,11 @@ func (a *Agent) CompressHistory(
 	if len(readFiles) > 0 || len(modifiedFiles) > 0 {
 		fileOpsHeader = fmt.Sprintf("\n- Files Read: %s\n- Files Modified: %s\n", strings.Join(readFiles, ", "), strings.Join(modifiedFiles, ", "))
 	}
+	// The summary scaffold is the fixed template from the catalog so the shape of
+	// a compressed summary stays stable across sessions and agents.
 	summaryMsg := db.Message{
 		Role:    "system",
-		Content: fmt.Sprintf("[System: Below is a summary of the earlier conversation history:%s\n%s]", fileOpsHeader, summaryText),
+		Content: fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryText),
 	}
 
 	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))

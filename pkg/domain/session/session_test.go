@@ -53,6 +53,28 @@ func TestNewUUID(t *testing.T) {
 	}
 }
 
+func TestLeafPathLegacyLinearChain(t *testing.T) {
+	legacy := []Record{
+		{Timestamp: "t1", Message: message.NewUser("a")},
+		{Timestamp: "t2", Message: message.NewAssistant("b")},
+	}
+	path := LeafPath(legacy, "")
+	if len(path) != 2 || path[0].Message.Content != "a" || path[1].Message.Content != "b" {
+		t.Fatalf("legacy flat lines must load as linear chain, got %+v", path)
+	}
+
+	dag := []Record{
+		{ID: "1", Type: "message", Timestamp: "t1", Message: message.NewUser("a")},
+		{ID: "2", ParentID: "1", Type: "message", Timestamp: "t2", Message: message.NewAssistant("b")},
+		{ID: "3", ParentID: "2", Type: "message", Timestamp: "t3", Message: message.NewAssistant("c")},
+		{ID: "4", ParentID: "2", Type: "branch", Timestamp: "t4"},
+	}
+	branchPath := LeafPath(dag, "2")
+	if len(branchPath) != 2 || branchPath[1].ID != "2" {
+		t.Fatalf("branch to entry 2 must yield root..2, got %+v", branchPath)
+	}
+}
+
 func TestRecordSerialization(t *testing.T) {
 	rec := Record{
 		Timestamp: "2026-10-09 14:00:00",

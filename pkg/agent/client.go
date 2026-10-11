@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"loop/pkg/config"
+	"loop/pkg/domain/limits"
 )
 
 type mcpClient struct {
@@ -33,6 +34,17 @@ type mcpClient struct {
 	initialized bool
 	client      *http.Client
 	cancel      context.CancelFunc
+
+	// connectTimeout bounds the wait for the SSE endpoint event and for response
+	// headers. It is resolved from limits at construction so a server that accepts a
+	// connection but never emits an endpoint event fails in a bounded time instead of
+	// holding up startup.
+	connectTimeout time.Duration
+
+	// A response whose id has no pending request is parked here instead of being
+	// dropped: some servers answer a duplicate or replayed id, and a later request that
+	// reuses that id can pick the parked answer up.
+	earlyResponses map[int64]string
 }
 
 type MCPTool struct {
@@ -67,8 +79,20 @@ func (c *mcpClient) startSSE() error {
 		req.Header.Set(k, v)
 	}
 
+	// The client timeout must stay 0 because an SSE stream is long-lived, but the
+	// connect phase still needs a bound: ResponseHeaderTimeout covers only the wait
+	// for the response headers, so a server that accepts the connection and never
+	// answers fails fast without cutting the stream short.
 	sseClient := *c.client
 	sseClient.Timeout = 0
+	if transport, ok := c.client.Transport.(*http.Transport); ok && transport != nil {
+		clonedTransport := transport.Clone()
+		clonedTransport.ResponseHeaderTimeout = c.connectTimeout
+		sseClient.Transport = clonedTransport
+	} else {
+		sseClient.Transport = &http.Transport{ResponseHeaderTimeout: c.connectTimeout}
+	}
+
 	resp, err := sseClient.Do(req)
 	if err != nil {
 		cancel()
@@ -123,9 +147,9 @@ func (c *mcpClient) startSSE() error {
 	select {
 	case postURL := <-endpointChan:
 		c.postURL = postURL
-	case <-time.After(5 * time.Second):
+	case <-time.After(c.connectTimeout):
 		c.close()
-		return fmt.Errorf("timeout waiting for SSE endpoint initialization")
+		return fmt.Errorf("timeout waiting for SSE endpoint initialization (%s)", c.connectTimeout)
 	}
 
 	err = c.handshake()
@@ -192,14 +216,34 @@ func (c *mcpClient) handleMessage(data string) {
 			case ch <- data:
 			default:
 			}
+		} else {
+			if c.earlyResponses == nil {
+				c.earlyResponses = make(map[int64]string)
+			}
+			c.earlyResponses[parsedID] = data
 		}
 		c.requestMu.Unlock()
 	}
 }
 
+// takeEarlyResponse returns a response that arrived before this request was
+// registered, if there is one.
+func (c *mcpClient) takeEarlyResponse(id int64) (string, bool) {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	if c.earlyResponses == nil {
+		return "", false
+	}
+	data, exists := c.earlyResponses[id]
+	if exists {
+		delete(c.earlyResponses, id)
+	}
+	return data, exists
+}
+
 func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	if c.isStdio {
-		return c.requestStdio(method, params, 15*time.Second)
+		return c.requestStdio(method, params, limits.MCPRequestTimeout())
 	}
 
 	c.requestMu.Lock()
@@ -208,6 +252,11 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	ch := make(chan string, 1)
 	c.requests[id] = ch
 	c.requestMu.Unlock()
+
+	// A response may already have arrived before this channel existed.
+	if data, ok := c.takeEarlyResponse(id); ok {
+		return data, nil
+	}
 
 	reqMap := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -227,7 +276,7 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	}
 	mcpLog("[MCP Tx] %s\n", string(data))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), limits.MCPRequestTimeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data))
@@ -257,6 +306,8 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 		c.requestMu.Unlock()
 		return "", fmt.Errorf("HTTP error %d", resp.StatusCode)
 	}
+
+	mcpLog("[MCP Tx] %s\n", string(data))
 
 	select {
 	case res := <-ch:

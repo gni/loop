@@ -8,19 +8,14 @@ import (
 	"strings"
 
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/domain/ignore"
 )
 
-// IsIgnoredDirName checks if directory name belongs to common build, cache, or VCS directories.
+// IsIgnoredDirName checks if directory name belongs to common build, cache, or VCS
+// directories. The name set lives in pkg/domain/ignore; the search policy also treats
+// any hidden directory as ignored.
 func IsIgnoredDirName(name string) bool {
-	low := strings.ToLower(name)
-	switch low {
-	case ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "env", ".env",
-		"__pycache__", ".pytest_cache", ".tox", ".mypy_cache", ".ruff_cache",
-		"dist", "build", "target", "out", "bin", "obj",
-		".idea", ".vscode", ".next", ".nuxt", ".cache", "vendor":
-		return true
-	}
-	return strings.HasPrefix(low, ".") && low != "." && low != ".."
+	return ignore.IsDirName(name, true)
 }
 
 // HasIgnoredComponent returns true if any directory in the given path is ignored.
@@ -33,23 +28,7 @@ func HasIgnoredComponent(path string) bool {
 // so a workspace living inside a hidden directory (e.g. a temp dir under .gotmp) is still
 // searched.
 func HasIgnoredComponentIn(path, root string) bool {
-	clean := filepath.ToSlash(filepath.Clean(path))
-	if root != "" {
-		cleanRoot := filepath.ToSlash(filepath.Clean(root))
-		if clean == cleanRoot {
-			return false
-		}
-		if strings.HasPrefix(clean, cleanRoot+"/") {
-			clean = strings.TrimPrefix(clean, cleanRoot+"/")
-		}
-	}
-	parts := strings.Split(clean, "/")
-	for _, part := range parts {
-		if IsIgnoredDirName(part) {
-			return true
-		}
-	}
-	return false
+	return ignore.HasComponent(path, root, true)
 }
 
 // IsIgnoredFileName returns true if the file extension or basename indicates a binary, image, lock, or cache file.

@@ -14,6 +14,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/limits"
 	"loop/pkg/ui/style"
 )
 
@@ -50,11 +51,11 @@ type KeyInterceptorReader struct {
 	PasteCounter     int
 
 	// Callbacks for decoupling from parent UI
-	OnClearPromptHint        func()
-	OnRedrawScreen           func()
-	OnDrawStaticControls     func(w io.Writer)
+	OnClearPromptHint       func()
+	OnRedrawScreen          func()
+	OnDrawStaticControls    func(w io.Writer)
 	OnRedrawPromptSeparator func()
-	OnClearCancelFunc        func()
+	OnClearCancelFunc       func()
 }
 
 func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
@@ -215,11 +216,15 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 		}
 
 		if n == 1 && ki.InputChan != nil {
+			// select prefers a byte that is already buffered, so a complete sequence that has
+			// arrived costs nothing; the timer only bounds a partial one.
 			select {
 			case input, ok := <-ki.InputChan:
 				if ok {
 					p[n] = input
 					n++
+				} else {
+					goto done
 				}
 			case <-time.After(3 * time.Millisecond):
 			}
@@ -235,6 +240,9 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 			}
 
 			if hasEscape || n > 1 {
+				// Escape disambiguation: a lone ESC is held briefly to see whether it begins a
+				// sequence. A byte that is already buffered wins over the timer, so a complete
+				// sequence costs nothing and only a genuine lone keypress pays the window.
 				select {
 				case input, ok := <-ki.InputChan:
 					if ok {
@@ -243,7 +251,7 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 					} else {
 						goto done
 					}
-				case <-time.After(15 * time.Millisecond):
+				case <-time.After(limits.EscapeDisambiguation()):
 					goto done
 				}
 			} else {
@@ -260,6 +268,7 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 				}
 			}
 		}
+
 	done:
 	}
 

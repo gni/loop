@@ -13,10 +13,10 @@ import (
 // The live ceiling is resolved from config through limits.SubagentDepth().
 var MaxSubagentDepth = limits.DefaultMaxSubagentDepth
 
-// MaxTrackedTasks bounds the supervisor registry. Without a cap every delegation adds
-// an entry that lives for the process lifetime, and the poll loop takes the lock on
+// MaxSupervisedTasks bounds the supervisor registry. Without a cap every delegation
+// adds an entry that lives for the process lifetime, and the poll loop takes the lock on
 // every tick.
-var MaxTrackedTasks = limits.DefaultSupervisedTasks
+var MaxSupervisedTasks = limits.DefaultSupervisedTasks
 
 // TaskRetentionGrace keeps recently finished tasks readable: pollers look up a task
 // right after it completes, so eviction must not clear entries that are still fresh.
@@ -37,7 +37,7 @@ func NewTaskSupervisor() *TaskSupervisor {
 
 // RegisterTask adds a newly spawned task with "pending" status. Terminal entries
 // (completed/failed) are evicted oldest-first once the registry exceeds
-// MaxTrackedTasks, so a long-lived process cannot grow the map without bound.
+// MaxSupervisedTasks, so a long-lived process cannot grow the map without bound.
 func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

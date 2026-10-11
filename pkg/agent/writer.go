@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"loop/pkg/domain/output"
 	"loop/pkg/ui/style"
 )
 
@@ -71,12 +72,7 @@ func (n *NewlineCounterWriter) Unwrap() io.Writer {
 }
 
 func (n *NewlineCounterWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
-	if sbr, ok := n.Writer.(interface {
-		ReplaceScrollBlockBack(int, []string) bool
-	}); ok {
-		return sbr.ReplaceScrollBlockBack(linesBack, lines)
-	}
-	return false
+	return forwardReplaceScrollBlockBack(n.Writer, linesBack, lines)
 }
 
 type FallbackStreamRenderer struct {
@@ -124,12 +120,21 @@ func (c *CustomTeeWriter) Unwrap() io.Writer {
 }
 
 func (c *CustomTeeWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
-	if sbr, ok := c.screen.(interface {
-		ReplaceScrollBlockBack(int, []string) bool
-	}); ok {
-		return sbr.ReplaceScrollBlockBack(linesBack, lines)
+	return forwardReplaceScrollBlockBack(c.screen, linesBack, lines)
+}
+
+// Wrappers forward scroll-block edits to whatever they wrap. One assertion helper keeps
+// every wrapper in the package answering the same way.
+type scrollBlockReplacer interface {
+	ReplaceScrollBlockBack(int, []string) bool
+}
+
+func forwardReplaceScrollBlockBack(w io.Writer, linesBack int, lines []string) bool {
+	sbr, ok := w.(scrollBlockReplacer)
+	if !ok {
+		return false
 	}
-	return false
+	return sbr.ReplaceScrollBlockBack(linesBack, lines)
 }
 
 func UnwrapWriter(w io.Writer) io.Writer {
@@ -167,3 +172,10 @@ func GetScreenWriter(w io.Writer) io.Writer {
 	}
 	return w
 }
+
+// OutputGuard is the shared single-writer output guard from pkg/domain/output,
+// used in buffered mode: the agent owns exactly one writer, a stream can take it
+// over exclusively, and Flush drains buffered output before the owner changes.
+type OutputGuard = output.OutputGuard
+
+func NewAgentOutputGuard(w io.Writer) *OutputGuard { return output.New(w) }

@@ -307,7 +307,153 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 	return nil
 }
 
+// readEntries parses a session file into DAG records (header line optional).
+func readEntries(filePath string) ([]session.Record, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var entries []session.Record
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var record session.Record
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		entries = append(entries, record)
+	}
+	return entries, scanner.Err()
+}
+
+// Branch appends a branch marker that moves the active leaf to entryID without
+// rewriting history.
+func (s *JSONLStore) Branch(sessionID, entryID string) error {
+	if err := session.ValidateID(sessionID); err != nil {
+		return err
+	}
+	if s == nil || s.dir == "" {
+		return fmt.Errorf("sessions directory not initialized")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	entries, err := readEntries(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read session file: %w", err)
+	}
+
+	path := session.LeafPath(entries, entryID)
+	if len(path) == 0 {
+		return fmt.Errorf("entry %s not found in session %s", entryID, sessionID)
+	}
+
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open session file: %w", err)
+	}
+	defer f.Close()
+
+	marker := session.Record{ID: session.NewUUID(), ParentID: path[len(path)-1].ID, Type: "branch", Timestamp: time.Now().Format("2006-01-02 15:04:05")}
+	if marker.ParentID == "" {
+		for _, e := range entries {
+			if e.Type == "message" {
+				marker.ParentID = e.ID
+			}
+		}
+	}
+	jsonData, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(jsonData, '\n')); err != nil {
+		return fmt.Errorf("failed to write branch marker: %w", err)
+	}
+	return s.setLatestSessionIDUnlocked(sessionID)
+}
+
+// ForkSession creates a new session with a versioned header recording
+// parentSession and copies the leaf path up to entryID; the parent file is left untouched.
+func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error) {
+	if err := session.ValidateID(parentSessionID); err != nil {
+		return "", err
+	}
+	if s == nil || s.dir == "" {
+		return "", fmt.Errorf("sessions directory not initialized")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := readEntries(filepath.Join(s.dir, parentSessionID+".jsonl"))
+	if err != nil {
+		return "", fmt.Errorf("failed to read parent session file: %w", err)
+	}
+	path := session.LeafPath(entries, entryID)
+	if len(path) == 0 {
+		return "", fmt.Errorf("entry %s not found in session %s", entryID, parentSessionID)
+	}
+
+	newID := session.NewUUID()
+	filePath := filepath.Join(s.dir, newID+".jsonl")
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create forked session file: %w", err)
+	}
+	defer f.Close()
+
+	header := session.SessionHeader{Type: "session", Version: session.CurrentSessionVersion, ID: newID, Timestamp: time.Now().Format("2006-01-02 15:04:05"), ParentSession: parentSessionID}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(append(headerJSON, '\n')); err != nil {
+		return "", fmt.Errorf("failed to write session header: %w", err)
+	}
+
+	var prev string
+	for _, e := range path {
+		e.ID = session.NewUUID()
+		e.ParentID = prev
+		e.Type = "message"
+		jsonData, err := json.Marshal(e)
+		if err != nil {
+			return "", err
+		}
+		if _, err := f.Write(append(jsonData, '\n')); err != nil {
+			return "", fmt.Errorf("failed to write forked entry: %w", err)
+		}
+		prev = e.ID
+	}
+
+	return newID, nil
+}
+
 // Global session helpers
+
+// Branch moves the active leaf of a session to entryID without rewriting history.
+func Branch(sessionID, entryID string) error {
+	store, err := getStore()
+	if err != nil {
+		return err
+	}
+	return store.Branch(sessionID, entryID)
+}
+
+func ForkSession(parentSessionID, entryID string) (string, error) {
+	store, err := getStore()
+	if err != nil {
+		return "", err
+	}
+	return store.ForkSession(parentSessionID, entryID)
+}
 
 func ClearHistory() error {
 	store, err := getStore()

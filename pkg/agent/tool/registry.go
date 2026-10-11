@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	domaintool "loop/pkg/domain/tool"
 )
@@ -49,8 +50,19 @@ func GetPromptGuidelines(t ToolExecutor) []string {
 	return domaintool.GetPromptGuidelines(t)
 }
 
+// ToolRegistry is safe for concurrent use: parallel tool workers execute from
+// several goroutines, and MCP servers register and unregister their tools while a
+// turn is in flight.
 type ToolRegistry struct {
+	mu    sync.RWMutex
 	tools map[string]ToolExecutor
+
+	// UnknownToolHook resolves a tool that is not registered yet. It exists for MCP
+	// servers deferred until first use: their executors cannot be registered before the
+	// server is connected, so a call to one of their tools has to trigger the connect.
+	// The hook is invoked with no registry lock held, so it may register freely; it must
+	// not call back into the registry while doing so.
+	UnknownToolHook func(name string) (ToolExecutor, bool)
 }
 
 func NewToolRegistry() *ToolRegistry {
@@ -58,14 +70,20 @@ func NewToolRegistry() *ToolRegistry {
 }
 
 func (r *ToolRegistry) Register(t ToolExecutor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tools[t.Name()] = t
 }
 
 func (r *ToolRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.tools, name)
 }
 
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for name := range r.tools {
 		if strings.HasPrefix(name, prefix) {
 			delete(r.tools, name)
@@ -73,11 +91,22 @@ func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 	}
 }
 
+// Lookup finds an executor by name, falling back to the normalized form.
+func (r *ToolRegistry) Lookup(name string) (ToolExecutor, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if executor, exists := r.tools[name]; exists {
+		return executor, true
+	}
+	executor, exists := r.tools[NormalizeName(name)]
+	return executor, exists
+}
+
 func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) (string, error) {
-	canonicalName := NormalizeName(name)
-	executor, exists := r.tools[canonicalName]
-	if !exists {
-		executor, exists = r.tools[name]
+	executor, exists := r.Lookup(name)
+	if !exists && r.UnknownToolHook != nil {
+		// Lookup has already released the read lock, so the hook can register.
+		executor, exists = r.UnknownToolHook(name)
 	}
 	if !exists {
 		return "", fmt.Errorf("unknown tool: %s", name)
@@ -99,6 +128,9 @@ func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) 
 }
 
 func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	var allTools []Tool
 	for name, t := range r.tools {
 		if len(allowlist) == 0 {
@@ -125,6 +157,9 @@ func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
 }
 
 func (r *ToolRegistry) GetAllExecutors() map[string]ToolExecutor {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	res := make(map[string]ToolExecutor, len(r.tools))
 	for k, v := range r.tools {
 		res[k] = v

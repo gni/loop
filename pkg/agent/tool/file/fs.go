@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"loop/pkg/domain/ignore"
 )
 
 // AtomicWriteFile writes data to a temporary file in the destination's directory,
@@ -68,10 +70,6 @@ func IsBinary(data []byte) bool {
 	return false
 }
 
-func isBinary(data []byte) bool {
-	return IsBinary(data)
-}
-
 // SanitizeUTF8 replaces invalid UTF-8 byte sequences with spaces.
 func SanitizeUTF8(data []byte) string {
 	if utf8.Valid(data) {
@@ -117,12 +115,18 @@ var (
 	fileLocksMu sync.Mutex
 )
 
-// LockPath locks a file path across concurrent operations.
+// LockPath locks a file path across concurrent operations. The lock key is the
+// symlink-resolved absolute path, so two names for the same file (a symlink and
+// its target, or two symlinks pointing at the same file) share one lock instead
+// of letting a read and an edit run concurrently on the same inode.
 func LockPath(path string) func() {
 	fileLocksMu.Lock()
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
+	}
+	if resolved, errRes := filepath.EvalSymlinks(absPath); errRes == nil && resolved != "" {
+		absPath = resolved
 	}
 	entry, exists := fileLocks[absPath]
 	if !exists {
@@ -180,19 +184,10 @@ func detectLineEnding(content string) string {
 	return DetectLineEnding(content)
 }
 
-// HasIgnoredComponent returns whether path has components like node_modules or .git.
+// HasIgnoredComponent reports whether path has a dependency or artifact component
+// (node_modules, venv, .git, __pycache__, etc.). It delegates to the shared name
+// set in pkg/domain/ignore. Unlike the search tools it does not treat every hidden
+// directory as ignored, so workspace-local hidden folders stay readable.
 func HasIgnoredComponent(path string) bool {
-	path = filepath.Clean(path)
-	parts := strings.Split(filepath.ToSlash(path), "/")
-	for _, part := range parts {
-		low := strings.ToLower(part)
-		if low == "node_modules" || low == "venv" || low == ".venv" || low == ".git" || low == "__pycache__" {
-			return true
-		}
-	}
-	return false
-}
-
-func hasIgnoredComponent(path string) bool {
-	return HasIgnoredComponent(path)
+	return ignore.HasComponent(path, "", false)
 }

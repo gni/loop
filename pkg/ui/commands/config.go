@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/interceptor"
@@ -189,7 +190,7 @@ func handleConfigCommand(
 			a.Config.RecapInterval = n
 		case "prompts_file", "prompts":
 			a.Config.PromptsFile = val
-			if err := agent.LoadPromptCatalog(val); err != nil {
+			if err := domaintool.LoadPromptCatalog(val); err != nil {
 				fmt.Fprintf(w, "prompt catalog not applied: %v\n", err)
 			} else {
 				fmt.Fprintf(w, "prompt catalog reloaded from %s\n", val)
@@ -241,10 +242,13 @@ func handleConfigCommand(
 			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
 
+		// The editor drew on the alternate screen, so the conversation is still where it
+		// was. Repainting only the fixed bottom controls keeps the chat in place; a theme
+		// change affects text rendered from here on, not the lines already on screen.
 		if kiReader != nil {
-			ui.RedrawScreen(w, a, kiReader, kiReader.RL)
+			ui.RestoreAfterModal(w, a, kiReader, kiReader.RL)
 		} else {
-			ui.RedrawScreen(w, a, nil, nil)
+			ui.RestoreAfterModal(w, a, nil, nil)
 		}
 	}
 }
@@ -263,4 +267,3 @@ func parseConfigBool(val string) bool {
 	v := strings.ToLower(strings.TrimSpace(val))
 	return v == "true" || v == "1" || v == "yes" || v == "on"
 }
-

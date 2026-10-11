@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
+	"loop/pkg/domain/tool"
+	"loop/pkg/ui/commands"
 )
 
 // autoCompleteCallback handles Tab completion for slash commands, configurations,
@@ -19,6 +21,11 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 	lastSpaceIdx := strings.LastIndex(prefixToPos, " ")
 	wordStartIdx := lastSpaceIdx + 1
 	wordToComplete := prefixToPos[wordStartIdx:]
+
+	templateCandidates := []string{}
+	for _, t := range tool.LoadPromptTemplates(commands.PromptTemplateCommandDir()) {
+		templateCandidates = append(templateCandidates, "/"+t.Name)
+	}
 
 	candidates := []string{
 		"/config ",
@@ -54,6 +61,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/provider timeout ",
 		"/provider remove ",
 		"/p ",
+		"/templates",
 		"/agent ",
 		"/agent list",
 		"/agent join ",
@@ -71,6 +79,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/context off",
 		"/ctx",
 	}
+	candidates = append(candidates, templateCandidates...)
 
 	var matches []string
 

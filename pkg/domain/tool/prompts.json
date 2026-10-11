@@ -40,7 +40,7 @@
     },
     "bash": {
       "name": "bash",
-      "description": "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands.",
+      "description": "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands. Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count.",
       "snippet": "Execute shell commands (builds, tests, git, background processes)",
       "guidelines": [
         "Use dedicated tools for file operations (read, edit, write, grep, find) instead of shell commands.",
@@ -90,7 +90,7 @@
     },
     "find": {
       "name": "find",
-      "description": "Find files by glob pattern",
+      "description": "Find files by glob pattern. Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue.",
       "snippet": "Find files by glob pattern",
       "guidelines": [
         "Use 'find' to locate files by glob pattern instead of running find in bash."
@@ -98,12 +98,13 @@
       "param_descriptions": {
         "limit": "Maximum results to return (default: 500)",
         "path": "Directory to search in (default: current directory)",
-        "pattern": "Glob pattern to match files (e.g. *.py, **/*.json)"
+        "pattern": "Glob pattern to match files (e.g. *.py, **/*.json)",
+        "offset": "Result number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue."
       }
     },
     "grep": {
       "name": "grep",
-      "description": "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories",
+      "description": "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories. Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue.",
       "snippet": "Search file contents for patterns or regular expressions",
       "guidelines": [
         "Use 'grep' to search definitions or references across the workspace instead of running grep/find in bash."
@@ -115,12 +116,13 @@
         "path": "Directory or file to search in (default: current directory).",
         "pattern": "Regular expression pattern to search for (or literal string). If empty and glob is provided, matches file names.",
         "ignore_case": "Case-insensitive search (default: false).",
-        "literal": "Treat pattern as a literal string instead of a regular expression (default: false)."
+        "literal": "Treat pattern as a literal string instead of a regular expression (default: false).",
+        "offset": "Match number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue."
       }
     },
     "list": {
       "name": "list",
-      "description": "List directory contents",
+      "description": "List directory contents. Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
       "snippet": "List directory contents",
       "guidelines": [
         "Use 'list' to inspect directory trees; never call 'read' on a directory path.",
@@ -128,7 +130,8 @@
       ],
       "param_descriptions": {
         "depth": "Depth to list (1 for flat, 2+ for recursive, default: 1)",
-        "path": "Directory to list (default: current directory)"
+        "path": "Directory to list (default: current directory)",
+        "offset": "Entry number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue."
       }
     },
     "list_subagents": {
@@ -149,7 +152,7 @@
     },
     "read": {
       "name": "read",
-      "description": "Read file contents. Supports text files. Specify 'path' first before offset or limit.",
+      "description": "Read file contents. Supports text files. Specify 'path' first before offset or limit. Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete.",
       "snippet": "Read file contents",
       "guidelines": [
         "Use 'read' to examine files instead of cat or sed in bash. Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
@@ -282,11 +285,11 @@
     "audit_header": "=== Swarm Audit Trail for Subagent: '%s' ===\n\n",
     "audit_no_history": "No execution history found for subagent '%s'.",
     "audit_step_line": "Step %d: [Task Assigned from %s]\n",
-    "name_too_long": "agent name exceeds 64 characters",
+    "name_too_long": "agent name exceeds %d characters",
     "name_bad_start": "agent name must start with a letter or number",
     "name_bad_chars": "agent name may contain only letters, numbers, underscores, and hyphens",
     "skill_no_instructions": "agent-local skill '%s' has no instructions",
-    "skill_desc_too_long": "agent-local skill '%s' description exceeds 2048 bytes",
+    "skill_desc_too_long": "agent-local skill '%s' description exceeds %d bytes",
     "spawning_disabled": "subagent spawning is disabled (max depth 0); set max_subagent_depth to allow it",
     "max_depth_reached": "maximum subagent nesting depth (%d) reached",
     "ad_hoc_skill_description": "Ad-hoc skill created for requested capability '%s'",
@@ -300,7 +303,40 @@
     "audit_truncation_notice": "\n... (output truncated for audit readability) ...",
     "audit_truncation_limit": "1500",
     "name_empty": "agent name cannot be empty",
-    "skill_invalid_name": "invalid agent-local skill name %q: %w",
-    "skill_content_too_long": "agent-local skill '%s' instructions exceed 128 KiB"
+    "skill_invalid_name": "invalid agent-local skill name %q: %v",
+    "skill_content_too_long": "agent-local skill '%s' instructions exceed %d bytes",
+    "read_line_truncated_marker": " ... [truncated]",
+    "middle_truncation_marker": "\n\n[... %d characters truncated ...]",
+    "read_truncation_notice": "\n\n[Showing lines %d to %d of %d total lines. Use read with offset=%d to continue.]",
+    "read_more_lines_notice": "\n[%d more lines in file (%d total lines). Use read with offset=%d to continue.]",
+    "read_first_line_over_budget_notice": "\n[First line exceeds the %d byte budget. Run: sed -n '%d p' %s | head -c %d]",
+    "search_result_limit_notice": "\n[Showing first %d results of %d total. Use %s with offset=%d to continue.]",
+    "find_result_limit_notice": "\n\n[Showing first %d results of %d total. Use find with offset=%d to continue.]",
+    "list_entry_limit_notice": "\n[Listing capped at %d entries of %d total. Use list with offset=%d to continue.]",
+    "grep_match_limit_notice": "\n[match limit reached: showing first %d matches of %d total matching lines. Use grep with offset=%d to continue.]",
+    "grep_output_limit_notice": "\n[output size limit reached: %d KB from %d matches of %d total matching lines. Use grep with offset=%d to continue.]",
+    "output_limit_notice": "\n[output size limit reached: %d KB from %d results of %d total. Use %s with offset=%d to continue.]",
+    "spill_prune_notice": "\n\n[... %d lines (%d characters) omitted to protect context window ... Showing lines 1 to %d and the last lines of %d total lines. Use read with offset=%d on the spill file to continue.]",
+    "spill_byte_prune_notice": "\n\n[... %d characters omitted to protect context window ... Showing first %d characters of %d total bytes across %d total lines. Use read with offset=1 limit=1 on the spill file, or grep it, to inspect the rest.]",
+    "spill_full_output_notice": "[Full raw output preserved at: %s]",
+    "spill_retrieval_hint": "[Hint: Call 'read' with offset/limit, or 'grep' on the spill file to inspect omitted sections]",
+    "compression_summary_scaffold": "[System: Below is a summary of the earlier conversation history:%s\n%s]",
+    "limit_text_read": "Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete.",
+    "limit_text_grep": "Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue.",
+    "limit_text_find": "Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue.",
+    "limit_text_list": "Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
+    "limit_text_bash": "Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count.",
+    "todo_invalid_args": "invalid arguments for todo: %v. Expected JSON with {\"tasks\": [...]}",
+    "todo_empty_list": "empty task list: please provide at least one task in 'tasks'",
+    "todo_duplicate_id": "duplicate task id: '%s' appears more than once",
+    "todo_empty_desc": "task at index %d has empty description",
+    "todo_invalid_status": "task '%s' has invalid status '%s'. Must be 'pending', 'in_progress', or 'completed'",
+    "todo_policy_violation": "policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next",
+    "todo_state_store_failed": "failed to store todo state: %w",
+    "todo_summary_line": "Updated todo plan: %d pending, %d in progress, %d completed.\n\n",
+    "todo_item_line": "%s %s: %s\n",
+    "todo_marker_pending": "[ ]",
+    "todo_marker_completed": "[x]",
+    "todo_marker_in_progress": "[>]"
   }
 }

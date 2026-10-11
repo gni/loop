@@ -43,6 +43,11 @@ var sessionListCmd = &cobra.Command{
 	},
 }
 
+var (
+	forkFrom   string
+	forkEntry  string
+)
+
 var sessionNewCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Start a new session and output its UUID",
@@ -50,6 +55,20 @@ var sessionNewCmd = &cobra.Command{
 		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
 		if err := db.InitDB(sessionsDir); err != nil {
 			fmt.Printf("Error: %v\n", err)
+			return
+		}
+
+		if forkFrom != "" {
+			newID, err := db.ForkSession(forkFrom, forkEntry)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+				return
+			}
+			if err := db.SetLatestSessionID(newID); err != nil {
+				fmt.Printf("Error: %v\n", err)
+				return
+			}
+			fmt.Println(newID)
 			return
 		}
 
@@ -84,6 +103,8 @@ var sessionClearCmd = &cobra.Command{
 }
 
 func init() {
+	sessionNewCmd.Flags().StringVar(&forkFrom, "fork", "", "Fork from an existing session ID (creates a new DAG session; parent file is untouched)")
+	sessionNewCmd.Flags().StringVar(&forkEntry, "fork-entry", "", "Entry ID to fork up to within the parent session (defaults to its leaf)")
 	sessionCmd.AddCommand(sessionListCmd, sessionNewCmd, sessionClearCmd)
 	rootCmd.AddCommand(sessionCmd)
 }

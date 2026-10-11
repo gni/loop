@@ -2,6 +2,7 @@ package todo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	} else {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-			return "", fmt.Errorf("invalid arguments for todo: %w. Expected JSON with {\"tasks\": [...]}", err)
+			return "", errors.New(domaintool.RuntimeMessagef("todo_invalid_args", "invalid arguments for todo: %v. Expected JSON with {\"tasks\": [...]}", err))
 		}
 	}
 
@@ -101,7 +102,7 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if len(items) == 0 {
-		return "", fmt.Errorf("empty task list: please provide at least one task in 'tasks'")
+		return "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
 	}
 
 	t.mu.Lock()
@@ -119,13 +120,13 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			items[i].ID = cleanID
 		}
 		if seenIDs[cleanID] {
-			return "", fmt.Errorf("duplicate task id: '%s' appears more than once", cleanID)
+			return "", errors.New(domaintool.RuntimeMessagef("todo_duplicate_id", "duplicate task id: '%s' appears more than once", cleanID))
 		}
 		seenIDs[cleanID] = true
 
 		taskDesc := strings.TrimSpace(item.Task)
 		if taskDesc == "" {
-			return "", fmt.Errorf("task at index %d has empty description", i)
+			return "", errors.New(domaintool.RuntimeMessagef("todo_empty_desc", "task at index %d has empty description", i))
 		}
 		items[i].Task = taskDesc
 
@@ -141,32 +142,32 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			items[i].Status = "pending"
 			pendingCount++
 		default:
-			return "", fmt.Errorf("task '%s' has invalid status '%s'. Must be 'pending', 'in_progress', or 'completed'", cleanID, item.Status)
+			return "", errors.New(domaintool.RuntimeMessagef("todo_invalid_status", "task '%s' has invalid status '%s'. Must be 'pending', 'in_progress', or 'completed'", cleanID, item.Status))
 		}
 	}
 
 	// Single-active task discipline
 	if inProgressCount > 1 {
-		return "", fmt.Errorf("policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount)
+		return "", errors.New(domaintool.RuntimeMessagef("todo_policy_violation", "policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount))
 	}
 
 	// If the context supports TodoState, update it
 	if ts, ok := ctx.(domaintool.TodoState); ok {
 		if err := ts.SetTodos(items); err != nil {
-			return "", fmt.Errorf("failed to store todo state: %w", err)
+			return "", fmt.Errorf(domaintool.RuntimeMessage("todo_state_store_failed", "failed to store todo state: %w"), err)
 		}
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Updated todo plan: %d pending, %d in progress, %d completed.\n\n", pendingCount, inProgressCount, completedCount))
+	sb.WriteString(domaintool.RuntimeMessagef("todo_summary_line", "Updated todo plan: %d pending, %d in progress, %d completed.\n\n", pendingCount, inProgressCount, completedCount))
 	for _, item := range items {
-		marker := "[ ]"
+		marker := domaintool.RuntimeMessage("todo_marker_pending", "[ ]")
 		if item.Status == "completed" {
-			marker = "[x]"
+			marker = domaintool.RuntimeMessage("todo_marker_completed", "[x]")
 		} else if item.Status == "in_progress" {
-			marker = "[>]"
+			marker = domaintool.RuntimeMessage("todo_marker_in_progress", "[>]")
 		}
-		sb.WriteString(fmt.Sprintf("%s %s: %s\n", marker, item.ID, item.Task))
+		sb.WriteString(domaintool.RuntimeMessagef("todo_item_line", "%s %s: %s\n", marker, item.ID, item.Task))
 	}
 
 	return sb.String(), nil

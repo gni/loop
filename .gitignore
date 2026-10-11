@@ -29,6 +29,7 @@ tmp
 
 loop_ubuntu
 loop_test
+loop_bin
 
 .codegraph
 

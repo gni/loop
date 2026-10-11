@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 // ToolPrompt defines the complete prompting contract for a single agent tool.
@@ -372,4 +376,131 @@ func FormatCoreRules(workspaceRoot string) []string {
 		rules = append(rules, fmt.Sprintf(r, workspaceRoot))
 	}
 	return rules
+}
+
+// PromptTemplate is a markdown prompt template loaded from disk.
+type PromptTemplate struct {
+	Name        string
+	Description string
+	Content     string
+	FilePath    string
+}
+
+// ParseCommandArgs parses bash-style quoted arguments.
+func ParseCommandArgs(argsString string) []string {
+	var args []string
+	var current string
+	var inQuote rune
+	for _, c := range argsString {
+		if inQuote != 0 {
+			if c == inQuote {
+				inQuote = 0
+			} else {
+				current += string(c)
+			}
+		} else if c == '"' || c == '\'' {
+			inQuote = c
+		} else if unicode.IsSpace(c) {
+			if current != "" {
+				args = append(args, current)
+				current = ""
+			}
+		} else {
+			current += string(c)
+		}
+	}
+	if current != "" {
+		args = append(args, current)
+	}
+	return args
+}
+
+var argPattern = regexp.MustCompile(`\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)`)
+
+// SubstituteArgs replaces $1..$9, $@, $ARGUMENTS, ${N:-default} and ${@:N:L}.
+// Substitution is non-recursive.
+func SubstituteArgs(content string, args []string) string {
+	all := strings.Join(args, " ")
+	return argPattern.ReplaceAllStringFunc(content, func(m string) string {
+		parts := argPattern.FindStringSubmatch(m)
+		if parts[1] != "" {
+			var v string
+			if parts[1] == "@" || parts[1] == "ARGUMENTS" {
+				v = all
+			} else if n, _ := strconv.Atoi(parts[1]); n > 0 && n <= len(args) {
+				v = args[n-1]
+			}
+			if v == "" {
+				return parts[2]
+			}
+			return v
+		}
+		if parts[3] != "" {
+			start := 0
+			if n, _ := strconv.Atoi(parts[3]); n > 0 {
+				start = n - 1
+			}
+			slice := args[start:]
+			if parts[4] != "" {
+				l, _ := strconv.Atoi(parts[4])
+				if start+l < len(slice) {
+					slice = slice[:l]
+				}
+			}
+			return strings.Join(slice, " ")
+		}
+		switch parts[5] {
+		case "@", "ARGUMENTS":
+			return all
+		default:
+			n, _ := strconv.Atoi(parts[5])
+			if n > 0 && n <= len(args) {
+				return args[n-1]
+			}
+			return ""
+		}
+	})
+}
+
+// LoadPromptTemplates reads markdown templates under ~/.loop/prompts/.
+// Frontmatter supplies name/description.
+func LoadPromptTemplates(dir string) []PromptTemplate {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []PromptTemplate
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".md")
+		desc, body := parseTemplateFrontmatter(string(raw))
+		out = append(out, PromptTemplate{Name: name, Description: desc, Content: body, FilePath: path})
+	}
+	return out
+}
+
+func parseTemplateFrontmatter(content string) (string, string) {
+	if !strings.HasPrefix(content, "---\n") {
+		return "", content
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return "", content
+	}
+	head := rest[:end]
+	desc := ""
+	for _, line := range strings.Split(head, "\n") {
+		if strings.HasPrefix(line, "description:") {
+			desc = strings.TrimSpace(strings.TrimPrefix(line, "description:"))
+		}
+	}
+	return desc, strings.TrimPrefix(rest[end+4:], "\n")
 }

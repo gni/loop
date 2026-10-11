@@ -22,17 +22,35 @@ type ToolCall struct {
 	Function ToolFunction `json:"function"`
 }
 
+// CacheBlock marks a prompt-cache breakpoint on a message part, mirroring the
+// Anthropic-style cache_control object. It is optional: providers that do not
+// support prompt caching simply ignore it (omitempty keeps the wire shape
+// byte-identical for non-supporting providers).
+type CacheBlock struct {
+	Type string `json:"type"`
+	// Key is an optional provider-scoped cache key; callers must clamp it to
+	// llm.PromptCacheKeyMaxLength before use.
+	Key string `json:"key,omitempty"`
+}
+
+// CacheControlEphemeral is the canonical breakpoint type used for the system
+// prompt and tool-catalog prefix.
+const CacheControlEphemeral = "ephemeral"
+
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
-	Role              string     `json:"role"`
-	Content           string     `json:"content,omitempty"`
-	ReasoningContent  string     `json:"reasoning_content,omitempty"`
-	ReasoningDuration float64    `json:"reasoning_duration,omitempty"`
-	ToolCalls         []ToolCall `json:"tool_calls,omitempty"`
-	Name              string     `json:"name,omitempty"`
-	ToolCallID        string     `json:"tool_call_id,omitempty"`
-	PromptTokens      int        `json:"prompt_tokens,omitempty"`
-	CompletionTokens  int        `json:"completion_tokens,omitempty"`
+	Role              string      `json:"role"`
+	Content           string      `json:"content,omitempty"`
+	ReasoningContent  string      `json:"reasoning_content,omitempty"`
+	ReasoningDuration float64     `json:"reasoning_duration,omitempty"`
+	ToolCalls         []ToolCall  `json:"tool_calls,omitempty"`
+	Name              string      `json:"name,omitempty"`
+	ToolCallID        string      `json:"tool_call_id,omitempty"`
+	PromptTokens      int         `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int         `json:"completion_tokens,omitempty"`
+	CacheReadTokens   int         `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteTokens  int         `json:"cache_creation_input_tokens,omitempty"`
+	CacheControl      []CacheBlock `json:"cache_control,omitempty"`
 }
 
 // IsUser reports whether the message was authored by the user.

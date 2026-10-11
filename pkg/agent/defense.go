@@ -19,23 +19,23 @@ func FormatDefensiveError(toolName string, err error) string {
 
 	var suggestion string
 	if strings.Contains(lowerErr, "not unique") {
-		suggestion = RuntimeMessage("suggestion_not_unique", "The oldText block matches multiple locations in the file.")
+		suggestion = RuntimeMessage("suggestion_not_unique", "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block.")
 	} else if (strings.Contains(lowerErr, "oldtext block") && strings.Contains(lowerErr, "not found")) ||
 		strings.Contains(lowerErr, "targetcontent not found") {
-		suggestion = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents.")
+		suggestion = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.")
 	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||
 		toolName == "task_status" || toolName == "task_kill" {
-		suggestion = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found.")
+		suggestion = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.")
 	} else if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no such file") {
-		suggestion = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list'.")
+		suggestion = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.")
 	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "security violation") {
-		suggestion = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace.")
+		suggestion = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.")
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
-		suggestion = RuntimeMessage("suggestion_command", "Review the command syntax and arguments.")
+		suggestion = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If the command depends on specific environment setups or files, verify they are present.")
 	} else if strings.HasPrefix(lowerErr, "unknown tool:") {
-		suggestion = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names.")
+		suggestion = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.")
 	} else {
-		suggestion = RuntimeMessage("suggestion_default", "Ensure arguments match the schema parameters exactly.")
+		suggestion = RuntimeMessage("suggestion_default", "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly.")
 	}
 
 	return RuntimeMessagef("alert_with_recommendation", "System Alert: Your execution of '%s' failed due to: %s\nRecommendation: %s", toolName, errStr, suggestion)
