@@ -194,16 +194,30 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 	case "remove":
 		if len(parts) < 3 {
-			fmt.Fprintln(w, "usage: /agent remove <name>")
+			fmt.Fprintln(w, "usage: /agent remove <name> (or /agent remove all)")
 			return
 		}
 		target := parts[2]
+		if target == "all" || target == "*" {
+			agents := mam.ListAgents()
+			for _, ag := range agents {
+				_ = mam.RemoveAgent(ag)
+			}
+			fmt.Fprintf(w, "removed %d subagents.\n", len(agents))
+			return
+		}
 		err := mam.RemoveAgent(target)
 		if err != nil {
 			fmt.Fprintf(w, "error removing agent: %v\n", err)
 		} else {
-			fmt.Fprintf(w, "agent .%s. removed.\n", target)
+			fmt.Fprintf(w, "agent '%s' removed.\n", target)
 		}
+	case "clear":
+		agents := mam.ListAgents()
+		for _, ag := range agents {
+			_ = mam.RemoveAgent(ag)
+		}
+		fmt.Fprintf(w, "cleared %d subagents.\n", len(agents))
 	default:
 		fmt.Fprintln(w, "unknown agent subcommand. usage: /agent [list | join <name> | spawn <name> <prompt> [parent_name] [skill_name] | remove <name> | skill [list/load/clear] ...]")
 	}
