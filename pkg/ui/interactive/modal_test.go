@@ -147,3 +147,57 @@ func TestRunChoiceMenuExEnterOnHighlightedFreeText(t *testing.T) {
 		t.Fatalf("expected typed answer via Enter path, got %q", answer)
 	}
 }
+
+type mockScrollReplacer struct {
+	printLine    int
+	scrollBottom int
+	linesBack    int
+	lines        []string
+}
+
+func (m *mockScrollReplacer) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+func (m *mockScrollReplacer) ReplaceScrollBlockBack(count int, lines []string) bool {
+	m.linesBack = count
+	m.lines = lines
+	return true
+}
+
+func (m *mockScrollReplacer) GetPrintLine() int {
+	return m.printLine
+}
+
+func (m *mockScrollReplacer) GetScrollBottom() int {
+	return m.scrollBottom
+}
+
+func TestRunChoiceMenuExLinesBackTargeting(t *testing.T) {
+	theme := style.GetTheme("catppuccin")
+	input := strings.NewReader("\x1b[B\r")
+	replacer := &mockScrollReplacer{
+		printLine:    25,
+		scrollBottom: 25,
+	}
+
+	options := []ChoiceMenuOption{
+		{Label: "yes, proceed (Recommended)", Keys: "1"},
+		{Label: "no, cancel", Keys: "2"},
+		{Label: "always allow in this session", Keys: "3"},
+	}
+
+	idx, dismissed, _ := runChoiceMenuEx(input, replacer, theme, "approve tool execution?", options, 0)
+	if dismissed {
+		t.Fatalf("menu was dismissed")
+	}
+	if idx != 1 {
+		t.Fatalf("expected selected index 1, got %d", idx)
+	}
+	if replacer.linesBack != len(options)-1 {
+		t.Fatalf("expected linesBack=%d, got %d", len(options)-1, replacer.linesBack)
+	}
+	if len(replacer.lines) != len(options) {
+		t.Fatalf("expected %d replaced lines, got %d", len(options), len(replacer.lines))
+	}
+}

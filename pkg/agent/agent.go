@@ -22,6 +22,7 @@ type StreamRenderer interface {
 	Flush()
 	HasOutput() bool
 	StartToolCall(toolName string, toolCallIndex int)
+	SetToolTarget(target string, toolCallIndex int)
 	WriteToolCall(content string)
 	GetToolTitleLineNumber(index int) int
 	DidStreamToolBody(index int) bool

@@ -58,6 +58,7 @@ type Config struct {
 	ActiveProvider           string                     `json:"active_provider,omitempty"`
 	MaxCompletionTokens      int                        `json:"max_completion_tokens,omitempty"`
 	CompactPrompt            bool                       `json:"compact_prompt,omitempty"`
+	ToolProtocol             string                     `json:"tool_protocol,omitempty"`
 	DisableLocalPlugins      bool                       `json:"disable_local_plugins,omitempty"`
 	DebugLogFile             string                     `json:"debug_log_file,omitempty"`
 	MaxSubagentDepth         int                        `json:"max_subagent_depth,omitempty"`
@@ -141,7 +142,7 @@ func DefaultConfig() *Config {
 		SyntaxTheme:              "auto",
 		Providers:                make(map[string]ProviderConfig),
 		ActiveProvider:           "",
-		CompactPrompt:            false,
+		CompactPrompt:            true,
 		MaxPasteLines:            80,
 		MaxPasteChars:            8000,
 		Timeout:                  120,

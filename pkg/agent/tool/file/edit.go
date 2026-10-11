@@ -20,15 +20,14 @@ func NewEditTool() domaintool.ToolExecutor {
 func (t *editTool) Name() string { return "edit" }
 
 func (t *editTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Make precise file edits with exact text replacement, including multiple disjoint edits in one call")
+	return domaintool.FormatToolSnippet(t.Name(), "<edit path=\"path/to/file\">\n<old>...</old>\n<new>...</new>\n</edit>")
 }
 
 func (t *editTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'edit' for precise changes (updates[].oldText must match uniquely).",
-		"Keep oldText minimal (typically 2-5 lines).",
-		"When modifying multiple separate locations in a file, provide multiple updates in updates[] in a single edit call.",
-		"If edit reports an oldText mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.",
+		"Use 'edit' for precise changes: <edit path=\"path/to/file\">\n<old>\nexact old code\n</old>\n<new>\nexact new code\n</new>\n</edit>",
+		"Keep old text minimal (typically 2-5 lines).",
+		"If edit reports a mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.",
 	})
 }
 

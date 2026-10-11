@@ -191,6 +191,71 @@ type TodoItem struct {
 	Status string `json:"status"` // "pending", "in_progress", "completed"
 }
 
+// UnmarshalJSON provides resilient deserialization for TodoItem, accepting
+// any common key for task description ("task", "content", "description", "title", etc.)
+// or string scalar.
+func (ti *TodoItem) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		ti.Task = strings.TrimSpace(s)
+		ti.Status = "pending"
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	for _, idKey := range []string{"id", "task_id", "taskId", "number", "index", "key"} {
+		if v, ok := raw[idKey]; ok {
+			ti.ID = fmt.Sprintf("%v", v)
+			break
+		}
+	}
+
+	for _, taskKey := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"} {
+		if v, ok := raw[taskKey]; ok {
+			if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
+				ti.Task = strings.TrimSpace(str)
+				break
+			}
+		}
+	}
+
+	for _, statusKey := range []string{"status", "state"} {
+		if v, ok := raw[statusKey]; ok {
+			if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
+				ti.Status = strings.TrimSpace(str)
+				break
+			}
+		}
+	}
+	if ti.Status == "" {
+		if done, ok := raw["done"].(bool); ok {
+			if done {
+				ti.Status = "completed"
+			} else {
+				ti.Status = "pending"
+			}
+		} else if completed, ok := raw["completed"].(bool); ok {
+			if completed {
+				ti.Status = "completed"
+			} else {
+				ti.Status = "pending"
+			}
+		} else if inProgress, ok := raw["in_progress"].(bool); ok {
+			if inProgress {
+				ti.Status = "in_progress"
+			} else {
+				ti.Status = "pending"
+			}
+		}
+	}
+
+	return nil
+}
+
 // TodoState is an interface implemented by agent contexts that maintain a task board.
 type TodoState interface {
 	GetTodos() []TodoItem

@@ -153,6 +153,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	cleanMessages = EnforceToolPairingInvariance(cleanMessages)
 
 	finalTools := prepareToolDefinitions(tools, p.Config.CompactPrompt)
+	if p.Config != nil && strings.ToLower(strings.TrimSpace(p.Config.ToolProtocol)) == "xml" {
+		finalTools = nil
+	}
 
 	reasoningEffort := ""
 	if enableThinking {

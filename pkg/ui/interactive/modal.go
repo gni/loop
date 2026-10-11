@@ -18,6 +18,33 @@ type scrollBlockReplacer interface {
 	ReplaceScrollBlockBack(count int, lines []string) bool
 }
 
+type scrollRegionTracker interface {
+	GetPrintLine() int
+	GetScrollBottom() int
+}
+
+func getScrollRegionTracker(w io.Writer) scrollRegionTracker {
+	type unwrapper interface {
+		Unwrap() io.Writer
+	}
+	curr := w
+	for curr != nil {
+		if srt, ok := curr.(scrollRegionTracker); ok {
+			return srt
+		}
+		if u, ok := curr.(unwrapper); ok {
+			next := u.Unwrap()
+			if next == nil || next == curr {
+				break
+			}
+			curr = next
+		} else {
+			break
+		}
+	}
+	return nil
+}
+
 func getScrollBlockReplacer(w io.Writer) scrollBlockReplacer {
 	type unwrapper interface {
 		Unwrap() io.Writer
@@ -111,7 +138,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	renderMenu := func() {
 		if firstRender {
-			fmt.Fprint(output, "\r\x1b[K", promptStyle.Render(prompt+"\r\n"))
+			fmt.Fprintf(output, "\r\x1b[K%s\r\n", promptStyle.Render(prompt))
 			for i := range options {
 				fmt.Fprint(output, "\r\x1b[K")
 				fmt.Fprintf(output, "%s\r\n", renderOption(i))
@@ -125,7 +152,13 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			for i := range options {
 				lines[i] = renderOption(i)
 			}
-			if promptWriter.ReplaceScrollBlockBack(len(options), lines) {
+			linesBack := len(options)
+			if tracker := getScrollRegionTracker(output); tracker != nil {
+				if tracker.GetPrintLine() >= tracker.GetScrollBottom() {
+					linesBack = len(options) - 1
+				}
+			}
+			if promptWriter.ReplaceScrollBlockBack(linesBack, lines) {
 				return
 			}
 		}
@@ -344,9 +377,9 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 
 func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
 	options := []ChoiceMenuOption{
-		{Label: "yes", Keys: "yY"},
-		{Label: "no", Keys: "nN"},
-		{Label: "always", Keys: "aA"},
+		{Label: "yes, proceed (Recommended)", Keys: "yY1"},
+		{Label: "no, cancel", Keys: "nN2"},
+		{Label: "always allow in this session", Keys: "aA3"},
 	}
 	selected, dismissed := runModalChoice(w, theme, " approve tool execution?", options, 0)
 	if dismissed {

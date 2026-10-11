@@ -22,6 +22,7 @@ func (r *noopRenderer) WriteReasoning(string)              {}
 func (r *noopRenderer) Flush()                             {}
 func (r *noopRenderer) HasOutput() bool                    { return false }
 func (r *noopRenderer) StartToolCall(string, int)          {}
+func (r *noopRenderer) SetToolTarget(string, int)          {}
 func (r *noopRenderer) WriteToolCall(string)               {}
 func (r *noopRenderer) GetToolTitleLineNumber(int) int     { return -1 }
 func (r *noopRenderer) DidStreamToolBody(int) bool         { return false }

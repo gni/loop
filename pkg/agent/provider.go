@@ -226,6 +226,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, p.ChunkDropObserver)
 			},
 		)
+		filter.SetToolTargetCallback(func(target string, idx int) {
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, p.ChunkDropObserver)
+		})
 	}
 
 	textFilter := NewFallbackToolTextFilter(func(text string) {

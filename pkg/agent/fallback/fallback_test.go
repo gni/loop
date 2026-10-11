@@ -100,3 +100,102 @@ func TestFallbackToolTextFilterEmitsToolCallbacks(t *testing.T) {
 		t.Fatalf("expected streamed tool call chunks, got: %q", fullBody)
 	}
 }
+
+func TestParseFallbackToolCallsXMLDirectTags(t *testing.T) {
+	input := `I will create App.vue now:
+<write path="frontend/src/App.vue">
+<script>
+console.log("hello");
+</script>
+</write>
+And edit model.py:
+<edit path="model.py">
+<old>val = 1</old>
+<new>val = 2</new>
+</edit>
+And check git:
+<bash>
+git status
+</bash>
+And inspect readme:
+<read path="README.md" />`
+
+	calls := fallback.ParseFallbackToolCalls(input)
+	if len(calls) != 4 {
+		t.Fatalf("expected 4 XML tool calls, got %d", len(calls))
+	}
+
+	// Verify write
+	if calls[0].Function.Name != "write" {
+		t.Fatalf("call 0: expected write, got %s", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"frontend/src/App.vue"`) {
+		t.Errorf("call 0: expected path in arguments, got: %s", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `console.log(\"hello\");`) {
+		t.Errorf("call 0: expected content in arguments, got: %s", calls[0].Function.Arguments)
+	}
+
+	// Verify edit
+	if calls[1].Function.Name != "edit" {
+		t.Fatalf("call 1: expected edit, got %s", calls[1].Function.Name)
+	}
+	if !strings.Contains(calls[1].Function.Arguments, `"oldText":"val = 1"`) || !strings.Contains(calls[1].Function.Arguments, `"newText":"val = 2"`) {
+		t.Errorf("call 1: expected updates in arguments, got: %s", calls[1].Function.Arguments)
+	}
+
+	// Verify bash
+	if calls[2].Function.Name != "bash" {
+		t.Fatalf("call 2: expected bash, got %s", calls[2].Function.Name)
+	}
+	if !strings.Contains(calls[2].Function.Arguments, "git status") {
+		t.Errorf("call 2: expected git status command, got: %s", calls[2].Function.Arguments)
+	}
+
+	// Verify read
+	if calls[3].Function.Name != "read" {
+		t.Fatalf("call 3: expected read, got %s", calls[3].Function.Name)
+	}
+	if !strings.Contains(calls[3].Function.Arguments, `"path":"README.md"`) {
+		t.Errorf("call 3: expected path README.md, got: %s", calls[3].Function.Arguments)
+	}
+}
+
+func TestFallbackToolTextFilterXMLTargetCallback(t *testing.T) {
+	var names []string
+	var targets []string
+	var calls []string
+	filter := fallback.NewToolTextFilter(func(text string) {})
+	filter.SetToolCallbacks(
+		func(toolName string, idx int) {
+			names = append(names, fmt.Sprintf("%d:%s", idx, toolName))
+		},
+		func(chunk string, idx int) {
+			calls = append(calls, chunk)
+		},
+	)
+	filter.SetToolTargetCallback(func(target string, idx int) {
+		targets = append(targets, fmt.Sprintf("%d:%s", idx, target))
+	})
+
+	chunks := []string{
+		"Creating component:\n<write path=\"src/App.vue\">\n",
+		"<template><div>hello</div></template>\n",
+		"</write>\nDone!",
+	}
+	for _, c := range chunks {
+		filter.Write(c)
+	}
+	filter.Flush()
+
+	if len(names) != 1 || names[0] != "0:write" {
+		t.Fatalf("expected tool name '0:write', got: %v", names)
+	}
+	if len(targets) != 1 || targets[0] != "0:src/App.vue" {
+		t.Fatalf("expected tool target '0:src/App.vue', got: %v", targets)
+	}
+	fullBody := strings.Join(calls, "")
+	if !strings.Contains(fullBody, "<template><div>hello</div></template>") {
+		t.Fatalf("expected body streamed cleanly, got: %q", fullBody)
+	}
+}

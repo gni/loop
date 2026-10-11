@@ -219,6 +219,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					loader.ShowDots()
 					loader.Feed()
 				}
+			} else if chunk.Type == "tool_target" {
+				sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
 			} else if chunk.Type == "tool_call" {
 				sr.WriteToolCall(chunk.Content)
 				if sr.DidStreamToolBody(chunk.ToolCallIndex) {

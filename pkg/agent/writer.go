@@ -90,6 +90,7 @@ func (f *FallbackStreamRenderer) WriteReasoning(content string)                 
 func (f *FallbackStreamRenderer) Flush()                                           {}
 func (f *FallbackStreamRenderer) HasOutput() bool                                  { return false }
 func (f *FallbackStreamRenderer) StartToolCall(toolName string, toolCallIndex int) {}
+func (f *FallbackStreamRenderer) SetToolTarget(target string, toolCallIndex int)   {}
 func (f *FallbackStreamRenderer) WriteToolCall(content string)                     {}
 func (f *FallbackStreamRenderer) GetToolTitleLineNumber(index int) int             { return -1 }
 func (f *FallbackStreamRenderer) DidStreamToolBody(index int) bool                 { return false }

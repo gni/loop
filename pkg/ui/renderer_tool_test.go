@@ -1260,4 +1260,43 @@ func TestStreamedWriteConsecutiveTurnsSameIndexStreaming(t *testing.T) {
 	renderer.CompleteToolCall(0, "write", `{"path": "file2.txt"}`, false)
 }
 
+func TestStreamedWriteConsecutiveTurnsContentBeforePathStreaming(t *testing.T) {
+	var output renderLineCounter
+	renderer := NewStreamRenderer(&output, UITheme{}, false, true, "test")
+
+	// Turn 1: tool 0 write file1 with path first
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(`{"path": "file1.txt", "content": "hello 1\n"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(0, "write", `{"path": "file1.txt"}`, false)
+
+	snapTurn1 := stripAnsi(output.String())
+	if !strings.Contains(snapTurn1, "file1.txt") || !strings.Contains(snapTurn1, "hello 1") {
+		t.Fatalf("turn 1 write not rendered properly: %s", snapTurn1)
+	}
+
+	// Turn 2: tool 0 write file2 with content first in same session
+	renderer.StartToolCall("write", 0)
+	renderer.WriteToolCall(`{"content": "hello 2\n`)
+
+	// Before path arrives: content should be buffered, no bare "write" without filename!
+	snapTurn2Mid := stripAnsi(output.String())
+	if strings.Contains(snapTurn2Mid, "hello 2") {
+		t.Fatalf("expected turn 2 content to be buffered until path arrives without premature bare header, got: %s", snapTurn2Mid)
+	}
+
+	renderer.WriteToolCall(`", "path": "file2.txt"}`)
+	renderer.Flush()
+	renderer.CompleteToolCall(0, "write", `{"path": "file2.txt"}`, false)
+
+	final := stripAnsi(output.String())
+	if !strings.Contains(final, "write file2.txt") {
+		t.Fatalf("expected header with file2.txt, got: %s", final)
+	}
+	if !strings.Contains(final, "hello 2") {
+		t.Fatalf("expected content flushed with file2.txt, got: %s", final)
+	}
+}
+
+
 

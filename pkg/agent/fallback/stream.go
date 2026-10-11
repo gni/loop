@@ -9,6 +9,15 @@ var fallbackOpeningMarkers = [...]string{
 	"<execute",
 	"<tool:",
 	"<function",
+	"<write",
+	"<edit",
+	"<bash",
+	"<read",
+	"<grep",
+	"<find",
+	"<list",
+	"<todo",
+	"<ask_user",
 }
 
 // ToolTextFilter removes fallback XML tool invocations before assistant text
@@ -20,6 +29,7 @@ type ToolTextFilter struct {
 	emit                     func(string)
 	flushed                  bool
 	emitToolName             func(string, int)
+	emitToolTarget           func(string, int)
 	emitToolCall             func(string, int)
 	toolCallIndex            int
 	activeToolName           string
@@ -36,6 +46,13 @@ func (f *ToolTextFilter) SetToolCallbacks(emitToolName func(string, int), emitTo
 	}
 	f.emitToolName = emitToolName
 	f.emitToolCall = emitToolCall
+}
+
+func (f *ToolTextFilter) SetToolTargetCallback(emitToolTarget func(string, int)) {
+	if f == nil {
+		return
+	}
+	f.emitToolTarget = emitToolTarget
 }
 
 func (f *ToolTextFilter) Write(chunk string) {
@@ -55,6 +72,13 @@ func (f *ToolTextFilter) Flush() {
 }
 
 func extractFallbackToolName(opening string) string {
+	for _, tool := range []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"} {
+		if strings.HasPrefix(opening, "<"+tool) {
+			if len(opening) == len(tool)+1 || opening[len(tool)+1] == ' ' || opening[len(tool)+1] == '>' || opening[len(tool)+1] == '/' || opening[len(tool)+1] == '\n' || opening[len(tool)+1] == '\r' || opening[len(tool)+1] == '\t' {
+				return tool
+			}
+		}
+	}
 	for _, attr := range []string{`name="`, `name='`} {
 		if idx := strings.Index(opening, attr); idx >= 0 {
 			rest := opening[idx+len(attr):]
@@ -66,13 +90,19 @@ func extractFallbackToolName(opening string) string {
 	}
 	if strings.HasPrefix(opening, "<tool:") {
 		name := opening[len("<tool:"):]
-		name = strings.TrimRight(name, ">\n\r ")
-		return name
+		end := strings.IndexAny(name, " >\n\r\t")
+		if end >= 0 {
+			return name[:end]
+		}
+		return strings.TrimRight(name, ">\n\r ")
 	}
 	if strings.HasPrefix(opening, "<function=") {
 		name := opening[len("<function="):]
-		name = strings.TrimRight(name, ">\n\r ")
-		return name
+		end := strings.IndexAny(name, " >\n\r\t")
+		if end >= 0 {
+			return name[:end]
+		}
+		return strings.TrimRight(name, ">\n\r ")
 	}
 	return ""
 }
@@ -208,6 +238,32 @@ func (f *ToolTextFilter) process(final bool) {
 			if f.emitToolName != nil {
 				f.emitToolName(toolName, f.toolCallIndex)
 			}
+			attrs := ParseXMLAttrs(opening)
+			var target string
+			for _, key := range []string{"path", "file", "file_path", "filepath", "filename", "file_name", "target", "target_file", "targetfile", "name", "to"} {
+				if v, ok := attrs[key]; ok && strings.TrimSpace(v) != "" {
+					target = strings.TrimSpace(v)
+					break
+				}
+			}
+			if target == "" && toolName == "bash" {
+				for _, key := range []string{"command", "cmd", "commandline", "script"} {
+					if v, ok := attrs[key]; ok && strings.TrimSpace(v) != "" {
+						target = strings.TrimSpace(v)
+						break
+					}
+				}
+			}
+			if target != "" && f.emitToolTarget != nil {
+				f.emitToolTarget(target, f.toolCallIndex)
+			}
+		}
+
+		if closingTag == "" {
+			f.activeToolName = ""
+			f.toolCallIndex++
+			f.discardLeadingWhitespace = true
+			continue
 		}
 	}
 }
@@ -219,6 +275,17 @@ func (f *ToolTextFilter) emitText(text string) {
 }
 
 func fallbackClosingTag(opening string) (string, bool) {
+	for _, tool := range []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"} {
+		if strings.HasPrefix(opening, "<"+tool) {
+			if !validFallbackOpeningBoundary(opening, len("<"+tool)) {
+				continue
+			}
+			if strings.HasSuffix(strings.TrimSpace(opening), "/>") {
+				return "", true // self-closing
+			}
+			return "</" + tool + ">", true
+		}
+	}
 	switch {
 	case strings.HasPrefix(opening, "<tool_call"):
 		if !validFallbackOpeningBoundary(opening, len("<tool_call")) {
@@ -232,6 +299,9 @@ func fallbackClosingTag(opening string) (string, bool) {
 		return "</execute>", true
 	case strings.HasPrefix(opening, "<tool:"):
 		name := opening[len("<tool:") : len(opening)-1]
+		if idx := strings.IndexAny(name, " \t\r\n"); idx >= 0 {
+			name = name[:idx]
+		}
 		if name == "" {
 			return "", false
 		}

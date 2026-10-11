@@ -210,7 +210,7 @@ func (sr *StreamRenderer) flushLocked() {
 func (sr *StreamRenderer) flushActiveToolLocked() {
 	if sr.parser != nil && sr.parser.ActiveToolName != "" {
 		if !sr.parser.TitlePrinted {
-			if sr.parser.ActiveToolName != "bash" || strings.TrimSpace(sr.parser.Path) != "" {
+			if !sr.parser.NeedsPath() || strings.TrimSpace(sr.parser.Path) != "" {
 				sr.parser.PrintStreamTitle(sr.w, sr.theme)
 			}
 		}
@@ -218,6 +218,7 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 		if sr.parser.LineBuffer.Len() > 0 {
 			sr.parser.EmitLine(sr.w, sr.theme)
 		}
+		sr.parser.IsRawStream = false
 		sr.parser.ActiveToolName = ""
 		sr.parser.ActiveToolIndex = -1
 	}
@@ -269,6 +270,7 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.PathPrinted = false
 		sr.parser.IsContent = false
 		sr.parser.IsPath = false
+		sr.parser.IsRawStream = false
 		sr.parser.OutputBuf.Reset()
 		sr.parser.LineBuffer.Reset()
 		sr.parser.InString = false
@@ -285,6 +287,22 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	}
 }
 
+func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if sr.parser != nil {
+		sr.parser.Path = target
+		sr.parser.IsRawStream = true
+		if sr.parser.GuessedLang == "" && target != "" {
+			sr.parser.GuessedLang = stream.DetectLangFromPath(target)
+		}
+		if sr.parser.StreamWrites && !sr.parser.TitlePrinted {
+			sr.parser.PrintStreamTitle(sr.w, sr.theme)
+			sr.parser.PathPrinted = true
+		}
+	}
+}
+
 func (sr *StreamRenderer) WriteToolCall(content string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -294,7 +312,11 @@ func (sr *StreamRenderer) WriteToolCall(content string) {
 	}
 
 	if sr.parser != nil {
-		sr.parser.Feed(content, sr.w, sr.theme)
+		if sr.parser.IsRawStream {
+			sr.parser.FeedRaw(content, sr.w, sr.theme)
+		} else {
+			sr.parser.Feed(content, sr.w, sr.theme)
+		}
 	}
 }
 
@@ -311,6 +333,9 @@ func (sr *StreamRenderer) GetToolTitleLineNumber(index int) int {
 
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return -1
+	}
+	if sr.parser.TitlePrinted && sr.parser.ToolTitleLineNumbers[index] < 0 {
+		return 0
 	}
 	return sr.parser.ToolTitleLineNumbers[index]
 }

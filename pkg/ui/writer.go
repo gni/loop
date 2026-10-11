@@ -51,6 +51,12 @@ func (p *PromptPreservingWriter) getScrollBottom() int {
 	return p.getOffsetRow(5)
 }
 
+func (p *PromptPreservingWriter) GetScrollBottom() int {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	return p.getScrollBottom()
+}
+
 func NewPromptPreservingWriter(w io.Writer, height int) *PromptPreservingWriter {
 	p := &PromptPreservingWriter{
 		inner:                 w,

@@ -373,7 +373,11 @@ func FormatToolGuidelines(toolName string, fallbackGuidelines []string) []string
 func FormatCoreRules(workspaceRoot string) []string {
 	rules := make([]string, 0, len(MasterSystemPrompts.CoreRules))
 	for _, r := range MasterSystemPrompts.CoreRules {
-		rules = append(rules, fmt.Sprintf(r, workspaceRoot))
+		if strings.Contains(r, "%s") {
+			rules = append(rules, fmt.Sprintf(r, workspaceRoot))
+		} else {
+			rules = append(rules, r)
+		}
 	}
 	return rules
 }

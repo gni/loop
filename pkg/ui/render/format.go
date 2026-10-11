@@ -42,6 +42,10 @@ func GetToolGlyph(toolName string) string {
 		return "✖"
 	case lower == "task_status" || lower == "task_list" || lower == "ps":
 		return "≡"
+	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
+		return "≡"
+	case lower == "ask_user" || strings.Contains(lower, "ask"):
+		return "?"
 	default:
 		return "●"
 	}
@@ -67,6 +71,10 @@ func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITh
 			color = theme.Highlight
 		case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
 			color = theme.Secondary
+		case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
+			color = theme.Secondary
+		case lower == "ask_user" || strings.Contains(lower, "ask"):
+			color = theme.Highlight
 		case lower == "load_skill" || strings.Contains(lower, "skill"):
 			color = theme.Highlight
 		default:
@@ -114,6 +122,10 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 		return style.NewStyle().Foreground(theme.Error).Bold(true)
 	case lower == "task_status" || lower == "task_list" || lower == "ps":
 		return style.NewStyle().Foreground(theme.TextMuted).Bold(true)
+	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
+		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
+	case lower == "ask_user" || strings.Contains(lower, "ask"):
+		return style.NewStyle().Foreground(theme.Highlight).Bold(true)
 	case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
 		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):

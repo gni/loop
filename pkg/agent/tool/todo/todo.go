@@ -11,7 +11,8 @@ import (
 )
 
 type todoTool struct {
-	mu sync.RWMutex
+	mu    sync.RWMutex
+	items []domaintool.TodoItem
 }
 
 // NewTodoTool creates a new instance of the todo planning tool.
@@ -28,7 +29,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "todo",
-			Description: domaintool.FormatToolDescription("todo", "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time."),
+			Description: domaintool.FormatToolDescription("todo", "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call, or specify action ('update', 'add', 'remove') with task_id and status. Exactly one task may be 'in_progress' at a time."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
@@ -55,15 +56,32 @@ func (t *todoTool) Definition() domaintool.Tool {
 							Required: []string{"id", "task", "status"},
 						},
 					},
+					"action": {
+						Type:        "string",
+						Description: domaintool.FormatParamDescription("todo", "action", "Action to perform on the plan: 'update', 'add', 'remove', or 'list'."),
+						Enum:        []string{"update", "add", "remove", "list"},
+					},
+					"task_id": {
+						Type:        "string",
+						Description: domaintool.FormatParamDescription("todo", "task_id", "Identifier of the task to update or remove (e.g., 'task-1')."),
+					},
+					"status": {
+						Type:        "string",
+						Description: domaintool.FormatParamDescription("todo", "status", "Updated status when modifying a task ('pending', 'in_progress', 'completed')."),
+						Enum:        []string{"pending", "in_progress", "completed"},
+					},
+					"task": {
+						Type:        "string",
+						Description: domaintool.FormatParamDescription("todo", "task", "Description of the task when adding or modifying."),
+					},
 				},
-				Required: []string{"tasks"},
 			},
 		},
 	}
 }
 
 func (t *todoTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement; exactly one task in_progress.")
+	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement or action-based update; exactly one task in_progress.")
 }
 
 func (t *todoTool) PromptGuidelines() []string {
@@ -72,41 +90,348 @@ func (t *todoTool) PromptGuidelines() []string {
 	})
 }
 
+func matchTaskID(targetID, itemID string, index int) bool {
+	tgt := strings.ToLower(strings.TrimSpace(targetID))
+	itm := strings.ToLower(strings.TrimSpace(itemID))
+	if tgt == "" || itm == "" {
+		return false
+	}
+	if tgt == itm {
+		return true
+	}
+	if tgt == fmt.Sprintf("%d", index+1) {
+		return true
+	}
+	strip := func(s string) string {
+		for _, prefix := range []string{"task-", "task_", "step-", "step_", "#"} {
+			if strings.HasPrefix(s, prefix) {
+				return strings.TrimPrefix(s, prefix)
+			}
+		}
+		return s
+	}
+	st := strip(tgt)
+	si := strip(itm)
+	if st == si || si == tgt || st == itm {
+		return true
+	}
+	return false
+}
+
 func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
-	var args struct {
-		Tasks []domaintool.TodoItem `json:"tasks"`
-		Todos []domaintool.TodoItem `json:"todos"`
-		Items []domaintool.TodoItem `json:"items"`
-		Plan  []domaintool.TodoItem `json:"plan"`
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var currentTasks []domaintool.TodoItem
+	if ts, ok := ctx.(domaintool.TodoState); ok {
+		currentTasks = ts.GetTodos()
+	}
+	if len(currentTasks) == 0 && len(t.items) > 0 {
+		currentTasks = make([]domaintool.TodoItem, len(t.items))
+		copy(currentTasks, t.items)
 	}
 
 	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" || trimmed == "{}" {
+		if len(currentTasks) > 0 {
+			return t.formatSummary(currentTasks), nil
+		}
+		return "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
+	}
+
+	isJSON := strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+
+	var items []domaintool.TodoItem
+
 	if strings.HasPrefix(trimmed, "[") {
 		var list []domaintool.TodoItem
 		if err := json.Unmarshal([]byte(trimmed), &list); err == nil {
-			args.Tasks = list
+			items = list
 		}
-	} else {
-		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-			return "", errors.New(domaintool.RuntimeMessagef("todo_invalid_args", "invalid arguments for todo: %v. Expected JSON with {\"tasks\": [...]}", err))
+	} else if strings.HasPrefix(trimmed, "{") {
+		var container struct {
+			Tasks    []domaintool.TodoItem `json:"tasks"`
+			Todos    []domaintool.TodoItem `json:"todos"`
+			Items    []domaintool.TodoItem `json:"items"`
+			Plan     []domaintool.TodoItem `json:"plan"`
+			Content  []domaintool.TodoItem `json:"content"`
+			Data     []domaintool.TodoItem `json:"data"`
+			List     []domaintool.TodoItem `json:"list"`
+			TodoList []domaintool.TodoItem `json:"todo_list"`
+		}
+		_ = json.Unmarshal([]byte(trimmed), &container)
+
+		if len(container.Tasks) > 0 {
+			items = container.Tasks
+		} else if len(container.Todos) > 0 {
+			items = container.Todos
+		} else if len(container.Items) > 0 {
+			items = container.Items
+		} else if len(container.Plan) > 0 {
+			items = container.Plan
+		} else if len(container.Content) > 0 {
+			items = container.Content
+		} else if len(container.Data) > 0 {
+			items = container.Data
+		} else if len(container.List) > 0 {
+			items = container.List
+		} else if len(container.TodoList) > 0 {
+			items = container.TodoList
+		}
+
+		if len(items) == 0 {
+			var raw map[string]interface{}
+			if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+				var action string
+				for _, k := range []string{"action", "op", "operation", "command", "type"} {
+					if v, ok := raw[k]; ok {
+						action = strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", v)))
+						break
+					}
+				}
+
+				var taskID string
+				for _, k := range []string{"task_id", "taskId", "id", "number", "index", "key"} {
+					if v, ok := raw[k]; ok {
+						taskID = strings.TrimSpace(fmt.Sprintf("%v", v))
+						break
+					}
+				}
+
+				var status string
+				for _, k := range []string{"status", "state"} {
+					if v, ok := raw[k]; ok {
+						status = strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", v)))
+						break
+					}
+				}
+				if status == "" {
+					if done, ok := raw["done"].(bool); ok {
+						if done {
+							status = "completed"
+						} else {
+							status = "pending"
+						}
+					} else if completed, ok := raw["completed"].(bool); ok {
+						if completed {
+							status = "completed"
+						} else {
+							status = "pending"
+						}
+					} else if inProgress, ok := raw["in_progress"].(bool); ok {
+						if inProgress {
+							status = "in_progress"
+						} else {
+							status = "pending"
+						}
+					}
+				}
+
+				var taskDesc string
+				for _, k := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"} {
+					if v, ok := raw[k]; ok {
+						if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+							taskDesc = strings.TrimSpace(s)
+							break
+						}
+					}
+				}
+
+				switch action {
+				case "complete", "completed", "finish", "done":
+					action = "update"
+					if status == "" {
+						status = "completed"
+					}
+				case "start", "in_progress", "inprogress":
+					action = "update"
+					if status == "" {
+						status = "in_progress"
+					}
+				case "pending", "reset":
+					action = "update"
+					if status == "" {
+						status = "pending"
+					}
+				case "delete", "del", "rm":
+					action = "remove"
+				case "create", "insert", "append", "new":
+					action = "add"
+				case "modify", "edit", "change", "set", "mark", "set_status":
+					action = "update"
+				case "list", "get", "show", "view", "read":
+					action = "list"
+				}
+
+				if action == "" && taskID != "" && (status != "" || taskDesc != "") {
+					action = "update"
+				}
+
+				switch action {
+				case "list":
+					if len(currentTasks) == 0 {
+						return "No active todo plan.", nil
+					}
+					return t.formatSummary(currentTasks), nil
+
+				case "update":
+					if len(currentTasks) == 0 {
+						return "", errors.New(domaintool.RuntimeMessage("todo_no_plan_to_update", "cannot update task: no active todo plan exists. Please initialize a plan first with 'tasks'"))
+					}
+					if taskID == "" {
+						return "", errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to update a task"))
+					}
+					matchedIdx := -1
+					for i, it := range currentTasks {
+						if matchTaskID(taskID, it.ID, i) {
+							matchedIdx = i
+							break
+						}
+					}
+					if matchedIdx == -1 {
+						return "", fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
+					}
+					if status != "" {
+						currentTasks[matchedIdx].Status = status
+					}
+					if taskDesc != "" {
+						currentTasks[matchedIdx].Task = taskDesc
+					}
+					// If this task was set to in_progress, demote any other in_progress task to pending
+					if strings.ToLower(currentTasks[matchedIdx].Status) == "in_progress" {
+						for j := range currentTasks {
+							if j != matchedIdx && strings.ToLower(currentTasks[j].Status) == "in_progress" {
+								currentTasks[j].Status = "pending"
+							}
+						}
+					}
+					items = currentTasks
+
+				case "remove":
+					if len(currentTasks) == 0 {
+						return "", errors.New(domaintool.RuntimeMessage("todo_no_plan_to_remove", "cannot remove task: no active todo plan exists"))
+					}
+					if taskID == "" {
+						return "", errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to remove a task"))
+					}
+					matched := false
+					var updated []domaintool.TodoItem
+					for i, it := range currentTasks {
+						if matchTaskID(taskID, it.ID, i) {
+							matched = true
+							continue
+						}
+						updated = append(updated, it)
+					}
+					if !matched {
+						return "", fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
+					}
+					items = updated
+
+				case "add":
+					if taskDesc == "" {
+						return "", errors.New(domaintool.RuntimeMessage("todo_empty_desc", "task description is required to add a task"))
+					}
+					if taskID == "" {
+						taskID = fmt.Sprintf("task-%d", len(currentTasks)+1)
+					}
+					if status == "" {
+						status = "pending"
+					}
+					if strings.ToLower(status) == "in_progress" {
+						for j := range currentTasks {
+							if strings.ToLower(currentTasks[j].Status) == "in_progress" {
+								currentTasks[j].Status = "pending"
+							}
+						}
+					}
+					currentTasks = append(currentTasks, domaintool.TodoItem{
+						ID:     taskID,
+						Task:   taskDesc,
+						Status: status,
+					})
+					items = currentTasks
+
+				default:
+					if taskDesc != "" {
+						if len(currentTasks) == 0 {
+							newID := taskID
+							if newID == "" {
+								newID = "task-1"
+							}
+							if status == "" {
+								status = "pending"
+							}
+							items = []domaintool.TodoItem{{ID: newID, Task: taskDesc, Status: status}}
+						} else if taskID != "" {
+							for i, it := range currentTasks {
+								if matchTaskID(taskID, it.ID, i) {
+									currentTasks[i].Task = taskDesc
+									if status != "" {
+										currentTasks[i].Status = status
+									}
+									items = currentTasks
+									break
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
-	items := args.Tasks
-	if len(items) == 0 && len(args.Todos) > 0 {
-		items = args.Todos
-	} else if len(items) == 0 && len(args.Items) > 0 {
-		items = args.Items
-	} else if len(items) == 0 && len(args.Plan) > 0 {
-		items = args.Plan
+	if len(items) == 0 {
+		if isJSON {
+			return "", errors.New(domaintool.RuntimeMessage("todo_invalid_args", "invalid arguments for todo: expected JSON with 'tasks' array or valid action parameters"))
+		}
+
+		lines := strings.Split(trimmed, "\n")
+		var parsed []domaintool.TodoItem
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			status := "pending"
+			if strings.HasPrefix(line, "- [x]") || strings.HasPrefix(line, "[x]") || strings.HasPrefix(line, "- [X]") || strings.HasPrefix(line, "[X]") {
+				status = "completed"
+				line = strings.TrimSpace(strings.TrimLeft(line, "- [xX] "))
+			} else if strings.HasPrefix(line, "- [>]") || strings.HasPrefix(line, "[>]") || strings.HasPrefix(line, "- [~]") || strings.HasPrefix(line, "[~]") || strings.HasPrefix(line, "- [in_progress]") {
+				status = "in_progress"
+				line = strings.TrimSpace(strings.TrimLeft(line, "- [>~in_progress] "))
+			} else if strings.HasPrefix(line, "- [ ]") || strings.HasPrefix(line, "[ ]") {
+				status = "pending"
+				line = strings.TrimSpace(strings.TrimLeft(line, "- [ ] "))
+			} else if strings.HasPrefix(line, "• ") || strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+				line = strings.TrimSpace(line[2:])
+			}
+
+			// Strip numbered prefixes like "1. ", "10) "
+			idx := 0
+			for idx < len(line) && line[idx] >= '0' && line[idx] <= '9' {
+				idx++
+			}
+			if idx > 0 && idx < len(line) && (line[idx] == '.' || line[idx] == ')') {
+				line = strings.TrimSpace(line[idx+1:])
+			}
+
+			if line != "" {
+				parsed = append(parsed, domaintool.TodoItem{
+					ID:     fmt.Sprintf("task-%d", len(parsed)+1),
+					Task:   line,
+					Status: status,
+				})
+			}
+		}
+		if len(parsed) > 0 {
+			items = parsed
+		}
 	}
 
 	if len(items) == 0 {
 		return "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
 	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	seenIDs := make(map[string]bool)
 	inProgressCount := 0
@@ -151,10 +476,32 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", errors.New(domaintool.RuntimeMessagef("todo_policy_violation", "policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount))
 	}
 
+	t.items = make([]domaintool.TodoItem, len(items))
+	copy(t.items, items)
+
 	// If the context supports TodoState, update it
 	if ts, ok := ctx.(domaintool.TodoState); ok {
 		if err := ts.SetTodos(items); err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("todo_state_store_failed", "failed to store todo state: %w"), err)
+		}
+	}
+
+	return t.formatSummary(items), nil
+}
+
+func (t *todoTool) formatSummary(items []domaintool.TodoItem) string {
+	inProgressCount := 0
+	pendingCount := 0
+	completedCount := 0
+
+	for _, item := range items {
+		switch item.Status {
+		case "in_progress":
+			inProgressCount++
+		case "completed":
+			completedCount++
+		default:
+			pendingCount++
 		}
 	}
 
@@ -170,5 +517,5 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		sb.WriteString(domaintool.RuntimeMessagef("todo_item_line", "%s %s: %s\n", marker, item.ID, item.Task))
 	}
 
-	return sb.String(), nil
+	return sb.String()
 }

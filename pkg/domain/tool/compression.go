@@ -60,8 +60,8 @@ func CompressToolDefinition(t Tool) Tool {
 		setPropDesc(props, "context", "Surrounding context lines")
 		setPropDesc(props, "limit", "Max matches")
 	case "write":
-		compressed.Function.Description = "Create or overwrite a file. Always specify 'path' first before 'content'. Never use after an edit mismatch."
-		setPropDesc(props, "path", "File path (specify first)")
+		compressed.Function.Description = "Create or overwrite a file. In arguments JSON, always specify 'path' first before 'content' (e.g. {\"path\": \"...\", \"content\": \"...\"}). Never use after an edit mismatch."
+		setPropDesc(props, "path", "File path (ALWAYS specify first)")
 		setPropDesc(props, "content", "File content (specify after path)")
 		setPropDesc(props, "write_content", "File content (specify after path)")
 	case "edit":

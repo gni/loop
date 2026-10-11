@@ -311,6 +311,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 					if chunk.ToolCallIndex == 0 {
 						sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
 					}
+				} else if chunk.Type == "tool_target" {
+					if chunk.ToolCallIndex == 0 {
+						sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
+					}
 				} else if chunk.Type == "tool_call" {
 					if chunk.ToolCallIndex == 0 {
 						sr.WriteToolCall(chunk.Content)

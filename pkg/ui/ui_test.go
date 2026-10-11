@@ -759,17 +759,17 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 	})
 
-	t.Run("chunked streaming buffers write_content until path arrives, then displays header with path and flushes lines", func(t *testing.T) {
+	t.Run("chunked streaming buffers content and displays header with path when path arrives", func(t *testing.T) {
 		p := &jsonStreamParser{
 			activeToolName: "write",
 			streamWrites:   true,
 		}
 		var buf bytes.Buffer
-		// First chunk: write_content arrives first without path - should buffer until path arrives
+		// First chunk: write_content arrives first without path - should buffer without premature bare header
 		p.feed(`{"write_content": "line 1\nline 2\n"`, &buf, theme)
 		gotChunk1 := stripAnsi(buf.String())
-		if gotChunk1 != "" {
-			t.Fatalf("expected write_content to buffer until path arrives, got: %q", gotChunk1)
+		if strings.Contains(gotChunk1, "write") || len(gotChunk1) > 0 {
+			t.Fatalf("expected write_content to be buffered until path arrives, got: %q", gotChunk1)
 		}
 		// Second chunk: path arrives - should display header with path and flush buffered lines
 		p.feed(`, "path": "app/worker.py"}`, &buf, theme)

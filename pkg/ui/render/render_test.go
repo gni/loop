@@ -76,6 +76,23 @@ func TestToolGlyphsAndTargetExtraction(t *testing.T) {
 	if cmdTarget != "ls -la" {
 		t.Fatalf("expected command ls -la, got: %s", cmdTarget)
 	}
+
+	if glyph := GetToolGlyph("todo"); glyph != "≡" {
+		t.Fatalf("expected ≡ for todo, got %s", glyph)
+	}
+	if glyph := GetToolGlyph("ask_user"); glyph != "?" {
+		t.Fatalf("expected ? for ask_user, got %s", glyph)
+	}
+
+	askTarget := ExtractToolTarget("ask_user", `{"question": "Proceed with deployment?"}`)
+	if askTarget != "Proceed with deployment?" {
+		t.Fatalf("expected question target for ask_user, got: %s", askTarget)
+	}
+
+	todoTarget := ExtractToolTarget("todo", `{"tasks": [{"id": "1", "task": "Build backend", "status": "in_progress"}]}`)
+	if todoTarget != "Build backend" {
+		t.Fatalf("expected active task target for todo, got: %s", todoTarget)
+	}
 }
 
 func TestCalculatePromptLayout(t *testing.T) {

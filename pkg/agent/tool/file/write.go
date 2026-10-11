@@ -19,24 +19,23 @@ func NewWriteTool() domaintool.ToolExecutor {
 func (t *writeTool) Name() string { return "write" }
 
 func (t *writeTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Create or overwrite complete files")
+	return domaintool.FormatToolSnippet(t.Name(), "Create or overwrite a file: {\"path\": \"path/to/file\", \"content\": \"...\"}")
 }
 
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
-		"Specify the target file in 'path' and the complete file contents in 'content'.",
-		"In tool call arguments, always output 'path' before 'content' to enable real-time streaming preview and syntax highlighting.",
+		"When calling 'write', you MUST ALWAYS declare 'path' as the FIRST property before 'content' in arguments JSON (e.g. {\"path\": \"file.ext\", \"content\": \"...\"}). NEVER put 'content' before 'path'.",
 	})
 }
 
 func (t *writeTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"write",
-		domaintool.FormatToolDescription("write", "Create a new file or completely overwrite an existing file. Specify 'path' first before 'content'. Automatically creates parent directories."),
+		domaintool.FormatToolDescription("write", "Create a new file or completely overwrite an existing file. In arguments JSON, ALWAYS specify 'path' first before 'content' (e.g. {\"path\": \"...\", \"content\": \"...\"}). Automatically creates parent directories."),
 		map[string]domaintool.SchemaProp{
-			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. Specify 'path' first before 'content'.")),
-			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. Specify 'content' after 'path'.")),
+			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. ALWAYS specify 'path' first before 'content'.")),
+			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. ALWAYS specify 'content' after 'path'.")),
 		},
 		"path", "content",
 	)

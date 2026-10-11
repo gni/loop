@@ -187,8 +187,14 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 		}
 	}
 
-	// 4. Subagents / Spawning / Prompts
+	// 4. Subagents / Spawning / Prompts / Interactive
 	if strings.Contains(toolName, "subagent") || strings.Contains(toolName, "spawn") || strings.Contains(toolName, "task") || strings.Contains(toolName, "ask") || strings.Contains(toolName, "permission") {
+		if p := getString("question"); p != "" {
+			return p
+		}
+		if p := getString("Question"); p != "" {
+			return p
+		}
 		if p := getString("prompt"); p != "" {
 			return p
 		}
@@ -201,6 +207,49 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 		if p := getString("id"); p != "" {
 			return p
 		}
+	}
+
+	if strings.Contains(toolName, "todo") || strings.Contains(toolName, "plan") {
+		if argsMap != nil {
+			for _, key := range []string{"tasks", "todos", "items", "plan", "content", "data", "list", "todo_list"} {
+				if tasksVal, ok := argsMap[key]; ok {
+					if taskList, ok := tasksVal.([]interface{}); ok {
+						var inProgressTask string
+						var firstPendingTask string
+						for _, item := range taskList {
+							if m, ok := item.(map[string]interface{}); ok {
+								var taskDesc string
+								for _, descKey := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary"} {
+									if s, ok := m[descKey].(string); ok && strings.TrimSpace(s) != "" {
+										taskDesc = strings.TrimSpace(s)
+										break
+									}
+								}
+								status, _ := m["status"].(string)
+								if strings.EqualFold(status, "in_progress") && taskDesc != "" {
+									inProgressTask = taskDesc
+									break
+								}
+								if firstPendingTask == "" && taskDesc != "" {
+									firstPendingTask = taskDesc
+								}
+							} else if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+								if firstPendingTask == "" {
+									firstPendingTask = strings.TrimSpace(s)
+								}
+							}
+						}
+						if inProgressTask != "" {
+							return inProgressTask
+						}
+						if firstPendingTask != "" {
+							return firstPendingTask
+						}
+					}
+				}
+			}
+		}
+		return ""
 	}
 
 	// 5. Fallback - check all keys in priority order

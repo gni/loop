@@ -46,6 +46,7 @@ type JSONStreamParser struct {
 	ToolBodyStreamed     []bool
 	ActiveToolIndex      int
 	StreamWrites         bool
+	IsRawStream          bool
 }
 
 // NewJSONStreamParser creates a new streamed JSON tool parser.
@@ -201,8 +202,12 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 	p.LineBuffer.Reset()
 
 	if !p.TitlePrinted {
-		p.OutputBuf.WriteString(line + "\n")
-		return
+		if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
+			p.OutputBuf.WriteString(line + "\n")
+			return
+		}
+		p.PrintStreamTitle(w, theme)
+		p.FlushOutputBuf(w, theme)
 	}
 
 	if p.GuessedLang == "" && p.Path != "" {
@@ -224,6 +229,9 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
 	if p.OutputBuf.Len() == 0 {
 		return
+	}
+	if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+		p.PrintStreamTitle(w, theme)
 	}
 	raw := p.OutputBuf.String()
 	p.OutputBuf.Reset()
@@ -257,8 +265,16 @@ func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
 
 func (p *JSONStreamParser) EmitContent(s string, w io.Writer, theme style.UITheme) {
 	if !p.TitlePrinted {
-		p.OutputBuf.WriteString(s)
-		return
+		if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
+			if p.OutputBuf.Len() < 200 {
+				p.OutputBuf.WriteString(s)
+				return
+			}
+			p.FlushOutputBuf(w, theme)
+		} else {
+			p.PrintStreamTitle(w, theme)
+			p.FlushOutputBuf(w, theme)
+		}
 	}
 
 	fmt.Fprint(w, s)
@@ -281,6 +297,27 @@ func (p *JSONStreamParser) appendStringChunk(s string, w io.Writer, theme style.
 		}
 	} else {
 		p.Buf.WriteString(s)
+	}
+}
+
+// FeedRaw streams unescaped raw text lines directly (for XML tool bodies like <write>).
+func (p *JSONStreamParser) FeedRaw(chunk string, w io.Writer, theme style.UITheme) {
+	p.EnsureTrackingIndex()
+	p.IsContent = true
+	p.MarkBodyStreamed()
+	if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+		p.PrintStreamTitle(w, theme)
+		p.FlushOutputBuf(w, theme)
+	}
+	for i := 0; i < len(chunk); i++ {
+		char := chunk[i]
+		if char == '\n' {
+			p.EmitLine(w, theme)
+		} else if char == '\r' {
+			continue
+		} else {
+			p.LineBuffer.WriteByte(char)
+		}
 	}
 }
 
@@ -376,11 +413,9 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 							p.GuessedLang = DetectLangFromPath(p.Path)
 						}
 						p.MarkBodyStreamed()
-						if !p.TitlePrinted {
-							if !p.NeedsPath() || p.Path != "" {
-								p.PrintStreamTitle(w, theme)
-								p.FlushOutputBuf(w, theme)
-							}
+						if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+							p.PrintStreamTitle(w, theme)
+							p.FlushOutputBuf(w, theme)
 						}
 					}
 				}
@@ -389,7 +424,9 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 					p.EmitLine(w, theme)
 				}
 				if !p.TitlePrinted {
-					p.PrintStreamTitle(w, theme)
+					if !p.NeedsPath() || strings.TrimSpace(p.Path) != "" {
+						p.PrintStreamTitle(w, theme)
+					}
 					p.FlushOutputBuf(w, theme)
 				}
 				p.InValue = false
@@ -411,7 +448,7 @@ func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
 	if p.TitlePrinted {
 		return
 	}
-	if p.ActiveToolName == "bash" && strings.TrimSpace(p.Path) == "" {
+	if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
 		return
 	}
 	p.TitlePrinted = true
@@ -431,13 +468,23 @@ func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
 
 func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UITheme) {
 	p.EnsureTrackingIndex()
-	line := p.ToolTitleLineNumbers[p.ActiveToolIndex]
-	symbol := render.RenderToolSymbol(p.ActiveToolName, render.ToolStatusPending, theme)
-	if p.ActiveToolName == "bash" {
-		ReplaceTrackedStreamLine(w, line, render.FormatBashCommandLine(symbol, p.Path, theme))
+	if !p.TitlePrinted {
+		if !p.NeedsPath() || strings.TrimSpace(p.Path) != "" {
+			p.PrintStreamTitle(w, theme)
+			p.FlushOutputBuf(w, theme)
+		}
 		return
 	}
-	ReplaceTrackedStreamLine(w, line, render.FormatToolTitle(symbol, p.ActiveToolName, p.Path, theme))
+	line := p.ToolTitleLineNumbers[p.ActiveToolIndex]
+	if line < 0 {
+		return
+	}
+	symbol := render.RenderToolSymbol(p.ActiveToolName, render.ToolStatusPending, theme)
+	if p.ActiveToolName == "bash" {
+		_ = ReplaceTrackedStreamLine(w, line, render.FormatBashCommandLine(symbol, p.Path, theme))
+	} else {
+		_ = ReplaceTrackedStreamLine(w, line, render.FormatToolTitle(symbol, p.ActiveToolName, p.Path, theme))
+	}
 }
 
 func (p *JSONStreamParser) EnsureTrackingIndex() {
