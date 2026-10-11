@@ -657,7 +657,7 @@ func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, r
 	}
 }
 
-func unwrapWriterIfPossible(w io.Writer) io.Writer { return unwrapWriter(w) }
+func unwrapWriterIfPossible(w io.Writer) io.Writer { return GetScreenWriter(w) }
 
 // EngineLoader is the spinner contract the engine needs from a turn loader.
 type EngineLoader interface {

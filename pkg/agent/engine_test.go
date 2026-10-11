@@ -141,3 +141,23 @@ func TestSubagentRecapSharesEngine(t *testing.T) {
 		t.Fatalf("halt notice must name the agent: %s", e.HaltNotice())
 	}
 }
+
+type mockScreenWriter struct {
+	inner io.Writer
+}
+
+func (m *mockScreenWriter) Write(p []byte) (int, error) { return m.inner.Write(p) }
+func (m *mockScreenWriter) Unwrap() io.Writer           { return m.inner }
+
+func TestUnwrapWriterPreservesScreenWriter(t *testing.T) {
+	raw := &bytes.Buffer{}
+	screen := &mockScreenWriter{inner: raw}
+	tee := NewCustomTeeWriter(screen, &bytes.Buffer{})
+	ncw := NewNewlineCounterWriter(tee)
+
+	unwrapped := unwrapWriterIfPossible(ncw)
+	if unwrapped != screen {
+		t.Fatalf("unwrapWriterIfPossible must return the screen writer, got %T instead of mockScreenWriter", unwrapped)
+	}
+}
+
