@@ -14,7 +14,7 @@
   "context_window_limit": 128000,
   "auto_adapt_context": true,
   "min_context_window": 32768,
-  "compression_threshold": 0.8,
+  "compression_threshold": 0.95,
   "reasoning_effort": "low",
   "stream_writes": true,
   "syntax_theme": "monokai",

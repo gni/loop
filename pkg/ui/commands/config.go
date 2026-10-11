@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
@@ -128,6 +129,28 @@ func handleConfigCommand(
 			if !parseConfigPositiveInt(w, "min context window", val, &a.Config.MinContextWindow) {
 				return
 			}
+		case "compression_threshold", "compress_threshold", "compression_ratio":
+			v := strings.TrimSpace(strings.TrimSuffix(val, "%"))
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || f <= 0 {
+				fmt.Fprintf(w, "Invalid compression threshold: %v (must be positive number, e.g. 0.90 or 90%%)\n", err)
+				return
+			}
+			if f > 1.0 {
+				f = f / 100.0
+			}
+			if f > 0.98 {
+				f = 0.98
+			}
+			a.Config.CompressionThreshold = f
+		case "compaction_reserve_tokens", "compaction_reserve", "reserve_tokens":
+			var reserve int
+			if !parseConfigPositiveInt(w, "compaction reserve tokens", val, &reserve) {
+				return
+			}
+			a.Config.Limits.CompactionReserveTokens = reserve
+			a.Config.Limits = limits.Resolve(a.Config.Limits)
+			limits.Set(a.Config.Limits)
 		case "max_completion_tokens", "max_tokens", "output_tokens":
 			if !parseConfigPositiveInt(w, "max completion tokens", val, &a.Config.MaxCompletionTokens) {
 				return

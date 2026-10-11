@@ -23,7 +23,7 @@ func (a *Agent) CompressionThreshold() float64 {
 	if a != nil && a.Config != nil && a.Config.CompressionThreshold > 0 {
 		return a.Config.CompressionThreshold
 	}
-	return 0.80
+	return 0.95
 }
 
 // CompactionTrigger reports whether history should be compressed. The trigger is
@@ -31,18 +31,40 @@ func (a *Agent) CompressionThreshold() float64 {
 // summarizer call itself plus the completion floor, otherwise a ratio trigger
 // fires too late and the next request overflows. The ratio is kept as a
 // secondary ceiling so a low configured ratio still fires early.
-func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
+func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio ...float64) bool {
 	if effectiveLimit <= 0 || promptTokens <= 0 {
 		return false
 	}
 	decision := promptTokens + completionTokens
 	reserve := limits.CompactionReserveTokens()
+
+	r := CompressionThresholdRatio()
+	if len(ratio) > 0 && ratio[0] > 0 {
+		r = ratio[0]
+		// When a custom ratio is supplied (e.g. 0.90 or 0.95), do not allow the default
+		// reserve to prematurely force compression before the target ratio, provided
+		// a safe headroom floor (4096 tokens) is preserved.
+		ratioHeadroom := int((1.0 - r) * float64(effectiveLimit))
+		const minSafeHeadroom = 4096
+		if ratioHeadroom < reserve && ratioHeadroom >= minSafeHeadroom {
+			reserve = ratioHeadroom
+		}
+	}
+
 	if decision >= effectiveLimit-reserve {
 		return true
 	}
 	// The configured ratio is kept as a secondary ceiling so a low ratio still
 	// fires early for large windows.
-	return decision >= int(CompressionThresholdRatio()*float64(effectiveLimit))
+	return decision >= int(r*float64(effectiveLimit))
+}
+
+func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
+	thresh := 0.80
+	if a != nil {
+		thresh = a.CompressionThreshold()
+	}
+	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, thresh)
 }
 
 func CompressionThresholdRatio() float64 {
@@ -52,7 +74,7 @@ func CompressionThresholdRatio() float64 {
 // maybeCompress is the single compression call site shared by the pre- and
 // post-iteration blocks of the main loop.
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
-	if len(*messages) > 4 && CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
+	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
 		a.CompressHistory(ctx, messages, sessionID, theme, w)
 		recomputed, _ := a.GetGlobalTokens(*messages, allowlist)
 		return recomputed, a.GetEffectiveContextLimit(recomputed), true

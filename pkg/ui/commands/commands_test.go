@@ -93,6 +93,36 @@ func TestSlashCommands_Config(t *testing.T) {
 		t.Fatalf("expected temperature 0.7, got %v", a.Config.Temperature)
 	}
 
+	// Set compression threshold
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/config compression_threshold 0.90", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /config to be handled")
+	}
+	if a.Config.CompressionThreshold != 0.90 {
+		t.Fatalf("expected compression threshold 0.90, got %v", a.Config.CompressionThreshold)
+	}
+
+	// Set compression threshold with percent
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/config compression_threshold 95%", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /config to be handled")
+	}
+	if a.Config.CompressionThreshold != 0.95 {
+		t.Fatalf("expected compression threshold 0.95, got %v", a.Config.CompressionThreshold)
+	}
+
+	// Set compaction reserve tokens
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/config compaction_reserve_tokens 8000", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /config to be handled")
+	}
+	if a.Config.Limits.CompactionReserveTokens != 8000 {
+		t.Fatalf("expected compaction reserve tokens 8000, got %v", a.Config.Limits.CompactionReserveTokens)
+	}
+
 	// Set invalid key
 	output.Reset()
 	handled, quit = HandleSlashCommand(a, "/config nonexistent_key 123", &messages, nil, theme, &output, &sessionID, nil, nil, nil)

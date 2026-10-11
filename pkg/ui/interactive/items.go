@@ -91,6 +91,30 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		intConfigItem("context_window_limit", "context window limit", "Maximum prompt context size allocated before compression (tokens)", &cloned.ContextWindowLimit),
 		boolConfigItem("auto_adapt_context", "auto adapt context", "Automatically scale context window dynamically according to prompt size", &cloned.AutoAdaptContext, formatBool),
 		intConfigItem("min_context_window", "min context window", "Smallest token window allowed during dynamic context scaling (tokens)", &cloned.MinContextWindow),
+		{
+			id:          "compression_threshold",
+			name:        "compression threshold",
+			value:       func() string { return fmt.Sprintf("%.2f", cloned.CompressionThreshold) },
+			description: "Context consumption fraction triggering history compression (e.g. 0.80 to 0.95)",
+			onEdit: func(newVal string) error {
+				if newVal == "" {
+					return nil
+				}
+				v := strings.TrimSpace(strings.TrimSuffix(newVal, "%"))
+				f, err := strconv.ParseFloat(v, 64)
+				if err != nil || f <= 0 {
+					return fmt.Errorf("must be a positive number (e.g. 0.90 or 90%%)")
+				}
+				if f > 1.0 {
+					f = f / 100.0
+				}
+				if f > 0.98 {
+					f = 0.98
+				}
+				cloned.CompressionThreshold = f
+				return nil
+			},
+		},
 		intConfigItem("max_completion_tokens", "max completion tokens", "Hard upper ceiling on generated tokens per single LLM turn", &cloned.MaxCompletionTokens),
 		intConfigItem("max_reasoning_steps", "max reasoning steps", "Safety ceiling on autonomous tool execution turns before stopping", &cloned.MaxReasoningSteps),
 		boolConfigItem("direct_commands", "direct commands", "Execute non-tool plain text as system shell instructions when recognized", &cloned.DirectCommands, formatBool),

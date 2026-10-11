@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
@@ -81,5 +82,51 @@ func TestCompressionSummaryScaffoldIsCatalogDriven(t *testing.T) {
 	// file operations are not lost when history is folded.
 	if !strings.Contains(domaintool.MasterSystemPrompts.CompressionPrompt, "File Modifications") {
 		t.Errorf("compression prompt lost the file-operations requirement")
+	}
+}
+
+func TestCompactionTriggerCustomRatio(t *testing.T) {
+	limit := 1000000 // Large limit so reserve doesn't dominate
+
+	// Default ratio is 0.80
+	if CompactionTrigger(750000, 0, limit) {
+		t.Errorf("should not trigger at 75%% with default ratio")
+	}
+
+	// Custom ratio 0.90
+	if CompactionTrigger(850000, 0, limit, 0.90) {
+		t.Errorf("should not trigger at 85%% when ratio is 0.90")
+	}
+	if !CompactionTrigger(910000, 0, limit, 0.90) {
+		t.Errorf("should trigger at 91%% when ratio is 0.90")
+	}
+
+	// Agent method on 128k context window
+	limit128k := 128000
+	ag := &Agent{}
+	// At default 0.95 on 128k, triggers above 95% (121600)
+	if ag.CompactionTrigger(120000, 0, limit128k) {
+		t.Errorf("default agent ratio 0.95 on 128k should not trigger at 93.75%%")
+	}
+	if !ag.CompactionTrigger(122000, 0, limit128k) {
+		t.Errorf("default agent ratio 0.95 on 128k should trigger above 95%%")
+	}
+
+	// At 0.90 on 128k, 90% is 115200 tokens
+	ag.Config = &config.Config{CompressionThreshold: 0.90}
+	if ag.CompactionTrigger(114000, 0, limit128k) {
+		t.Errorf("agent with 0.90 threshold on 128k should not trigger at 89%% (114000 tokens)")
+	}
+	if !ag.CompactionTrigger(116000, 0, limit128k) {
+		t.Errorf("agent with 0.90 threshold on 128k should trigger at 90.6%% (116000 tokens)")
+	}
+
+	// At 0.95 on 128k, 95% is 121600 tokens
+	ag.Config = &config.Config{CompressionThreshold: 0.95}
+	if ag.CompactionTrigger(120000, 0, limit128k) {
+		t.Errorf("agent with 0.95 threshold on 128k should not trigger at 93.75%% (120000 tokens)")
+	}
+	if !ag.CompactionTrigger(122000, 0, limit128k) {
+		t.Errorf("agent with 0.95 threshold on 128k should trigger at 95.3%% (122000 tokens)")
 	}
 }

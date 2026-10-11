@@ -136,7 +136,7 @@ func DefaultConfig() *Config {
 		ContextWindowLimit:       128000,
 		AutoAdaptContext:         true,
 		MinContextWindow:         32768,
-		CompressionThreshold:     0.80,
+		CompressionThreshold:     0.95,
 		ReasoningEffort:          "low",
 		StreamWrites:             true,
 		SyntaxTheme:              "auto",
@@ -249,7 +249,7 @@ func LoadConfig(path string) (*Config, error) {
 	limits.Set(config.Limits)
 
 	if config.CompressionThreshold == 0.0 {
-		config.CompressionThreshold = 0.80
+		config.CompressionThreshold = 0.95
 	}
 	if config.MaxPasteLines <= 0 {
 		config.MaxPasteLines = 80
