@@ -10,7 +10,10 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
+	"loop/pkg/ui/style"
 )
 
 func TestParseManualCommand(t *testing.T) {
@@ -174,3 +177,50 @@ func TestPromptInputAndBackspace(t *testing.T) {
 		t.Errorf("expected line %q after backspacing gibberish, got %q", "/help", line2)
 	}
 }
+
+func TestExecuteManualShellCommandDoesNotPolluteHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	a := &agent.Agent{
+		WorkspaceRoot: tmpDir,
+		Config:        &config.Config{},
+	}
+	var outBuf bytes.Buffer
+	ppWriter := ui.NewPromptPreservingWriter(&outBuf, 30)
+	messages := []db.Message{
+		{Role: "user", Content: "initial user message"},
+	}
+	ki := &interceptor.KeyInterceptorReader{Agent: a, W: &outBuf}
+	rl := term.NewTerminal(ki, "")
+
+	executeManualShellCommand(
+		"echo 'test shell output'",
+		"!echo 'test shell output'",
+		"> ",
+		a,
+		ppWriter,
+		&messages,
+		"sess-test",
+		ki,
+		rl,
+		nil,
+		nil,
+		style.UITheme{},
+	)
+
+	// Messages must record the command output for the LLM to see
+	if len(messages) != 2 {
+		t.Fatalf("expected messages length 2, got %d: %+v", len(messages), messages)
+	}
+	if !strings.Contains(messages[1].Content, "test shell output") {
+		t.Fatalf("expected command output in messages[1], got: %s", messages[1].Content)
+	}
+
+	rendered := outBuf.String()
+	if strings.Contains(rendered, "command output appended to conversation context") {
+		t.Fatalf("expected no 'command output appended' banner, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "test shell output") {
+		t.Fatalf("expected stdout 'test shell output' in terminal output, got: %q", rendered)
+	}
+}
+

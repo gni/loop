@@ -169,9 +169,6 @@ func executeManualShellCommand(
 	*messages = append(*messages, db.Message{Role: "user", Content: contextMsg})
 	_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
 
-	successStyle := style.NewStyle().Foreground(theme.Success).Italic(true)
-	fmt.Fprintln(ppWriter)
-	fmt.Fprintln(ppWriter, successStyle.Render("command output appended to conversation context."))
 	ppWriter.ForceReposition()
 	kiReader.Drain()
 	refreshREPLStatus(a, *messages, allowedTools, mam, kiReader, rl, false)
