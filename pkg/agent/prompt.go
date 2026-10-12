@@ -81,6 +81,24 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		baseInstruction = MasterSystemPrompts.DefaultIdentity
 	}
 
+	// 2. Tools section, generated from the registry so plugins and MCP tools are
+	// never omitted from the model's view of what it can call.
+	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
+	hasBash := false
+	for _, entry := range tools {
+		if entry.Name == "bash" {
+			hasBash = true
+			break
+		}
+	}
+
+	if !hasBash {
+		baseInstruction = sanitizeNoBashInstruction(baseInstruction)
+		if userGuidelines != "" {
+			userGuidelines = sanitizeNoBashInstruction(userGuidelines)
+		}
+	}
+
 	var sb strings.Builder
 	t := tpl()
 
@@ -90,9 +108,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	// CWD section
 	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
-	// 2. Tools section, generated from the registry so plugins and MCP tools are
-	// never omitted from the model's view of what it can call.
-	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	var toolLines strings.Builder
 	for _, entry := range tools {
 		toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
@@ -104,16 +119,65 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	// 3. Rules section: core rules, then per-tool guidelines, then user guidelines.
 	var ruleLines strings.Builder
-	for _, rule := range FormatCoreRules(workspaceRoot) {
+	seenRules := make(map[string]bool)
+
+	addRule := func(rule string) {
+		rule = strings.TrimSpace(rule)
+		if rule == "" {
+			return
+		}
+		key := normalizeRuleKey(rule)
+		if seenRules[key] {
+			return
+		}
+		seenRules[key] = true
 		ruleLines.WriteString(fmt.Sprintf(t.RuleLine, rule))
+	}
+
+	for _, rule := range FormatCoreRules(workspaceRoot) {
+		if !hasBash {
+			if strings.Contains(rule, "Background Processes:") && strings.Contains(rule, "bash") {
+				continue
+			}
+			if strings.Contains(rule, "Strict Tool Hierarchy:") {
+				rule = "Use Available Tools: Always use available tools instead of commands."
+			}
+			rule = sanitizeNoBashInstruction(rule)
+		}
+		addRule(rule)
+	}
+	if !hasBash {
+		addRule("Commands: Command execution is unavailable. Always use available tools instead of commands.")
 	}
 	for _, entry := range tools {
 		for _, rule := range entry.Guidelines {
-			ruleLines.WriteString(fmt.Sprintf(t.RuleLine, rule))
+			if !hasBash {
+				rule = sanitizeNoBashInstruction(rule)
+			}
+			addRule(rule)
 		}
 	}
 	if userGuidelines != "" {
-		ruleLines.WriteString(fmt.Sprintf(t.UserGuidelinesSection, userGuidelines))
+		if !hasBash {
+			userGuidelines = sanitizeNoBashInstruction(userGuidelines)
+		}
+		lines := strings.Split(userGuidelines, "\n")
+		var customLines []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			key := normalizeRuleKey(trimmed)
+			if seenRules[key] {
+				continue
+			}
+			seenRules[key] = true
+			customLines = append(customLines, trimmed)
+		}
+		if len(customLines) > 0 {
+			ruleLines.WriteString(fmt.Sprintf(t.UserGuidelinesSection, strings.Join(customLines, "\n")))
+		}
 	}
 	sb.WriteString(fmt.Sprintf(t.RulesSection, ruleLines.String()))
 
@@ -250,4 +314,55 @@ func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries
+}
+
+func sanitizeNoBashInstruction(s string) string {
+	s = strings.ReplaceAll(s, ", and run shell commands in the workspace.", ".")
+	s = strings.ReplaceAll(s, "and run shell commands in the workspace.", ".")
+	s = strings.ReplaceAll(s, ", and run shell commands in the workspace", "")
+	s = strings.ReplaceAll(s, "and run shell commands in the workspace", "")
+	s = strings.ReplaceAll(s, ", and execute commands in the workspace.", ".")
+	s = strings.ReplaceAll(s, "and execute commands in the workspace.", ".")
+	s = strings.ReplaceAll(s, ", and execute commands in the workspace", "")
+	s = strings.ReplaceAll(s, "and execute commands in the workspace", "")
+	s = strings.ReplaceAll(s, "Never use bash for file operations.", "")
+	s = strings.ReplaceAll(s, "Never use bash for file operations", "")
+	s = strings.ReplaceAll(s, "over bash", "for file operations")
+	s = strings.ReplaceAll(s, " in bash", "")
+	s = strings.ReplaceAll(s, "  ", " ")
+	return strings.TrimSpace(s)
+}
+
+func normalizeRuleKey(rule string) string {
+	r := strings.ToLower(strings.TrimSpace(rule))
+	r = strings.TrimLeft(r, "0123456789.-* ")
+	r = strings.Trim(r, ".:;!?'\"`")
+
+	// Semantic clusters for rules that appear across core rules, tool guidelines, and user configs
+	if strings.Contains(r, "available tools instead of commands") ||
+		(strings.Contains(r, "instead of commands") && strings.Contains(r, "tools")) ||
+		strings.Contains(r, "strict tool hierarchy") ||
+		strings.Contains(r, "use available tools") {
+		return "concept:tools_over_commands"
+	}
+	if strings.Contains(r, "path") && strings.Contains(r, "content") &&
+		(strings.Contains(r, "first") || strings.Contains(r, "order") || strings.Contains(r, "before")) {
+		return "concept:path_first_before_content"
+	}
+	if strings.Contains(r, "directory") && strings.Contains(r, "read") && strings.Contains(r, "list") {
+		return "concept:read_dir_use_list"
+	}
+	if strings.Contains(r, "actions over talk") {
+		return "concept:actions_over_talk"
+	}
+	if strings.Contains(r, "zero-slop") || strings.Contains(r, "conciseness") {
+		return "concept:conciseness"
+	}
+	if strings.Contains(r, "read files before editing") || strings.Contains(r, "read the file first") {
+		return "concept:read_before_edit"
+	}
+	if strings.Contains(r, "command execution is unavailable") {
+		return "concept:commands_unavailable"
+	}
+	return r
 }

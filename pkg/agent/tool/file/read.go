@@ -34,8 +34,7 @@ func (t *readTool) PromptSnippet() string {
 
 func (t *readTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'read' to examine files instead of cat or sed in bash. Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
-		"In tool call arguments, always output 'path' first.",
+		"Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
 	})
 }
 

@@ -28,7 +28,6 @@ func (t *listTool) PromptSnippet() string {
 
 func (t *listTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'list' to inspect directory trees; never call 'read' on a directory path.",
 		"If a listing returns nothing relevant, stop searching and answer from internal knowledge instead of re-listing.",
 	})
 }

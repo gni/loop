@@ -33,7 +33,6 @@ func (t *bashTool) PromptSnippet() string {
 
 func (t *bashTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use dedicated tools for file operations (read, edit, write, grep, find) instead of shell commands.",
 		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
 		"For background processes and long-running services, set 'background': true.",
 	})

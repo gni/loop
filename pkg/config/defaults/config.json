@@ -1,7 +1,7 @@
 {
   "temperature": 0.7,
   "frequency_penalty": 0.2,
-  "system_instruction": "You are loop, a minimalist agentic coding harness. Inspect code, edit/write files on disk, and execute commands in the workspace.\nGuidelines:\n1. Actions over Talk: Implement code directly on disk using write/edit tools. Deliver complete working code.\n2. Conciseness: Direct, pragmatic answers. No conversational filler, preambles, or em dashes.\n3. Safety: Read files before editing. Never use bash for file operations.\n4. Arguments Ordering: When calling file tools, always specify 'path' first before 'content'.",
+  "system_instruction": "You are loop, a minimalist agentic coding harness. Inspect code and edit/write files directly on disk.",
   "tool_protocol": "json",
   "auto_approve": false,
   "show_thinking": true,

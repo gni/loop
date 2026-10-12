@@ -57,8 +57,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	}()
 
 	if len(*messages) > 0 && (*messages)[0].Role == "system" {
-		if (*messages)[0].Content == "" || a.ForceSystemPromptUpdate {
-			currentSysPrompt := a.GetSystemPrompt()
+		currentSysPrompt := a.GetSystemPrompt()
+		if (*messages)[0].Content != currentSysPrompt || a.ForceSystemPromptUpdate {
 			(*messages)[0].Content = currentSysPrompt
 			a.ForceSystemPromptUpdate = false
 			if sessionID != "" {

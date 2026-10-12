@@ -24,8 +24,7 @@ func (t *writeTool) PromptSnippet() string {
 
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'write' only for new files or complete rewrites. Never use after an edit mismatch.",
-		"When calling 'write', you MUST ALWAYS declare 'path' as the FIRST property before 'content' in arguments JSON (e.g. {\"path\": \"file.ext\", \"content\": \"...\"}). NEVER put 'content' before 'path'.",
+		"Use 'write' only for new files or complete rewrites.",
 	})
 }
 

@@ -27,9 +27,7 @@ func (t *findTool) PromptSnippet() string {
 }
 
 func (t *findTool) PromptGuidelines() []string {
-	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'find' to locate files by glob pattern instead of running find in bash.",
-	})
+	return domaintool.FormatToolGuidelines(t.Name(), nil)
 }
 
 func (t *findTool) Definition() domaintool.Tool {

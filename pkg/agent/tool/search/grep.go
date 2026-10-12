@@ -37,9 +37,7 @@ func (t *grepTool) PromptSnippet() string {
 }
 
 func (t *grepTool) PromptGuidelines() []string {
-	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'grep' to search definitions or references across the workspace instead of running grep/find in bash.",
-	})
+	return domaintool.FormatToolGuidelines(t.Name(), nil)
 }
 
 func (t *grepTool) Definition() domaintool.Tool {

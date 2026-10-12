@@ -24,16 +24,19 @@ func TestAgentToolDisablingAndPrompt(t *testing.T) {
 		t.Fatalf("expected read to be enabled")
 	}
 
-	// Verify system prompt does not contain disabled tools
+	// Verify system prompt does not contain disabled tools or any mention of bash
 	prompt := a.GetSystemPrompt()
-	if strings.Contains(prompt, "bash: ") {
-		t.Fatalf("system prompt should not list disabled tool 'bash':\n%s", prompt)
+	if strings.Contains(strings.ToLower(prompt), "bash") {
+		t.Fatalf("system prompt should have zero mention of 'bash' when disabled:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "ask_user: ") {
 		t.Fatalf("system prompt should not list disabled tool 'ask_user':\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "read: ") {
 		t.Fatalf("system prompt should list enabled tool 'read':\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Always use available tools instead of commands") {
+		t.Fatalf("system prompt should instruct to use available tools instead of commands:\n%s", prompt)
 	}
 
 	// Enable bash at runtime
@@ -90,5 +93,42 @@ func TestAgentApplyConfigDisabledTools(t *testing.T) {
 
 	if a.IsToolDisabled("edit") {
 		t.Fatalf("expected edit to be re-enabled after ApplyConfig with empty DisabledTools")
+	}
+}
+
+func TestInspectPromptRepetitions(t *testing.T) {
+	cfg := config.DefaultConfig()
+	a := NewAgent(cfg, "", nil)
+	prompt := a.GetSystemPrompt()
+
+	// Count occurrences of key rule phrases in the prompt
+	countSubstring := func(needle string) int {
+		return strings.Count(prompt, needle)
+	}
+
+	if n := countSubstring("output 'path' first"); n > 1 {
+		t.Fatalf("expected at most 1 mention of 'output path first', got %d", n)
+	}
+	if n := countSubstring("available tools instead of commands"); n > 1 {
+		t.Fatalf("expected at most 1 mention of 'available tools instead of commands', got %d", n)
+	}
+	if n := countSubstring("use 'list' to inspect directory trees"); n > 1 {
+		t.Fatalf("expected at most 1 mention of 'use list to inspect directory trees', got %d", n)
+	}
+	if n := countSubstring("No registered reference skills"); n > 1 {
+		t.Fatalf("expected at most 1 mention of 'No registered reference skills', got %d", n)
+	}
+
+	// Also verify with bash disabled
+	cfgNoBash := config.DefaultConfig()
+	cfgNoBash.DisabledTools = []string{"bash"}
+	aNoBash := NewAgent(cfgNoBash, "", nil)
+	promptNoBash := aNoBash.GetSystemPrompt()
+
+	if strings.Contains(strings.ToLower(promptNoBash), "bash") {
+		t.Fatalf("prompt should not mention bash when disabled")
+	}
+	if n := strings.Count(promptNoBash, "available tools instead of commands"); n > 1 {
+		t.Fatalf("expected at most 1 mention of 'available tools instead of commands' when bash disabled, got %d", n)
 	}
 }
