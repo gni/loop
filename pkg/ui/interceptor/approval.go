@@ -25,7 +25,24 @@ func (r *ApprovalByteReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	p[0] = first
-	if first != 27 || len(p) == 1 {
+	if first != 27 {
+		n := 1
+		for n < len(p) {
+			select {
+			case next, ok := <-r.Input:
+				if !ok {
+					return n, nil
+				}
+				p[n] = next
+				n++
+			default:
+				return n, nil
+			}
+		}
+		return n, nil
+	}
+
+	if len(p) == 1 {
 		return 1, nil
 	}
 

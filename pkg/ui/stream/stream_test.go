@@ -221,4 +221,19 @@ func TestJSONStreamParserContentBeforePathStreaming(t *testing.T) {
 			t.Fatalf("expected header before code, got header at %d, code at %d", headerIdx, codeIdx)
 		}
 	})
+
+	t.Run("UTF-8 accents and unicode escapes in content", func(t *testing.T) {
+		p := stream.NewJSONStreamParser(true)
+		p.ActiveToolName = "write"
+		p.TitlePrinted = true
+		var buf bytes.Buffer
+
+		input := `{"content":"café crème à la fête \u00e9\n"}`
+		p.Feed(input, &buf, theme)
+
+		out := style.StripAnsi(buf.String())
+		if !strings.Contains(out, "café crème à la fête é") {
+			t.Fatalf("expected preserved UTF-8 accents and unescaped \\u00e9, got: %q", out)
+		}
+	})
 }

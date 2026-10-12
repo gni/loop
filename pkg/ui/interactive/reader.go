@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"loop/pkg/domain/limits"
 )
@@ -148,7 +149,7 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 			}
 			if b >= 32 {
 				line.WriteByte(b)
-				fmt.Fprint(rlOutput, string(b))
+				rlOutput.Write([]byte{b})
 			}
 		}
 		return "", fmt.Errorf("read error")
@@ -173,7 +174,7 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 			}
 			if b >= 32 {
 				line.WriteByte(b)
-				fmt.Fprint(rlOutput, string(b))
+				rlOutput.Write([]byte{b})
 			}
 		}
 	}
@@ -209,8 +210,14 @@ func readInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 			if char == 127 || char == 8 {
 				str := sb.String()
 				if len(str) > 0 {
-					sb.Reset()
-					sb.WriteString(str[:len(str)-1])
+					_, size := utf8.DecodeLastRuneInString(str)
+					if size > 0 {
+						sb.Reset()
+						sb.WriteString(str[:len(str)-size])
+					} else {
+						sb.Reset()
+						sb.WriteString(str[:len(str)-1])
+					}
 					fmt.Fprint(rlOutput, "\b \b")
 				}
 				continue
@@ -220,9 +227,9 @@ func readInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 				return "", fmt.Errorf("cancelled")
 			}
 
-			if char >= 32 && char <= 126 {
+			if char >= 32 {
 				sb.WriteByte(char)
-				fmt.Fprint(rlOutput, string(char))
+				rlOutput.Write([]byte{char})
 			}
 		}
 	}

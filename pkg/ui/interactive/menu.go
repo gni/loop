@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/ui/style"
 )
@@ -107,7 +108,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 				valStr := item.value()
 
 				keyColWidth := 28
-				nameLen := len(nameStr)
+				nameLen := utf8.RuneCountInString(nameStr)
 				leader := ""
 				if nameLen < keyColWidth {
 					leader = strings.Repeat("·", keyColWidth-nameLen)
@@ -162,6 +163,23 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			continue
+		}
+
+		if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
+			switch readBuf[2] {
+			case 'A':
+				if len(filtered) > 0 {
+					selectedIdx = (selectedIdx - 1 + len(filtered)) % len(filtered)
+				}
+			case 'B':
+				if len(filtered) > 0 {
+					selectedIdx = (selectedIdx + 1) % len(filtered)
+				}
+			}
+			continue
+		}
 
 		if n == 1 {
 			char := readBuf[0]
@@ -204,27 +222,24 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 
 			if char == 127 || char == 8 {
 				if len(searchQuery) > 0 {
-					searchQuery = searchQuery[:len(searchQuery)-1]
+					_, size := utf8.DecodeLastRuneInString(searchQuery)
+					searchQuery = searchQuery[:len(searchQuery)-size]
 				}
-				continue
-			}
-
-			if char >= 32 && char <= 126 {
-				searchQuery += string(char)
 				continue
 			}
 		}
 
-		if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
-			switch readBuf[2] {
-			case 'A':
-				if len(filtered) > 0 {
-					selectedIdx = (selectedIdx - 1 + len(filtered)) % len(filtered)
+		if readBuf[0] != 27 {
+			for i := 0; i < n; {
+				r, size := utf8.DecodeRune(readBuf[i:n])
+				if r == utf8.RuneError && size == 1 {
+					i++
+					continue
 				}
-			case 'B':
-				if len(filtered) > 0 {
-					selectedIdx = (selectedIdx + 1) % len(filtered)
+				if r >= 32 && r != 127 {
+					searchQuery += string(r)
 				}
+				i += size
 			}
 		}
 	}

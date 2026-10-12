@@ -239,7 +239,7 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 				}
 			}
 
-			if hasEscape || n > 1 {
+			if hasEscape {
 				// Escape disambiguation: a lone ESC is held briefly to see whether it begins a
 				// sequence. A byte that is already buffered wins over the timer, so a complete
 				// sequence costs nothing and only a genuine lone keypress pays the window.

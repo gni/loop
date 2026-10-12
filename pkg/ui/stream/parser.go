@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -322,31 +324,50 @@ func (p *JSONStreamParser) FeedRaw(chunk string, w io.Writer, theme style.UIThem
 }
 
 func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) {
-	for i := 0; i < len(chunk); i++ {
-		char := chunk[i]
-
+	for i := 0; i < len(chunk); {
 		if p.InString {
 			if p.InEscape {
 				p.InEscape = false
+				char := chunk[i]
 				var unescaped string
 				switch char {
 				case 'n':
 					unescaped = "\n"
+					i++
 				case 't':
 					unescaped = "\t"
+					i++
 				case 'r':
 					unescaped = "\r"
+					i++
 				case '"', '\\', '/':
 					unescaped = string(char)
+					i++
+				case 'u':
+					if i+5 <= len(chunk) {
+						if val, err := strconv.ParseUint(chunk[i+1:i+5], 16, 32); err == nil {
+							unescaped = string(rune(val))
+							i += 5
+						} else {
+							unescaped = "\\u"
+							i++
+						}
+					} else {
+						unescaped = "\\u"
+						i++
+					}
 				default:
 					unescaped = "\\" + string(char)
+					i++
 				}
 
 				p.appendStringChunk(unescaped, w, theme)
-			} else if char == '\\' {
+			} else if chunk[i] == '\\' {
 				p.InEscape = true
-			} else if char == '"' {
+				i++
+			} else if chunk[i] == '"' {
 				p.InString = false
+				i++
 				strVal := p.Buf.String()
 				p.Buf.Reset()
 
@@ -386,9 +407,17 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 					p.IsPath = false
 				}
 			} else {
-				p.appendStringChunk(string(char), w, theme)
+				r, size := utf8.DecodeRuneInString(chunk[i:])
+				if r != utf8.RuneError {
+					p.appendStringChunk(chunk[i:i+size], w, theme)
+					i += size
+				} else {
+					p.appendStringChunk(string(chunk[i]), w, theme)
+					i++
+				}
 			}
 		} else {
+			char := chunk[i]
 			if char == '"' {
 				p.InString = true
 			} else if char == '{' {
@@ -440,6 +469,7 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 				p.IsContent = false
 				p.IsPath = false
 			}
+			i++
 		}
 	}
 }

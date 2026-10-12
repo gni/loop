@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -190,47 +191,58 @@ func readFreeTextAnswer(input io.Reader, output io.Writer, theme style.UITheme, 
 	fmt.Fprint(output, "\r\x1b[K", promptStyle.Render("  type your answer (Enter to confirm): "))
 
 	answer := []byte{}
-	for i := 0; i < len(initial); i++ {
-		c := initial[i]
-		if c == '\r' || c == '\n' {
-			if len(answer) > 0 {
-				fmt.Fprint(output, "\r\n")
-				return strings.TrimSpace(string(answer))
-			}
-			// Leading newline confirms the menu selection; skip it.
-			continue
-		}
-		answer = append(answer, c)
-		fmt.Fprint(output, string(c))
+	cleanInitial := strings.TrimLeft(initial, "\r\n")
+	if len(cleanInitial) > 0 {
+		answer = append(answer, []byte(cleanInitial)...)
+		_, _ = output.Write([]byte(cleanInitial))
 	}
-	line := make([]byte, 1)
+	buf := make([]byte, 16)
 	for {
-		n, err := input.Read(line)
+		n, err := input.Read(buf)
 		if err != nil || n == 0 {
 			if len(answer) > 0 {
 				return strings.TrimSpace(string(answer))
 			}
 			return ""
 		}
-		c := line[0]
-		switch c {
-		case '\r', '\n':
-			fmt.Fprint(output, "\r\n")
-			if len(answer) == 0 {
+		for i := 0; i < n; {
+			c := buf[i]
+			switch c {
+			case '\r', '\n':
+				fmt.Fprint(output, "\r\n")
+				if len(answer) == 0 {
+					return ""
+				}
+				return strings.TrimSpace(string(answer))
+			case 3, 4, 27:
+				fmt.Fprint(output, "\r\n")
 				return ""
+			case 127, 8:
+				if len(answer) > 0 {
+					_, size := utf8.DecodeLastRune(answer)
+					if size > 0 {
+						answer = answer[:len(answer)-size]
+					} else {
+						answer = answer[:len(answer)-1]
+					}
+					fmt.Fprint(output, "\r\x1b[K", activeStyle.Render("  type your answer (Enter to confirm): ")+string(answer))
+				}
+				i++
+			default:
+				r, size := utf8.DecodeRune(buf[i:n])
+				if r != utf8.RuneError && r >= 32 {
+					chunk := buf[i : i+size]
+					answer = append(answer, chunk...)
+					_, _ = output.Write(chunk)
+					i += size
+				} else if c >= 32 {
+					answer = append(answer, c)
+					_, _ = output.Write([]byte{c})
+					i++
+				} else {
+					i++
+				}
 			}
-			return strings.TrimSpace(string(answer))
-		case 3, 4, 27:
-			fmt.Fprint(output, "\r\n")
-			return ""
-		case 127, 8:
-			if len(answer) > 0 {
-				answer = answer[:len(answer)-1]
-				fmt.Fprint(output, "\r\x1b[K", activeStyle.Render("  type your answer (Enter to confirm): ")+string(answer))
-			}
-		default:
-			answer = append(answer, c)
-			fmt.Fprint(output, string(c))
 		}
 	}
 }
