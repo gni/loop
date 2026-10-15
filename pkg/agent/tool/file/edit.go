@@ -69,6 +69,9 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		Target                   string        `json:"target"`
 		AbsolutePath             string        `json:"AbsolutePath"`
 		AbsolutePathSnake        string        `json:"absolute_path"`
+		Instructions             string        `json:"instructions,omitempty"`
+		Instruction              string        `json:"instruction,omitempty"`
+		Description              string        `json:"description,omitempty"`
 		Updates                  []ReplaceEdit `json:"updates"`
 		Edits                    []ReplaceEdit `json:"edits"`
 		Replacements             []ReplaceEdit `json:"replacements"`

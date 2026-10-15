@@ -165,6 +165,21 @@ func computeMyersDiff(a, b []string) []diffPart {
 	return merged
 }
 
+// CountDiffStats calculates the total inserted and deleted lines between two texts.
+func CountDiffStats(oldContent, newContent string) (added int, deleted int) {
+	oldLines := strings.Split(oldContent, "\n")
+	newLines := strings.Split(newContent, "\n")
+	parts := computeMyersDiff(oldLines, newLines)
+	for _, p := range parts {
+		if p.op == diffInsert {
+			added += len(p.lines)
+		} else if p.op == diffDelete {
+			deleted += len(p.lines)
+		}
+	}
+	return added, deleted
+}
+
 // GenerateDisplayDiff renders a colorized visual diff between two text versions.
 func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string {
 	oldLines := strings.Split(oldContent, "\n")

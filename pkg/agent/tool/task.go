@@ -72,6 +72,14 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 		return "", errors.New(RuntimeMessagef("task_status_not_found", "task %q not found. The task may have already completed, was killed, or does not exist.", taskID))
 	}
 
+	var cmdStr string
+	if tc, ok := ctx.(interface{ GetTaskCommand(string) string }); ok {
+		cmdStr = tc.GetTaskCommand(taskID)
+	}
+	if cmdStr != "" {
+		return RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, cmdStr, status, output), nil
+	}
+
 	return RuntimeMessagef("task_status_output", "Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output), nil
 }
 

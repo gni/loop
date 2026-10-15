@@ -16,6 +16,11 @@ func IsWriteLikeTool(toolName string) bool {
 	return toolName == "write" || strings.Contains(toolName, "write") || strings.Contains(toolName, "replace")
 }
 
+func IsEditLikeTool(toolName string) bool {
+	lower := strings.ToLower(toolName)
+	return lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "patch")
+}
+
 func IsCommandLikeTool(toolName string) bool {
 	lower := strings.ToLower(toolName)
 	return lower == "bash" || lower == "exec" || lower == "sh" || strings.Contains(lower, "command") || strings.Contains(lower, "shell") || strings.Contains(lower, "run")

@@ -38,7 +38,12 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 			fmt.Fprintf(w, "error: %v\n", err)
 			return
 		}
-		fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
+		cmd := a.GetTaskCommand(id)
+		if cmd != "" {
+			fmt.Fprintf(w, "task %s (%s) status: %s\noutput:\n%s\n", id, cmd, status, output)
+		} else {
+			fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
+		}
 	case "stream":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /task stream <id>")

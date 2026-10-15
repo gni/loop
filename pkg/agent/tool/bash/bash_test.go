@@ -123,6 +123,9 @@ func TestBashAutoDetectsBackgroundShellSyntax(t *testing.T) {
 	if !strings.Contains(output, "Task spawned in background with ID: task_1") {
 		t.Fatalf("expected output to mention task_1, got: %s", output)
 	}
+	if !strings.Contains(output, "command: cd /workspace/tests && python main.py > main.log 2>&1") {
+		t.Fatalf("expected output to include executed command, got: %s", output)
+	}
 	if ctx.spawnedCmd != "cd /workspace/tests && python main.py > main.log 2>&1" {
 		t.Fatalf("expected cleaned spawned command, got: %q", ctx.spawnedCmd)
 	}

@@ -369,7 +369,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		status = toolStatusError
 	}
 	symbol := renderToolSymbol(toolName, status, sr.theme)
-	if toolName == "bash" {
+	if toolName == "bash" || render.IsCommandLikeTool(toolName) {
 		stream.ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatBashCommandLine(symbol, target, sr.theme))
 		return
 	}

@@ -30,6 +30,10 @@ func TestKillAllTasksAndClearTasks(t *testing.T) {
 		t.Fatalf("expected status running, got %s", status)
 	}
 
+	if cmd := a.GetTaskCommand(taskID); cmd != "sleep 60" {
+		t.Fatalf("expected GetTaskCommand to return 'sleep 60', got %q", cmd)
+	}
+
 	tasks := a.ListTasks()
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task in ListTasks, got %d", len(tasks))

@@ -97,6 +97,9 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		StartTime:      time.Now(),
 		LastOutputTime: time.Now(),
 	}
+	if a.Tasks == nil {
+		a.Tasks = make(map[string]*Task)
+	}
 	a.Tasks[id] = task
 	a.pruneFinishedTasksLocked()
 	a.TasksMu.Unlock()
@@ -240,6 +243,23 @@ func (a *Agent) GetTaskStatus(id string) (string, string, error) {
 	}
 
 	return task.Status, output, nil
+}
+
+func (a *Agent) GetTaskCommand(id string) string {
+	a.TasksMu.Lock()
+	task, exists := a.Tasks[id]
+	if !exists && !strings.HasPrefix(id, "task_") {
+		task, exists = a.Tasks["task_"+id]
+	}
+	a.TasksMu.Unlock()
+
+	if !exists || task == nil {
+		return ""
+	}
+
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return task.Command
 }
 
 func (a *Agent) ListTasks() []TaskInfo {

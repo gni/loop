@@ -83,7 +83,7 @@ func IsToolContentKey(key string, toolName string) bool {
 	if toolName == "todo" {
 		return lower == "task" || lower == "title" || lower == "description" || lower == "content"
 	}
-	if lower == "description" || lower == "summary" || lower == "explanation" || lower == "overwrite" || lower == "encoding" || lower == "background" {
+	if lower == "description" || lower == "summary" || lower == "explanation" || lower == "instructions" || lower == "instruction" || lower == "overwrite" || lower == "encoding" || lower == "background" {
 		return false
 	}
 	if render.IsWriteLikeTool(toolName) {

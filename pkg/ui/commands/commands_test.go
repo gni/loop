@@ -33,6 +33,8 @@ func setupTestAgent(t *testing.T) (*agent.Agent, string) {
 		Config:        cfg,
 		ConfigPath:    cfgPath,
 		WorkspaceRoot: tmpDir,
+		Tasks:         make(map[string]*agent.Task),
+		NextTaskId:    1,
 	}
 	sessionID := db.NewUUID()
 	_ = db.SetLatestSessionID(sessionID)
@@ -75,6 +77,22 @@ func TestSlashCommands_Task(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "no background tasks registered") {
 		t.Fatalf("unexpected output: %s", output.String())
+	}
+
+	// Spawn a task and test /task view includes command
+	taskID, err := a.SpawnTask("echo 'hello from bg task'", &output)
+	if err != nil {
+		t.Fatalf("SpawnTask failed: %v", err)
+	}
+	defer a.KillAllTasks()
+
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task view "+taskID, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task view to be handled")
+	}
+	if !strings.Contains(output.String(), "echo 'hello from bg task'") {
+		t.Fatalf("expected /task view output to contain command, got: %s", output.String())
 	}
 }
 

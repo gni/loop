@@ -204,8 +204,10 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 		if p := getString("name"); p != "" {
 			return p
 		}
-		if p := getString("id"); p != "" {
-			return p
+		for _, k := range []string{"id", "task_id", "taskId", "task", "command", "cmd", "CommandLine"} {
+			if p := getString(k); p != "" {
+				return p
+			}
 		}
 	}
 
@@ -261,6 +263,90 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 	for _, key := range keys {
 		if val := getString(key); val != "" {
 			return val
+		}
+	}
+
+	return ""
+}
+
+// ExtractToolInstructions retrieves user- or model-supplied instructions/descriptions from tool argument payloads.
+func ExtractToolInstructions(argsJSON string) string {
+	trimmed := strings.TrimSpace(argsJSON)
+	if trimmed == "" {
+		return ""
+	}
+
+	var argsMap map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
+		repaired := RepairArgsJSON(trimmed)
+		_ = json.Unmarshal([]byte(repaired), &argsMap)
+	}
+
+	instructionKeys := []string{
+		"instructions", "instruction",
+		"Instructions", "Instruction",
+		"description", "Description",
+		"comment", "Comment",
+		"explanation", "Explanation",
+		"summary", "Summary",
+		"message", "Message",
+	}
+
+	if argsMap != nil {
+		for _, k := range instructionKeys {
+			if val, ok := argsMap[k]; ok {
+				if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+
+		for _, wrapper := range []string{"parameters", "params", "input", "arguments", "edit"} {
+			if subVal, ok := argsMap[wrapper]; ok {
+				if subMap, ok := subVal.(map[string]interface{}); ok {
+					for _, k := range instructionKeys {
+						if val, ok := subMap[k]; ok {
+							if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+								return strings.TrimSpace(s)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		for _, listKey := range []string{"updates", "edits", "replacements"} {
+			if listVal, ok := argsMap[listKey]; ok {
+				if slice, ok := listVal.([]interface{}); ok {
+					var itemInstructions []string
+					for _, item := range slice {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							for _, k := range instructionKeys {
+								if val, ok := itemMap[k]; ok {
+									if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+										itemInstructions = append(itemInstructions, strings.TrimSpace(s))
+										break
+									}
+								}
+							}
+						}
+					}
+					if len(itemInstructions) > 0 {
+						return strings.Join(itemInstructions, "; ")
+					}
+				}
+			}
+		}
+	}
+
+	for _, k := range instructionKeys {
+		regex := regexp.MustCompile(fmt.Sprintf(`"(?i)%s"\s*:\s*"((?:\\.|[^"\\])*)"`, regexp.QuoteMeta(k)))
+		if matches := regex.FindStringSubmatch(trimmed); len(matches) > 1 {
+			var unquoted string
+			if err := json.Unmarshal([]byte(`"`+matches[1]+`"`), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
+				return strings.TrimSpace(unquoted)
+			}
+			return strings.TrimSpace(matches[1])
 		}
 	}
 

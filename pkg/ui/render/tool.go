@@ -33,7 +33,7 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 	if pathVal == "" && IsCommandLikeTool(toolName) && strings.TrimSpace(argsJSON) != "" && strings.TrimSpace(argsJSON) != "{}" {
 		pathVal = strings.TrimSpace(argsJSON)
 	}
-	if toolName == "bash" {
+	if toolName == "bash" || IsCommandLikeTool(toolName) {
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
 		return
 	}
@@ -47,6 +47,9 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	}
 	if !isError && IsWriteLikeTool(toolName) {
 		renderWriteSummary(w, theme, toolName, argsJSON, output)
+	}
+	if !isError && IsEditLikeTool(toolName) {
+		renderEditSummary(w, theme, toolName, argsJSON, output)
 	}
 	if !isError && IsCommandLikeTool(toolName) && bodyWasStreamed {
 		return
@@ -63,10 +66,10 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	}
 
 	borderColor := theme.Success
-	title := fmt.Sprintf("  %s Output", finalDot)
+	title := fmt.Sprintf("  ⎿  %s Output", finalDot)
 	if isError {
 		borderColor = theme.Error
-		title = fmt.Sprintf("  %s Error", finalDot)
+		title = fmt.Sprintf("  ⎿  %s Error", finalDot)
 	}
 
 	titleStyle := style.NewStyle().
@@ -174,7 +177,8 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 
 	if collapse && !isError && len(lines) > 0 {
 		collapsedCount := len(lines)
-		collapsedMsg := fmt.Sprintf("  ... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", collapsedCount)
+		branchStyle := style.NewStyle().Foreground(theme.Border).Render("  ⎿  ")
+		collapsedMsg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, collapsedCount)
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(collapsedMsg))
 	} else {
 		for _, line := range lines {
@@ -226,18 +230,21 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 		sizeDesc = output
 	}
 
+	branchStyle := style.NewStyle().Foreground(theme.Border).Render("  ⎿  ")
 	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 	sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
 
 	if sizeDesc != "" {
-		fmt.Fprintf(w, "%s %s %s\n",
+		fmt.Fprintf(w, "%s%s %s %s\n",
+			branchStyle,
 			checkStyle.Render("✓"),
 			pathStyle.Render(absPath),
 			sizeStyle.Render(fmt.Sprintf("(%s)", sizeDesc)),
 		)
 	} else {
-		fmt.Fprintf(w, "%s %s\n",
+		fmt.Fprintf(w, "%s%s %s\n",
+			branchStyle,
 			checkStyle.Render("✓"),
 			pathStyle.Render(absPath),
 		)
@@ -251,5 +258,89 @@ func formatByteSize(bytes int64) string {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
 	}
 	return fmt.Sprintf("%.2f MB", float64(bytes)/(1024*1024))
+}
+
+// CountDiffLines counts the number of added and deleted lines from diff output.
+func CountDiffLines(diffText string) (added int, deleted int) {
+	lines := strings.Split(diffText, "\n")
+	for _, rawLine := range lines {
+		stripped := style.StripAnsi(rawLine)
+		trimmed := strings.TrimSpace(stripped)
+		if trimmed == "" || trimmed == "..." {
+			continue
+		}
+		// Check for ANSI color markers from GenerateDisplayDiff:
+		// \x1b[32m is green (diffInsert), \x1b[31m is red (diffDelete)
+		if strings.Contains(rawLine, "\x1b[32m") {
+			added++
+			continue
+		}
+		if strings.Contains(rawLine, "\x1b[31m") {
+			deleted++
+			continue
+		}
+		// Fallback for stripped or non-colored diffs:
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 2 {
+			if fields[1] == "+" {
+				added++
+				continue
+			} else if fields[1] == "-" {
+				deleted++
+				continue
+			}
+		}
+		// Fallback for standard unified diff format:
+		if strings.HasPrefix(trimmed, "+") && !strings.HasPrefix(trimmed, "+++") {
+			added++
+		} else if strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "---") {
+			deleted++
+		}
+	}
+	return added, deleted
+}
+
+// FormatDiffStats formats the line additions in green and deletions in red.
+func FormatDiffStats(added, deleted int, theme style.UITheme) string {
+	greenStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
+	redStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+
+	return fmt.Sprintf("%s / %s lines", greenStyle.Render(fmt.Sprintf("+%d", added)), redStyle.Render(fmt.Sprintf("-%d", deleted)))
+}
+
+func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
+	target := ExtractToolTarget(toolName, argsJSON)
+	if target == "" {
+		return
+	}
+
+	absPath := target
+	if !filepath.IsAbs(absPath) {
+		if cwd, err := os.Getwd(); err == nil {
+			absPath = filepath.Join(cwd, target)
+		}
+	}
+
+	added, deleted := CountDiffLines(output)
+	statsDesc := FormatDiffStats(added, deleted, theme)
+
+	branchStyle := style.NewStyle().Foreground(theme.Border).Render("  ⎿  ")
+	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
+	pathStyle := style.NewStyle().Foreground(theme.Text)
+
+	if statsDesc != "" {
+		fmt.Fprintf(w, "%s%s %s (%s)\n",
+			branchStyle,
+			checkStyle.Render("✓"),
+			pathStyle.Render(absPath),
+			statsDesc,
+		)
+	} else {
+		fmt.Fprintf(w, "%s%s %s\n",
+			branchStyle,
+			checkStyle.Render("✓"),
+			pathStyle.Render(absPath),
+		)
+	}
 }
 

@@ -125,7 +125,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("task_spawn_failed", "failed to spawn background task: %w"), err)
 		}
-		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s. You can monitor its output using 'task_status' or kill it using 'task_kill'. Toggle live stream via Ctrl+O.", id), nil
+		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). You can monitor its output using 'task_status' or kill it using 'task_kill'. Toggle live stream via Ctrl+O.", id, bgCmd), nil
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), 120*time.Second)

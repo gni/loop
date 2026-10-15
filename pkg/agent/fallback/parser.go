@@ -102,6 +102,22 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 		}
 		argsMap["path"] = path
 
+		instructions := attrs["instructions"]
+		if instructions == "" {
+			instructions = attrs["instruction"]
+		}
+		if instructions == "" {
+			instructions = attrs["description"]
+		}
+		if instructions == "" {
+			if reI := regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`).FindStringSubmatch(body); len(reI) >= 2 {
+				instructions = strings.TrimSpace(reI[1])
+			}
+		}
+		if instructions != "" {
+			argsMap["instructions"] = instructions
+		}
+
 		reOldNew := regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`)
 		oldNewMatches := reOldNew.FindAllStringSubmatch(body, -1)
 		if len(oldNewMatches) > 0 {

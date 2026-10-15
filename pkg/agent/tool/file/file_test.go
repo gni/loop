@@ -87,6 +87,11 @@ func TestMyersDiff(t *testing.T) {
 	if !strings.Contains(diffStr, "- banana") || !strings.Contains(diffStr, "+ blueberry") {
 		t.Fatalf("unexpected diff display: %s", diffStr)
 	}
+
+	added, deleted := CountDiffStats(strings.Join(a, "\n"), strings.Join(b, "\n"))
+	if added != 1 || deleted != 1 {
+		t.Fatalf("expected added=1 and deleted=1, got added=%d, deleted=%d", added, deleted)
+	}
 }
 
 func TestFuzzyMatchingTiers(t *testing.T) {

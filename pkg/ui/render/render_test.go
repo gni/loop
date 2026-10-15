@@ -248,3 +248,76 @@ func TestPromptSeparatorAndStatsLine(t *testing.T) {
 		t.Fatalf("unexpected stats content: %q", cleanStats)
 	}
 }
+
+func TestDiffStatsAndInstructions(t *testing.T) {
+	theme := style.GetTheme("catppuccin")
+
+	// 1. Test CountDiffLines
+	diffWithAnsi := "\x1b[31m1    - old line 1\x1b[0m\n\x1b[31m2    - old line 2\x1b[0m\n\x1b[32m1    + new line 1\x1b[0m\n\x1b[32m2    + new line 2\x1b[0m\n\x1b[32m3    + new line 3\x1b[0m\n4      context line\n     ...\n"
+	added, deleted := CountDiffLines(diffWithAnsi)
+	if added != 3 || deleted != 2 {
+		t.Fatalf("expected 3 added and 2 deleted, got added=%d, deleted=%d", added, deleted)
+	}
+
+	// Plain diff without ANSI
+	plainDiff := "1    - old line\n1    + new line\n"
+	added, deleted = CountDiffLines(plainDiff)
+	if added != 1 || deleted != 1 {
+		t.Fatalf("expected 1 added and 1 deleted, got added=%d, deleted=%d", added, deleted)
+	}
+
+	// 2. Test FormatDiffStats colors
+	stats := FormatDiffStats(added, deleted, theme)
+	if !strings.Contains(stats, "+1") || !strings.Contains(stats, "-1") || !strings.Contains(stats, "/") || !strings.Contains(stats, "lines") {
+		t.Fatalf("expected formatted stats to contain '+1 / -1 lines', got: %q", stats)
+	}
+
+	// 3. Test ExtractToolInstructions
+	argsWithInstructions := `{"path":"main.go","instructions":"refactor server setup","updates":[{"oldText":"a","newText":"b"}]}`
+	instr := ExtractToolInstructions(argsWithInstructions)
+	if instr != "refactor server setup" {
+		t.Fatalf("expected 'refactor server setup', got %q", instr)
+	}
+
+	argsWithInstruction := `{"path":"main.go","instruction":"fix bug"}`
+	instr2 := ExtractToolInstructions(argsWithInstruction)
+	if instr2 != "fix bug" {
+		t.Fatalf("expected 'fix bug', got %q", instr2)
+	}
+
+	// 4. Test RenderToolOutput for edit produces concise summary on front only
+	var buf bytes.Buffer
+	RenderToolOutput(&buf, diffWithAnsi, false, false, theme, "edit", argsWithInstructions, false)
+	rendered := buf.String()
+
+	if !strings.Contains(rendered, "main.go") {
+		t.Fatalf("expected rendered edit output to contain filename, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "+3") || !strings.Contains(rendered, "-2") || !strings.Contains(rendered, "lines") {
+		t.Fatalf("expected rendered edit output to contain '+3 / -2 lines', got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "new line 1") || !strings.Contains(rendered, "old line 1") {
+		t.Fatalf("expected rendered edit output to contain diff lines, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "⎿") {
+		t.Fatalf("expected rendered edit output to contain '⎿', got: %s", rendered)
+	}
+
+	// 5. Test RenderToolOutput for write produces summary with ⎿
+	var writeBuf bytes.Buffer
+	RenderToolOutput(&writeBuf, "wrote file", false, false, theme, "write", `{"path":"main.go"}`, false)
+	writeRendered := writeBuf.String()
+	if !strings.Contains(writeRendered, "⎿") {
+		t.Fatalf("expected rendered write output to contain '⎿', got: %s", writeRendered)
+	}
+
+	// 6. Test ExtractToolTarget for task tools
+	taskTarget := ExtractToolTarget("task_status", `{"task_id":"task_42"}`)
+	if taskTarget != "task_42" {
+		t.Fatalf("expected ExtractToolTarget for task_status to return 'task_42', got: %q", taskTarget)
+	}
+	taskKillTarget := ExtractToolTarget("task_kill", `{"taskId":"task_99"}`)
+	if taskKillTarget != "task_99" {
+		t.Fatalf("expected ExtractToolTarget for task_kill to return 'task_99', got: %q", taskKillTarget)
+	}
+}

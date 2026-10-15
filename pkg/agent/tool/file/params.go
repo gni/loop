@@ -28,6 +28,9 @@ type ReplaceEdit struct {
 	New                      string `json:"new"`
 	OldStr                   string `json:"old_str"`
 	NewStr                   string `json:"new_str"`
+	Instruction              string `json:"instruction,omitempty"`
+	Instructions             string `json:"instructions,omitempty"`
+	Description              string `json:"description,omitempty"`
 	Path                     string `json:"path"`
 	File                     string `json:"file"`
 	FilePath                 string `json:"file_path"`

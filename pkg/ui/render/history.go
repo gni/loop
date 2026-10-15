@@ -194,7 +194,7 @@ func PrintSessionHistory(
 						isWriteTool := tc.Function.Name == "write" || strings.Contains(tc.Function.Name, "write") || strings.Contains(tc.Function.Name, "replace")
 						path := ExtractToolTarget(tc.Function.Name, tc.Function.Arguments)
 						symbol := RenderToolSymbol(tc.Function.Name, ToolStatusPending, theme)
-						if tc.Function.Name == "bash" {
+						if tc.Function.Name == "bash" || IsCommandLikeTool(tc.Function.Name) {
 							fmt.Fprintln(w, FormatBashCommandLine(symbol, path, theme))
 						} else {
 							title := FormatToolTitle(symbol, tc.Function.Name, path, theme)
@@ -252,7 +252,7 @@ func PrintSessionHistory(
 			}
 			symbol := RenderToolSymbol(toolName, status, theme)
 			path := ExtractToolTarget(toolName, argsJSON)
-			if toolName == "bash" {
+			if toolName == "bash" || IsCommandLikeTool(toolName) {
 				fmt.Fprintln(w, FormatBashCommandLine(symbol, path, theme))
 			} else {
 				title := FormatToolTitle(symbol, toolName, path, theme)

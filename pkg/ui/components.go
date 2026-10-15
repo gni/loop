@@ -95,6 +95,22 @@ func FormatToolTitle(symbol string, toolName string, path string, theme UITheme)
 	return render.FormatToolTitle(symbol, toolName, path, theme)
 }
 
+func CountDiffLines(diffText string) (added int, deleted int) {
+	return render.CountDiffLines(diffText)
+}
+
+func FormatDiffStats(added, deleted int, theme UITheme) string {
+	return render.FormatDiffStats(added, deleted, theme)
+}
+
+func ExtractToolInstructions(argsJSON string) string {
+	return render.ExtractToolInstructions(argsJSON)
+}
+
+func IsEditLikeTool(toolName string) bool {
+	return render.IsEditLikeTool(toolName)
+}
+
 // NormalizeHistoryInput formats history lines replacing carriage returns and line feeds.
 func NormalizeHistoryInput(input string, pos int) (string, int) {
 	return render.NormalizeHistoryInput(input, pos)

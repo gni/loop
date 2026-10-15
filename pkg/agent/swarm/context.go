@@ -69,6 +69,13 @@ func (mac *multiAgentContext) GetTodos() []tool.TodoItem {
 	return nil
 }
 
+func (mac *multiAgentContext) GetTaskCommand(taskID string) string {
+	if tc, ok := mac.AgentContext.(interface{ GetTaskCommand(string) string }); ok {
+		return tc.GetTaskCommand(taskID)
+	}
+	return ""
+}
+
 func (mac *multiAgentContext) SetTodos(todos []tool.TodoItem) error {
 	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
 		return ts.SetTodos(todos)
