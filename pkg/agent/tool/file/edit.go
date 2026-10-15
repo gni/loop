@@ -12,7 +12,6 @@ import (
 
 type editTool struct{}
 
-// NewEditTool initializes the targeted file editing tool.
 func NewEditTool() domaintool.ToolExecutor {
 	return &editTool{}
 }
@@ -56,102 +55,32 @@ func (t *editTool) Definition() domaintool.Tool {
 
 func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
 	var args struct {
-		Path                     string        `json:"path"`
-		File                     string        `json:"file"`
-		FilePath                 string        `json:"file_path"`
-		FilePathCamel            string        `json:"filePath"`
-		TargetFile               string        `json:"target_file"`
-		TargetFileCamel          string        `json:"targetFile"`
-		TargetFilePascal         string        `json:"TargetFile"`
-		FileName                 string        `json:"file_name"`
-		FileNameCamel            string        `json:"fileName"`
-		Filename                 string        `json:"filename"`
-		Target                   string        `json:"target"`
-		AbsolutePath             string        `json:"AbsolutePath"`
-		AbsolutePathSnake        string        `json:"absolute_path"`
-		Instructions             string        `json:"instructions,omitempty"`
-		Instruction              string        `json:"instruction,omitempty"`
-		Description              string        `json:"description,omitempty"`
-		Updates                  []ReplaceEdit `json:"updates"`
-		Edits                    []ReplaceEdit `json:"edits"`
-		Replacements             []ReplaceEdit `json:"replacements"`
-		OldText                  string        `json:"oldText,omitempty"`
-		NewText                  string        `json:"newText,omitempty"`
-		OldTextSnake             string        `json:"old_text,omitempty"`
-		NewTextSnake             string        `json:"new_text,omitempty"`
-		OldString                string        `json:"old_string,omitempty"`
-		NewString                string        `json:"new_string,omitempty"`
-		TargetContent            string        `json:"targetContent,omitempty"`
-		TargetContentSnake       string        `json:"target_content,omitempty"`
-		TargetContentPascal      string        `json:"TargetContent,omitempty"`
-		ReplacementContent       string        `json:"replacementContent,omitempty"`
-		ReplacementContentSnake  string        `json:"replacement_content,omitempty"`
-		ReplacementContentPascal string        `json:"ReplacementContent,omitempty"`
-		Search                   string        `json:"search,omitempty"`
-		Replace                  string        `json:"replace,omitempty"`
-		Old                      string        `json:"old,omitempty"`
-		New                      string        `json:"new,omitempty"`
-		OldStr                   string        `json:"old_str,omitempty"`
-		NewStr                   string        `json:"new_str,omitempty"`
+		Path         string        `json:"path"`
+		Updates      []ReplaceEdit `json:"updates"`
+		Edits        []ReplaceEdit `json:"edits"`
+		Replacements []ReplaceEdit `json:"replacements"`
+		ReplaceEdit
 	}
 	unmarshalErr := json.Unmarshal([]byte(arguments), &args)
 
-	edits := args.Updates
-	if len(edits) == 0 && len(args.Edits) > 0 {
-		edits = args.Edits
-	} else if len(edits) == 0 && len(args.Replacements) > 0 {
-		edits = args.Replacements
+	var topEdits []ReplaceEdit
+	if topOld := args.ReplaceEdit.EffectiveOldText(); topOld != "" {
+		topEdits = append(topEdits, ReplaceEdit{OldText: topOld, NewText: args.ReplaceEdit.EffectiveNewText()})
 	}
+	edits := ExtractEdits(arguments, args.Updates, args.Edits, args.Replacements, topEdits)
 
-	topEdit := ReplaceEdit{
-		OldText:                  args.OldText,
-		NewText:                  args.NewText,
-		OldTextSnake:             args.OldTextSnake,
-		NewTextSnake:             args.NewTextSnake,
-		OldString:                args.OldString,
-		NewString:                args.NewString,
-		TargetContent:            args.TargetContent,
-		TargetContentSnake:       args.TargetContentSnake,
-		TargetContentPascal:      args.TargetContentPascal,
-		ReplacementContent:       args.ReplacementContent,
-		ReplacementContentSnake:  args.ReplacementContentSnake,
-		ReplacementContentPascal: args.ReplacementContentPascal,
-		Search:                   args.Search,
-		Replace:                  args.Replace,
-		Old:                      args.Old,
-		New:                      args.New,
-		OldStr:                   args.OldStr,
-		NewStr:                   args.NewStr,
+	var candidatePaths []string
+	if args.Path != "" {
+		candidatePaths = append(candidatePaths, args.Path)
 	}
-	if topOld := topEdit.EffectiveOldText(); topOld != "" {
-		edits = append(edits, ReplaceEdit{OldText: topOld, NewText: topEdit.EffectiveNewText()})
-	}
-
-	if len(edits) == 0 {
-		edits = extractEdits(arguments)
-	}
-
-	var editCandidatePaths []string
 	for _, e := range edits {
-		for _, cp := range []string{e.Path, e.File, e.FilePath, e.TargetFile} {
-			if strings.TrimSpace(cp) != "" {
-				editCandidatePaths = append(editCandidatePaths, cp)
-			}
-		}
+		candidatePaths = append(candidatePaths, e.Path, e.File, e.FilePath, e.TargetFile)
 	}
 
-	allCandidatePaths := append([]string{
-		args.Path, args.FilePath, args.FilePathCamel,
-		args.TargetFile, args.TargetFileCamel, args.TargetFilePascal,
-		args.FileName, args.FileNameCamel, args.Filename,
-		args.File, args.Target, args.AbsolutePath, args.AbsolutePathSnake,
-	}, editCandidatePaths...)
-
-	targetPath := extractFilePath(arguments, allCandidatePaths...)
+	targetPath := ExtractFilePath(arguments, candidatePaths...)
 	if targetPath == "" {
 		return "", fmt.Errorf("missing required argument: path")
 	}
-	args.Path = targetPath
 
 	if len(edits) == 0 {
 		if unmarshalErr != nil {
@@ -160,19 +89,13 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("no edits specified to apply")
 	}
 
-	safePath, err := ctx.SafePath(args.Path)
+	safePath, err := ctx.SafePath(targetPath)
 	if err != nil {
 		return "", err
 	}
 
-	unlock := lockPath(safePath)
+	unlock := LockPath(safePath)
 	defer unlock()
-
-	if fo, ok := ctx.(domaintool.FileObserver); ok {
-		if err := fo.CheckMutationAllowed(safePath, true); err != nil {
-			return "", err
-		}
-	}
 
 	for i := range edits {
 		edit := &edits[i]
@@ -187,19 +110,33 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
+	sg, hasSG := ctx.(snapshotGuard)
+	hadSnapshot := hasSG && sg.HasSnapshot(safePath)
+	discardIfUncommitted := func() {
+		if hasSG && !hadSnapshot {
+			sg.DiscardSnapshot(safePath)
+		}
+	}
+
+	if fo, ok := ctx.(domaintool.FileObserver); ok {
+		if err := fo.CheckMutationAllowed(safePath, true); err != nil {
+			return "", err
+		}
+	}
+
 	data, err := os.ReadFile(safePath)
 	if err != nil {
+		discardIfUncommitted()
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
-	hasBOM, rawStr := splitBOM(data)
-	originalEnding := detectLineEnding(rawStr)
+	hasBOM, rawStr := SplitBOM(data)
+	originalEnding := DetectLineEnding(rawStr)
 	content := strings.ReplaceAll(rawStr, "\r\n", "\n")
 	initialContent := content
 
 	var diffBuilder strings.Builder
 	contentChanged := false
 
-	// Strategy 1: Parallel non-overlapping resolution against initialContent for multi-edit batches.
 	if len(edits) > 1 {
 		matches := make([]*textMatch, len(edits))
 		allMatched := true
@@ -227,20 +164,10 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			}
 
 			if !hasOverlap {
-				type orderedMatch struct {
-					idx int
-					m   *textMatch
-				}
-				order := make([]orderedMatch, len(matches))
-				for i, m := range matches {
-					order[i] = orderedMatch{idx: i, m: m}
-				}
-				sort.Slice(order, func(i, j int) bool {
-					return order[i].m.startByte > order[j].m.startByte
+				sort.Slice(matches, func(i, j int) bool {
+					return matches[i].startByte > matches[j].startByte
 				})
-
-				for _, om := range order {
-					m := om.m
+				for _, m := range matches {
 					content = content[:m.startByte] + m.newText + content[m.endByte:]
 					contentChanged = true
 				}
@@ -249,11 +176,11 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
-	// Strategy 2: Sequential execution for single edits or chained edits
 	for i := range edits {
 		edit := &edits[i]
 		m, err := locateEditMatch(content, edit.OldText, edit.NewText)
 		if err != nil {
+			discardIfUncommitted()
 			return "", fmt.Errorf("edit[%d]: %w", i, err)
 		}
 		if m == nil {
@@ -261,12 +188,13 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				diffBuilder.WriteString(fmt.Sprintf("edit[%d]: requested replacement already present; file unchanged\n", i))
 				continue
 			}
+			discardIfUncommitted()
 			closestLine := findClosestLineMatch(content, edit.OldText)
 			if closestLine > 0 {
 				snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
-				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, args.Path, closestLine, snippet)
+				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, targetPath, closestLine, snippet)
 			}
-			return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nRecommendation: Read the file again using 'read' to verify its current contents, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.", i, args.Path)
+			return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nRecommendation: Read the file again using 'read' to verify its current contents, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.", i, targetPath)
 		}
 
 		updatedContent := content[:m.startByte] + m.newText + content[m.endByte:]
@@ -277,10 +205,8 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 writeBack:
-
 	if contentChanged {
-		diffStr := generateDisplayDiff(initialContent, content, 3)
-		diffBuilder.WriteString(diffStr)
+		diffBuilder.WriteString(GenerateDisplayDiff(initialContent, content, 3))
 		finalStr := content
 		if originalEnding == "\r\n" {
 			finalStr = strings.ReplaceAll(finalStr, "\n", "\r\n")
@@ -296,17 +222,20 @@ writeBack:
 			useAtomic = cp.IsAtomicWritesEnabled()
 		}
 		if useAtomic {
-			err = atomicWriteFile(safePath, finalBytes, 0644)
+			err = AtomicWriteFile(safePath, finalBytes, 0644)
 		} else {
 			err = os.WriteFile(safePath, finalBytes, 0644)
 		}
 		if err != nil {
+			discardIfUncommitted()
 			return "", fmt.Errorf("failed to write modified content back: %w", err)
 		}
 		if fo, ok := ctx.(domaintool.FileObserver); ok {
 			fo.RecordMutation(safePath, finalBytes)
 		}
 		ctx.ReloadSkills()
+	} else {
+		discardIfUncommitted()
 	}
 
 	return diffBuilder.String(), nil

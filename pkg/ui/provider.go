@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/term"
+
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
@@ -15,10 +17,6 @@ import (
 	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/style"
 )
-
-func cloneProviderConfig(cfg *config.Config) *config.Config {
-	return interactive.CloneProviderConfig(cfg)
-}
 
 func commitProviderConfig(a *agent.Agent, next *config.Config) error {
 	if a == nil || next == nil {
@@ -65,6 +63,34 @@ func HandleProviderCommand(
 		syncAgentStatus(a, theme, calcHistoryTokens)
 	}
 
+	switchProvider := func(name string, modelOverride string) {
+		next := interactive.CloneProviderConfig(a.Config)
+		if name == "none" {
+			if _, ok := next.Providers["default"]; ok {
+				name = "default"
+			} else {
+				name = ""
+			}
+		}
+		if name != "" {
+			if _, ok := next.Providers[name]; !ok {
+				fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
+				return
+			}
+		}
+		next.ActiveProvider = name
+		if modelOverride != "" {
+			next.Model = modelOverride
+			next.UpdateActiveProvider()
+		}
+		if err := commitProviderConfig(a, next); err != nil {
+			fmt.Fprintf(w, "error: %v\n", err)
+			return
+		}
+		printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
+		syncStatus()
+	}
+
 	if len(parts) < 2 {
 		input, output, cleanup := getInteractiveIO(kiReader)
 		defer cleanup()
@@ -80,13 +106,11 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "error: provider configuration failed: %v\n", errInteractive)
 		}
 
-		// The provider editor drew on the alternate screen, so the conversation is still
-		// where it was; only the fixed bottom controls need repainting.
+		var rl *term.Terminal
 		if kiReader != nil {
-			RestoreAfterModal(w, a, kiReader, kiReader.RL)
-		} else {
-			RestoreAfterModal(w, a, nil, nil)
+			rl = kiReader.RL
 		}
+		RestoreAfterModal(w, a, kiReader, rl)
 		return
 	}
 
@@ -99,17 +123,15 @@ func HandleProviderCommand(
 			fmt.Fprintln(w, "usage: /provider add <name> <endpoint> [api_key] [model]")
 			return
 		}
-		name := parts[2]
-		endpoint := parts[3]
-		apiKey := ""
-		model := ""
+		name, endpoint := parts[2], parts[3]
+		var apiKey, model string
 		if len(parts) > 4 {
 			apiKey = parts[4]
 		}
 		if len(parts) > 5 {
 			model = strings.Join(parts[5:], " ")
 		}
-		next := cloneProviderConfig(a.Config)
+		next := interactive.CloneProviderConfig(a.Config)
 		if next.Providers == nil {
 			next.Providers = make(map[string]config.ProviderConfig)
 		}
@@ -129,36 +151,14 @@ func HandleProviderCommand(
 			fmt.Fprintln(w, "usage: /provider select <name>")
 			return
 		}
-		name := parts[2]
-		next := cloneProviderConfig(a.Config)
-		if name == "none" {
-			if _, ok := next.Providers["default"]; ok {
-				name = "default"
-			} else {
-				name = ""
-			}
-		}
-		if name != "" {
-			if _, ok := next.Providers[name]; !ok {
-				fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
-				return
-			}
-		}
-		next.ActiveProvider = name
-		if err := commitProviderConfig(a, next); err != nil {
-			fmt.Fprintf(w, "error: %v\n", err)
-			return
-		}
-
-		printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
-		syncStatus()
+		switchProvider(parts[2], "")
 	case "model":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider model <model>")
 			return
 		}
 		model := strings.Join(parts[2:], " ")
-		next := cloneProviderConfig(a.Config)
+		next := interactive.CloneProviderConfig(a.Config)
 		next.Model = model
 		next.UpdateActiveProvider()
 		if err := commitProviderConfig(a, next); err != nil {
@@ -178,10 +178,10 @@ func HandleProviderCommand(
 		}
 		sec, err := strconv.Atoi(parts[2])
 		if err != nil || sec < 0 {
-			fmt.Fprintf(w, "error: timeout must be a non-negative integer\n")
+			fmt.Fprintln(w, "error: timeout must be a non-negative integer")
 			return
 		}
-		next := cloneProviderConfig(a.Config)
+		next := interactive.CloneProviderConfig(a.Config)
 		next.Timeout = sec
 		next.UpdateActiveProvider()
 		if err := commitProviderConfig(a, next); err != nil {
@@ -200,7 +200,7 @@ func HandleProviderCommand(
 			return
 		}
 		name := parts[2]
-		next := cloneProviderConfig(a.Config)
+		next := interactive.CloneProviderConfig(a.Config)
 		if _, ok := next.Providers[name]; !ok {
 			fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
 			return
@@ -221,32 +221,14 @@ func HandleProviderCommand(
 		fmt.Fprintf(w, "Provider '%s' removed.\n", name)
 		syncStatus()
 	default:
-		// Direct provider switch shortcut: /provider <name> [optional-model]
 		if _, ok := a.Config.Providers[sub]; ok || sub == "default" || sub == "none" {
-			name := sub
-			next := cloneProviderConfig(a.Config)
-			if name == "none" {
-				if _, ok := next.Providers["default"]; ok {
-					name = "default"
-				} else {
-					name = ""
-				}
-			}
-			next.ActiveProvider = name
+			var modelOverride string
 			if len(parts) > 2 {
-				next.Model = strings.Join(parts[2:], " ")
-				next.UpdateActiveProvider()
+				modelOverride = strings.Join(parts[2:], " ")
 			}
-			if err := commitProviderConfig(a, next); err != nil {
-				fmt.Fprintf(w, "error: %v\n", err)
-				return
-			}
-
-			printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
-			syncStatus()
+			switchProvider(sub, modelOverride)
 			return
 		}
-
 		fmt.Fprintf(w, "unknown subcommand or provider '%s'.\n", sub)
 		printProviderHelp(w, theme)
 	}
@@ -330,4 +312,3 @@ func printProviderSwitchMessage(w io.Writer, name, endpoint, model string) {
 		fmt.Fprintf(w, "Switched active provider to '%s' (Endpoint: %s, Model: %s).\n", name, endpoint, model)
 	}
 }
-

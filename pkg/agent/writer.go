@@ -30,10 +30,8 @@ func (n *NewlineCounterWriter) Write(p []byte) (int, error) {
 		if n.inEsc {
 			if b == '[' {
 				n.inCSI = true
-				n.inEsc = false
-			} else {
-				n.inEsc = false
 			}
+			n.inEsc = false
 			continue
 		}
 		if b == '\x1b' {
@@ -63,13 +61,8 @@ func (n *NewlineCounterWriter) Write(p []byte) (int, error) {
 	return n.Writer.Write(p)
 }
 
-func (n *NewlineCounterWriter) GetCount() int {
-	return n.count
-}
-
-func (n *NewlineCounterWriter) Unwrap() io.Writer {
-	return n.Writer
-}
+func (n *NewlineCounterWriter) GetCount() int     { return n.count }
+func (n *NewlineCounterWriter) Unwrap() io.Writer { return n.Writer }
 
 func (n *NewlineCounterWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
 	return forwardReplaceScrollBlockBack(n.Writer, linesBack, lines)
@@ -83,21 +76,18 @@ func NewFallbackStreamRenderer(w io.Writer) *FallbackStreamRenderer {
 	return &FallbackStreamRenderer{w: w}
 }
 
-func (f *FallbackStreamRenderer) Write(content string) {
-	fmt.Fprint(f.w, content)
-}
-func (f *FallbackStreamRenderer) WriteReasoning(content string)                    {}
-func (f *FallbackStreamRenderer) Flush()                                           {}
-func (f *FallbackStreamRenderer) HasOutput() bool                                  { return false }
-func (f *FallbackStreamRenderer) StartToolCall(toolName string, toolCallIndex int) {}
-func (f *FallbackStreamRenderer) SetToolTarget(target string, toolCallIndex int)   {}
-func (f *FallbackStreamRenderer) WriteToolCall(content string)                     {}
-func (f *FallbackStreamRenderer) GetToolTitleLineNumber(index int) int             { return -1 }
-func (f *FallbackStreamRenderer) DidStreamToolBody(index int) bool                 { return false }
-func (f *FallbackStreamRenderer) CompleteToolCall(index int, toolName string, toolArgs string, isError bool) {
-}
-func (f *FallbackStreamRenderer) GetReasoningDuration() float64 { return 0 }
-func (f *FallbackStreamRenderer) SetPrompt(prompt string)       {}
+func (f *FallbackStreamRenderer) Write(content string)                        { fmt.Fprint(f.w, content) }
+func (f *FallbackStreamRenderer) WriteReasoning(string)                       {}
+func (f *FallbackStreamRenderer) Flush()                                      {}
+func (f *FallbackStreamRenderer) HasOutput() bool                             { return false }
+func (f *FallbackStreamRenderer) StartToolCall(string, int)                   {}
+func (f *FallbackStreamRenderer) SetToolTarget(string, int)                   {}
+func (f *FallbackStreamRenderer) WriteToolCall(string)                        {}
+func (f *FallbackStreamRenderer) GetToolTitleLineNumber(int) int              { return -1 }
+func (f *FallbackStreamRenderer) DidStreamToolBody(int) bool                  { return false }
+func (f *FallbackStreamRenderer) CompleteToolCall(int, string, string, bool)  {}
+func (f *FallbackStreamRenderer) GetReasoningDuration() float64               { return 0 }
+func (f *FallbackStreamRenderer) SetPrompt(string)                            {}
 
 type CustomTeeWriter struct {
 	screen io.Writer
@@ -116,26 +106,21 @@ func (c *CustomTeeWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (c *CustomTeeWriter) Unwrap() io.Writer {
-	return c.screen
-}
+func (c *CustomTeeWriter) Unwrap() io.Writer { return c.screen }
 
 func (c *CustomTeeWriter) ReplaceScrollBlockBack(linesBack int, lines []string) bool {
 	return forwardReplaceScrollBlockBack(c.screen, linesBack, lines)
 }
 
-// Wrappers forward scroll-block edits to whatever they wrap. One assertion helper keeps
-// every wrapper in the package answering the same way.
 type scrollBlockReplacer interface {
 	ReplaceScrollBlockBack(int, []string) bool
 }
 
 func forwardReplaceScrollBlockBack(w io.Writer, linesBack int, lines []string) bool {
-	sbr, ok := w.(scrollBlockReplacer)
-	if !ok {
-		return false
+	if sbr, ok := w.(scrollBlockReplacer); ok {
+		return sbr.ReplaceScrollBlockBack(linesBack, lines)
 	}
-	return sbr.ReplaceScrollBlockBack(linesBack, lines)
+	return false
 }
 
 func UnwrapWriter(w io.Writer) io.Writer {
@@ -155,10 +140,6 @@ func UnwrapWriter(w io.Writer) io.Writer {
 	}
 }
 
-func unwrapWriter(w io.Writer) io.Writer {
-	return UnwrapWriter(w)
-}
-
 func GetScreenWriter(w io.Writer) io.Writer {
 	for w != nil {
 		if ncw, ok := w.(*NewlineCounterWriter); ok {
@@ -174,9 +155,6 @@ func GetScreenWriter(w io.Writer) io.Writer {
 	return w
 }
 
-// OutputGuard is the shared single-writer output guard from pkg/domain/output,
-// used in buffered mode: the agent owns exactly one writer, a stream can take it
-// over exclusively, and Flush drains buffered output before the owner changes.
 type OutputGuard = output.OutputGuard
 
 func NewAgentOutputGuard(w io.Writer) *OutputGuard { return output.New(w) }

@@ -62,6 +62,19 @@ func (mac *multiAgentContext) RecordMutation(absPath string, data []byte) {
 	}
 }
 
+func (mac *multiAgentContext) HasSnapshot(absPath string) bool {
+	if sg, ok := mac.AgentContext.(interface{ HasSnapshot(string) bool }); ok {
+		return sg.HasSnapshot(absPath)
+	}
+	return false
+}
+
+func (mac *multiAgentContext) DiscardSnapshot(absPath string) {
+	if sd, ok := mac.AgentContext.(interface{ DiscardSnapshot(string) }); ok {
+		sd.DiscardSnapshot(absPath)
+	}
+}
+
 func (mac *multiAgentContext) GetTodos() []tool.TodoItem {
 	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
 		return ts.GetTodos()

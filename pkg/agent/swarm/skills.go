@@ -3,14 +3,9 @@ package swarm
 import (
 	"fmt"
 
-	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 )
-
-func validateAgentLocalSkill(skill tool.Skill) (tool.Skill, error) {
-	return subagent.ValidateAgentLocalSkill(skill)
-}
 
 func (mam *MultiAgentManager) ListAgentSkills(name string) ([]tool.Skill, error) {
 	mam.mu.RLock()
@@ -77,7 +72,7 @@ func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
 	}
 
 	ma.HistoryMu.Lock()
-	ma.Skills = []tool.Skill{}
+	ma.Skills = nil
 	ma.LocalSkills = nil
 	ma.HasAllSkills = false
 	ma.History = append(ma.History, db.Message{

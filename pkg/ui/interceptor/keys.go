@@ -21,12 +21,7 @@ var promptNavigationKeyReplacer = strings.NewReplacer(
 	"\x1bO1;5C", "\x1b[1;3C",
 )
 
-// NormalizePromptNavigationKeys standardizes terminal escape sequences for word navigation.
 func NormalizePromptNavigationKeys(input []byte) []byte {
-	return normalizePromptNavigationKeys(input)
-}
-
-func normalizePromptNavigationKeys(input []byte) []byte {
 	if !bytes.ContainsRune(input, '\x1b') {
 		return input
 	}
@@ -34,20 +29,12 @@ func normalizePromptNavigationKeys(input []byte) []byte {
 }
 
 func (ki *KeyInterceptorReader) ResetTypeAheadLocked() {
-	ki.resetTypeAheadLocked()
-}
-
-func (ki *KeyInterceptorReader) resetTypeAheadLocked() {
 	ki.TypeAheadBuffer = nil
 	ki.HistoryIndex = -1
 	ki.SavedTypeAhead = nil
 }
 
 func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
-	ki.navigateHistory(direction)
-}
-
-func (ki *KeyInterceptorReader) navigateHistory(direction int) {
 	if ki.Hist == nil && ki.RL != nil && ki.RL.History != nil {
 		ki.Hist = ki.RL.History
 	}
@@ -55,22 +42,19 @@ func (ki *KeyInterceptorReader) navigateHistory(direction int) {
 		return
 	}
 
-	if direction > 0 { // Up arrow / older history
+	if direction > 0 {
 		if ki.HistoryIndex == -1 {
 			ki.SavedTypeAhead = append([]byte(nil), ki.TypeAheadBuffer...)
 			ki.HistoryIndex = 0
-			entry := ki.Hist.At(ki.HistoryIndex)
-			ki.TypeAheadBuffer = []byte(entry)
+			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
 		} else if ki.HistoryIndex+1 < ki.Hist.Len() {
 			ki.HistoryIndex++
-			entry := ki.Hist.At(ki.HistoryIndex)
-			ki.TypeAheadBuffer = []byte(entry)
+			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
 		}
-	} else if direction < 0 { // Down arrow / newer history
+	} else if direction < 0 {
 		if ki.HistoryIndex > 0 {
 			ki.HistoryIndex--
-			entry := ki.Hist.At(ki.HistoryIndex)
-			ki.TypeAheadBuffer = []byte(entry)
+			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
 		} else if ki.HistoryIndex == 0 {
 			ki.HistoryIndex = -1
 			ki.TypeAheadBuffer = append([]byte(nil), ki.SavedTypeAhead...)
@@ -82,10 +66,6 @@ func (ki *KeyInterceptorReader) navigateHistory(direction int) {
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlO() {
-	ki.handleCtrlO()
-}
-
-func (ki *KeyInterceptorReader) handleCtrlO() {
 	if ki.Agent == nil {
 		return
 	}
@@ -99,77 +79,68 @@ func (ki *KeyInterceptorReader) handleCtrlO() {
 			dest = chatWriter
 		}
 		ki.Agent.ToggleStreaming(targetTaskId, dest)
-	} else {
-		ki.Agent.Config.CollapseResults = !ki.Agent.Config.CollapseResults
-		_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
-		if ki.Agent.UI != nil {
-			ki.Agent.UI.SetCollapseStatus(ki.Agent.Config.CollapseResults)
-		}
+		return
+	}
 
-		if ki.OnRedrawScreen != nil {
-			ki.OnRedrawScreen()
-		}
-
-		if ki.Agent.CurrentWriter() != nil {
-			if fr, ok := ki.Agent.CurrentWriter().(interface{ ForceReposition() }); ok {
-				fr.ForceReposition()
-			}
-		}
+	ki.Agent.Config.CollapseResults = !ki.Agent.Config.CollapseResults
+	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	if ki.Agent.UI != nil {
+		ki.Agent.UI.SetCollapseStatus(ki.Agent.Config.CollapseResults)
+	}
+	if ki.OnRedrawScreen != nil {
+		ki.OnRedrawScreen()
+	}
+	if fr, ok := ki.Agent.CurrentWriter().(interface{ ForceReposition() }); ok {
+		fr.ForceReposition()
 	}
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlT() {
-	ki.handleCtrlT()
-}
-
-func (ki *KeyInterceptorReader) handleCtrlT() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
-	activeTheme := style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
 	ki.Agent.Config.ShowThinking = !ki.Agent.Config.ShowThinking
 	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
-	ki.redrawPromptSeparatorOrFallback(activeTheme)
+	ki.redrawPromptSeparatorOrFallback()
+}
+
+func (ki *KeyInterceptorReader) HandleCtrlG() {
+	if ki.Agent == nil || ki.Agent.Config == nil {
+		return
+	}
+	ki.Agent.SetGuidedMode(!ki.Agent.IsGuidedMode())
+	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	ki.redrawPromptSeparatorOrFallback()
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlR() {
-	ki.handleCtrlR()
-}
-
-func (ki *KeyInterceptorReader) handleCtrlR() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
-	activeTheme := style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
-	currentEffort := strings.ToLower(strings.TrimSpace(ki.Agent.Config.ReasoningEffort))
-
-	nextEffort := "low"
-	switch currentEffort {
-	case "off", "none", "":
-		nextEffort = "low"
+	switch strings.ToLower(strings.TrimSpace(ki.Agent.Config.ReasoningEffort)) {
 	case "low":
-		nextEffort = "medium"
+		ki.Agent.Config.ReasoningEffort = "medium"
 	case "medium":
-		nextEffort = "high"
+		ki.Agent.Config.ReasoningEffort = "high"
 	case "high":
-		nextEffort = "max"
+		ki.Agent.Config.ReasoningEffort = "max"
 	case "max":
-		nextEffort = "off"
+		ki.Agent.Config.ReasoningEffort = "off"
 	default:
-		nextEffort = "low"
+		ki.Agent.Config.ReasoningEffort = "low"
 	}
 
-	ki.Agent.Config.ReasoningEffort = nextEffort
 	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
-	ki.redrawPromptSeparatorOrFallback(activeTheme)
+	ki.redrawPromptSeparatorOrFallback()
 }
 
-func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback(theme style.UITheme) {
+func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback() {
 	if ki.OnRedrawPromptSeparator != nil {
 		ki.OnRedrawPromptSeparator()
 	} else if ki.OnRedrawScreen != nil {
 		ki.OnRedrawScreen()
 	} else if ki.W != nil {
+		theme := style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
 		width, _ := terminal.GetDimensions()
 		fmt.Fprint(ki.W, render.FormatPromptSeparator(ki.Agent.Config.ShowThinking, ki.Agent.Config.ReasoningEffort, theme, width))
 	}

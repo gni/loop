@@ -25,6 +25,29 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 		}
 		return
 	}
+
+	redrawBar := func() {
+		if kiReader != nil {
+			ui.GetUI().StateMu.Lock()
+			ui.GetUI().DrawStatusBar(w, *theme)
+			ui.GetUI().StateMu.Unlock()
+		}
+	}
+
+	printTaskView := func(id string) error {
+		id = a.ResolveTaskID(id)
+		status, output, err := a.GetTaskStatus(id)
+		if err != nil {
+			return err
+		}
+		if cmd := a.GetTaskCommand(id); cmd != "" {
+			fmt.Fprintf(w, "task %s (%s) status: %s\noutput:\n%s\n", id, cmd, status, output)
+		} else {
+			fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
+		}
+		return nil
+	}
+
 	sub := parts[1]
 	switch sub {
 	case "view", "status", "info":
@@ -35,29 +58,22 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 			id = a.GetLastRunningTaskId()
 			if id == "" {
 				tasks := a.ListTasks()
-				if len(tasks) == 1 {
-					id = tasks[0].ID
-				} else if len(tasks) == 0 {
+				switch len(tasks) {
+				case 0:
 					fmt.Fprintln(w, "no background tasks registered.")
 					return
-				} else {
+				case 1:
+					id = tasks[0].ID
+				default:
 					fmt.Fprintln(w, "usage: /task view <id> | /task list")
 					return
 				}
 			}
 		}
-		id = a.ResolveTaskID(id)
-		status, output, err := a.GetTaskStatus(id)
-		if err != nil {
+		if err := printTaskView(id); err != nil {
 			fmt.Fprintf(w, "error: %v\n", err)
-			return
 		}
-		cmd := a.GetTaskCommand(id)
-		if cmd != "" {
-			fmt.Fprintf(w, "task %s (%s) status: %s\noutput:\n%s\n", id, cmd, status, output)
-		} else {
-			fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
-		}
+
 	case "stream":
 		var id string
 		if len(parts) < 3 {
@@ -69,8 +85,8 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 		} else {
 			id = parts[2]
 		}
-		id = a.ResolveTaskID(id)
-		a.ToggleStreaming(id, w)
+		a.ToggleStreaming(a.ResolveTaskID(id), w)
+
 	case "kill", "stop":
 		var id string
 		if len(parts) >= 3 {
@@ -78,74 +94,49 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 		} else {
 			id = a.GetLastRunningTaskId()
 			if id == "" {
-				tasks := a.ListTasks()
-				if len(tasks) == 0 {
+				if len(a.ListTasks()) == 0 {
 					fmt.Fprintln(w, "no background tasks registered.")
-					return
+				} else {
+					fmt.Fprintln(w, "no running background tasks to kill. usage: /task kill <id> | /task kill all")
 				}
-				fmt.Fprintln(w, "no running background tasks to kill. usage: /task kill <id> | /task kill all")
 				return
 			}
 		}
 		if id == "all" {
 			killed := a.KillAllTasks()
 			fmt.Fprintf(w, "terminated %d running background task(s).\n", killed)
-			if kiReader != nil {
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().DrawStatusBar(w, *theme)
-				ui.GetUI().StateMu.Unlock()
-			}
+			redrawBar()
 			return
 		}
 		id = a.ResolveTaskID(id)
-		err := a.KillTask(id)
-		if err != nil {
+		if err := a.KillTask(id); err != nil {
 			fmt.Fprintf(w, "error: %v\n", err)
 		} else {
 			fmt.Fprintf(w, "task %s successfully terminated.\n", id)
-			if kiReader != nil {
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().DrawStatusBar(w, *theme)
-				ui.GetUI().StateMu.Unlock()
-			}
+			redrawBar()
 		}
+
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /task remove <id>")
 			return
 		}
 		id := a.ResolveTaskID(parts[2])
-		err := a.RemoveTask(id)
-		if err != nil {
+		if err := a.RemoveTask(id); err != nil {
 			fmt.Fprintf(w, "error: %v\n", err)
 		} else {
 			fmt.Fprintf(w, "task %s removed from registry.\n", id)
-			if kiReader != nil {
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().DrawStatusBar(w, *theme)
-				ui.GetUI().StateMu.Unlock()
-			}
+			redrawBar()
 		}
+
 	case "clear", "clean":
 		n := a.ClearTasks()
 		fmt.Fprintf(w, "cleared %d background task(s).\n", n)
-		if kiReader != nil {
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().DrawStatusBar(w, *theme)
-			ui.GetUI().StateMu.Unlock()
-		}
+		redrawBar()
+
 	default:
-		id := a.ResolveTaskID(sub)
-		status, output, err := a.GetTaskStatus(id)
-		if err == nil {
-			cmd := a.GetTaskCommand(id)
-			if cmd != "" {
-				fmt.Fprintf(w, "task %s (%s) status: %s\noutput:\n%s\n", id, cmd, status, output)
-			} else {
-				fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
-			}
-			return
+		if printTaskView(sub) != nil {
+			fmt.Fprintln(w, "unknown task subcommand. usage: /task [list | view <id> | stream <id> | kill <id> | remove <id> | clear]")
 		}
-		fmt.Fprintln(w, "unknown task subcommand. usage: /task [list | view <id> | stream <id> | kill <id> | remove <id> | clear]")
 	}
 }

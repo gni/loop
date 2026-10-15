@@ -44,3 +44,5 @@ buildtmp
 .tmpgo
 
 bin/
+
+dev_*.txt

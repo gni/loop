@@ -15,9 +15,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// streamBufferView returns an io.Writer appending to this agent's own StreamBuffer
-// under StreamBufferMu, so a concurrent redraw can read it safely while another agent's
-// loop writes its own buffer.
 func (ma *MultiAgent) streamBufferView() io.Writer {
 	return &streamBufferWriter{ma: ma}
 }
@@ -42,7 +39,6 @@ func (s *streamBufferWriter) Write(p []byte) (int, error) {
 	return s.ma.StreamBuffer.Write(p)
 }
 
-// Start initiates the message processing loop for the subagent in a background goroutine.
 func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 	go func() {
 		for {
@@ -101,9 +97,6 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 							_ = ma.Manager.SaveAgentState(ma, "failed")
 						}
 
-						// errors.Is so wrapped context.Canceled is still treated as a
-						// cancellation; wrapped DeadlineExceeded (provider timeouts) stays
-						// a real error and is printed as a timeout.
 						if errors.Is(err, context.DeadlineExceeded) {
 							errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 							fmt.Fprintf(writer, "\n%s [%s] timed out: %v\n",
@@ -162,13 +155,22 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		maxSteps = 30
 	}
 
-	// Shared pipeline (see pkg/agent/engine.go). Subagent policy is explicit now instead
-	// of being an implicit fork of the main loop: no interactive approval (trust inherited
-	// at spawn), no before/after hooks, name-prefixed rendering.
+	guidedMode := false
+	allowApproval := false
+	runHooks := false
+	if ma.BaseAgent != nil {
+		guidedMode = ma.BaseAgent.IsGuidedMode()
+		if ma.BaseAgent.Config != nil {
+			allowApproval = guidedMode
+			runHooks = ma.BaseAgent.Config.BeforeToolHook != "" || ma.BaseAgent.Config.AfterToolHook != ""
+		}
+	}
+
 	engine := agent.NewTurnEngine(ma.BaseAgent, agent.EnginePolicy{
 		AgentName:     ma.Name,
-		AllowApproval: false,
-		RunHooks:      false,
+		AllowApproval: allowApproval,
+		RunHooks:      runHooks,
+		GuidedMode:    guidedMode,
 		SessionKey:    "subagent:" + ma.Name,
 		ShowRecapLine: ma.Parent == nil,
 		ExecContext: func() tool.AgentContext {
@@ -208,9 +210,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		go func() {
 			allowlist := ma.GetToolAllowlist()
 			msg, err := ma.BaseAgent.StreamChatCompletions(ctx, historyCopy, allowlist, chunkChan)
-			// Same ordering as pkg/agent/loop.go: the message must be assigned before
-			// the error is signalled, otherwise the reader can observe a nil message
-			// for a successful turn.
 			if msg != nil {
 				assistantMsg = msg
 			}
@@ -218,9 +217,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			errChan <- err
 		}()
 
-		// Tee into this agent's own buffer, never BaseAgent.CurrentStreamBuffer: that
-		// buffer belongs to the main loop and is read by pkg/ui/redraw.go, so sharing it
-		// let concurrent subagents overwrite each other's (and the main loop's) output.
 		ma.StreamBufferMu.Lock()
 		ma.StreamBuffer = new(bytes.Buffer)
 		ma.StreamBufferMu.Unlock()
@@ -248,24 +244,15 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		sr.SetPrompt(lastUserPrompt)
 
-		// Same echo suppression as the main loop, so subagent output does not begin
-		// with the model's quoted repeat of the delegated task.
 		echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
 
 		var responseHeaderStarted bool
-		// Streaming counts characters, not SSE events: counting chunks reported
-		// chunks/second as if they were tokens/second, which made subagent TPS and
-		// completion counts incomparable with the main loop (which uses measured
-		// usage). One calibration, agent.TokensFromChars, is used by both paths.
 		var subagentStreamChars int
 		subagentCompletionTokens := 0
 		var subagentGenStart time.Time
 		var lastDraw time.Time
 		subagentCtxLimit := 128000
 		if ma.BaseAgent != nil {
-			// The display must use the same effective limit the compression decision
-			// uses, otherwise an adaptive window shows a headroom the subagent is not
-			// actually compressing against.
 			estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, ma.GetToolAllowlist())
 			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
 		}
@@ -276,8 +263,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				lastDraw = subagentGenStart
 			}
 
-			// Tool-call generation is completion output too, so it must count; the
-			// old check skipped it and reported near-zero for tool-heavy turns.
 			if chunk.Type == "reasoning" || chunk.Type == "text" || chunk.Type == "tool_call" {
 				subagentStreamChars += len(chunk.Content)
 				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
@@ -349,8 +334,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		sr.Flush()
 
-		// Prefer measured provider usage over the streaming estimate for the final
-		// readout, matching the main loop.
 		if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
 			subagentCompletionTokens = assistantMsg.CompletionTokens
 		}

@@ -9,18 +9,16 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-// tpl returns the live render templates for prompt sections.
 func tpl() domaintool.PromptTemplates {
 	return domaintool.MasterTemplates
 }
 
-// SystemPromptConfig encapsulates all parameters required to generate a
-// consistent, deterministic system prompt across single and multi-agent roles.
 type SystemPromptConfig struct {
 	BaseInstruction string
 	WorkspaceRoot   string
 	SkillsDir       string
 	CompactPrompt   bool
+	GuidedMode      bool
 	ActiveAgents    []string
 	Skills          []tool.Skill
 	AllSkills       []tool.Skill
@@ -28,32 +26,25 @@ type SystemPromptConfig struct {
 	ActiveTasks     []TaskInfo
 	UserGuidelines  string
 	Tools           []ToolEntry
-	// Allowlist restricts which tools the agent may actually call. The catalog
-	// must match it, otherwise the model is prompted with tools it cannot use.
-	Allowlist []string
+	Allowlist       []string
 }
 
-// ToolEntry is one line of the tool catalog rendered into the system prompt.
 type ToolEntry struct {
 	Name       string
 	Snippet    string
 	Guidelines []string
 }
 
-// splitInstruction separates the identity preamble from user-authored guidelines
-// so both reach the model. Previously everything after "Guidelines:" was discarded.
 func splitInstruction(instruction string) (identity, guidelines string) {
 	const marker = "Guidelines:"
 	if idx := strings.Index(instruction, marker); idx != -1 {
 		identity = strings.TrimSpace(instruction[:idx])
-		guidelines = strings.TrimSpace(instruction[idx+len(marker):])
-		return identity, strings.TrimLeft(guidelines, "\n")
+		guidelines = strings.TrimLeft(strings.TrimSpace(instruction[idx+len(marker):]), "\n")
+		return identity, guidelines
 	}
 	return strings.TrimSpace(instruction), ""
 }
 
-// BuildSystemPrompt constructs the complete system prompt instructions, guidelines,
-// skill catalog, and multi-agent topology guidance using structured XML sections.
 func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	workspaceRoot := cfg.WorkspaceRoot
 	if workspaceRoot == "" {
@@ -70,8 +61,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		skillsForGuidance = cfg.AllSkills
 	}
 
-	// User guidelines must survive: they were previously truncated away, which is
-	// why instructions written in system_instruction never reached the model.
 	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
 	baseInstruction = strings.TrimSpace(baseInstruction)
 	if userGuidelines == "" {
@@ -81,8 +70,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		baseInstruction = MasterSystemPrompts.DefaultIdentity
 	}
 
-	// 2. Tools section, generated from the registry so plugins and MCP tools are
-	// never omitted from the model's view of what it can call.
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
 	for _, entry := range tools {
@@ -102,10 +89,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	var sb strings.Builder
 	t := tpl()
 
-	// 1. Preamble section
 	sb.WriteString(baseInstruction)
-
-	// CWD section
 	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
 	var toolLines strings.Builder
@@ -117,7 +101,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 	sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))
 
-	// 3. Rules section: core rules, then per-tool guidelines, then user guidelines.
 	var ruleLines strings.Builder
 	seenRules := make(map[string]bool)
 
@@ -134,7 +117,15 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		ruleLines.WriteString(fmt.Sprintf(t.RuleLine, rule))
 	}
 
+	if cfg.GuidedMode {
+		addRule("Guided Workflow Protocol: You are operating in Guided Mode. Never call mutating tools ('write', 'edit', 'bash', 'create_subagent') before completing three steps: (1) inspect relevant files using 'read', 'grep', 'find', or 'list', (2) clarify any ambiguous requirements using 'ask_user', and (3) register a concrete step-by-step execution plan using 'todo'.")
+		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
+	}
+
 	for _, rule := range FormatCoreRules(workspaceRoot) {
+		if cfg.GuidedMode && strings.Contains(rule, "Actions Over Talk") {
+			continue
+		}
 		if !hasBash {
 			if strings.Contains(rule, "Background Processes:") && strings.Contains(rule, "bash") {
 				continue
@@ -181,7 +172,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 	sb.WriteString(fmt.Sprintf(t.RulesSection, ruleLines.String()))
 
-	// 4. Skills section
 	if len(cfg.Skills) > 0 {
 		var skillLines strings.Builder
 		for _, s := range cfg.Skills {
@@ -217,12 +207,10 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 	sb.WriteString(fmt.Sprintf(t.MultiAgentSection, maLines.String()))
 
-	// 5. Memory section
 	if cfg.MemoryContext != "" {
 		sb.WriteString(fmt.Sprintf(t.MemorySection, cfg.MemoryContext))
 	}
 
-	// 6. Active tasks section
 	if len(cfg.ActiveTasks) > 0 {
 		var taskLines strings.Builder
 		for _, task := range cfg.ActiveTasks {
@@ -236,8 +224,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 func (a *Agent) GetSystemPrompt() string { return a.GetSystemPromptFor(nil) }
 
-// GetSystemPromptFor builds the prompt for a specific tool allowlist so the
-// advertised tool catalog matches the tools the agent can actually execute.
 func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 	var activeAgents []string
 	a.SpawnedAgentsMu.RLock()
@@ -268,6 +254,7 @@ func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 		WorkspaceRoot:   a.WorkspaceRoot,
 		SkillsDir:       skillsDir,
 		CompactPrompt:   compact,
+		GuidedMode:      a.IsGuidedMode(),
 		ActiveAgents:    activeAgents,
 		Skills:          a.ActiveSkills,
 		MemoryContext:   a.LoadMemoryContext(),
@@ -294,8 +281,6 @@ func filterToolEntries(entries []ToolEntry, allowlist []string) []ToolEntry {
 	return out
 }
 
-// promptToolEntries renders the tool catalog from the live registry, so plugin
-// and MCP tools are visible to the model instead of being hardcoded.
 func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 	if registry == nil {
 		return nil
@@ -338,7 +323,6 @@ func normalizeRuleKey(rule string) string {
 	r = strings.TrimLeft(r, "0123456789.-* ")
 	r = strings.Trim(r, ".:;!?'\"`")
 
-	// Semantic clusters for rules that appear across core rules, tool guidelines, and user configs
 	if strings.Contains(r, "available tools instead of commands") ||
 		(strings.Contains(r, "instead of commands") && strings.Contains(r, "tools")) ||
 		strings.Contains(r, "strict tool hierarchy") ||

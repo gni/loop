@@ -31,6 +31,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				return nil
 			},
 		},
+		boolConfigItem("guided_mode", "guided mode", "Require workspace exploration, todo plan approval, and diff previews before mutating files", &cloned.GuidedMode, formatBool),
 		boolConfigItem("auto_approve", "auto approve", "Execute tool operations directly without interactive approval", &cloned.AutoApprove, formatBool),
 		boolConfigItem("approval_always_answer", "approval always answer", "Skip the approval modal and pre-answer 'always' for unattended loop runs", &cloned.ApprovalAlwaysAnswer, formatBool),
 		stringListConfigItem("disabled_tools", "disabled tools", "Comma-separated list of disabled tools (e.g. bash,edit)", &cloned.DisabledTools),
@@ -256,8 +257,6 @@ func intListConfigItem(id, name, desc string, target *[]int) *settingItem {
 			if err != nil {
 				return err
 			}
-			// Empty input is a no-op, consistent with parsePositiveInt: pressing
-			// enter without typing must not silently wipe the thresholds.
 			if len(parsed) == 0 {
 				return nil
 			}

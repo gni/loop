@@ -9,12 +9,8 @@ import (
 	"loop/pkg/domain/message"
 )
 
-// contextKey is an unexported type for context keys defined in this package,
-// preventing collisions with keys defined elsewhere.
 type contextKey string
 
-// contextKeyGenerationDuration carries the duration callback used by providers
-// to report how long a generation took.
 const contextKeyGenerationDuration = contextKey("generation_duration_callback")
 
 type Tool = tool.Tool
@@ -74,6 +70,10 @@ type ChatCompletionResponseChunk struct {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage,omitempty"`
+	Timings *struct {
+		PromptN    int `json:"prompt_n"`
+		PredictedN int `json:"predicted_n"`
+	} `json:"timings,omitempty"`
 }
 
 type LLMProvider interface {
@@ -86,13 +86,9 @@ type LLMProvider interface {
 	CheckThinkingSupport(ctx context.Context) bool
 }
 
-// ContextLimitDetector is optionally implemented by providers capable of querying
-// runtime context window limits from backend inference servers.
 type ContextLimitDetector interface {
 	GetDetectedContextLimit() int
 }
-
-// Delegators on Agent struct to maintain backwards compatibility
 
 func (a *Agent) currentLLMProvider() LLMProvider {
 	a.LLMProviderMu.Lock()
@@ -128,8 +124,6 @@ func (a *Agent) CheckThinkingSupport() bool {
 			timeout = t
 		}
 	}
-	// Derive from the agent's active context so the supervisor's root cancellation
-	// propagates to the /props probe; fall back to Background only when none is set.
 	parent := a.Context()
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -144,10 +138,6 @@ func (a *Agent) StreamChatCompletions(
 ) (*db.Message, error) {
 	provider := a.currentLLMProvider()
 
-	// Capture generation duration via context value. The provider invokes the callback
-	// synchronously before returning, so writing to the captured variable is reliable;
-	// the previous size-1 channel with select/default silently dropped the value when
-	// the provider called the callback more than once.
 	var generationDuration time.Duration
 	ctxWithCallback := context.WithValue(ctx, contextKeyGenerationDuration, func(d time.Duration) {
 		generationDuration = d
@@ -172,9 +162,6 @@ func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {
 	return tool.PrepareToolDefinitions(tools, compact)
 }
 
-// EnforceToolPairingInvariance ensures every assistant message with tool calls has
-// matching tool responses for each tool_call_id, and removes any orphaned tool responses,
-// preserving API protocol invariants across conversation trimming.
 func EnforceToolPairingInvariance(messages []db.Message) []db.Message {
 	return message.EnforceToolPairingInvariance(messages)
 }

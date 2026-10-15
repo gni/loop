@@ -30,22 +30,11 @@ type OpenAICompatibleProvider struct {
 	ContextLimitChecked    bool
 	ContextLimitMu         sync.RWMutex
 
-	// thinkingMu guards ThinkingSupported/ThinkingSupportChecked: concurrent subagent
-	// loops and the UI commands layer read them while the probe writes them.
-	thinkingMu sync.Mutex
-
-	// ChunkDropObserver is notified for every stream chunk that cannot be delivered to
-	// the UI consumer within streamSendTimeout, so dropped output is observable rather
-	// than silently lost.
-	ChunkDropObserver ChunkDropObserver
-
-	// PromptCacheSupported gates cache_control emission; providers that do not
-	// accept cache breakpoints leave it false and are unaffected.
+	thinkingMu           sync.Mutex
+	ChunkDropObserver    ChunkDropObserver
 	PromptCacheSupported bool
 }
 
-// activeProviderAuthStatus reports credentials availability for the active
-// provider profile before a request is dispatched.
 func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
 	if p.Config == nil {
 		return fmt.Errorf("provider config is nil")
@@ -55,27 +44,21 @@ func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
 			return prof.AuthStatus()
 		}
 	}
-	// No active profile: keyless local endpoints remain valid (existing behaviour).
 	return nil
 }
 
-// ThinkingEnabled reports whether the backend advertises reasoning support, under the
-// capability lock.
 func (p *OpenAICompatibleProvider) ThinkingEnabled() bool {
 	p.thinkingMu.Lock()
 	defer p.thinkingMu.Unlock()
 	return p.ThinkingSupported
 }
 
-// ThinkingProbeChecked reports whether the capability probe has already run.
 func (p *OpenAICompatibleProvider) ThinkingProbeChecked() bool {
 	p.thinkingMu.Lock()
 	defer p.thinkingMu.Unlock()
 	return p.ThinkingSupportChecked
 }
 
-// ResetThinkingCapabilities clears the cached probe result (used when the provider or
-// model changes, so capabilities are re-detected rather than inherited).
 func (p *OpenAICompatibleProvider) ResetThinkingCapabilities() {
 	p.thinkingMu.Lock()
 	p.ThinkingSupported = false
@@ -89,7 +72,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
-	// Auth-status check before dispatch.
 	if p.Config != nil {
 		if err := p.activeProviderAuthStatus(); err != nil {
 			return nil, err
@@ -100,8 +82,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	if p.PromptCacheSupported {
-		// Breakpoints on system prompt + tool-catalog prefix; the wire field is
-		// omitempty so non-supporting providers see the byte-identical shape.
 		transportllm.ApplyPromptCacheBreakpoints(messages)
 	}
 
@@ -160,23 +140,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		kickTimer()
 	}
 
-	_, cleanMessages, jsonData, err := p.prepareChatCompletionRequest(messages, tools)
+	_, _, jsonData, err := p.prepareChatCompletionRequest(messages, tools)
 	if err != nil {
 		return nil, err
 	}
 
-	maxRetries := 3
 	client := p.HttpClient
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	// One retry implementation instead of a hand-rolled duplicate of the resilient
-	// client: the shared client now carries the stream watchdog through BeforeAttempt so
-	// a stalled connection still reports as a timeout, and DescribeError keeps the
-	// endpoint hint that the loop used to add inline.
 	resilient := transporthttp.NewResilientClient(transporthttp.RetryConfig{
-		MaxRetries: maxRetries,
+		MaxRetries: 3,
 		BaseDelay:  time.Second,
 		Client:     client,
 		BeforeAttempt: func(int) error {
@@ -263,20 +238,19 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	thinkingFilter := transportllm.NewThinkingStreamFilter(emitText, emitReasoning)
 	var chunk ChatCompletionResponseChunk
 
-	finalizePartial := func() *db.Message {
+	buildMessage := func() *db.Message {
 		thinkingFilter.Flush()
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
 		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String(), p.Config != nil && p.Config.ParallelToolCalls)
-		pTokens, cTokens := EstimateFallbackTokens(promptTokens, completionTokens, cleanMessages, calls, rawTextBuilder.String(), reasoningBuilder.String())
 
 		return &db.Message{
 			Role:             "assistant",
 			Content:          textBuilder.String(),
 			ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
-			PromptTokens:     pTokens,
-			CompletionTokens: cTokens,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
 			CacheReadTokens:  cacheReadTokens,
 			CacheWriteTokens: cacheWriteTokens,
 			ToolCalls:        calls,
@@ -286,12 +260,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	for {
 		select {
 		case <-ctx.Done():
-			return finalizePartial(), ctx.Err()
+			return buildMessage(), ctx.Err()
 		case <-streamCtx.Done():
 			if err := p.checkStreamContextOrTimeout(ctx, streamCtx, &timedOut); err != nil {
-				return finalizePartial(), err
+				return buildMessage(), err
 			}
-			return finalizePartial(), streamCtx.Err()
+			return buildMessage(), streamCtx.Err()
 		default:
 		}
 
@@ -301,7 +275,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				break
 			}
 			if streamErr := p.checkStreamContextOrTimeout(ctx, streamCtx, &timedOut); streamErr != nil {
-				return finalizePartial(), streamErr
+				return buildMessage(), streamErr
 			}
 			return nil, fmt.Errorf("error reading stream: %w", err)
 		}
@@ -309,11 +283,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		kickTimer()
 
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		if !strings.HasPrefix(line, "data:") {
+		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
 		}
 
@@ -328,12 +298,22 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		if chunk.Usage != nil {
-			promptTokens = chunk.Usage.PromptTokens
-			completionTokens = chunk.Usage.CompletionTokens
+			if chunk.Usage.PromptTokens > 0 {
+				promptTokens = chunk.Usage.PromptTokens
+			}
+			if chunk.Usage.CompletionTokens > 0 {
+				completionTokens = chunk.Usage.CompletionTokens
+			}
+		}
+		if chunk.Timings != nil {
+			if promptTokens == 0 && chunk.Timings.PromptN > 0 {
+				promptTokens = chunk.Timings.PromptN
+			}
+			if completionTokens == 0 && chunk.Timings.PredictedN > 0 {
+				completionTokens = chunk.Timings.PredictedN
+			}
 		}
 
-		// Cache read/write counts live in transportllm.Usage (owned here) and are
-		// surfaced through agent.CacheTokenTotals over the persisted message.
 		if u, err := transportllm.ParseUsage(data); err == nil && u != nil {
 			if u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
 				cacheReadTokens, cacheWriteTokens = u.CacheReadTokens, u.CacheWriteTokens
@@ -370,8 +350,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				}
 
 				if p.Config != nil && !p.Config.ParallelToolCalls && idx > 0 {
-					// Drop secondary tool calls so they are never emitted to UI or executed.
-					// Keep reading the stream so tool call 0 receives all its arguments and content!
 					continue
 				}
 
@@ -409,44 +387,22 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
-	thinkingFilter.Flush()
-	textFilter.Flush()
-	reasoningFilter.Flush()
+	assistantMsg := buildMessage()
+	if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 && assistantMsg.ReasoningContent == "" {
+		return nil, fmt.Errorf("server closed stream without returning any content or tool calls")
+	}
 
 	var duration time.Duration
 	if !generationStart.IsZero() {
 		duration = time.Since(generationStart)
 	}
-
-	calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String(), p.Config != nil && p.Config.ParallelToolCalls)
-
-	promptTokens, completionTokens = EstimateFallbackTokens(promptTokens, completionTokens, messages, calls, rawTextBuilder.String(), reasoningBuilder.String())
-
-	if textBuilder.Len() == 0 && len(calls) == 0 && cleanReasoningBuilder.Len() == 0 {
-		return nil, fmt.Errorf("server closed stream without returning any content or tool calls")
-	}
-
-	assistantMsg := &db.Message{
-		Role:             "assistant",
-		Content:          textBuilder.String(),
-		ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		ToolCalls:        calls,
-	}
-
-	// Store duration in context/metadata or handle via caller setting
-	ctxVal := ctx.Value(contextKeyGenerationDuration)
-	if callback, ok := ctxVal.(func(time.Duration)); ok {
+	if callback, ok := ctx.Value(contextKeyGenerationDuration).(func(time.Duration)); ok {
 		callback(duration)
 	}
 
 	return assistantMsg, nil
 }
 
-// checkContextOrTimeout is the single context/timeout classifier. `prefix` is the full
-// message stem (e.g. "LLM request timed out after "); the stream path reuses it rather
-// than keeping a duplicate copy.
 func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.Context, timedOut *atomic.Bool, prefix string) error {
 	if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
 		return fmt.Errorf("%s%d seconds: %w", prefix, p.Config.Timeout, context.DeadlineExceeded)
@@ -460,8 +416,6 @@ func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.
 	return nil
 }
 
-// checkStreamContextOrTimeout is the stream-path wrapper of checkContextOrTimeout;
-// the two were previously byte-identical copies that could drift.
 func (p *OpenAICompatibleProvider) checkStreamContextOrTimeout(ctx, streamCtx context.Context, timedOut *atomic.Bool) error {
 	return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after ")
 }

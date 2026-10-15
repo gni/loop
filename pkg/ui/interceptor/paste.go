@@ -21,7 +21,7 @@ func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 				select {
 				case b, ok := <-ki.InputChan:
 					if !ok {
-						break
+						goto bracketedDrainDone
 					}
 					ki.BracketedBuffer = append(ki.BracketedBuffer, b)
 				case <-time.After(50 * time.Millisecond):
@@ -47,7 +47,7 @@ func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 		}
 	} else if n > 1 {
 		trimmed := bytes.TrimRight(p[:n], "\r\n")
-		if len(trimmed) > 0 && (bytes.Contains(trimmed, []byte("\n")) || bytes.Contains(trimmed, []byte("\r"))) {
+		if len(trimmed) > 0 && bytes.ContainsAny(trimmed, "\r\n") {
 			isPaste = true
 			pasteBytes = append([]byte(nil), p[:n]...)
 			if ki.InputChan != nil {
@@ -71,16 +71,11 @@ func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 		return ki.formatPastedText(pasteBytes, p)
 	}
 
-	if len(ki.PasteRemaining) > 0 {
-		return ki.copyReadData(p, normalizePromptNavigationKeys(p[:n])), false
-	}
-	return ki.copyReadData(p, normalizePromptNavigationKeys(p[:n])), false
+	return ki.copyReadData(p, NormalizePromptNavigationKeys(p[:n])), false
 }
 
 func (ki *KeyInterceptorReader) formatPastedText(pasteBytes []byte, p []byte) (int, bool) {
-	pasteStr := string(pasteBytes)
-	pasteStr = strings.ReplaceAll(pasteStr, "\r\n", "\n")
-	pasteStr = strings.ReplaceAll(pasteStr, "\r", "\n")
+	pasteStr := strings.ReplaceAll(strings.ReplaceAll(string(pasteBytes), "\r\n", "\n"), "\r", "\n")
 
 	lineCount := strings.Count(pasteStr, "\n")
 	if len(pasteStr) > 0 && !strings.HasSuffix(pasteStr, "\n") {
@@ -103,24 +98,18 @@ func (ki *KeyInterceptorReader) formatPastedText(pasteBytes []byte, p []byte) (i
 			ki.PastedCodeBlocks = make(map[string]string)
 		}
 		ki.PasteCounter++
-		var tagStr string
+		unit, count := "chars", len(pasteStr)
 		if lineCount > 1 {
-			tagStr = fmt.Sprintf("[Pasted %d lines]", lineCount)
-			if _, exists := ki.PastedCodeBlocks[tagStr]; exists {
-				tagStr = fmt.Sprintf("[Pasted %d lines #%d]", lineCount, ki.PasteCounter)
-			}
-		} else {
-			tagStr = fmt.Sprintf("[Pasted %d chars]", len(pasteStr))
-			if _, exists := ki.PastedCodeBlocks[tagStr]; exists {
-				tagStr = fmt.Sprintf("[Pasted %d chars #%d]", len(pasteStr), ki.PasteCounter)
-			}
+			unit, count = "lines", lineCount
+		}
+		tagStr := fmt.Sprintf("[Pasted %d %s]", count, unit)
+		if _, exists := ki.PastedCodeBlocks[tagStr]; exists {
+			tagStr = fmt.Sprintf("[Pasted %d %s #%d]", count, unit, ki.PasteCounter)
 		}
 		ki.PastedCodeBlocks[tagStr] = pasteStr
-		copied := ki.copyReadData(p, []byte(tagStr))
-		return copied, true
+		return ki.copyReadData(p, []byte(tagStr)), true
 	}
 
 	singleLine := strings.ReplaceAll(pasteStr, "\n", " ↵ ")
-	copied := ki.copyReadData(p, []byte(singleLine))
-	return copied, true
+	return ki.copyReadData(p, []byte(singleLine)), true
 }

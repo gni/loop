@@ -11,12 +11,7 @@ import (
 	"loop/pkg/agent"
 )
 
-// SetNonCanonical places terminal in raw non-canonical mode during turn execution.
 func SetNonCanonical(fd int) (func(), error) {
-	return setNonCanonical(fd)
-}
-
-func setNonCanonical(fd int) (func(), error) {
 	if !term.IsTerminal(fd) {
 		return func() {}, nil
 	}
@@ -30,23 +25,16 @@ func setNonCanonical(fd int) (func(), error) {
 	termios.Cc[unix.VMIN] = 1
 	termios.Cc[unix.VTIME] = 0
 
-	err = unix.IoctlSetTermios(fd, unix.TCSETS, termios)
-	if err != nil {
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, termios); err != nil {
 		return nil, err
 	}
 
-	restore := func() {
+	return func() {
 		_ = unix.IoctlSetTermios(fd, unix.TCSETS, &oldTermios)
-	}
-	return restore, nil
+	}, nil
 }
 
-// HandleResize updates terminal sizes and redraws controls on SIGWINCH.
 func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
-	handleResize(w, a, kiReader, rl)
-}
-
-func handleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
@@ -64,7 +52,7 @@ func handleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 	getUI().StateMu.Unlock()
 
 	cw := crnlWriter{W: w}
-	drawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
+	DrawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
 
 	if !activeOp && a.CurrentWriter() != nil {
 		if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
@@ -83,12 +71,8 @@ func getTerminalLine(rl *term.Terminal) (string, int) {
 	lineField := val.FieldByName("line")
 	posField := val.FieldByName("pos")
 	if lineField.IsValid() && posField.IsValid() {
-		ptrLine := unsafe.Pointer(lineField.UnsafeAddr())
-		runes := *(*[]rune)(ptrLine)
-
-		ptrPos := unsafe.Pointer(posField.UnsafeAddr())
-		pos := *(*int)(ptrPos)
-
+		runes := *(*[]rune)(unsafe.Pointer(lineField.UnsafeAddr()))
+		pos := *(*int)(unsafe.Pointer(posField.UnsafeAddr()))
 		return string(runes), pos
 	}
 	return "", 0

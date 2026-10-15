@@ -73,15 +73,8 @@ type Agent struct {
 	McpClientsMu   sync.Mutex
 	McpStartErrors map[string]error
 
-	// mcpGeneration identifies the current set of connected servers. A connect started
-	// under an older generation must not publish its client or register tools after a
-	// restart, because that would resurrect a server the user removed.
 	mcpGeneration int
-
-	// mcpPending holds configured servers that were not connected at startup. They are
-	// connected on first use, so startup does not pay for a child process the session
-	// may never need.
-	mcpPending map[string]config.MCPServerConfig
+	mcpPending    map[string]config.MCPServerConfig
 
 	Registry      *tool.ToolRegistry
 	WorkspaceRoot string
@@ -94,8 +87,6 @@ type Agent struct {
 	CurrentStreamBuffer *bytes.Buffer
 	CurrentStreamMu     sync.Mutex
 
-	// Shared mutable per-turn state. Guarded by stateMu: the main loop writes it
-	// while UI goroutines and concurrent subagent loops read it.
 	stateMu        sync.Mutex
 	currentWriter  io.Writer
 	currentContext context.Context
@@ -123,6 +114,7 @@ type Agent struct {
 	DebugLogger       *DebugLogger
 
 	FileObservations *tool.FileObservationTracker
+	Guided           *GuidedController
 	Todos            []tool.TodoItem
 	TodosMu          sync.RWMutex
 
@@ -137,8 +129,10 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	absWorkspace, _ := filepath.Abs(cwd)
 
 	debugPath := ""
+	guidedEnabled := false
 	if cfg != nil {
 		debugPath = cfg.DebugLogFile
+		guidedEnabled = cfg.GuidedMode
 	}
 
 	a := &Agent{
@@ -160,20 +154,16 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		SystemEvents:     make(chan string, 100),
 		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
 		FileObservations: tool.NewFileObservationTracker(),
+		Guided:           NewGuidedController(guidedEnabled),
 	}
 
-	// Deferred MCP servers have no registered executor until they are connected, so a
-	// call to one of their tools is the thing that must connect it.
 	a.Registry.UnknownToolHook = a.ResolveUnknownTool
 	a.Registry.Register(tool.NewLoadMCPTool())
 
-	// Wire the drop observer after the agent exists so provider-side chunk drops are
-	// counted instead of vanishing.
 	if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
 		provider.ChunkDropObserver = a.recordDroppedChunk
 	}
 
-	// Register built-in tools
 	a.Registry.Register(tool.NewBashTool())
 	a.Registry.Register(tool.NewReadTool())
 	a.Registry.Register(tool.NewWriteTool())
@@ -187,7 +177,6 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	a.Registry.Register(tool.NewTodoTool())
 	a.Registry.Register(tool.NewAskUserTool())
 
-	// Only register local executable plugins from the "plugins" directory in the workspace
 	if a.Config != nil && !a.Config.DisableLocalPlugins {
 		pluginsDir := filepath.Join(absWorkspace, "plugins")
 		_ = tool.RegisterPlugins(a.Registry, pluginsDir)
@@ -200,6 +189,68 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	return a
 }
 
+func (a *Agent) ensureGuided() *GuidedController {
+	if a == nil {
+		return nil
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if a.Guided == nil {
+		enabled := a.Config != nil && a.Config.GuidedMode
+		a.Guided = NewGuidedController(enabled)
+	}
+	return a.Guided
+}
+
+func (a *Agent) IsGuidedMode() bool {
+	if a == nil {
+		return false
+	}
+	if a.Guided != nil {
+		return a.Guided.IsEnabled()
+	}
+	return a.Config != nil && a.Config.GuidedMode
+}
+
+func (a *Agent) SetGuidedMode(enabled bool) {
+	if a == nil {
+		return
+	}
+	if a.Config != nil {
+		a.Config.GuidedMode = enabled
+		if enabled {
+			a.Config.AutoApprove = false
+			a.Config.ApprovalAlwaysAnswer = false
+			a.Config.ParallelToolCalls = false
+		}
+	}
+	a.ensureGuided().SetEnabled(enabled)
+	a.stateMu.Lock()
+	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) RollbackChanges() ([]string, error) {
+	if a == nil {
+		return nil, nil
+	}
+	return a.ensureGuided().Rollback(a.FileObservations)
+}
+
+func (a *Agent) HasSnapshot(absPath string) bool {
+	if a == nil {
+		return false
+	}
+	return a.ensureGuided().HasSnapshot(absPath)
+}
+
+func (a *Agent) DiscardSnapshot(absPath string) {
+	if a == nil {
+		return
+	}
+	a.ensureGuided().DiscardSnapshot(absPath)
+}
+
 func (a *Agent) RecordRead(absPath string, data []byte) {
 	if a != nil && a.FileObservations != nil {
 		a.FileObservations.RecordRead(absPath, data)
@@ -207,14 +258,24 @@ func (a *Agent) RecordRead(absPath string, data []byte) {
 }
 
 func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
-	if a != nil && a.FileObservations != nil {
-		return a.FileObservations.CheckMutationAllowed(absPath, isEdit)
+	if a == nil {
+		return nil
 	}
+	if a.FileObservations != nil {
+		if err := a.FileObservations.CheckMutationAllowed(absPath, isEdit); err != nil {
+			return err
+		}
+	}
+	a.ensureGuided().CaptureFileSnapshot(absPath)
 	return nil
 }
 
 func (a *Agent) RecordMutation(absPath string, data []byte) {
-	if a != nil && a.FileObservations != nil {
+	if a == nil {
+		return
+	}
+	a.ensureGuided().CaptureFileSnapshot(absPath)
+	if a.FileObservations != nil {
 		a.FileObservations.RecordMutation(absPath, data)
 	}
 }
@@ -252,8 +313,6 @@ func (a *Agent) SetTodos(todos []tool.TodoItem) error {
 	return nil
 }
 
-// ApplyConfig replaces the live configuration and refreshes the built-in LLM
-// provider so the next request uses the new endpoint, credentials, and model.
 func (a *Agent) ApplyConfig(cfg *config.Config) {
 	if a == nil || cfg == nil {
 		return
@@ -263,6 +322,8 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 	defer a.LLMProviderMu.Unlock()
 
 	a.Config = cfg
+	a.ensureGuided().SetEnabled(cfg.GuidedMode)
+
 	switch provider := a.LLMProvider.(type) {
 	case nil:
 		a.LLMProvider = &OpenAICompatibleProvider{
@@ -281,9 +342,6 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 		}
 	}
 
-	// Capability caches must not survive a config/provider switch: the new provider
-	// re-probes /props. The Agent-level mirror fields were dead copies of the provider
-	// state (only ever written, never read).
 	if p, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
 		p.ResetThinkingCapabilities()
 	}
@@ -299,10 +357,11 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 			a.Registry.Disable(cfg.DisabledTools...)
 		}
 	}
+	a.stateMu.Lock()
 	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
 }
 
-// DisableTools disables one or more tools on the agent registry and updates configuration.
 func (a *Agent) DisableTools(names ...string) {
 	if a == nil || a.Registry == nil {
 		return
@@ -311,10 +370,11 @@ func (a *Agent) DisableTools(names ...string) {
 	if a.Config != nil {
 		a.Config.DisabledTools = a.Registry.GetDisabledTools()
 	}
+	a.stateMu.Lock()
 	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
 }
 
-// EnableTools re-enables one or more tools on the agent registry and updates configuration.
 func (a *Agent) EnableTools(names ...string) {
 	if a == nil || a.Registry == nil {
 		return
@@ -323,10 +383,11 @@ func (a *Agent) EnableTools(names ...string) {
 	if a.Config != nil {
 		a.Config.DisabledTools = a.Registry.GetDisabledTools()
 	}
+	a.stateMu.Lock()
 	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
 }
 
-// EnableAllTools clears all disabled tools on the agent registry.
 func (a *Agent) EnableAllTools() {
 	if a == nil || a.Registry == nil {
 		return
@@ -335,10 +396,11 @@ func (a *Agent) EnableAllTools() {
 	if a.Config != nil {
 		a.Config.DisabledTools = nil
 	}
+	a.stateMu.Lock()
 	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
 }
 
-// IsToolDisabled checks whether a tool is currently disabled.
 func (a *Agent) IsToolDisabled(name string) bool {
 	if a == nil || a.Registry == nil {
 		return false
@@ -346,7 +408,6 @@ func (a *Agent) IsToolDisabled(name string) bool {
 	return a.Registry.IsDisabled(name)
 }
 
-// GetDisabledTools returns a list of all currently disabled tools.
 func (a *Agent) GetDisabledTools() []string {
 	if a == nil || a.Registry == nil {
 		return nil
@@ -368,30 +429,24 @@ func (a *Agent) Context() context.Context {
 	return context.Background()
 }
 
-// CurrentWriter returns the live turn writer under the shared-state lock.
 func (a *Agent) CurrentWriter() io.Writer {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	return a.currentWriter
 }
 
-// CurrentTheme returns the active theme under the shared-state lock.
 func (a *Agent) CurrentTheme() style.UITheme {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	return a.currentTheme
 }
 
-// LastGenerationDuration returns the duration recorded by the most recent generation.
 func (a *Agent) LastGenerationDuration() time.Duration {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	return a.lastGenerationDuration
 }
 
-// recordDroppedChunk counts a stream chunk that could not be delivered to the UI
-// within streamSendTimeout. A nonzero count means the rendered output was truncated
-// even though the persisted message contains everything.
 func (a *Agent) recordDroppedChunk() {
 	if a == nil {
 		return
@@ -402,8 +457,6 @@ func (a *Agent) recordDroppedChunk() {
 	a.stateMu.Unlock()
 }
 
-// DroppedChunks returns the total number of stream chunks dropped because the UI
-// consumer was not draining them.
 func (a *Agent) DroppedChunks() int64 {
 	if a == nil {
 		return 0
@@ -413,7 +466,6 @@ func (a *Agent) DroppedChunks() int64 {
 	return a.droppedChunks
 }
 
-// TurnDroppedChunks returns how many chunks were dropped during the current turn.
 func (a *Agent) TurnDroppedChunks() int64 {
 	if a == nil {
 		return 0
@@ -423,8 +475,6 @@ func (a *Agent) TurnDroppedChunks() int64 {
 	return a.lastTurnDropped
 }
 
-// SetTurnState publishes the per-turn state read by the UI and by concurrent
-// subagent loops. All writes go through this or the setter helpers below.
 func (a *Agent) SetTurnState(w io.Writer, ctx context.Context, theme style.UITheme) {
 	a.stateMu.Lock()
 	a.currentWriter = w
@@ -472,7 +522,9 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 	skills, err := LoadSkillsFromDirs(dirs...)
 	if err == nil && (len(skills) > 0 || len(a.ActiveSkills) == 0) {
 		a.ActiveSkills = skills
+		a.stateMu.Lock()
 		a.ForceSystemPromptUpdate = true
+		a.stateMu.Unlock()
 	}
 	return a.ActiveSkills
 }
@@ -481,8 +533,6 @@ func (a *Agent) GetLiveWriter() io.Writer {
 	return a.CurrentWriter()
 }
 
-// GetChatWriter returns the active UI chat writer (e.g. PromptPreservingWriter)
-// if available, falling back to currentWriter, or os.Stderr.
 func (a *Agent) GetChatWriter() io.Writer {
 	if a == nil {
 		return os.Stderr
@@ -513,8 +563,9 @@ func (a *Agent) DidStreamLiveBody() bool {
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
-	if a.Config != nil {
-		if a.Config.AskUserMode == "auto_recommended" {
+	if a.Config != nil && !a.IsGuidedMode() {
+		switch a.Config.AskUserMode {
+		case "auto_recommended":
 			if recommended != "" {
 				return recommended, nil
 			}
@@ -522,11 +573,9 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 				return options[0].Label, nil
 			}
 			return "Confirmed", nil
-		} else if a.Config.AskUserMode == "disabled" {
+		case "disabled":
 			return "", fmt.Errorf("ask_user tool is disabled by configuration")
-		} else if a.Config.AskUserMode == "always_ask" {
-			// Never auto-answer: every prompt must reach a human. If no interactive UI is
-			// attached, fail instead of silently picking the recommendation.
+		case "always_ask":
 			if a.UI == nil {
 				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
 			}
@@ -583,10 +632,8 @@ func (a *Agent) ReloadPlugins() error {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
-	// Clear all existing plugins (tools prefixed with "plugin__")
 	a.Registry.UnregisterPrefix("plugin__")
 
-	// Re-register local plugins from the workspace
 	pluginsDir := filepath.Join(a.WorkspaceRoot, "plugins")
 	return tool.RegisterPlugins(a.Registry, pluginsDir)
 }

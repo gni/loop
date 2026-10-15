@@ -5,16 +5,16 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-
-	"loop/pkg/domain/limits"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"loop/pkg/domain/limits"
 )
 
 type MCPServerConfig struct {
-	Type       string            `json:"type,omitempty"` // "stdio" or "sse" (default)
+	Type       string            `json:"type,omitempty"`
 	Command    string            `json:"command,omitempty"`
 	Args       []string          `json:"args,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
@@ -33,6 +33,7 @@ type Config struct {
 	PresencePenalty          float64                    `json:"presence_penalty,omitempty"`
 	SystemInstruction        string                     `json:"system_instruction"`
 	AutoApprove              bool                       `json:"auto_approve,omitempty"`
+	GuidedMode               bool                       `json:"guided_mode,omitempty"`
 	ShowThinking             bool                       `json:"show_thinking"`
 	CollapseResults          bool                       `json:"collapse_results,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
@@ -71,33 +72,57 @@ type Config struct {
 	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
-	// AskUserMode: "interactive" (default), "auto_recommended", "disabled", or
-	// "always_ask" — every ask_user prompt must reach a human, never auto-answered.
-	AskUserMode string `json:"ask_user_mode,omitempty"`
-	// ApprovalAlwaysAnswer: when true the approval modal is skipped and treated as if the
-	// user answered "always" up front (unattended loop runs). Default false: every action
-	// tool prompts on each call.
-	ApprovalAlwaysAnswer bool `json:"approval_always_answer,omitempty"`
-	ParallelToolCalls    bool `json:"parallel_tool_calls"`
-	RecapInterval        int  `json:"recap_interval,omitempty"`
-	// DisableRecap turns off the turn/token recap that is injected into agent
-	// history every RecapInterval steps. Equivalent to a negative recap_interval.
-	DisableRecap bool `json:"disable_recap,omitempty"`
-	// Limits are the operational ceilings (search caps, guard bounds, task registry
-	// size, skill size caps). Zero fields keep their compiled defaults; every value
-	// is clamped to a safety ceiling so a config file cannot disable a guard.
-	Limits limits.Limits `json:"limits,omitempty"`
-	// PromptsFile is the user-editable prompt catalog (tool descriptions, rules,
-	// section templates) layered over the embedded defaults. Empty disables
-	// runtime overrides.
-	PromptsFile string `json:"prompts_file,omitempty"`
+	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
+	ApprovalAlwaysAnswer     bool                       `json:"approval_always_answer,omitempty"`
+	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
+	RecapInterval            int                        `json:"recap_interval,omitempty"`
+	DisableRecap             bool                       `json:"disable_recap,omitempty"`
+	Limits                   limits.Limits              `json:"limits,omitempty"`
+	PromptsFile              string                     `json:"prompts_file,omitempty"`
+}
+
+func resolveDefaultSkillsDir() string {
+	if _, err := os.Stat("/workspace/agent/skills"); err == nil {
+		return "/workspace/agent/skills"
+	}
+	if _, err := os.Stat("skills"); err == nil {
+		return "skills"
+	}
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".loop", "skills")
+}
+
+func saveMCPFile(dir string, servers map[string]MCPServerConfig) {
+	if servers == nil {
+		servers = make(map[string]MCPServerConfig)
+	}
+	if data, err := json.MarshalIndent(servers, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "mcp.json"), data, 0644)
+	}
+}
+
+func saveProvidersFile(dir string, active string, providers map[string]ProviderConfig) {
+	clean := make(map[string]ProviderConfig, len(providers))
+	for name, p := range providers {
+		cp := p
+		cp.Name = ""
+		clean[name] = cp
+	}
+	provFile := ProvidersFile{
+		Active:         active,
+		ActiveProvider: active,
+		Providers:      clean,
+	}
+	if data, err := json.MarshalIndent(provFile, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "providers.json"), data, 0644)
+	}
 }
 
 func DefaultConfig() *Config {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	endpoint := os.Getenv("OPENAI_API_BASE")
 	if endpoint == "" {
-		endpoint = "http://localhost:8080" // Defaults to local llama.cpp
+		endpoint = "http://localhost:8080"
 	}
 
 	model := "llama-3-instruct"
@@ -106,31 +131,16 @@ func DefaultConfig() *Config {
 		model = "gpt-4-turbo"
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	skillsDir := filepath.Join(homeDir, ".loop", "skills")
-	if _, err := os.Stat("/workspace/agent/skills"); err == nil {
-		skillsDir = "/workspace/agent/skills"
-	} else if _, err := os.Stat("skills"); err == nil {
-		skillsDir = "skills"
-	}
-
 	return &Config{
 		Endpoint:                 endpoint,
 		ApiKey:                   apiKey,
 		Model:                    model,
 		Temperature:              0.7,
 		SystemInstruction:        DefaultSystemInstruction,
-		AutoApprove:              false,
 		ShowThinking:             true,
-		CollapseResults:          false,
-		ShowTokens:               false,
 		Theme:                    "dark",
 		DirectCommands:           true,
-		CertFile:                 "",
-		KeyFile:                  "",
-		CAFile:                   "",
-		SkipVerify:               false,
-		SkillsDir:                skillsDir,
+		SkillsDir:                resolveDefaultSkillsDir(),
 		MCPServers:               make(map[string]MCPServerConfig),
 		MaxReasoningSteps:        30,
 		MaxCompletionTokens:      16384,
@@ -142,7 +152,6 @@ func DefaultConfig() *Config {
 		StreamWrites:             true,
 		SyntaxTheme:              "auto",
 		Providers:                make(map[string]ProviderConfig),
-		ActiveProvider:           "",
 		CompactPrompt:            true,
 		MaxPasteLines:            80,
 		MaxPasteChars:            8000,
@@ -153,7 +162,6 @@ func DefaultConfig() *Config {
 		PersistentBash:           true,
 		AtomicWrites:             true,
 		AskUserMode:              "interactive",
-		ParallelToolCalls:        false,
 		RecapInterval:            5,
 		Limits:                   limits.Defaults(),
 	}
@@ -161,14 +169,11 @@ func DefaultConfig() *Config {
 
 func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		var conf *Config
+		conf := DefaultConfig()
 		if len(embeddedDefaultConfig) > 0 {
-			conf = DefaultConfig()
 			if err := json.Unmarshal(embeddedDefaultConfig, conf); err != nil {
 				conf = DefaultConfig()
 			}
-		} else {
-			conf = DefaultConfig()
 		}
 
 		if len(embeddedDefaultProviders) > 0 {
@@ -203,78 +208,63 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	config := DefaultConfig()
-	if err := json.Unmarshal(data, config); err != nil {
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	if len(config.SystemInstruction) > 5000 && strings.Contains(config.SystemInstruction, "Principal Software Architect") {
-		config.SystemInstruction = DefaultSystemInstruction
+	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
+		cfg.SystemInstruction = DefaultSystemInstruction
+	}
+	if cfg.ApiKey == "" {
+		cfg.ApiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = resolveDefaultSkillsDir()
+	}
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = make(map[string]MCPServerConfig)
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
+	}
+	if cfg.MaxReasoningSteps == 0 {
+		cfg.MaxReasoningSteps = 30
+	}
+	if cfg.ContextWindowLimit == 0 {
+		cfg.ContextWindowLimit = 128000
+	}
+	if cfg.MinContextWindow <= 0 {
+		cfg.MinContextWindow = 32768
+	}
+	cfg.Limits = limits.Resolve(cfg.Limits)
+	limits.Set(cfg.Limits)
+
+	if cfg.CompressionThreshold == 0.0 {
+		cfg.CompressionThreshold = 0.95
+	}
+	if cfg.MaxPasteLines <= 0 {
+		cfg.MaxPasteLines = 80
+	}
+	if cfg.RecapInterval == 0 {
+		cfg.RecapInterval = 5
+	}
+	if cfg.MaxPasteChars <= 0 {
+		cfg.MaxPasteChars = 8000
 	}
 
-	// Dynamic env overrides if config file doesn't have them set
-	if config.ApiKey == "" {
-		config.ApiKey = os.Getenv("OPENAI_API_KEY")
-	}
-
-	if config.SkillsDir == "" {
-		homeDir, _ := os.UserHomeDir()
-		config.SkillsDir = filepath.Join(homeDir, ".loop", "skills")
-		if _, err := os.Stat("/workspace/agent/skills"); err == nil {
-			config.SkillsDir = "/workspace/agent/skills"
-		} else if _, err := os.Stat("skills"); err == nil {
-			config.SkillsDir = "skills"
-		}
-	}
-
-	if config.MCPServers == nil {
-		config.MCPServers = make(map[string]MCPServerConfig)
-	}
-
-	if config.Providers == nil {
-		config.Providers = make(map[string]ProviderConfig)
-	}
-
-	if config.MaxReasoningSteps == 0 {
-		config.MaxReasoningSteps = 30
-	}
-	if config.ContextWindowLimit == 0 {
-		config.ContextWindowLimit = 128000
-	}
-	if config.MinContextWindow <= 0 {
-		config.MinContextWindow = 32768
-	}
-	// Resolve the operational ceilings: every value is clamped to its safety
-	// maximum, so a config file can tighten a limit but never disable a guard.
-	config.Limits = limits.Resolve(config.Limits)
-	limits.Set(config.Limits)
-
-	if config.CompressionThreshold == 0.0 {
-		config.CompressionThreshold = 0.95
-	}
-	if config.MaxPasteLines <= 0 {
-		config.MaxPasteLines = 80
-	}
-	if config.RecapInterval == 0 {
-		config.RecapInterval = 5
-	}
-	if config.MaxPasteChars <= 0 {
-		config.MaxPasteChars = 8000
-	}
-	mcpPath := filepath.Join(filepath.Dir(path), "mcp.json")
+	dir := filepath.Dir(path)
+	mcpPath := filepath.Join(dir, "mcp.json")
 	if mcpData, err := os.ReadFile(mcpPath); err == nil {
 		var mcpMap map[string]MCPServerConfig
 		if err := json.Unmarshal(mcpData, &mcpMap); err == nil && mcpMap != nil {
-			config.MCPServers = mcpMap
+			cfg.MCPServers = mcpMap
 		}
-	} else if len(config.MCPServers) > 0 {
-		mcpData, err := json.MarshalIndent(config.MCPServers, "", "  ")
-		if err == nil {
-			_ = os.WriteFile(mcpPath, mcpData, 0644)
-		}
+	} else if len(cfg.MCPServers) > 0 {
+		saveMCPFile(dir, cfg.MCPServers)
 	}
 
-	providersPath := filepath.Join(filepath.Dir(path), "providers.json")
+	providersPath := filepath.Join(dir, "providers.json")
 	if provData, err := os.ReadFile(providersPath); err == nil {
 		var provFile ProvidersFile
 		if err := json.Unmarshal(provData, &provFile); err == nil && provFile.Providers != nil {
@@ -283,7 +273,7 @@ func LoadConfig(path string) (*Config, error) {
 				active = provFile.ActiveProvider
 			}
 			if active != "" {
-				config.ActiveProvider = active
+				cfg.ActiveProvider = active
 			}
 			for name, p := range provFile.Providers {
 				if p.Name == "" {
@@ -291,7 +281,7 @@ func LoadConfig(path string) (*Config, error) {
 					provFile.Providers[name] = p
 				}
 			}
-			config.Providers = provFile.Providers
+			cfg.Providers = provFile.Providers
 		} else {
 			var provMap map[string]ProviderConfig
 			if err := json.Unmarshal(provData, &provMap); err == nil && provMap != nil {
@@ -301,167 +291,104 @@ func LoadConfig(path string) (*Config, error) {
 						provMap[name] = p
 					}
 				}
-				config.Providers = provMap
+				cfg.Providers = provMap
 			}
 		}
-	} else if len(config.Providers) > 0 {
-		cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
-		for name, p := range config.Providers {
-			cp := p
-			cp.Name = ""
-			cleanProviders[name] = cp
-		}
-		provFile := ProvidersFile{
-			Active:         config.ActiveProvider,
-			ActiveProvider: config.ActiveProvider,
-			Providers:      cleanProviders,
-		}
-		provData, err := json.MarshalIndent(provFile, "", "  ")
-		if err == nil {
-			_ = os.WriteFile(providersPath, provData, 0644)
-		}
-	} else if config.Endpoint != "" {
-		// Migration: No providers.json, and no providers map, but we have legacy top-level provider fields.
-		if config.Providers == nil {
-			config.Providers = make(map[string]ProviderConfig)
-		}
-
-		providerName := config.ActiveProvider
+	} else if len(cfg.Providers) > 0 {
+		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
+	} else if cfg.Endpoint != "" {
+		providerName := cfg.ActiveProvider
 		if providerName == "" {
 			providerName = "default"
-			config.ActiveProvider = "default"
+			cfg.ActiveProvider = "default"
 		}
-
-		config.Providers[providerName] = ProviderConfig{
+		cfg.Providers[providerName] = ProviderConfig{
 			Name:     providerName,
-			Endpoint: config.Endpoint,
-			ApiKey:   config.ApiKey,
-			Model:    config.Model,
-			Timeout:  config.Timeout,
+			Endpoint: cfg.Endpoint,
+			ApiKey:   cfg.ApiKey,
+			Model:    cfg.Model,
+			Timeout:  cfg.Timeout,
 		}
-
-		cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
-		for name, p := range config.Providers {
-			cp := p
-			cp.Name = ""
-			cleanProviders[name] = cp
-		}
-		provFile := ProvidersFile{
-			Active:         config.ActiveProvider,
-			ActiveProvider: config.ActiveProvider,
-			Providers:      cleanProviders,
-		}
-		provData, err := json.MarshalIndent(provFile, "", "  ")
-		if err == nil {
-			_ = os.WriteFile(providersPath, provData, 0644)
-		}
+		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
 	}
 
-	if config.ReasoningEffort == "" {
-		config.ReasoningEffort = "low"
+	if cfg.ReasoningEffort == "" {
+		cfg.ReasoningEffort = "low"
 	}
-	config.SyncActiveProvider()
-	envTimeout := os.Getenv("LOOP_TIMEOUT")
-	if envTimeout != "" {
+	cfg.SyncActiveProvider()
+	if envTimeout := os.Getenv("LOOP_TIMEOUT"); envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
-			config.Timeout = t
+			cfg.Timeout = t
 		}
 	}
-	if config.SyntaxTheme == "" {
-		config.SyntaxTheme = "auto"
+	if cfg.SyntaxTheme == "" {
+		cfg.SyntaxTheme = "auto"
 	}
-	if config.MaxCompletionTokens == 0 {
-		config.MaxCompletionTokens = 16384
+	if cfg.MaxCompletionTokens == 0 {
+		cfg.MaxCompletionTokens = 16384
 	}
 
-	return config, nil
+	return cfg, nil
 }
 
-func SaveConfig(path string, config *Config) error {
+func SaveConfig(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	config.UpdateActiveProvider()
+	cfg.UpdateActiveProvider()
 
-	savedMCP := config.MCPServers
-	savedProviders := config.Providers
+	savedMCP := cfg.MCPServers
+	savedProviders := cfg.Providers
+	cfg.MCPServers = nil
+	cfg.Providers = nil
 
-	config.MCPServers = nil
-	config.Providers = nil
+	data, err := json.MarshalIndent(cfg, "", "  ")
 
-	data, err := json.MarshalIndent(config, "", "  ")
-
-	config.MCPServers = savedMCP
-	config.Providers = savedProviders
+	cfg.MCPServers = savedMCP
+	cfg.Providers = savedProviders
 
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	mcpPath := filepath.Join(dir, "mcp.json")
-	if config.MCPServers == nil {
-		config.MCPServers = make(map[string]MCPServerConfig)
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = make(map[string]MCPServerConfig)
 	}
-	mcpData, err := json.MarshalIndent(config.MCPServers, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(mcpPath, mcpData, 0644)
-	}
+	saveMCPFile(dir, cfg.MCPServers)
 
-	providersPath := filepath.Join(dir, "providers.json")
-	if config.Providers == nil {
-		config.Providers = make(map[string]ProviderConfig)
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
 	}
-	// Always ensure at least a default active provider exists
-	if config.ActiveProvider == "" || config.ActiveProvider == "default" {
-		if _, ok := config.Providers["default"]; !ok {
-			config.ActiveProvider = "default"
-			config.Providers["default"] = ProviderConfig{
+	if cfg.ActiveProvider == "" || cfg.ActiveProvider == "default" {
+		if _, ok := cfg.Providers["default"]; !ok {
+			cfg.ActiveProvider = "default"
+			cfg.Providers["default"] = ProviderConfig{
 				Name:     "default",
-				Endpoint: config.Endpoint,
-				ApiKey:   config.ApiKey,
-				Model:    config.Model,
-				Timeout:  config.Timeout,
+				Endpoint: cfg.Endpoint,
+				ApiKey:   cfg.ApiKey,
+				Model:    cfg.Model,
+				Timeout:  cfg.Timeout,
 			}
 		}
 	}
-	cleanProviders := make(map[string]ProviderConfig, len(config.Providers))
-	for name, prov := range config.Providers {
-		p := prov
-		p.Name = ""
-		cleanProviders[name] = p
-	}
-	provFile := ProvidersFile{
-		Active:         config.ActiveProvider,
-		ActiveProvider: config.ActiveProvider,
-		Providers:      cleanProviders,
-	}
-	provData, err := json.MarshalIndent(provFile, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(providersPath, provData, 0644)
-	}
-
+	saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
 	return nil
 }
 
-func GetTLSConfig(config *Config) (*tls.Config, error) {
+func GetTLSConfig(cfg *Config) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: config.SkipVerify,
+		InsecureSkipVerify: cfg.SkipVerify,
 	}
 
-	hasCert := config.CertFile != "" && config.KeyFile != ""
-	if hasCert {
-		certPath := config.CertFile
-		keyPath := config.KeyFile
-
-		if _, err := os.Stat(certPath); err == nil {
-			if _, err := os.Stat(keyPath); err == nil {
-				cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if cfg.CertFile != "" && cfg.KeyFile != "" {
+		if _, err := os.Stat(cfg.CertFile); err == nil {
+			if _, err := os.Stat(cfg.KeyFile); err == nil {
+				cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load client keypair: %w", err)
 				}
@@ -470,10 +397,9 @@ func GetTLSConfig(config *Config) (*tls.Config, error) {
 		}
 	}
 
-	if config.CAFile != "" {
-		caPath := config.CAFile
-		if _, err := os.Stat(caPath); err == nil {
-			caCert, err := os.ReadFile(caPath)
+	if cfg.CAFile != "" {
+		if _, err := os.Stat(cfg.CAFile); err == nil {
+			caCert, err := os.ReadFile(cfg.CAFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 			}
@@ -486,9 +412,6 @@ func GetTLSConfig(config *Config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// CopyMCPServers deep-copies the server map. The interactive editor does a shallow
-// struct copy, so its map aliases the live config and every edit mutates the
-// original; a caller that wants to know what changed must snapshot first.
 func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConfig {
 	if servers == nil {
 		return nil
@@ -516,11 +439,6 @@ func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConf
 	return out
 }
 
-// MCPServersEqual reports whether two server maps are identical. The interactive
-// editor works on a clone, so callers need to know whether anything actually
-// changed before paying for a reconnect: reconnecting every server costs the
-// child-process boot time per server, which is far more than the repaint it would
-// replace.
 func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
 	if len(a) != len(b) {
 		return false
@@ -533,16 +451,13 @@ func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
 		if cfgA.Type != cfgB.Type || cfgA.Command != cfgB.Command || cfgA.URL != cfgB.URL || cfgA.Disabled != cfgB.Disabled || cfgA.AlwaysLoad != cfgB.AlwaysLoad {
 			return false
 		}
-		if len(cfgA.Args) != len(cfgB.Args) {
+		if len(cfgA.Args) != len(cfgB.Args) || len(cfgA.Env) != len(cfgB.Env) || len(cfgA.Headers) != len(cfgB.Headers) {
 			return false
 		}
 		for i := range cfgA.Args {
 			if cfgA.Args[i] != cfgB.Args[i] {
 				return false
 			}
-		}
-		if len(cfgA.Env) != len(cfgB.Env) || len(cfgA.Headers) != len(cfgB.Headers) {
-			return false
 		}
 		for k, v := range cfgA.Env {
 			if cfgB.Env[k] != v {
@@ -558,7 +473,6 @@ func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
 	return true
 }
 
-// ParseHeaderArgs parses key:value or key=value header arguments into a map.
 func ParseHeaderArgs(args []string) map[string]string {
 	headers := make(map[string]string)
 	for _, arg := range args {

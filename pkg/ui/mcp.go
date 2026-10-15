@@ -6,6 +6,8 @@ import (
 	"os"
 	"sort"
 
+	"golang.org/x/term"
+
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
@@ -29,7 +31,12 @@ func HandleMCPCommand(
 		return calculateActiveTokenUsage(a, *messages, activeToolAllowlist(kiReader), mam)
 	}
 
-	syncStatus := func() {
+	restartAndSyncMCP := func() {
+		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		a.StopMCPServers()
+		if len(a.Config.MCPServers) > 0 {
+			_ = a.StartMCPServers(a.Config.MCPServers)
+		}
 		syncAgentStatus(a, theme, calcHistoryTokens)
 	}
 
@@ -37,9 +44,6 @@ func HandleMCPCommand(
 		input, output, cleanup := getInteractiveIO(kiReader)
 		defer cleanup()
 
-		// The editor copies the config shallowly, so its MCPServers map aliases this
-		// one and every edit lands on the live config. Snapshot first: without this
-		// there is no way to tell an edited session from one exited with escape.
 		before := config.CopyMCPServers(a.Config.MCPServers)
 
 		ShutdownStatusBar(os.Stderr)
@@ -50,36 +54,30 @@ func HandleMCPCommand(
 			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
 
-		// Repaint before reconnecting. Reconnecting costs the child-process boot time
-		// per server (hundreds of milliseconds each), and the user is looking at the
-		// screen while it happens; the prompt must come back first.
-		//
-		// Only the fixed bottom controls are redrawn: the editor drew on the alternate
-		// screen, so the conversation is still where it was, and a full repaint would shove
-		// the chat to the top of the screen.
+		var rl *term.Terminal
 		if kiReader != nil {
-			RestoreAfterModal(w, a, kiReader, kiReader.RL)
-		} else {
-			RestoreAfterModal(w, a, nil, nil)
+			rl = kiReader.RL
 		}
+		RestoreAfterModal(w, a, kiReader, rl)
 
-		changed := errInteractive == nil && newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers)
-		if changed {
+		if errInteractive == nil && newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers) {
 			a.StopMCPServers()
 			if len(a.Config.MCPServers) > 0 {
 				_ = a.StartMCPServers(a.Config.MCPServers)
-				syncStatus()
+				syncAgentStatus(a, theme, calcHistoryTokens)
 			}
 		}
 		return
+	}
+
+	if a.Config.MCPServers == nil {
+		a.Config.MCPServers = make(map[string]config.MCPServerConfig)
 	}
 
 	sub := parts[1]
 	switch sub {
 	case "list":
 		RenderMCPServers(w, a.Config, theme)
-
-		// Show connection status
 		mcpStatuses := a.GetMCPServersStatus()
 		if len(a.Config.MCPServers) > 0 {
 			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("\nmcp connection status:"))
@@ -91,7 +89,6 @@ func HandleMCPCommand(
 			for _, name := range keys {
 				status, active := mcpStatuses[name]
 				cfg := a.Config.MCPServers[name]
-
 				if cfg.Disabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
@@ -109,79 +106,41 @@ func HandleMCPCommand(
 			fmt.Fprintln(w, "usage: /mcp add <name> <url> [headerKey:headerVal]...")
 			return
 		}
-		name := parts[2]
-		url := parts[3]
-		headers := config.ParseHeaderArgs(parts[4:])
-
-		if a.Config.MCPServers == nil {
-			a.Config.MCPServers = make(map[string]config.MCPServerConfig)
-		}
+		name, url := parts[2], parts[3]
 		a.Config.MCPServers[name] = config.MCPServerConfig{
 			URL:     url,
-			Headers: headers,
+			Headers: config.ParseHeaderArgs(parts[4:]),
 		}
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
 		fmt.Fprintf(w, "MCP Server '%s' successfully added/updated.\n", name)
-
-		// Restart MCP servers
-		a.StopMCPServers()
-		if len(a.Config.MCPServers) > 0 {
-			_ = a.StartMCPServers(a.Config.MCPServers)
-		}
-
-		syncStatus()
+		restartAndSyncMCP()
 	case "enable", "disable":
 		if len(parts) < 3 {
 			fmt.Fprintf(w, "usage: /mcp %s <name>\n", sub)
 			return
 		}
 		name := parts[2]
-		if a.Config.MCPServers == nil {
-			a.Config.MCPServers = make(map[string]config.MCPServerConfig)
-		}
 		cfg, ok := a.Config.MCPServers[name]
 		if !ok {
 			fmt.Fprintf(w, "error: MCP server '%s' not found.\n", name)
 			return
 		}
-
 		cfg.Disabled = (sub == "disable")
 		a.Config.MCPServers[name] = cfg
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
 		fmt.Fprintf(w, "MCP Server '%s' successfully %sd.\n", name, sub)
-
-		// Restart MCP servers
-		a.StopMCPServers()
-		if len(a.Config.MCPServers) > 0 {
-			_ = a.StartMCPServers(a.Config.MCPServers)
-		}
-
-		syncStatus()
+		restartAndSyncMCP()
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /mcp remove <name>")
 			return
 		}
 		name := parts[2]
-		if a.Config.MCPServers == nil {
-			a.Config.MCPServers = make(map[string]config.MCPServerConfig)
-		}
 		if _, ok := a.Config.MCPServers[name]; !ok {
 			fmt.Fprintf(w, "error: MCP server '%s' not found.\n", name)
 			return
 		}
-
 		delete(a.Config.MCPServers, name)
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
 		fmt.Fprintf(w, "MCP Server '%s' removed.\n", name)
-
-		// Restart MCP servers
-		a.StopMCPServers()
-		if len(a.Config.MCPServers) > 0 {
-			_ = a.StartMCPServers(a.Config.MCPServers)
-		}
-
-		syncStatus()
+		restartAndSyncMCP()
 	case "tools":
 		mcpTools := a.GetMCPTools()
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("available mcp tools:"))

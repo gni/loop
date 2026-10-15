@@ -12,7 +12,6 @@ import (
 	"loop/pkg/ui/interceptor"
 )
 
-// refreshREPLStatus updates status bar token usage and refreshes the console after a turn or cancellation.
 func refreshREPLStatus(
 	a *agent.Agent,
 	messages []db.Message,
@@ -25,11 +24,15 @@ func refreshREPLStatus(
 	activeTasks := a.CountActiveTasks()
 	pTok, cTok, estimated := interceptor.CalculateActiveTokenUsage(a, messages, allowedTools, mam)
 	latestTurnTokens := 0
+	var tps float64
 	if !isCancellation {
 		latestTurnTokens = a.GetLatestAssistantCompletionTokens(messages)
+		if dur := a.LastGenerationDuration(); dur > 0 && latestTurnTokens > 0 {
+			tps = float64(latestTurnTokens) / dur.Seconds()
+		}
 	}
 	effLimit := a.GetEffectiveContextLimit(pTok)
-	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
+	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, tps, activeTasks, a.Config.ShowTokens, estimated)
 	if isCancellation {
 		ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, rl)
 	} else {

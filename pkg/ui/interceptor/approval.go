@@ -81,17 +81,13 @@ func (ki *KeyInterceptorReader) EndApprovalInput() {
 }
 
 func (ki *KeyInterceptorReader) DrainApprovalInput() {
-	ki.drainApprovalInput()
-}
-
-func (ki *KeyInterceptorReader) drainApprovalInput() {
 	if ki.ApprovalChan == nil {
 		return
 	}
 	for {
 		select {
-		case _, channelOpen := <-ki.ApprovalChan:
-			if !channelOpen {
+		case _, ok := <-ki.ApprovalChan:
+			if !ok {
 				return
 			}
 		default:
@@ -101,18 +97,14 @@ func (ki *KeyInterceptorReader) drainApprovalInput() {
 }
 
 func (ki *KeyInterceptorReader) PrintCancelMessage() {
-	ki.printCancelMessage()
-}
-
-func (ki *KeyInterceptorReader) printCancelMessage() {
 	output := ki.W
 	if ki.Agent != nil {
 		if wh, ok := ki.Agent.UI.(interface{ GetPPWriter() io.Writer }); ok {
 			if w := wh.GetPPWriter(); w != nil {
 				output = w
 			}
-		} else if ki.Agent.CurrentWriter() != nil {
-			output = ki.Agent.CurrentWriter()
+		} else if w := ki.Agent.CurrentWriter(); w != nil {
+			output = w
 		}
 	}
 	if output != nil {
@@ -121,10 +113,6 @@ func (ki *KeyInterceptorReader) printCancelMessage() {
 }
 
 func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte, cancelParent context.CancelFunc, agentName string) {
-	ki.handleSubagentCancellation(rawInput, cancelParent, agentName)
-}
-
-func (ki *KeyInterceptorReader) handleSubagentCancellation(rawInput <-chan byte, cancelParent context.CancelFunc, agentName string) {
 	output := ki.W
 	if ki.Agent != nil && ki.Agent.CurrentWriter() != nil {
 		output = ki.Agent.CurrentWriter()

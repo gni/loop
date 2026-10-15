@@ -7,7 +7,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// RenderHelp formats and displays the slash command reference and keyboard shortcut guide.
 func RenderHelp(w io.Writer, theme style.UITheme) {
 	headerStyle := style.NewStyle().
 		Foreground(theme.Primary).
@@ -25,6 +24,8 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 	fmt.Fprintln(w)
 
 	commands := [][]string{
+		{"/guided [on|off|status|approve]", "toggle or inspect guided execution mode (Explore -> Plan -> Execute)"},
+		{"/rollback (or /undo)", "restore files modified in this session to their initial snapshots"},
 		{"/config [show|set <k> <v>]", "view or modify runtime settings"},
 		{"/session [list|new|load|clear]", "manage persistent conversation sessions"},
 		{"/provider", "manage ai endpoints, keys, and model profiles"},
@@ -56,11 +57,13 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 
 	shortcuts := [][]string{
 		{"Enter", "submit prompt to agent"},
+		{"Ctrl+G", "toggle guided mode on/off"},
 		{"Ctrl+C", "interrupt generation / cancel turn"},
 		{"Ctrl+D", "exit loop cleanly"},
 		{"Ctrl+L", "clear screen buffer and redraw"},
 		{"Ctrl+O", "toggle collapsible tool outputs"},
-		{"Ctrl+R", "reverse search conversation history"},
+		{"Ctrl+R", "cycle reasoning effort (off/low/medium/high/max)"},
+		{"Ctrl+T", "toggle streaming thought visibility"},
 		{"Tab", "autocomplete slash commands and tool names"},
 		{"Up / Down", "navigate prompt history"},
 	}

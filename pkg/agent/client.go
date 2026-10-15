@@ -20,30 +20,21 @@ import (
 )
 
 type mcpClient struct {
-	name        string
-	config      config.MCPServerConfig
-	isSSE       bool
-	isStdio     bool
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	postURL     string
-	sseBody     io.ReadCloser
-	requests    map[int64]chan string
-	requestMu   sync.Mutex
-	nextID      int64
-	initialized bool
-	client      *http.Client
-	cancel      context.CancelFunc
-
-	// connectTimeout bounds the wait for the SSE endpoint event and for response
-	// headers. It is resolved from limits at construction so a server that accepts a
-	// connection but never emits an endpoint event fails in a bounded time instead of
-	// holding up startup.
+	name           string
+	config         config.MCPServerConfig
+	isSSE          bool
+	isStdio        bool
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	postURL        string
+	sseBody        io.ReadCloser
+	requests       map[int64]chan string
+	requestMu      sync.Mutex
+	nextID         int64
+	initialized    bool
+	client         *http.Client
+	cancel         context.CancelFunc
 	connectTimeout time.Duration
-
-	// A response whose id has no pending request is parked here instead of being
-	// dropped: some servers answer a duplicate or replayed id, and a later request that
-	// reuses that id can pick the parked answer up.
 	earlyResponses map[int64]string
 }
 
@@ -79,16 +70,12 @@ func (c *mcpClient) startSSE() error {
 		req.Header.Set(k, v)
 	}
 
-	// The client timeout must stay 0 because an SSE stream is long-lived, but the
-	// connect phase still needs a bound: ResponseHeaderTimeout covers only the wait
-	// for the response headers, so a server that accepts the connection and never
-	// answers fails fast without cutting the stream short.
 	sseClient := *c.client
 	sseClient.Timeout = 0
 	if transport, ok := c.client.Transport.(*http.Transport); ok && transport != nil {
-		clonedTransport := transport.Clone()
-		clonedTransport.ResponseHeaderTimeout = c.connectTimeout
-		sseClient.Transport = clonedTransport
+		cloned := transport.Clone()
+		cloned.ResponseHeaderTimeout = c.connectTimeout
+		sseClient.Transport = cloned
 	} else {
 		sseClient.Transport = &http.Transport{ResponseHeaderTimeout: c.connectTimeout}
 	}
@@ -152,12 +139,10 @@ func (c *mcpClient) startSSE() error {
 		return fmt.Errorf("timeout waiting for SSE endpoint initialization (%s)", c.connectTimeout)
 	}
 
-	err = c.handshake()
-	if err != nil {
+	if err := c.handshake(); err != nil {
 		c.close()
 		return fmt.Errorf("handshake failed: %w", err)
 	}
-
 	return nil
 }
 
@@ -178,85 +163,55 @@ func (c *mcpClient) close() {
 
 func (c *mcpClient) handleMessage(data string) {
 	var msg struct {
-		ID     json.RawMessage  `json:"id"`
-		Method string           `json:"method"`
-		Result *json.RawMessage `json:"result"`
-		Error  *json.RawMessage `json:"error"`
+		ID json.RawMessage `json:"id"`
 	}
-
-	if err := json.Unmarshal([]byte(data), &msg); err != nil {
+	if err := json.Unmarshal([]byte(data), &msg); err != nil || len(msg.ID) == 0 {
 		return
 	}
 
 	var parsedID int64
-	hasID := false
-
-	if len(msg.ID) > 0 {
-		var idInt int64
-		if err := json.Unmarshal(msg.ID, &idInt); err == nil {
-			parsedID = idInt
-			hasID = true
-		} else {
-			var idStr string
-			if err := json.Unmarshal(msg.ID, &idStr); err == nil {
-				if val, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-					parsedID = val
-					hasID = true
-				}
-			}
+	if err := json.Unmarshal(msg.ID, &parsedID); err != nil {
+		var idStr string
+		if json.Unmarshal(msg.ID, &idStr) != nil {
+			return
 		}
+		val, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return
+		}
+		parsedID = val
 	}
 
-	if hasID {
-		c.requestMu.Lock()
-		ch, exists := c.requests[parsedID]
-		if exists {
-			delete(c.requests, parsedID)
-			select {
-			case ch <- data:
-			default:
-			}
-		} else {
-			if c.earlyResponses == nil {
-				c.earlyResponses = make(map[int64]string)
-			}
-			c.earlyResponses[parsedID] = data
-		}
-		c.requestMu.Unlock()
-	}
-}
-
-// takeEarlyResponse returns a response that arrived before this request was
-// registered, if there is one.
-func (c *mcpClient) takeEarlyResponse(id int64) (string, bool) {
 	c.requestMu.Lock()
-	defer c.requestMu.Unlock()
-	if c.earlyResponses == nil {
-		return "", false
+	if ch, exists := c.requests[parsedID]; exists {
+		delete(c.requests, parsedID)
+		select {
+		case ch <- data:
+		default:
+		}
+	} else {
+		if c.earlyResponses == nil {
+			c.earlyResponses = make(map[int64]string)
+		}
+		c.earlyResponses[parsedID] = data
 	}
-	data, exists := c.earlyResponses[id]
-	if exists {
-		delete(c.earlyResponses, id)
-	}
-	return data, exists
+	c.requestMu.Unlock()
 }
 
-func (c *mcpClient) request(method string, params interface{}) (string, error) {
-	if c.isStdio {
-		return c.requestStdio(method, params, limits.MCPRequestTimeout())
-	}
-
+func (c *mcpClient) prepareRPCRequest(method string, params interface{}) (int64, chan string, []byte, string, error) {
 	c.requestMu.Lock()
 	id := c.nextID
 	c.nextID++
+	if c.earlyResponses != nil {
+		if early, exists := c.earlyResponses[id]; exists {
+			delete(c.earlyResponses, id)
+			c.requestMu.Unlock()
+			return id, nil, nil, early, nil
+		}
+	}
 	ch := make(chan string, 1)
 	c.requests[id] = ch
 	c.requestMu.Unlock()
-
-	// A response may already have arrived before this channel existed.
-	if data, ok := c.takeEarlyResponse(id); ok {
-		return data, nil
-	}
 
 	reqMap := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -269,10 +224,26 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 
 	data, err := json.Marshal(reqMap)
 	if err != nil {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
-		return "", err
+		c.clearPendingRequest(id)
+		return id, nil, nil, "", err
+	}
+	return id, ch, data, "", nil
+}
+
+func (c *mcpClient) clearPendingRequest(id int64) {
+	c.requestMu.Lock()
+	delete(c.requests, id)
+	c.requestMu.Unlock()
+}
+
+func (c *mcpClient) request(method string, params interface{}) (string, error) {
+	if c.isStdio {
+		return c.requestStdio(method, params, limits.MCPRequestTimeout())
+	}
+
+	id, ch, data, early, err := c.prepareRPCRequest(method, params)
+	if err != nil || early != "" {
+		return early, err
 	}
 	mcpLog("[MCP Tx] %s\n", string(data))
 
@@ -281,9 +252,7 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data))
 	if err != nil {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -293,29 +262,21 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", fmt.Errorf("HTTP error %d", resp.StatusCode)
 	}
-
-	mcpLog("[MCP Tx] %s\n", string(data))
 
 	select {
 	case res := <-ch:
 		return res, nil
 	case <-ctx.Done():
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", fmt.Errorf("request timeout or cancellation")
 	}
 }
@@ -336,32 +297,23 @@ func (c *mcpClient) handshake() error {
 	}
 
 	var resp struct {
-		Result struct {
-			ProtocolVersion string `json:"protocolVersion"`
-		} `json:"result"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-
 	if err := json.Unmarshal([]byte(res), &resp); err != nil {
 		return err
 	}
-
 	if resp.Error != nil {
 		return fmt.Errorf("MCP error: %s", resp.Error.Message)
 	}
 
-	reqMap := map[string]interface{}{
+	data, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
-	}
-	data, _ := json.Marshal(reqMap)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+	})
 	mcpLog("[MCP Tx Notification] %s\n", string(data))
+
 	if c.isStdio {
 		if err := c.sendStdio(string(data)); err != nil {
 			mcpLog("[MCP] failed to send notifications/initialized: %v\n", err)
@@ -370,19 +322,16 @@ func (c *mcpClient) handshake() error {
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data))
-	if err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data)); err == nil {
 		req.Header.Set("Content-Type", "application/json")
 		for k, v := range c.config.Headers {
 			req.Header.Set(k, v)
 		}
 		if respDrop, errDrop := c.client.Do(req); errDrop == nil {
-			if respDrop.StatusCode != http.StatusOK && respDrop.StatusCode != http.StatusAccepted && respDrop.StatusCode != http.StatusNoContent {
-				mcpLog("[MCP] notifications/initialized returned status %d\n", respDrop.StatusCode)
-			}
 			respDrop.Body.Close()
-		} else {
-			mcpLog("[MCP] failed to send notifications/initialized: %v\n", errDrop)
 		}
 	}
 
@@ -408,15 +357,12 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-
 	if err := json.Unmarshal([]byte(res), &resp); err != nil {
 		return nil, err
 	}
-
 	if resp.Error != nil {
 		return nil, fmt.Errorf("MCP error: %s", resp.Error.Message)
 	}
-
 	return resp.Result.Tools, nil
 }
 
@@ -430,12 +376,10 @@ func (c *mcpClient) callTool(name string, arguments string) (string, error) {
 		return "", err
 	}
 
-	params := map[string]interface{}{
+	res, err := c.request("tools/call", map[string]interface{}{
 		"name":      name,
 		"arguments": argsMap,
-	}
-
-	res, err := c.request("tools/call", params)
+	})
 	if err != nil {
 		return "", err
 	}
@@ -452,11 +396,9 @@ func (c *mcpClient) callTool(name string, arguments string) (string, error) {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-
 	if err := json.Unmarshal([]byte(res), &resp); err != nil {
 		return "", err
 	}
-
 	if resp.Error != nil {
 		return "", fmt.Errorf("MCP error: %s", resp.Error.Message)
 	}

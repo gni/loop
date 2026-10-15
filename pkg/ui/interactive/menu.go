@@ -8,6 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/term"
+
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -22,9 +25,34 @@ type settingItem struct {
 	onEdit      func(newVal string) error
 }
 
-// GetInteractiveIO resolves the appropriate input reader and output writer for
-// interactive modals, falling back to /dev/tty if available, and returning
-// a cleanup callback to close any opened file handles.
+func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() error) (bool, error) {
+	var fd int
+	if f, ok := rlInput.(*os.File); ok {
+		fd = int(f.Fd())
+	} else {
+		fd = int(os.Stdin.Fd())
+	}
+
+	if !term.IsTerminal(fd) {
+		return false, nil
+	}
+
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return true, err
+	}
+	defer term.Restore(fd, oldState)
+
+	fmt.Fprint(rlOutput, terminal.EnterAlternateScreen)
+	fmt.Fprint(rlOutput, "\x1b[?25l")
+	defer func() {
+		fmt.Fprint(rlOutput, "\x1b[?25h")
+		fmt.Fprint(rlOutput, terminal.ExitAlternateScreen)
+	}()
+
+	return true, fn()
+}
+
 func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	var input io.Reader = kiReader
 	var inputCloser io.Closer
@@ -55,6 +83,76 @@ func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	return input, output, cleanup
 }
 
+func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.UITheme) string {
+	nameStr := item.name
+	valStr := item.value()
+	cleanVal := style.StripAnsi(valStr)
+	hasAnsiVal := cleanVal != valStr
+
+	keyColWidth := 24
+	if colWidth > 0 {
+		keyColWidth = colWidth - 16
+		if keyColWidth < 14 {
+			keyColWidth = 14
+		}
+		if keyColWidth > 26 {
+			keyColWidth = 26
+		}
+	}
+
+	if utf8.RuneCountInString(nameStr) > keyColWidth-1 {
+		nameStr = style.TruncateRunes(nameStr, keyColWidth-1)
+	}
+
+	if colWidth > 0 && !hasAnsiVal {
+		maxValRunes := colWidth - keyColWidth - 6
+		if maxValRunes < 6 {
+			maxValRunes = 6
+		}
+		if utf8.RuneCountInString(valStr) > maxValRunes {
+			valStr = style.TruncateRunes(valStr, maxValRunes)
+		}
+	}
+
+	nameLen := utf8.RuneCountInString(nameStr)
+	leader := ""
+	if nameLen < keyColWidth {
+		leader = strings.Repeat("·", keyColWidth-nameLen)
+	}
+	leaderStyled := style.NewStyle().Foreground(theme.Border).Render(leader)
+
+	if selected {
+		marker := style.NewStyle().Foreground(theme.Primary).Bold(true).Render("›")
+		nameStyled := style.NewStyle().Foreground(theme.Primary).Bold(true).Render(nameStr)
+		valStyled := valStr
+		if !hasAnsiVal {
+			valStyled = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(valStr)
+		}
+		bracket := style.NewStyle().Foreground(theme.Secondary)
+
+		valStrFormatted := ""
+		if valStr != "" {
+			valStrFormatted = fmt.Sprintf("%s%s%s", bracket.Render("["), valStyled, bracket.Render("]"))
+		}
+		return fmt.Sprintf("%s %s %s %s", marker, nameStyled, leaderStyled, valStrFormatted)
+	}
+
+	nameStyled := style.NewStyle().Foreground(theme.Text).Render(nameStr)
+	valStyled := valStr
+	if !hasAnsiVal {
+		valStyled = style.NewStyle().Foreground(theme.Secondary).Render(valStr)
+	}
+	return fmt.Sprintf("  %s %s %s", nameStyled, leaderStyled, valStyled)
+}
+
+func padAnsiCell(cell string, width int) string {
+	vis := utf8.RuneCountInString(style.StripAnsi(cell))
+	if vis >= width {
+		return cell
+	}
+	return cell + strings.Repeat(" ", width-vis)
+}
+
 func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITheme, title string, itemsProvider func() []*settingItem, extraRender func(buf *strings.Builder)) error {
 	searchQuery := ""
 	selectedIdx := 0
@@ -80,79 +178,97 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			selectedIdx = 0
 		}
 
+		termW, termH := terminal.GetDimensions()
+		if termW <= 0 {
+			termW = 80
+		}
+		if termH <= 0 {
+			termH = 24
+		}
+
+		useTwoCols := termW >= 72 && len(filtered) > 1
+		rows := len(filtered)
+		if useTwoCols {
+			rows = (len(filtered) + 1) / 2
+		}
+
 		var buf strings.Builder
 		buf.WriteString("\x1b[H")
 
-		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-		buf.WriteString(titleStyle.Render(title))
-		buf.WriteString("\n\n")
-
-		searchLabelStyle := style.NewStyle().Foreground(theme.Text)
-		buf.WriteString(searchLabelStyle.Render("  search:  "))
-
-		searchValStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-		buf.WriteString(searchValStyle.Render(searchQuery))
-		buf.WriteString("\n")
-
-		underlineStyle := style.NewStyle().Foreground(theme.Border)
-		buf.WriteString(underlineStyle.Render("           ────────────────────"))
-		buf.WriteString("\n\n")
+		titleStyled := style.NewStyle().Foreground(theme.Primary).Bold(true).Render(title)
+		searchLabel := style.NewStyle().Foreground(theme.Text).Render("  search: ")
+		searchVal := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(searchQuery)
+		underline := style.NewStyle().Foreground(theme.Border).Render("──────────")
+		if searchQuery == "" {
+			buf.WriteString(fmt.Sprintf("%s    %s%s\n\n", titleStyled, searchLabel, underline))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s    %s%s\n\n", titleStyled, searchLabel, searchVal))
+		}
 
 		if len(filtered) == 0 {
-			dimStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-			buf.WriteString(dimStyle.Render("  (no matching settings found)"))
+			buf.WriteString(style.NewStyle().Foreground(theme.Border).Italic(true).Render("  (no matching settings found)"))
 			buf.WriteString("\n")
+		} else if useTwoCols {
+			colWidth := (termW - 5) / 2
+			sep := style.NewStyle().Foreground(theme.Border).Render(" │ ")
+
+			maxVisibleRows := termH - 8
+			if extraRender != nil && termH >= 22 {
+				maxVisibleRows = termH - 11
+			}
+			if maxVisibleRows < 5 {
+				maxVisibleRows = 5
+			}
+
+			selectedRow := selectedIdx % rows
+			startRow := 0
+			if rows > maxVisibleRows {
+				if selectedRow >= startRow+maxVisibleRows {
+					startRow = selectedRow - maxVisibleRows + 1
+				}
+				if selectedRow < startRow {
+					startRow = selectedRow
+				}
+				if startRow+maxVisibleRows > rows {
+					startRow = rows - maxVisibleRows
+				}
+			}
+			endRow := rows
+			if endRow > startRow+maxVisibleRows {
+				endRow = startRow + maxVisibleRows
+			}
+
+			for r := startRow; r < endRow; r++ {
+				leftIdx := r
+				rightIdx := r + rows
+
+				leftCell := formatMenuCell(filtered[leftIdx], leftIdx == selectedIdx, colWidth, theme)
+				if rightIdx < len(filtered) {
+					rightCell := formatMenuCell(filtered[rightIdx], rightIdx == selectedIdx, colWidth, theme)
+					buf.WriteString(padAnsiCell(leftCell, colWidth) + sep + rightCell + "\n")
+				} else {
+					buf.WriteString(leftCell + "\n")
+				}
+			}
 		} else {
 			for idx, item := range filtered {
-				nameStr := item.name
-				valStr := item.value()
-
-				keyColWidth := 28
-				nameLen := utf8.RuneCountInString(nameStr)
-				leader := ""
-				if nameLen < keyColWidth {
-					leader = strings.Repeat("·", keyColWidth-nameLen)
-				}
-
-				if idx == selectedIdx {
-					markerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-					nameStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-					leaderStyle := style.NewStyle().Foreground(theme.Border)
-					valStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-					bracketStyle := style.NewStyle().Foreground(theme.Secondary)
-
-					valStrFormatted := ""
-					if valStr != "" {
-						valStrFormatted = fmt.Sprintf("%s %s %s", bracketStyle.Render("["), valStyle.Render(valStr), bracketStyle.Render("]"))
-					}
-					buf.WriteString(fmt.Sprintf("%s  %s %s %s\n", markerStyle.Render("›"), nameStyle.Render(nameStr), leaderStyle.Render(leader), valStrFormatted))
-				} else {
-					nameStyle := style.NewStyle().Foreground(theme.Text)
-					leaderStyle := style.NewStyle().Foreground(theme.Border)
-					valStyle := style.NewStyle().Foreground(theme.Secondary)
-					buf.WriteString(fmt.Sprintf("   %s %s %s\n", nameStyle.Render(nameStr), leaderStyle.Render(leader), valStyle.Render(valStr)))
-				}
+				buf.WriteString(formatMenuCell(item, idx == selectedIdx, termW-4, theme) + "\n")
 			}
 		}
 
-		buf.WriteString("\n")
-
 		if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 			descStyle := style.NewStyle().Foreground(theme.Success)
-			buf.WriteString(fmt.Sprintf("  %s\n", descStyle.Render(filtered[selectedIdx].description)))
+			buf.WriteString(fmt.Sprintf("\n  %s\n", descStyle.Render(filtered[selectedIdx].description)))
 		} else {
 			buf.WriteString("\n")
 		}
 
-		if extraRender != nil {
+		if extraRender != nil && termH >= 20 {
 			extraRender(&buf)
 		}
 
-		buf.WriteString("\n")
 		navStyle := style.NewStyle().Foreground(theme.Border)
-		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("↑/↓ navigate · enter select/edit · esc clear search/exit")))
-		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("esc to save and exit")))
-
+		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("↑/↓/←/→ navigate · enter select/edit · type to search · esc save & exit")))
 		buf.WriteString("\x1b[J")
 
 		outputStr := strings.ReplaceAll(buf.String(), "\n", "\x1b[K\r\n")
@@ -168,14 +284,24 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		}
 
 		if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
-			switch readBuf[2] {
-			case 'A':
-				if len(filtered) > 0 {
+			if len(filtered) > 0 {
+				switch readBuf[2] {
+				case 'A':
 					selectedIdx = (selectedIdx - 1 + len(filtered)) % len(filtered)
-				}
-			case 'B':
-				if len(filtered) > 0 {
+				case 'B':
 					selectedIdx = (selectedIdx + 1) % len(filtered)
+				case 'C':
+					if useTwoCols && selectedIdx < rows {
+						target := selectedIdx + rows
+						if target >= len(filtered) {
+							target = len(filtered) - 1
+						}
+						selectedIdx = target
+					}
+				case 'D':
+					if useTwoCols && selectedIdx >= rows {
+						selectedIdx -= rows
+					}
 				}
 			}
 			continue
@@ -183,25 +309,19 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 
 		if n == 1 {
 			char := readBuf[0]
-
-			if char == 3 || char == 4 {
+			switch char {
+			case 3, 4:
 				return fmt.Errorf("cancelled")
-			}
-
-			if char == 13 || char == 10 {
+			case 13, 10:
 				if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 					item := filtered[selectedIdx]
 					if item.onToggle != nil {
 						item.onToggle()
 					} else if item.onEdit != nil {
-						fmt.Fprintf(rlOutput, "\r\n\r\n  edit %s (current: %s):\r\n", item.name, item.value())
-						fmt.Fprint(rlOutput, "  enter new value (empty to delete if header): ")
-
+						fmt.Fprintf(rlOutput, "\r\n  edit %s (current: %s): ", item.name, item.value())
 						newVal, err := ReadInputRaw(rlInput, rlOutput)
 						if err == nil {
-							newVal = strings.TrimSpace(newVal)
-							err = item.onEdit(newVal)
-							if err != nil {
+							if err = item.onEdit(strings.TrimSpace(newVal)); err != nil {
 								fmt.Fprintf(rlOutput, "\r\n  error: %v. press enter to continue...", err)
 								_, _ = ReadInputRaw(rlInput, rlOutput)
 							}
@@ -209,18 +329,13 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 					}
 				}
 				continue
-			}
-
-			if char == 27 {
+			case 27:
 				if searchQuery != "" {
 					searchQuery = ""
-				} else {
-					return nil
+					continue
 				}
-				continue
-			}
-
-			if char == 127 || char == 8 {
+				return nil
+			case 127, 8:
 				if len(searchQuery) > 0 {
 					_, size := utf8.DecodeLastRuneInString(searchQuery)
 					searchQuery = searchQuery[:len(searchQuery)-size]
@@ -246,35 +361,25 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 }
 
 func RunInteractiveSelect(sr *SessionReader, sigChan chan os.Signal, rlOutput io.Writer, title string, items []string, theme style.UITheme) (int, error) {
-	return runInteractiveSelect(sr, sigChan, rlOutput, title, items, theme)
-}
-
-func runInteractiveSelect(sr *sessionReader, sigChan chan os.Signal, rlOutput io.Writer, title string, items []string, theme style.UITheme) (int, error) {
 	selectedIdx := 0
 
 	for {
 		var buf strings.Builder
 		buf.WriteString("\x1b[H")
-
-		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-		buf.WriteString(titleStyle.Render(title))
+		buf.WriteString(style.NewStyle().Foreground(theme.Primary).Bold(true).Render(title))
 		buf.WriteString("\n\n")
 
 		for idx, item := range items {
 			if idx == selectedIdx {
-				markerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-				itemStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-				buf.WriteString(fmt.Sprintf("    %s %s\n", markerStyle.Render("›"), itemStyle.Render(item)))
+				primaryBold := style.NewStyle().Foreground(theme.Primary).Bold(true)
+				buf.WriteString(fmt.Sprintf("    %s %s\n", primaryBold.Render("›"), primaryBold.Render(item)))
 			} else {
-				itemStyle := style.NewStyle().Foreground(theme.Text)
-				buf.WriteString(fmt.Sprintf("      %s\n", itemStyle.Render(item)))
+				buf.WriteString(fmt.Sprintf("      %s\n", style.NewStyle().Foreground(theme.Text).Render(item)))
 			}
 		}
 
 		buf.WriteString("\n")
-		navStyle := style.NewStyle().Foreground(theme.Border)
-		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("↑/↓ navigate · enter select · esc cancel")))
-
+		buf.WriteString(fmt.Sprintf("  %s\n", style.NewStyle().Foreground(theme.Border).Render("↑/↓ navigate · enter select · esc cancel")))
 		buf.WriteString("\x1b[J")
 
 		outputStr := strings.ReplaceAll(buf.String(), "\n", "\x1b[K\r\n")
@@ -290,11 +395,10 @@ func runInteractiveSelect(sr *sessionReader, sigChan chan os.Signal, rlOutput io
 		n := len(readBuf)
 
 		if n == 1 {
-			char := readBuf[0]
-			if char == 3 || char == 27 || char == 4 {
+			switch readBuf[0] {
+			case 3, 27, 4:
 				return -1, fmt.Errorf("selection cancelled")
-			}
-			if char == 13 || char == 10 {
+			case 13, 10:
 				return selectedIdx, nil
 			}
 		}

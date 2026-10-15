@@ -3,7 +3,6 @@ package agent
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,8 +11,6 @@ import (
 	"time"
 )
 
-// startStdio launches the configured command as a local MCP server over
-// JSON-RPC on stdin/stdout (newline-delimited).
 func (c *mcpClient) startStdio() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -65,7 +62,6 @@ func (c *mcpClient) startStdio() error {
 		c.close()
 		return fmt.Errorf("handshake failed: %w", err)
 	}
-
 	return nil
 }
 
@@ -83,31 +79,14 @@ func (c *mcpClient) sendStdio(data string) error {
 }
 
 func (c *mcpClient) requestStdio(method string, params interface{}, timeout time.Duration) (string, error) {
-	c.requestMu.Lock()
-	id := c.nextID
-	c.nextID++
-	ch := make(chan string, 1)
-	c.requests[id] = ch
-	c.requestMu.Unlock()
-
-	reqMap := map[string]interface{}{"jsonrpc": "2.0", "id": id, "method": method}
-	if params != nil {
-		reqMap["params"] = params
-	}
-
-	data, err := json.Marshal(reqMap)
-	if err != nil {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
-		return "", err
+	id, ch, data, early, err := c.prepareRPCRequest(method, params)
+	if err != nil || early != "" {
+		return early, err
 	}
 
 	mcpLog("[MCP Tx] %s\n", string(data))
 	if err := c.sendStdio(string(data)); err != nil {
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", err
 	}
 
@@ -115,9 +94,7 @@ func (c *mcpClient) requestStdio(method string, params interface{}, timeout time
 	case res := <-ch:
 		return res, nil
 	case <-time.After(timeout):
-		c.requestMu.Lock()
-		delete(c.requests, id)
-		c.requestMu.Unlock()
+		c.clearPendingRequest(id)
 		return "", fmt.Errorf("request timeout waiting for '%s' response", method)
 	}
 }

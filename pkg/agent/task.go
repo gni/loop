@@ -16,9 +16,6 @@ import (
 	"loop/pkg/domain/limits"
 )
 
-// MaxTrackedTasks bounds the per-agent task registry. Terminal tasks (completed,
-// failed, killed) are evicted oldest-first once the map exceeds this cap, so a
-// long-running session cannot accumulate finished tasks for its whole lifetime.
 var MaxTrackedTasks = limits.DefaultMaxTrackedTasks
 
 type Task struct {
@@ -53,21 +50,14 @@ type taskWriter struct {
 
 func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	tw.task.mu.Lock()
-
-	// Keep buffer capped at ~100KB to prevent OOM on long tasks
-	capBuf := func(buf *bytes.Buffer) {
-		const maxLen = 100 * 1024
-		if buf.Len() > maxLen {
-			buf.Next(buf.Len() - maxLen)
-		}
-	}
-
+	const maxLen = 100 * 1024
+	targetBuf := tw.task.Stdout
 	if tw.isStderr {
-		tw.task.Stderr.Write(p)
-		capBuf(tw.task.Stderr)
-	} else {
-		tw.task.Stdout.Write(p)
-		capBuf(tw.task.Stdout)
+		targetBuf = tw.task.Stderr
+	}
+	targetBuf.Write(p)
+	if targetBuf.Len() > maxLen {
+		targetBuf.Next(targetBuf.Len() - maxLen)
 	}
 	tw.task.LastOutputTime = time.Now()
 	tw.task.mu.Unlock()
@@ -87,6 +77,30 @@ func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	}
 
 	return len(p), nil
+}
+
+func (a *Agent) findTaskLocked(id string) (string, *Task) {
+	if task, exists := a.Tasks[id]; exists {
+		return id, task
+	}
+	if !strings.HasPrefix(id, "task_") {
+		prefixed := "task_" + id
+		if task, exists := a.Tasks[prefixed]; exists {
+			return prefixed, task
+		}
+	}
+	return id, nil
+}
+
+func killTaskProcessLocked(task *Task) {
+	task.Status = "killed"
+	task.EndTime = time.Now()
+	if task.Pgid > 0 {
+		_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
+	}
+	if task.Cmd != nil && task.Cmd.Process != nil {
+		_ = task.Cmd.Process.Kill()
+	}
 }
 
 func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
@@ -116,14 +130,10 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	task.Cmd = cmd
+	cmd.Stdout = &taskWriter{task: task, agent: a, w: w, isStderr: false}
+	cmd.Stderr = &taskWriter{task: task, agent: a, w: w, isStderr: true}
 
-	stdoutWriter := &taskWriter{task: task, agent: a, w: w, isStderr: false}
-	stderrWriter := &taskWriter{task: task, agent: a, w: w, isStderr: true}
-	cmd.Stdout = stdoutWriter
-	cmd.Stderr = stderrWriter
-
-	err := cmd.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		task.mu.Lock()
 		task.Status = "failed"
 		task.EndTime = time.Now()
@@ -131,6 +141,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		task.mu.Unlock()
 		return id, err
 	}
+
 	task.mu.Lock()
 	if cmd.Process != nil {
 		task.Pgid = cmd.Process.Pid
@@ -163,7 +174,6 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		}
 		a.TasksMu.Unlock()
 
-		// Send notification event for listeners (e.g. UI status bar)
 		select {
 		case a.SystemEvents <- fmt.Sprintf("Background task %s finished: %s", task.ID, finalStatus):
 		default:
@@ -175,36 +185,20 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 
 func (a *Agent) KillTask(id string) error {
 	a.TasksMu.Lock()
-	task, exists := a.Tasks[id]
-	if !exists && !strings.HasPrefix(id, "task_") {
-		task, exists = a.Tasks["task_"+id]
-		if exists {
-			id = "task_" + id
-		}
-	}
+	resolvedID, task := a.findTaskLocked(id)
 	a.TasksMu.Unlock()
 
-	if !exists {
-		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
+	if task == nil {
+		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
 	}
 
 	task.mu.Lock()
 	defer task.mu.Unlock()
 
 	if task.Status != "running" {
-		return fmt.Errorf("task %s is not running (status: %s)", id, task.Status)
+		return fmt.Errorf("task %s is not running (status: %s)", resolvedID, task.Status)
 	}
-
-	task.Status = "killed"
-	task.EndTime = time.Now()
-
-	if task.Pgid > 0 {
-		_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
-	}
-	if task.Cmd != nil && task.Cmd.Process != nil {
-		_ = task.Cmd.Process.Kill()
-	}
-
+	killTaskProcessLocked(task)
 	return nil
 }
 
@@ -212,109 +206,72 @@ func (a *Agent) RemoveTask(id string) error {
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
 
-	task, exists := a.Tasks[id]
-	if !exists && !strings.HasPrefix(id, "task_") {
-		task, exists = a.Tasks["task_"+id]
-		if exists {
-			id = "task_" + id
-		}
-	}
-
-	if !exists {
-		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
+	resolvedID, task := a.findTaskLocked(id)
+	if task == nil {
+		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
 	}
 
 	task.mu.Lock()
 	if task.Status == "running" {
-		task.Status = "killed"
-		task.EndTime = time.Now()
-		if task.Pgid > 0 {
-			_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
-		}
-		if task.Cmd != nil && task.Cmd.Process != nil {
-			_ = task.Cmd.Process.Kill()
-		}
+		killTaskProcessLocked(task)
 	}
 	task.mu.Unlock()
 
-	delete(a.Tasks, id)
+	delete(a.Tasks, resolvedID)
 	return nil
 }
 
-// ResolveTaskID canonicalizes a task ID (e.g. "1" -> "task_1" if "task_1" exists).
 func (a *Agent) ResolveTaskID(id string) string {
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
-	if _, exists := a.Tasks[id]; exists {
-		return id
-	}
-	if !strings.HasPrefix(id, "task_") {
-		if _, exists := a.Tasks["task_"+id]; exists {
-			return "task_" + id
-		}
-	}
-	return id
+	resolvedID, _ := a.findTaskLocked(id)
+	return resolvedID
 }
 
 func (a *Agent) GetTaskStatus(id string) (string, string, error) {
 	a.TasksMu.Lock()
-	task, exists := a.Tasks[id]
-	if !exists && !strings.HasPrefix(id, "task_") {
-		task, exists = a.Tasks["task_"+id]
-		if exists {
-			id = "task_" + id
-		}
-	}
+	resolvedID, task := a.findTaskLocked(id)
 	a.TasksMu.Unlock()
 
-	if !exists {
-		return "", "", errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
+	if task == nil {
+		return "", "", errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
 	}
 
 	task.mu.Lock()
 	defer task.mu.Unlock()
 
 	var sb bytes.Buffer
-
-	// Helper function to get the tail of a byte slice
-	getTail := func(b []byte, maxLen int) []byte {
-		if len(b) > maxLen {
-			return append([]byte(fmt.Sprintf("...(truncated %d bytes)...\n", len(b)-maxLen)), b[len(b)-maxLen:]...)
+	writeTail := func(b []byte, maxLen int) {
+		if len(b) == 0 {
+			return
 		}
-		return b
+		if len(b) > maxLen {
+			fmt.Fprintf(&sb, "...(truncated %d bytes)...\n", len(b)-maxLen)
+			sb.Write(b[len(b)-maxLen:])
+		} else {
+			sb.Write(b)
+		}
+		sb.WriteString("\n")
 	}
 
-	if task.Stdout.Len() > 0 {
-		// sb.WriteString("STDOUT:\n")
-		sb.Write(getTail(task.Stdout.Bytes(), 4000))
-		sb.WriteString("\n")
-	}
-	if task.Stderr.Len() > 0 {
-		// sb.WriteString("STDERR:\n")
-		sb.Write(getTail(task.Stderr.Bytes(), 4000))
-		sb.WriteString("\n")
-	}
+	writeTail(task.Stdout.Bytes(), 4000)
+	writeTail(task.Stderr.Bytes(), 4000)
 
 	output := sb.String()
 	if output == "" {
 		output = "(no output)"
 	}
-
 	return task.Status, output, nil
 }
 
 func (a *Agent) GetTaskCommand(id string) string {
 	a.TasksMu.Lock()
-	task, exists := a.Tasks[id]
-	if !exists && !strings.HasPrefix(id, "task_") {
-		task, exists = a.Tasks["task_"+id]
-	}
+	_, task := a.findTaskLocked(id)
 	a.TasksMu.Unlock()
 
-	if !exists || task == nil {
+	if task == nil {
 		return ""
 	}
-
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.Command
@@ -327,29 +284,23 @@ func (a *Agent) ListTasks() []TaskInfo {
 	var list []TaskInfo
 	for _, t := range a.Tasks {
 		t.mu.Lock()
-		status := t.Status
-		cmd := t.Command
-		start := t.StartTime
 		end := t.EndTime
 		if end.IsZero() {
 			end = time.Now()
 		}
-		bytesCount := t.Stdout.Len() + t.Stderr.Len()
-		t.mu.Unlock()
-
 		list = append(list, TaskInfo{
 			ID:       t.ID,
-			Command:  cmd,
-			Status:   status,
-			Duration: end.Sub(start),
-			BytesOut: bytesCount,
+			Command:  t.Command,
+			Status:   t.Status,
+			Duration: end.Sub(t.StartTime),
+			BytesOut: t.Stdout.Len() + t.Stderr.Len(),
 		})
+		t.mu.Unlock()
 	}
 
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].ID < list[j].ID
 	})
-
 	return list
 }
 
@@ -364,26 +315,20 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 		}
 	}
 
-	if !strings.HasPrefix(id, "task_") {
-		if _, exists := a.Tasks["task_"+id]; exists {
-			id = "task_" + id
-		}
-	}
-
-	if a.StreamingTask == id {
+	resolvedID, task := a.findTaskLocked(id)
+	if a.StreamingTask == resolvedID && resolvedID != "" {
 		a.StreamingTask = ""
-		fmt.Fprintf(dest, "\n[stopped streaming output of %s]\n", id)
+		fmt.Fprintf(dest, "\n[stopped streaming output of %s]\n", resolvedID)
 		return
 	}
 
-	task, exists := a.Tasks[id]
-	if !exists {
-		fmt.Fprintf(dest, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", id))
+	if task == nil {
+		fmt.Fprintf(dest, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
 		return
 	}
 
-	a.StreamingTask = id
-	fmt.Fprintf(dest, "\n[streaming output of %s...]\n", id)
+	a.StreamingTask = resolvedID
+	fmt.Fprintf(dest, "\n[streaming output of %s...]\n", resolvedID)
 
 	task.mu.Lock()
 	outBytes := task.Stdout.Bytes()
@@ -418,7 +363,6 @@ func (a *Agent) GetLastRunningTaskId() string {
 	return lastRunningId
 }
 
-// CountActiveTasks returns the number of currently running background tasks.
 func (a *Agent) CountActiveTasks() int {
 	if a == nil {
 		return 0
@@ -428,16 +372,14 @@ func (a *Agent) CountActiveTasks() int {
 	count := 0
 	for _, t := range a.Tasks {
 		t.mu.Lock()
-		isRunning := t.Status == "running"
-		t.mu.Unlock()
-		if isRunning {
+		if t.Status == "running" {
 			count++
 		}
+		t.mu.Unlock()
 	}
 	return count
 }
 
-// KillAllTasks terminates all currently running background tasks and their process groups.
 func (a *Agent) KillAllTasks() int {
 	if a == nil {
 		return 0
@@ -462,7 +404,6 @@ func (a *Agent) KillAllTasks() int {
 	return killed
 }
 
-// ClearTasks terminates all running background tasks and clears the task registry.
 func (a *Agent) ClearTasks() int {
 	if a == nil {
 		return 0
@@ -475,9 +416,6 @@ func (a *Agent) ClearTasks() int {
 	return killed
 }
 
-// pruneFinishedTasksLocked evicts the oldest terminal tasks until the registry fits
-// within MaxTrackedTasks. Must be called with TasksMu held; task.mu is taken per task
-// because status writes happen on that lock.
 func (a *Agent) pruneFinishedTasksLocked() {
 	if a == nil || len(a.Tasks) <= limits.MaxTrackedTasks() {
 		return

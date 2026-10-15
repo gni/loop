@@ -28,28 +28,29 @@ func UpdateStatus(model string, promptTokens, completionTokens, currentCompletio
 		estimated = tokenEstimate[0]
 	}
 
-	getUI().StateMu.Lock()
-	getUI().State.Model = model
+	ui := getUI()
+	ui.StateMu.Lock()
+	ui.State.Model = model
 	if promptTokens >= 0 {
-		getUI().State.PromptTokens = promptTokens
+		ui.State.PromptTokens = promptTokens
 	}
 	if completionTokens >= 0 {
-		getUI().State.CompletionTokens = completionTokens
+		ui.State.CompletionTokens = completionTokens
 	}
-	getUI().State.CurrentCompletionTokens = currentCompletionTokens
-	getUI().State.ContextLimit = contextLimit
-	getUI().State.IsGenerating = isGenerating
-	getUI().State.TokenEstimate = estimated
-	getUI().State.ActiveTasksCount = activeTasks
-	getUI().State.ShowTokens = showTokens
+	ui.State.CurrentCompletionTokens = currentCompletionTokens
+	ui.State.ContextLimit = contextLimit
+	ui.State.IsGenerating = isGenerating
+	ui.State.TokenEstimate = estimated
+	ui.State.ActiveTasksCount = activeTasks
+	ui.State.ShowTokens = showTokens
 	if tps > 0 {
-		getUI().State.LastTps = tps
-		getUI().State.HasLastTps = true
+		ui.State.LastTps = tps
+		ui.State.HasLastTps = true
 	} else if !isGenerating {
-		getUI().State.HasLastTps = false
-		getUI().State.LastTps = 0
+		ui.State.HasLastTps = false
+		ui.State.LastTps = 0
 	}
-	getUI().StateMu.Unlock()
+	ui.StateMu.Unlock()
 }
 
 func DrawStatusBar(w io.Writer, theme UITheme) {
@@ -59,10 +60,11 @@ func DrawStatusBar(w io.Writer, theme UITheme) {
 }
 
 func DrawStatusBarLocked(w io.Writer, theme UITheme) {
-	getUI().StateMu.Lock()
-	defer getUI().StateMu.Unlock()
+	ui := getUI()
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
 
-	if !getUI().Enabled {
+	if !ui.Enabled {
 		return
 	}
 
@@ -71,62 +73,33 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 		return
 	}
 
-	var buf bytes.Buffer
-
-	offset := getUI().ScrollRegionOffset
-	scrollBottom := height - 2 - offset - getUI().PasteLinesOffset
+	scrollBottom := height - 2 - ui.ScrollRegionOffset - ui.PasteLinesOffset
 	if scrollBottom < 1 {
 		scrollBottom = 1
 	}
-	if height != getUI().LastH || getUI().PasteLinesOffset != getUI().LastPasteLinesOffset {
-		getUI().LastH = height
-		getUI().LastPasteLinesOffset = getUI().PasteLinesOffset
-		getUI().LastStatusBarText = "" // Force redraw of the actual text
+	if height != ui.LastH || ui.PasteLinesOffset != ui.LastPasteLinesOffset {
+		ui.LastH = height
+		ui.LastPasteLinesOffset = ui.PasteLinesOffset
+		ui.LastStatusBarText = ""
 	}
-	fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
 
-	// Save cursor
-	fmt.Fprint(&buf, "\x1b7")
-
-	newStatusBarText := render.FormatStatusBarLine(getUI().State, theme, width)
-
+	newStatusBarText := render.FormatStatusBarLine(ui.State, theme, width)
 	indicator := "▾"
-	if getUI().CollapseResults {
+	if ui.CollapseResults {
 		indicator = "›"
 	}
 	deltaKey := newStatusBarText + indicator
 
-	// Line-Level Delta Rendering check
-	if deltaKey == getUI().LastStatusBarText && height == getUI().LastH {
+	if deltaKey == ui.LastStatusBarText && height == ui.LastH {
 		return
 	}
-	getUI().LastStatusBarText = deltaKey
+	ui.LastStatusBarText = deltaKey
 
-	// Save cursor
-	buf.WriteString("\x1b[?2026h\x1b7")
-
-	// Draw separator line at height-1
-	fmt.Fprintf(&buf, "\x1b[%d;1H", height-1)
-	fmt.Fprint(&buf, "\x1b[2K")
-	borderLine := render.FormatStatusBarSeparator(width, indicator, theme)
-	fmt.Fprint(&buf, borderLine)
-
-	// Draw status bar content at height
-	fmt.Fprintf(&buf, "\x1b[%d;1H", height)
-	fmt.Fprint(&buf, "\x1b[2K")
-
-	fmt.Fprint(&buf, newStatusBarText)
-
-	// Restore cursor
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8\x1b[?2026h\x1b7", scrollBottom)
+	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s", height-1, render.FormatStatusBarSeparator(width, indicator, theme))
+	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s", height, newStatusBarText)
 	buf.WriteString("\x1b8\x1b[?2026l")
 
 	_, _ = w.Write(buf.Bytes())
-}
-
-func formatLeft(theme UITheme, width int) string {
-	return render.FormatStatusBarLeft(getUI().State, theme, width)
-}
-
-func formatRight(theme UITheme, width int) string {
-	return render.FormatStatusBarRight(getUI().State, theme, width)
 }

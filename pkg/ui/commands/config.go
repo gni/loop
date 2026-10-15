@@ -82,12 +82,16 @@ func handleConfigCommand(
 			}
 			a.Config.Temperature = t
 		case "auto_approve", "yes", "yolo":
-			a.Config.AutoApprove = val == "true" || val == "yes" || val == "1"
+			a.Config.AutoApprove = parseConfigBool(val)
+			if a.Config.AutoApprove {
+				a.SetGuidedMode(false)
+			}
+		case "guided_mode", "guided":
+			a.SetGuidedMode(parseConfigBool(val))
 		case "approval_always_answer", "always_answer":
 			a.Config.ApprovalAlwaysAnswer = parseConfigBool(val)
 		case "show_thinking", "thinking":
-			enabled := val == "true" || val == "yes" || val == "1" || val == "on"
-			a.Config.ShowThinking = enabled
+			a.Config.ShowThinking = parseConfigBool(val)
 		case "reasoning_effort", "reasoning":
 			valLower := strings.ToLower(strings.TrimSpace(val))
 			switch valLower {
@@ -104,9 +108,9 @@ func handleConfigCommand(
 		case "after_tool_hook", "after_hook":
 			a.Config.AfterToolHook = val
 		case "collapse_results", "collapse":
-			a.Config.CollapseResults = val == "true" || val == "yes" || val == "1"
+			a.Config.CollapseResults = parseConfigBool(val)
 		case "show_tokens", "tokens":
-			a.Config.ShowTokens = val == "true" || val == "yes" || val == "1"
+			a.Config.ShowTokens = parseConfigBool(val)
 		case "theme":
 			a.Config.Theme = val
 			*theme = ui.GetConfiguredTheme(a.Config)
@@ -282,9 +286,6 @@ func handleConfigCommand(
 			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
 
-		// The editor drew on the alternate screen, so the conversation is still where it
-		// was. Repainting only the fixed bottom controls keeps the chat in place; a theme
-		// change affects text rendered from here on, not the lines already on screen.
 		if kiReader != nil {
 			ui.RestoreAfterModal(w, a, kiReader, kiReader.RL)
 		} else {

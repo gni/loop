@@ -14,12 +14,10 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// GetPromptSymbol returns the standard interactive console input prompt glyph.
-func GetPromptSymbol(cfg *config.Config) string {
+func GetPromptSymbol(_ *config.Config) string {
 	return "> "
 }
 
-// DrawConsoleStaticControlsLocked renders fixed bottom console controls while holding TerminalMu.
 func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, drawPrompt bool) {
 	termW, height := GetTerminalSize()
 	if height <= 3 {
@@ -43,14 +41,12 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 
 	getUI().StateMu.Lock()
 	inApproval := getUI().InApprovalPrompt
+	activeOp := getUI().ActiveCancelFunc != nil
 	getUI().StateMu.Unlock()
 
 	inputLine := ""
 	posOffset := 0
 	if drawPrompt {
-		getUI().StateMu.Lock()
-		activeOp := getUI().ActiveCancelFunc != nil
-		getUI().StateMu.Unlock()
 		if activeOp && kiReader != nil {
 			getUI().StateMu.Lock()
 			inputLine = string(kiReader.TypeAheadBuffer)
@@ -63,20 +59,19 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			posOffset = kiReader.CurrentInputPos
 		}
 		if kiReader != nil && kiReader.PastedText != "" {
-			inputLine = inputLine + kiReader.PastedText
+			inputLine += kiReader.PastedText
 			posOffset = len([]rune(inputLine))
 		}
 	}
 
-	inputLine = strings.ReplaceAll(inputLine, "\t", " ")
-	inputLine = strings.ReplaceAll(inputLine, "\r", "")
+	inputLine = strings.ReplaceAll(strings.ReplaceAll(inputLine, "\t", " "), "\r", "")
 	inputLine, posOffset = NormalizeHistoryInput(inputLine, posOffset)
 
 	cleanInput := strings.TrimRight(inputLine, "\r\n")
 	logicalLines := strings.Split(cleanInput, "\n")
 	hasMultipleLines := len(logicalLines) > 1
 
-	prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
+	prefixLen := utf8.RuneCountInString(style.StripAnsi(fullPrefixPlain))
 	availWidth := termW - prefixLen - 1
 	if availWidth < 10 {
 		availWidth = 10
@@ -103,7 +98,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 					cursorFound = true
 				}
 				vRows = append(vRows, visualRow{text: "", isFirst: lIdx == 0})
-				accumRunes++ // accounting for '\n'
+				accumRunes++
 				continue
 			}
 
@@ -117,8 +112,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 
 				if !cursorFound && posOffset <= accumRunes+chunkLen {
 					cursorVRow = len(vRows)
-					colOffset := posOffset - accumRunes
-					cursorVCol = 1 + prefixLen + colOffset
+					cursorVCol = 1 + prefixLen + (posOffset - accumRunes)
 					cursorFound = true
 				}
 
@@ -128,14 +122,12 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 				})
 				accumRunes += chunkLen
 			}
-			accumRunes++ // accounting for '\n'
+			accumRunes++
 		}
 
-		if !cursorFound {
-			if len(vRows) > 0 {
-				cursorVRow = len(vRows) - 1
-				cursorVCol = 1 + prefixLen + len([]rune(vRows[len(vRows)-1].text))
-			}
+		if !cursorFound && len(vRows) > 0 {
+			cursorVRow = len(vRows) - 1
+			cursorVCol = 1 + prefixLen + len([]rune(vRows[len(vRows)-1].text))
 		}
 	}
 
@@ -157,11 +149,12 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	getUI().StateMu.Lock()
 	oldOffset := getUI().PasteLinesOffset
 	getUI().PasteLinesOffset = effectiveOffset
+	savedStats := getUI().LastStatsText
+	hint := getUI().PromptHint
 	getUI().StateMu.Unlock()
 
 	delta := effectiveOffset - oldOffset
-	offset := getUI().ScrollRegionOffset
-	oldScrollBottom := height - 2 - offset - oldOffset
+	oldScrollBottom := height - 2 - getUI().ScrollRegionOffset - oldOffset
 	if oldScrollBottom < 1 {
 		oldScrollBottom = 1
 	}
@@ -177,7 +170,6 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	}
 
 	var frameBuf bytes.Buffer
-	// Hide cursor while redrawing static controls and prompt to eliminate any cursor flicker/jumping onto column 1 ('>')
 	frameBuf.WriteString("\x1b[?25l")
 
 	if delta > 0 && oldScrollBottom > delta {
@@ -185,10 +177,8 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		if a != nil {
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
 				uiImpl.PPWriter.AdjustPrintLineLocked(-delta)
-			} else if a.CurrentWriter() != nil {
-				if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
-					pw.AdjustPrintLineLocked(-delta)
-				}
+			} else if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
+				pw.AdjustPrintLineLocked(-delta)
 			}
 		}
 	}
@@ -199,156 +189,121 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		}
 	}
 
-	// Draw Status Bar at row height
 	DrawStatusBarLocked(&frameBuf, activeTheme)
-
-	// Draw Separator at row height-3-PasteLinesOffset
 	DrawStaticPromptSeparatorLocked(&frameBuf, a.Config.ShowThinking, a.Config.ReasoningEffort, activeTheme)
-
-	// Draw Stats Line at row height-4-PasteLinesOffset
-	getUI().StateMu.Lock()
-	savedStats := getUI().LastStatsText
-	getUI().StateMu.Unlock()
 	DrawStaticStatsLineLocked(&frameBuf, activeTheme, "", savedStats)
 
 	if inApproval {
 		fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
-	} else {
-		if hasMultipleLines && len(vRows) > 0 {
-			indent := strings.Repeat(" ", prefixLen)
-			numVisibleRows := effectiveOffset + 1
-			if numVisibleRows < 1 {
-				numVisibleRows = 1
-			}
+	} else if hasMultipleLines && len(vRows) > 0 {
+		indent := strings.Repeat(" ", prefixLen)
+		numVisibleRows := effectiveOffset + 1
+		if numVisibleRows < 1 {
+			numVisibleRows = 1
+		}
 
-			startVRow := 0
-			if len(vRows) > numVisibleRows {
-				if cursorVRow >= startVRow+numVisibleRows {
-					startVRow = cursorVRow - numVisibleRows + 1
-				}
-				if cursorVRow < startVRow {
-					startVRow = cursorVRow
-				}
-				if startVRow < 0 {
-					startVRow = 0
-				}
-				if startVRow+numVisibleRows > len(vRows) {
-					startVRow = len(vRows) - numVisibleRows
-				}
-				if startVRow < 0 {
-					startVRow = 0
-				}
+		startVRow := 0
+		if len(vRows) > numVisibleRows {
+			if cursorVRow >= startVRow+numVisibleRows {
+				startVRow = cursorVRow - numVisibleRows + 1
 			}
+			if cursorVRow < startVRow {
+				startVRow = cursorVRow
+			}
+			if startVRow+numVisibleRows > len(vRows) {
+				startVRow = len(vRows) - numVisibleRows
+			}
+			if startVRow < 0 {
+				startVRow = 0
+			}
+		}
 
-			for r := 0; r < numVisibleRows; r++ {
-				vIdx := startVRow + r
-				if vIdx >= len(vRows) {
-					break
-				}
-				row := promptStartRow + r
-				if row > height-2 {
-					break
-				}
-				fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", row)
-				vr := vRows[vIdx]
-				if vr.isFirst {
-					frameBuf.WriteString(promptStr)
-				} else {
-					frameBuf.WriteString(indent)
-				}
-				frameBuf.WriteString(vr.text)
+		for r := 0; r < numVisibleRows; r++ {
+			vIdx := startVRow + r
+			if vIdx >= len(vRows) {
+				break
 			}
-
-			cursorRow := promptStartRow + (cursorVRow - startVRow)
-			if cursorRow > height-2 {
-				cursorRow = height - 2
+			row := promptStartRow + r
+			if row > height-2 {
+				break
 			}
-			if cursorRow < promptStartRow {
-				cursorRow = promptStartRow
-			}
-
-			if cursorVCol > termW {
-				cursorVCol = termW
-			}
-			if cursorVCol < 1 {
-				cursorVCol = 1
-			}
-
-			if drawPrompt {
-				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorVCol)
+			fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", row)
+			vr := vRows[vIdx]
+			if vr.isFirst {
+				frameBuf.WriteString(promptStr)
 			} else {
-				promptCol := 1 + prefixLen
-				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, promptCol)
+				frameBuf.WriteString(indent)
 			}
+			frameBuf.WriteString(vr.text)
+		}
+
+		cursorRow := promptStartRow + (cursorVRow - startVRow)
+		if cursorRow > height-2 {
+			cursorRow = height - 2
+		}
+		if cursorRow < promptStartRow {
+			cursorRow = promptStartRow
+		}
+		if cursorVCol > termW {
+			cursorVCol = termW
+		}
+		if cursorVCol < 1 {
+			cursorVCol = 1
+		}
+
+		if drawPrompt {
+			fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorVCol)
 		} else {
-			prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
-			availWidth := termW - prefixLen - 1
-			if availWidth < 10 {
-				availWidth = 10
+			fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, 1+prefixLen)
+		}
+	} else {
+		runes := []rune(inputLine)
+		totalRunes := len(runes)
+
+		start := 0
+		displayStr := inputLine
+		if totalRunes > availWidth {
+			start = posOffset - (availWidth / 2)
+			if start < 0 {
+				start = 0
 			}
-
-			runes := []rune(inputLine)
-			totalRunes := len(runes)
-
-			start := 0
-			displayStr := inputLine
-			if totalRunes > availWidth {
-				start = posOffset - (availWidth / 2)
+			end := start + availWidth
+			if end > totalRunes {
+				end = totalRunes
+				start = end - availWidth
 				if start < 0 {
 					start = 0
 				}
-				end := start + availWidth
-				if end > totalRunes {
-					end = totalRunes
-					start = end - availWidth
-					if start < 0 {
-						start = 0
-					}
-				}
-				displayStr = string(runes[start:end])
 			}
+			displayStr = string(runes[start:end])
+		}
 
-			fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
-			frameBuf.WriteString(promptStr)
-			if displayStr != "" {
-				frameBuf.WriteString(displayStr)
-			} else {
-				getUI().StateMu.Lock()
-				hint := getUI().PromptHint
-				getUI().StateMu.Unlock()
-				if hint != "" {
-					hintRunes := []rune(hint)
-					if len(hintRunes) > availWidth && availWidth > 5 {
-						hint = string(hintRunes[:availWidth])
-					}
-					hintStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
-					frameBuf.WriteString(hintStyle.Render(hint))
-				}
+		fmt.Fprintf(&frameBuf, "\x1b[%d;1H\x1b[2K", promptStartRow)
+		frameBuf.WriteString(promptStr)
+		if displayStr != "" {
+			frameBuf.WriteString(displayStr)
+		} else if hint != "" {
+			hintRunes := []rune(hint)
+			if len(hintRunes) > availWidth && availWidth > 5 {
+				hint = string(hintRunes[:availWidth])
 			}
+			frameBuf.WriteString(style.NewStyle().Foreground(activeTheme.Border).Italic(true).Render(hint))
+		}
 
-			cursorRow := promptStartRow
-			cursorCol := 1 + prefixLen + (posOffset - start)
-			if cursorCol > termW {
-				cursorCol = termW
-			}
-			if cursorCol < 1+prefixLen {
-				cursorCol = 1 + prefixLen
-			}
+		cursorCol := 1 + prefixLen + (posOffset - start)
+		if cursorCol > termW {
+			cursorCol = termW
+		}
+		if cursorCol < 1+prefixLen {
+			cursorCol = 1 + prefixLen
+		}
 
-			if drawPrompt {
-				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorCol)
-			} else {
-				prefixLen := utf8.RuneCountInString(stripAnsi(fullPrefixPlain))
-				promptCol := 1 + prefixLen
-				fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, promptCol)
-			}
+		if drawPrompt {
+			fmt.Fprintf(&frameBuf, "\x1b[%d;%dH\x1b[?25h", promptStartRow, cursorCol)
+		} else {
+			fmt.Fprintf(&frameBuf, "\x1b[%d;%dH", promptStartRow, 1+prefixLen)
 		}
 	}
 
 	_, _ = w.Write(frameBuf.Bytes())
 }
-
-func drawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, drawPrompt bool) {
-	DrawConsoleStaticControlsLocked(w, a, kiReader, rl, drawPrompt)
-}
-

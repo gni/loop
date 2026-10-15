@@ -50,16 +50,15 @@ func computeMyersDiff(a, b []string) []diffPart {
 	n := len(midA)
 	m := len(midB)
 
-	if n == 0 && m == 0 {
-		// Nothing in middle
-	} else if n == 0 {
+	switch {
+	case n == 0 && m == 0:
+	case n == 0:
 		parts = append(parts, diffPart{op: diffInsert, lines: midB})
-	} else if m == 0 {
+	case m == 0:
 		parts = append(parts, diffPart{op: diffDelete, lines: midA})
-	} else if n+m > 2000 {
-		parts = append(parts, diffPart{op: diffDelete, lines: midA})
-		parts = append(parts, diffPart{op: diffInsert, lines: midB})
-	} else {
+	case n+m > 2000:
+		parts = append(parts, diffPart{op: diffDelete, lines: midA}, diffPart{op: diffInsert, lines: midB})
+	default:
 		maxD := n + m
 		offset := maxD
 		v := make([]int, 2*maxD+1)
@@ -95,13 +94,10 @@ func computeMyersDiff(a, b []string) []diffPart {
 		}
 
 		if dFound == -1 {
-			parts = append(parts, diffPart{op: diffDelete, lines: midA})
-			parts = append(parts, diffPart{op: diffInsert, lines: midB})
+			parts = append(parts, diffPart{op: diffDelete, lines: midA}, diffPart{op: diffInsert, lines: midB})
 		} else {
-			x := n
-			y := m
+			x, y := n, m
 			var revParts []diffPart
-
 			addRevLine := func(op diffOp, line string) {
 				if len(revParts) > 0 && revParts[len(revParts)-1].op == op {
 					revParts[len(revParts)-1].lines = append([]string{line}, revParts[len(revParts)-1].lines...)
@@ -165,22 +161,19 @@ func computeMyersDiff(a, b []string) []diffPart {
 	return merged
 }
 
-// CountDiffStats calculates the total inserted and deleted lines between two texts.
 func CountDiffStats(oldContent, newContent string) (added int, deleted int) {
-	oldLines := strings.Split(oldContent, "\n")
-	newLines := strings.Split(newContent, "\n")
-	parts := computeMyersDiff(oldLines, newLines)
+	parts := computeMyersDiff(strings.Split(oldContent, "\n"), strings.Split(newContent, "\n"))
 	for _, p := range parts {
-		if p.op == diffInsert {
+		switch p.op {
+		case diffInsert:
 			added += len(p.lines)
-		} else if p.op == diffDelete {
+		case diffDelete:
 			deleted += len(p.lines)
 		}
 	}
 	return added, deleted
 }
 
-// GenerateDisplayDiff renders a colorized visual diff between two text versions.
 func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string {
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")
@@ -203,9 +196,22 @@ func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string
 	newLineNum := 1
 	lastWasChange := false
 
-	for i := 0; i < len(parts); i++ {
-		part := parts[i]
+	writeEqual := func(lines []string) {
+		for _, line := range lines {
+			sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
+			oldLineNum++
+			newLineNum++
+		}
+	}
+	skipEqual := func(count int) {
+		if count > 0 {
+			sb.WriteString(fmt.Sprintf("%-*s   ...\n", width, ""))
+			oldLineNum += count
+			newLineNum += count
+		}
+	}
 
+	for i, part := range parts {
 		if part.op == diffInsert || part.op == diffDelete {
 			for _, line := range part.lines {
 				if part.op == diffInsert {
@@ -217,86 +223,42 @@ func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string
 				}
 			}
 			lastWasChange = true
-		} else {
-			raw := part.lines
-			nextPartIsChange := i < len(parts)-1 && (parts[i+1].op == diffInsert || parts[i+1].op == diffDelete)
-			hasLeadingChange := lastWasChange
-			hasTrailingChange := nextPartIsChange
-
-			if hasLeadingChange && hasTrailingChange {
-				if len(raw) <= contextLines*2 {
-					for _, line := range raw {
-						sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
-						oldLineNum++
-						newLineNum++
-					}
-				} else {
-					leadingLines := raw[:contextLines]
-					trailingLines := raw[len(raw)-contextLines:]
-					skippedLines := len(raw) - len(leadingLines) - len(trailingLines)
-
-					for _, line := range leadingLines {
-						sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
-						oldLineNum++
-						newLineNum++
-					}
-
-					sb.WriteString(fmt.Sprintf("%-*s   ...\n", width, ""))
-					oldLineNum += skippedLines
-					newLineNum += skippedLines
-
-					for _, line := range trailingLines {
-						sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
-						oldLineNum++
-						newLineNum++
-					}
-				}
-			} else if hasLeadingChange {
-				shownLines := raw
-				if len(shownLines) > contextLines {
-					shownLines = raw[:contextLines]
-				}
-				skippedLines := len(raw) - len(shownLines)
-
-				for _, line := range shownLines {
-					sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
-					oldLineNum++
-					newLineNum++
-				}
-
-				if skippedLines > 0 {
-					sb.WriteString(fmt.Sprintf("%-*s   ...\n", width, ""))
-					oldLineNum += skippedLines
-					newLineNum += skippedLines
-				}
-			} else if hasTrailingChange {
-				skippedLines := len(raw) - contextLines
-				if skippedLines < 0 {
-					skippedLines = 0
-				}
-				if skippedLines > 0 {
-					sb.WriteString(fmt.Sprintf("%-*s   ...\n", width, ""))
-					oldLineNum += skippedLines
-					newLineNum += skippedLines
-				}
-
-				for _, line := range raw[skippedLines:] {
-					sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
-					oldLineNum++
-					newLineNum++
-				}
-			} else {
-				oldLineNum += len(raw)
-				newLineNum += len(raw)
-			}
-
-			lastWasChange = false
+			continue
 		}
+
+		raw := part.lines
+		hasLeadingChange := lastWasChange
+		hasTrailingChange := i < len(parts)-1 && (parts[i+1].op == diffInsert || parts[i+1].op == diffDelete)
+
+		switch {
+		case hasLeadingChange && hasTrailingChange:
+			if len(raw) <= contextLines*2 {
+				writeEqual(raw)
+			} else {
+				writeEqual(raw[:contextLines])
+				skipEqual(len(raw) - contextLines*2)
+				writeEqual(raw[len(raw)-contextLines:])
+			}
+		case hasLeadingChange:
+			shown := raw
+			if len(shown) > contextLines {
+				shown = raw[:contextLines]
+			}
+			writeEqual(shown)
+			skipEqual(len(raw) - len(shown))
+		case hasTrailingChange:
+			skipped := len(raw) - contextLines
+			if skipped < 0 {
+				skipped = 0
+			}
+			skipEqual(skipped)
+			writeEqual(raw[skipped:])
+		default:
+			oldLineNum += len(raw)
+			newLineNum += len(raw)
+		}
+		lastWasChange = false
 	}
 
 	return sb.String()
-}
-
-func generateDisplayDiff(oldContent, newContent string, contextLines int) string {
-	return GenerateDisplayDiff(oldContent, newContent, contextLines)
 }

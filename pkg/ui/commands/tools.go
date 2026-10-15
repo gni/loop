@@ -32,21 +32,44 @@ func handleToolsCommand(
 		return
 	}
 
-	syncStatus := func() {
-		if calcHistoryTokens != nil {
-			pTok, cTok, estimated := calcHistoryTokens()
-			var msgs []db.Message
-			if messages != nil {
-				msgs = *messages
-			}
-			latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
-			effLimit := a.GetEffectiveContextLimit(pTok)
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().LastStatusBarText = ""
-			ui.GetUI().StateMu.Unlock()
-			ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-			ui.DrawStatusBar(os.Stderr, *theme)
+	saveCfg := func() {
+		if a.ConfigPath != "" && a.Config != nil {
+			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
+	}
+
+	syncStatus := func() {
+		if calcHistoryTokens == nil {
+			return
+		}
+		pTok, cTok, estimated := calcHistoryTokens()
+		var msgs []db.Message
+		if messages != nil {
+			msgs = *messages
+		}
+		latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
+		effLimit := a.GetEffectiveContextLimit(pTok)
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().LastStatusBarText = ""
+		ui.GetUI().StateMu.Unlock()
+		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		ui.DrawStatusBar(os.Stderr, *theme)
+	}
+
+	openInteractiveMenu := func() {
+		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
+		defer cleanup()
+
+		ui.ShutdownStatusBar(os.Stderr)
+		_ = interactive.RunInteractiveToolsConfig(a, *theme, input, output)
+		ui.InitStatusBar(os.Stderr)
+
+		var rl *term.Terminal
+		if kiReader != nil {
+			rl = kiReader.RL
+		}
+		ui.RestoreAfterModal(w, a, kiReader, rl)
+		syncStatus()
 	}
 
 	if len(parts) > 1 {
@@ -73,12 +96,9 @@ func handleToolsCommand(
 				}
 				kiReader.AllowedTools = filtered
 			}
-			if a.ConfigPath != "" && a.Config != nil {
-				_ = config.SaveConfig(a.ConfigPath, a.Config)
-			}
+			saveCfg()
 			fmt.Fprintf(w, "disabled tool(s): %s. system prompt updated.\n", strings.Join(toolsToDisable, ", "))
 			syncStatus()
-			return
 
 		case "enable":
 			if len(parts) < 3 {
@@ -87,30 +107,22 @@ func handleToolsCommand(
 			}
 			if parts[2] == "all" {
 				a.EnableAllTools()
-				if a.ConfigPath != "" && a.Config != nil {
-					_ = config.SaveConfig(a.ConfigPath, a.Config)
-				}
+				saveCfg()
 				fmt.Fprintln(w, "all tools enabled. system prompt updated.")
 				syncStatus()
 				return
 			}
 			toolsToEnable := parts[2:]
 			a.EnableTools(toolsToEnable...)
-			if a.ConfigPath != "" && a.Config != nil {
-				_ = config.SaveConfig(a.ConfigPath, a.Config)
-			}
+			saveCfg()
 			fmt.Fprintf(w, "enabled tool(s): %s. system prompt updated.\n", strings.Join(toolsToEnable, ", "))
 			syncStatus()
-			return
 
 		case "reset":
 			a.EnableAllTools()
-			if a.ConfigPath != "" && a.Config != nil {
-				_ = config.SaveConfig(a.ConfigPath, a.Config)
-			}
+			saveCfg()
 			fmt.Fprintln(w, "all tools reset to enabled. system prompt updated.")
 			syncStatus()
-			return
 
 		case "toggle":
 			if len(parts) < 3 {
@@ -125,54 +137,23 @@ func handleToolsCommand(
 				a.DisableTools(toolName)
 				fmt.Fprintf(w, "tool '%s' is now disabled. system prompt updated.\n", toolName)
 			}
-			if a.ConfigPath != "" && a.Config != nil {
-				_ = config.SaveConfig(a.ConfigPath, a.Config)
-			}
+			saveCfg()
 			syncStatus()
-			return
 
 		case "list", "show":
 			render.RenderToolsList(w, a, *theme)
-			return
 
 		case "menu", "interactive":
-			input, output, cleanup := interactive.GetInteractiveIO(kiReader)
-			defer cleanup()
-
-			ui.ShutdownStatusBar(os.Stderr)
-			_ = interactive.RunInteractiveToolsConfig(a, *theme, input, output)
-			ui.InitStatusBar(os.Stderr)
-
-			if kiReader != nil {
-				ui.RestoreAfterModal(w, a, kiReader, kiReader.RL)
-			} else {
-				ui.RestoreAfterModal(w, a, nil, nil)
-			}
-			syncStatus()
-			return
+			openInteractiveMenu()
 
 		default:
 			fmt.Fprintf(w, "unknown subcommand: %s. usage: /tools [list|enable|disable|toggle|reset|menu]\n", sub)
-			return
 		}
+		return
 	}
 
-	// Default when no subcommand is given
-	fd := int(os.Stdin.Fd())
-	if kiReader != nil && term.IsTerminal(fd) {
-		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
-		defer cleanup()
-
-		ui.ShutdownStatusBar(os.Stderr)
-		_ = interactive.RunInteractiveToolsConfig(a, *theme, input, output)
-		ui.InitStatusBar(os.Stderr)
-
-		if kiReader != nil {
-			ui.RestoreAfterModal(w, a, kiReader, kiReader.RL)
-		} else {
-			ui.RestoreAfterModal(w, a, nil, nil)
-		}
-		syncStatus()
+	if kiReader != nil && term.IsTerminal(int(os.Stdin.Fd())) {
+		openInteractiveMenu()
 		return
 	}
 

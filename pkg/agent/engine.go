@@ -14,10 +14,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// HistorySink abstracts *where* a turn appends messages. The main agent writes into a
-// slice + JSONL session store; subagents write into a mutex-guarded history and persist
-// agent state. Both now share one tool-execution pipeline (TurnEngine) instead of two
-// copies of it (the old pkg/agent/tools.go vs pkg/agent/swarm/loop.go duplication).
 type HistorySink interface {
 	Append(m db.Message)
 	Messages() []db.Message
@@ -27,7 +23,7 @@ type agentSink struct {
 	a         *Agent
 	messages  *[]db.Message
 	sessionID string
-	label     string // debug label for SaveMessage failures, empty = default
+	label     string
 }
 
 func (s *agentSink) Append(m db.Message) {
@@ -41,13 +37,10 @@ func (s *agentSink) Append(m db.Message) {
 
 func (s *agentSink) Messages() []db.Message { return *s.messages }
 
-// NewAgentSink builds the main-loop sink (message slice + JSONL persistence).
 func NewAgentSink(a *Agent, messages *[]db.Message, sessionID string) HistorySink {
 	return &agentSink{a: a, messages: messages, sessionID: sessionID}
 }
 
-// EngineRenderer abstracts the per-loop difference in how tool headers/outputs are
-// printed (main agent vs prefixed subagent banner).
 type EngineRenderer interface {
 	ToolHeader(w io.Writer, theme style.UITheme, toolName, args string)
 	ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool)
@@ -65,38 +58,26 @@ func (r *mainRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, ar
 
 func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
 	if r.a != nil && r.a.UI != nil {
-		collapse := false
-		if r.a.Config != nil {
-			collapse = r.a.Config.CollapseResults
-		}
+		collapse := r.a.Config != nil && r.a.Config.CollapseResults
 		r.a.UI.RenderToolOutput(w, output, isError, collapse, theme, toolName, args, bodyStreamed)
 	} else if !bodyStreamed {
 		fmt.Fprintln(w, output)
 	}
 }
 
-// NewMainRenderer returns the plain main-agent renderer.
 func NewMainRenderer(a *Agent) EngineRenderer { return &mainRenderer{a: a} }
 
-// EnginePolicy makes the previously implicit differences between the two loops explicit:
-// subagents historically skipped approval and hooks. That is now a policy, not a fork.
 type EnginePolicy struct {
-	AgentName     string // "" for the main agent
-	AllowApproval bool   // subagents inherit trust at spawn time; main agent asks
-	RunHooks      bool   // before/after tool hooks
-	SessionKey    string // JSONL session id or "subagent:<name>" Cast" for spill/prune label
+	AgentName     string
+	AllowApproval bool
+	RunHooks      bool
+	GuidedMode    bool
+	SessionKey    string
 	DebugPrefix   string
-	ShowRecapLine bool // print the recap line to the terminal in interactive mode
-	// ExecContext supplies the AgentContext passed to Registry.Execute. The main loop uses
-	// the Agent itself; subagents pass their multiAgentContext so tools observe the correct
-	// per-agent context (HasSubagent, Context()). Nil means "use the agent".
-	ExecContext func() tool.AgentContext
+	ShowRecapLine bool
+	ExecContext   func() tool.AgentContext
 }
 
-// TurnAwareness is the single place that knows how many turns an agent has executed and
-// how much of its context window it has consumed. Every RecapInterval turns it produces
-// a recap the agent can read in its own history, so the model is never blind to its turn
-// count or token budget when the context window is approached or exceeded.
 type TurnAwareness struct {
 	Turn          int
 	MaxTurns      int
@@ -107,15 +88,10 @@ func (ta *TurnAwareness) ShouldRecap() bool {
 	return ta != nil && ta.RecapInterval > 0 && ta.Turn > 0 && ta.Turn%ta.RecapInterval == 0
 }
 
-// Format renders the recap the agent sees in its history.
 func (ta *TurnAwareness) Format(who string, promptTokens, totalCompletion, effectiveLimit int) string {
-	used := 0
-	if effectiveLimit > 0 {
-		used = promptTokens
-	}
 	pct := 0.0
 	if effectiveLimit > 0 {
-		pct = float64(used) / float64(effectiveLimit) * 100.0
+		pct = float64(promptTokens) / float64(effectiveLimit) * 100.0
 	}
 	next := ta.RecapInterval - (ta.Turn % ta.RecapInterval)
 
@@ -123,15 +99,12 @@ func (ta *TurnAwareness) Format(who string, promptTokens, totalCompletion, effec
 		who, ta.Turn, ta.MaxTurns, promptTokens, totalCompletion, effectiveLimit, pct, next)
 }
 
-// TurnEngine is the single shared per-turn pipeline: guard wiring, approval (policy),
-// hooks (policy), execution, defense formatting, pruning/spill, rendering, history
-// append and circuit-breaker halt. Both RunAgentLoop and the subagent loop drive it.
 type TurnEngine struct {
-	agent     *Agent
-	policy    EnginePolicy
-	guard     *TurnExecutionGuard
-	awareness *TurnAwareness
-
+	agent                      *Agent
+	policy                     EnginePolicy
+	guard                      *TurnExecutionGuard
+	awareness                  *TurnAwareness
+	guided                     *GuidedController
 	consecutiveGuardRejections int
 }
 
@@ -140,6 +113,7 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 	thresholds := []int{3, 5}
 	maxSteps := 30
 	interval := 5
+	guidedEnabled := policy.GuidedMode
 	if a != nil && a.Config != nil {
 		if a.Config.RepeatGuardLimit > 0 {
 			limit = limits.ConsecutiveLimitClamped(a.Config.RepeatGuardLimit)
@@ -151,6 +125,9 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 			maxSteps = a.Config.MaxReasoningSteps
 		}
 		interval = a.Config.RecapInterval
+		if a.Config.GuidedMode {
+			guidedEnabled = true
+		}
 	}
 
 	guard := NewTurnExecutionGuardWithConfig(limit, thresholds)
@@ -164,20 +141,30 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 		})
 	}
 
+	var guidedCtrl *GuidedController
+	if a != nil && a.Guided != nil {
+		guidedCtrl = a.Guided
+		if policy.GuidedMode && !guidedCtrl.IsEnabled() {
+			guidedCtrl.SetEnabled(true)
+		}
+	} else {
+		guidedCtrl = NewGuidedController(guidedEnabled)
+	}
+
 	return &TurnEngine{
 		agent:     a,
 		policy:    policy,
 		guard:     guard,
 		awareness: &TurnAwareness{MaxTurns: maxSteps, RecapInterval: interval},
+		guided:    guidedCtrl,
 	}
 }
 
 func (e *TurnEngine) Guard() *TurnExecutionGuard { return e.guard }
 func (e *TurnEngine) Awareness() *TurnAwareness  { return e.awareness }
+func (e *TurnEngine) Guided() *GuidedController  { return e.guided }
+func (e *TurnEngine) SetGuidedMode(enabled bool) { e.guided.SetEnabled(enabled) }
 
-// ShouldRecap is the canonical gate: it honours the live config flag so
-// '/config set disable_recap true' takes effect mid-session without rebuilding
-// the engine.
 func (e *TurnEngine) ShouldRecap() bool {
 	if e.agent != nil && e.agent.Config != nil && e.agent.Config.DisableRecap {
 		return false
@@ -185,12 +172,8 @@ func (e *TurnEngine) ShouldRecap() bool {
 	return e.awareness.ShouldRecap()
 }
 
-// BeginTurn advances the turn counter; called once per reasoning step.
 func (e *TurnEngine) BeginTurn() { e.awareness.Turn++ }
 
-// MaybeRecap injects the recap as a user-role message (the only role that is always
-// preserved and never orphaned by EnforceToolPairingInvariance). Returns the content
-// when a recap was emitted, "" otherwise.
 func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion, effectiveLimit int, w io.Writer, theme style.UITheme) string {
 	if !e.ShouldRecap() {
 		return ""
@@ -207,7 +190,192 @@ func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion,
 	return content
 }
 
-// ExecuteToolCalls is the single tool-call pipeline shared by both loops.
+func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, toolName string) error {
+	if e.guided == nil || !e.guided.IsEnabled() || e.agent == nil {
+		return nil
+	}
+
+	needsPlanApproval, blockErr := e.guided.CheckToolAllowed(e.agent, toolName)
+	if blockErr != nil {
+		return blockErr
+	}
+	if !needsPlanApproval {
+		return nil
+	}
+
+	todos := e.agent.GetTodos()
+	if e.agent.Config != nil && (e.agent.Config.AutoApprove || e.agent.Config.ApprovalAlwaysAnswer) {
+		e.guided.ApprovePlan(todos)
+		return nil
+	}
+
+	sr.Flush()
+	if loader != nil {
+		loader.Pause()
+		defer loader.Resume()
+	}
+
+	options := []tool.AskUserOption{
+		{Label: "Approve plan and execute"},
+		{Label: "Revise plan"},
+		{Label: "Abort turn"},
+	}
+	answer, err := e.agent.AskUser(FormatPlanSummary(todos), options, "Approve plan and execute")
+	if err != nil {
+		return fmt.Errorf("plan approval cancelled: %w", err)
+	}
+
+	trimmed := strings.TrimSpace(answer)
+	if strings.EqualFold(trimmed, "Approve plan and execute") || strings.EqualFold(trimmed, "Confirmed") {
+		e.guided.ApprovePlan(todos)
+		return nil
+	}
+	if strings.EqualFold(trimmed, "Abort turn") || strings.EqualFold(trimmed, "operation cancelled by user") {
+		return fmt.Errorf("guided plan aborted by user")
+	}
+
+	return fmt.Errorf("user requested plan revision before executing '%s': %s. Update the plan with 'todo' or adjust your approach", toolName, trimmed)
+}
+
+func (e *TurnEngine) promptRejectionFeedback(toolName string) (steeringMessage string, abortTurn bool) {
+	if e.agent == nil || e.agent.UI == nil || e.guided == nil || !e.guided.IsEnabled() {
+		return RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user."), true
+	}
+
+	options := []tool.AskUserOption{
+		{Label: "Skip this tool and continue"},
+		{Label: "Abort turn"},
+	}
+	resp, err := e.agent.AskUser(
+		fmt.Sprintf("Tool '%s' was rejected. Select an action or choose Other to provide steering instructions:", toolName),
+		options,
+		"Skip this tool and continue",
+	)
+	trimmed := strings.TrimSpace(resp)
+	if err != nil || strings.EqualFold(trimmed, "Abort turn") || strings.EqualFold(trimmed, "operation cancelled by user") {
+		return RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user."), true
+	}
+	if strings.EqualFold(trimmed, "Skip this tool and continue") || strings.EqualFold(trimmed, "other: wrote nothing") {
+		return fmt.Sprintf("User skipped tool '%s'. Proceed with an alternative approach or ask for clarification.", toolName), false
+	}
+	return fmt.Sprintf("User rejected tool '%s' with steering feedback: %s", toolName, trimmed), false
+}
+
+func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UITheme, toolName, toolArgs string) {
+	if e.agent == nil {
+		return
+	}
+	diffPreview := PreviewToolDiff(e.agent, toolName, toolArgs)
+	if strings.TrimSpace(diffPreview) == "" {
+		return
+	}
+	header := style.NewStyle().Foreground(theme.Secondary).Italic(true).Render("  proposed diff preview:")
+	fmt.Fprintln(w, header)
+	for _, line := range strings.Split(strings.TrimRight(diffPreview, "\r\n"), "\n") {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+}
+
+func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
+	a := e.agent
+	if !e.policy.AllowApproval || a.Config == nil || !NeedsApproval(tc.Function.Name) || a.Config.AutoApprove || a.Config.ApprovalAlwaysAnswer {
+		return true, false
+	}
+	if a.UI == nil {
+		return true, false
+	}
+
+	sr.Flush()
+	if loader != nil {
+		loader.Pause()
+	}
+	if !sr.DidStreamToolBody(idx) {
+		e.renderPreApprovalDiffPreview(w, theme, tc.Function.Name, tc.Function.Arguments)
+	}
+
+	approved, always := a.UI.AskForApproval(GetScreenWriter(w), theme)
+	if loader != nil {
+		loader.Resume()
+	}
+	if always {
+		a.Config.AutoApprove = true
+		if a.ConfigPath != "" {
+			if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+				a.DebugLogError(e.policy.SessionKey, "config.SaveConfig (auto-approve)", err)
+			}
+		}
+	}
+	return approved, true
+}
+
+func (e *TurnEngine) finalizeToolCall(
+	idx int,
+	tc db.ToolCall,
+	rawOutput string,
+	toolErr error,
+	approvalRendered bool,
+	preserveEditOutput bool,
+	sink HistorySink,
+	sr StreamRenderer,
+	w io.Writer,
+	theme style.UITheme,
+	render EngineRenderer,
+	afterCall func(tc db.ToolCall, output string, toolErr error),
+) {
+	a := e.agent
+	e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr)
+	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
+		rawOutput += "\n\n[" + reminder + "]"
+	}
+	if toolErr != nil {
+		rawOutput = FormatToolExecutionFailure(tc.Function.Name, rawOutput, toolErr)
+	}
+	if rawOutput == "" {
+		rawOutput = "(no output)"
+	}
+
+	maxOutputBytes := tool.DefaultMaxToolOutputBytes
+	if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
+		maxOutputBytes = a.Config.MaxToolOutputBytes
+	}
+	if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
+		maxOutputBytes = ceiling
+	}
+	pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, maxOutputBytes)
+
+	isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
+	if !isSubagentCall && !approvalRendered {
+		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
+	}
+	if !isSubagentCall {
+		bodyStreamed := sr.DidStreamToolBody(idx) || (preserveEditOutput && a.DidStreamLiveBody())
+		render.ToolOutput(w, theme, pruned, toolErr != nil, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
+	}
+
+	a.stateMu.Lock()
+	if !preserveEditOutput || !IsInspectionTool(tc.Function.Name) || !a.lastToolWasEdit || a.lastToolOutput == "" {
+		a.lastToolOutput = pruned
+		a.lastToolIsError = toolErr != nil
+		a.lastToolWasEdit = tc.Function.Name == "edit"
+	}
+	a.stateMu.Unlock()
+
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned})
+	if afterCall != nil {
+		afterCall(tc, pruned, toolErr)
+	}
+}
+
+func (e *TurnEngine) emitHaltNotice(sink HistorySink, w io.Writer, theme style.UITheme) {
+	haltNotice := e.HaltNotice()
+	sink.Append(db.Message{Role: "assistant", Content: haltNotice})
+	if e.agent != nil && e.agent.UI != nil {
+		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(haltNotice))
+	} else {
+		fmt.Fprintln(w, haltNotice)
+	}
+}
+
 func (e *TurnEngine) ExecuteToolCalls(
 	ctx context.Context,
 	assistantMsg *db.Message,
@@ -226,6 +394,13 @@ func (e *TurnEngine) ExecuteToolCalls(
 
 	if a.Config != nil && !a.Config.ParallelToolCalls && len(assistantMsg.ToolCalls) > 1 {
 		assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+	} else if e.guided.IsEnabled() && len(assistantMsg.ToolCalls) > 1 {
+		for _, tc := range assistantMsg.ToolCalls {
+			if IsActionTool(tc.Function.Name) {
+				assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+				break
+			}
+		}
 	}
 
 	if len(assistantMsg.ToolCalls) > 1 {
@@ -239,8 +414,6 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 		a.SetLiveBodyStreamed(false)
 
-		isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
-
 		if sr.GetToolTitleLineNumber(idx) == -1 {
 			if e.policy.AgentName == "" && idx == 0 && strings.TrimSpace(assistantMsg.Content) != "" {
 				fmt.Fprintln(w)
@@ -253,43 +426,20 @@ func (e *TurnEngine) ExecuteToolCalls(
 			render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 		}
 
-		approved := false
-		approvalRendered := false
-		// Pre-answered "always": config opted into unattended loop runs, so the modal is
-		// skipped but the decision is recorded as always-approved. Otherwise every action
-		// tool prompts, per call (auto_approve defaults to false).
-		if e.policy.AllowApproval && a.Config != nil && a.Config.ApprovalAlwaysAnswer && NeedsApproval(tc.Function.Name) {
-			approved = true
-		} else if e.policy.AllowApproval && a.Config != nil && !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) {
-			approvalRendered = true
-			sr.Flush()
-			if a.UI != nil {
-				if loader != nil {
-					loader.Pause()
-				}
-
-				var always bool
-				approved, always = a.UI.AskForApproval(unwrapWriterIfPossible(w), theme)
-				if loader != nil {
-					loader.Resume()
-				}
-				if always {
-					a.Config.AutoApprove = true
-					if a.ConfigPath != "" {
-						if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
-							a.DebugLogError(e.policy.SessionKey, "config.SaveConfig (auto-approve)", err)
-						}
-					}
-				}
-			} else {
-				approved = true
+		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
+			output := gateErr.Error()
+			sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
+			render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
+			sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
+			if strings.Contains(output, "aborted by user") {
+				return false, true
 			}
-		} else {
-			approved = true
+			continue
 		}
 
+		approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
 		if !approved {
-			output := RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
+			output, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
 			a.stateMu.Lock()
 			a.lastToolOutput = output
 			a.lastToolIsError = true
@@ -299,7 +449,10 @@ func (e *TurnEngine) ExecuteToolCalls(
 			}
 			render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
 			sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
-			return false, true
+			if shouldAbort {
+				return false, true
+			}
+			continue
 		}
 
 		var toolOutput string
@@ -315,8 +468,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 		} else {
 			e.consecutiveGuardRejections = 0
 			if e.policy.RunHooks {
-				allowed, reason := a.runBeforeToolHook(tc)
-				if !allowed {
+				if allowed, reason := a.runBeforeToolHook(tc); !allowed {
 					toolErr = fmt.Errorf("blocked by hook")
 					toolOutput = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
 				}
@@ -325,13 +477,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 				if loader != nil {
 					loader.ShowDots()
 				}
-				execCtx := tool.AgentContext(a)
-				if e.policy.ExecContext != nil {
-					if c := e.policy.ExecContext(); c != nil {
-						execCtx = c
-					}
-				}
-				toolOutput, toolErr = a.Registry.Execute(execCtx, tc.Function.Name, tc.Function.Arguments)
+				toolOutput, toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
 				if ctx.Err() != nil {
 					e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
 					return true, false
@@ -342,78 +488,24 @@ func (e *TurnEngine) ExecuteToolCalls(
 			}
 		}
 
-		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, toolOutput, toolErr)
-		if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
-			toolOutput += "\n\n[" + reminder + "]"
-		}
-		if toolErr != nil {
-			toolOutput = FormatToolExecutionFailure(tc.Function.Name, toolOutput, toolErr)
-		}
-		if toolOutput == "" {
-			toolOutput = "(no output)"
-		}
-
-		maxOutputBytes := tool.DefaultMaxToolOutputBytes
-		if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
-			maxOutputBytes = a.Config.MaxToolOutputBytes
-		}
-		// The resolved limit acts as a safety ceiling: config can lower the pruner
-		// budget but cannot raise it past the clamp.
-		if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
-			maxOutputBytes = ceiling
-		}
-		pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, toolOutput, maxOutputBytes)
-
-		if !isSubagentCall && !approvalRendered {
-			sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
-		}
-		if !isSubagentCall {
-			bodyStreamed := sr.DidStreamToolBody(idx) || a.DidStreamLiveBody()
-			render.ToolOutput(w, theme, pruned, toolErr != nil, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
-		}
-
-		a.stateMu.Lock()
-		if !IsInspectionTool(tc.Function.Name) || !a.lastToolWasEdit || a.lastToolOutput == "" {
-			a.lastToolOutput = pruned
-			a.lastToolIsError = toolErr != nil
-			a.lastToolWasEdit = tc.Function.Name == "edit"
-		}
-		a.stateMu.Unlock()
-
-		sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned})
-		if afterCall != nil {
-			afterCall(tc, pruned, toolErr)
-		}
+		e.finalizeToolCall(idx, tc, toolOutput, toolErr, approvalRendered, true, sink, sr, w, theme, render, afterCall)
 
 		if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
-			haltNotice := e.HaltNotice()
-			sink.Append(db.Message{Role: "assistant", Content: haltNotice})
-			if a.UI != nil {
-				fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(haltNotice))
-			} else {
-				fmt.Fprintln(w, haltNotice)
-			}
+			e.emitHaltNotice(sink, w, theme)
 			return true, false
 		}
 	}
 	return false, false
 }
 
-// callPlan is one tool call plus the outcome of the parts of the pipeline that
-// must stay sequential: approval (a modal UI decision), the pre-execution guard,
-// and the model-order rendering.
 type callPlan struct {
-	tc          db.ToolCall
-	idx         int
-	output      string
-	toolErr     error
-	guardHit    bool
+	tc       db.ToolCall
+	idx      int
+	output   string
+	toolErr  error
+	guardHit bool
 }
 
-// executeToolCallsParallel runs the execution step of every planned call through
-// a bounded worker pool (never an unbounded goroutine spawn), then finalises and
-// appends the results in the order the model emitted them so tool_call_id pairing
-// and history order stay exactly as the model expects.
 func (e *TurnEngine) executeToolCallsParallel(
 	ctx context.Context,
 	assistantMsg *db.Message,
@@ -428,7 +520,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 	a := e.agent
 	plans := make([]callPlan, len(assistantMsg.ToolCalls))
 
-	// Phase 1: header rendering, approval and guard checks stay in model order.
 	for idx, tc := range assistantMsg.ToolCalls {
 		plan := &plans[idx]
 		plan.tc = tc
@@ -447,31 +538,36 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 
+		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
+			plan.toolErr = gateErr
+			plan.output = gateErr.Error()
+			plan.guardHit = true
+			if strings.Contains(plan.output, "aborted by user") {
+				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
+				render.ToolOutput(w, theme, plan.output, true, tc.Function.Name, tc.Function.Arguments, false)
+				sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: plan.output})
+				return false, true
+			}
+			continue
+		}
+
 		if e.policy.AllowApproval && a.Config != nil && !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) && !a.Config.ApprovalAlwaysAnswer {
 			if a.UI == nil {
 				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
 			} else {
-				sr.Flush()
-				if loader != nil {
-					loader.Pause()
-				}
-				approved, always := a.UI.AskForApproval(unwrapWriterIfPossible(w), theme)
-				if loader != nil {
-					loader.Resume()
-				}
-				if always {
-					a.Config.AutoApprove = true
-					if a.ConfigPath != "" {
-						if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
-							a.DebugLogError(e.policy.SessionKey, "config.SaveConfig (auto-approve)", err)
-						}
-					}
-				}
+				approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc)
 				if !approved {
+					rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
 					sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-					render.ToolOutput(w, theme, RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user."), true, tc.Function.Name, tc.Function.Arguments, false)
-					sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")})
-					return false, true
+					render.ToolOutput(w, theme, rejOutput, true, tc.Function.Name, tc.Function.Arguments, false)
+					sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: rejOutput})
+					if shouldAbort {
+						return false, true
+					}
+					plan.toolErr = fmt.Errorf("rejected by user")
+					plan.output = rejOutput
+					plan.guardHit = true
+					continue
 				}
 			}
 		}
@@ -489,8 +585,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 	}
 
-	// Phase 2: bounded concurrent execution. Workers are capped by the resolved
-	// limit so a model that emits a huge fan-out cannot spawn unbounded goroutines.
 	workers := limits.ParallelToolWorkers()
 	if workers < 1 {
 		workers = 1
@@ -509,8 +603,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 
 		if e.policy.RunHooks {
-			allowed, reason := a.runBeforeToolHook(plan.tc)
-			if !allowed {
+			if allowed, reason := a.runBeforeToolHook(plan.tc); !allowed {
 				plan.toolErr = fmt.Errorf("blocked by hook")
 				plan.output = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
 				continue
@@ -518,9 +611,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 
 		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
-			// Subagent calls fan out their own workers; running them inside this
-			// pool would double the concurrency and let two subagents mutate the
-			// same workspace at once. Keep them on the sequential path.
 			output, err := a.Registry.Execute(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
 			if e.policy.RunHooks {
 				output, err = a.runAfterToolHook(plan.tc, output, err)
@@ -533,7 +623,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 		wg.Add(1)
 		go func(p *callPlan) {
 			defer wg.Done()
-
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -544,7 +633,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 			}
 
 			a.SetLiveBodyStreamed(false)
-
 			output, err := a.Registry.Execute(executionContext(e, a), p.tc.Function.Name, p.tc.Function.Arguments)
 			if ctx.Err() != nil {
 				p.toolErr = fmt.Errorf("cancelled during execution")
@@ -566,57 +654,12 @@ func (e *TurnEngine) executeToolCallsParallel(
 		return true, false
 	}
 
-	// Phase 3: finalise and append in model order.
 	for i := range plans {
 		plan := &plans[i]
-		tc := plan.tc
-
-		if plan.output == "" && plan.toolErr == nil {
-			plan.output = "(no output)"
-		}
-
-		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, plan.output, plan.toolErr)
-		if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
-			plan.output += "\n\n[" + reminder + "]"
-		}
-		if plan.toolErr != nil {
-			plan.output = FormatToolExecutionFailure(tc.Function.Name, plan.output, plan.toolErr)
-		}
-
-		maxOutputBytes := tool.DefaultMaxToolOutputBytes
-		if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
-			maxOutputBytes = a.Config.MaxToolOutputBytes
-		}
-		if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
-			maxOutputBytes = ceiling
-		}
-		pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, plan.output, maxOutputBytes)
-
-		isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
-		if !isSubagentCall {
-			sr.CompleteToolCall(i, tc.Function.Name, tc.Function.Arguments, plan.toolErr != nil)
-			render.ToolOutput(w, theme, pruned, plan.toolErr != nil, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(i))
-		}
-
-		a.stateMu.Lock()
-		a.lastToolOutput = pruned
-		a.lastToolIsError = plan.toolErr != nil
-		a.lastToolWasEdit = tc.Function.Name == "edit"
-		a.stateMu.Unlock()
-
-		sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned})
-		if afterCall != nil {
-			afterCall(tc, pruned, plan.toolErr)
-		}
+		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, false, false, sink, sr, w, theme, render, afterCall)
 
 		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
-			haltNotice := e.HaltNotice()
-			sink.Append(db.Message{Role: "assistant", Content: haltNotice})
-			if a.UI != nil {
-				fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(haltNotice))
-			} else {
-				fmt.Fprintln(w, haltNotice)
-			}
+			e.emitHaltNotice(sink, w, theme)
 			return true, false
 		}
 	}
@@ -624,8 +667,6 @@ func (e *TurnEngine) executeToolCallsParallel(
 	return false, false
 }
 
-// executionContext resolves the AgentContext a tool call runs against. It is read
-// once per call so parallel workers never share a mutating context value.
 func executionContext(e *TurnEngine, a *Agent) tool.AgentContext {
 	if e.policy.ExecContext != nil {
 		if c := e.policy.ExecContext(); c != nil {
@@ -643,9 +684,6 @@ func (e *TurnEngine) HaltNotice() string {
 	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", who, e.guard.maxConsecutiveCalls)
 }
 
-// RecordInterruption keeps tool_call_id pairing for calls that will never execute;
-// without it EnforceToolPairingInvariance drops the whole turn. Previously only the
-// main loop had this — subagents silently lost turns on cancellation.
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
 	for _, tc := range calls {
 		sink.Append(db.Message{
@@ -657,9 +695,6 @@ func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, r
 	}
 }
 
-func unwrapWriterIfPossible(w io.Writer) io.Writer { return GetScreenWriter(w) }
-
-// EngineLoader is the spinner contract the engine needs from a turn loader.
 type EngineLoader interface {
 	Pause()
 	Resume()

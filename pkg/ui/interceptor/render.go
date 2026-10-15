@@ -23,15 +23,12 @@ type CRNLWriter struct {
 func (cw CRNLWriter) Write(p []byte) (int, error) {
 	var buf []byte
 	for i := 0; i < len(p); i++ {
-		if p[i] == '\n' {
-			if i == 0 || p[i-1] != '\r' {
-				buf = append(buf, '\r')
-			}
+		if p[i] == '\n' && (i == 0 || p[i-1] != '\r') {
+			buf = append(buf, '\r')
 		}
 		buf = append(buf, p[i])
 	}
-	_, err := cw.W.Write(buf)
-	if err != nil {
+	if _, err := cw.W.Write(buf); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -69,29 +66,16 @@ func CalculateActiveTokenUsage(
 }
 
 func StylePrompt(p []byte, prefix string, styledPrefix string) []byte {
-	if bytes.HasPrefix(p, []byte(prefix)) {
-		return append([]byte(styledPrefix), p[len(prefix):]...)
-	}
-	rPrefix := append([]byte{'\r'}, []byte(prefix)...)
-	if bytes.HasPrefix(p, rPrefix) {
-		return append(append([]byte{'\r'}, []byte(styledPrefix)...), p[len(rPrefix):]...)
-	}
-	rkPrefix := append([]byte("\r\x1b[K"), []byte(prefix)...)
-	if bytes.HasPrefix(p, rkPrefix) {
-		return append(append([]byte("\r\x1b[K"), []byte(styledPrefix)...), p[len(rkPrefix):]...)
-	}
-	r2kPrefix := append([]byte("\r\x1b[2K"), []byte(prefix)...)
-	if bytes.HasPrefix(p, r2kPrefix) {
-		return append(append([]byte("\r\x1b[2K"), []byte(styledPrefix)...), p[len(r2kPrefix):]...)
+	for _, lead := range []string{"", "\r", "\r\x1b[K", "\r\x1b[2K"} {
+		full := []byte(lead + prefix)
+		if bytes.HasPrefix(p, full) {
+			return append([]byte(lead+styledPrefix), p[len(full):]...)
+		}
 	}
 	return p
 }
 
 func (ki *KeyInterceptorReader) RedrawTypeAhead() {
-	ki.redrawTypeAhead()
-}
-
-func (ki *KeyInterceptorReader) redrawTypeAhead() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
@@ -108,16 +92,13 @@ func (ki *KeyInterceptorReader) redrawTypeAhead() {
 		return
 	}
 
-	typeAheadCopy := string(ki.TypeAheadBuffer)
-	pasteLinesOffset := ki.PasteLinesOffset
-
 	prefixLen := utf8.RuneCountInString(style.StripAnsi(fullPrefixPlain))
 	availableWidth := termW - prefixLen - 1
 	if availableWidth < 1 {
 		availableWidth = 1
 	}
 
-	inputRunes := []rune(typeAheadCopy)
+	inputRunes := []rune(string(ki.TypeAheadBuffer))
 	if len(inputRunes) > availableWidth {
 		inputRunes = inputRunes[len(inputRunes)-availableWidth:]
 	}
@@ -127,13 +108,13 @@ func (ki *KeyInterceptorReader) redrawTypeAhead() {
 		cursorCol = termW
 	}
 
-	if ki.Agent != nil && ki.Agent.CurrentWriter() != nil {
+	if ki.Agent.CurrentWriter() != nil {
 		if writer, ok := ki.Agent.CurrentWriter().(interface{ SetPromptCol(int) }); ok {
 			writer.SetPromptCol(cursorCol)
 		}
 	}
 
-	promptRow := height - 2 - pasteLinesOffset
+	promptRow := height - 2 - ki.PasteLinesOffset
 	if promptRow < 1 {
 		promptRow = 1
 	}

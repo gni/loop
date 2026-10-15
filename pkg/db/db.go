@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,18 +13,15 @@ import (
 	"loop/pkg/domain/session"
 )
 
-// Domain model type aliases preserving complete backward compatibility.
 type ToolFunction = message.ToolFunction
 type ToolCall = message.ToolCall
 type Message = message.Message
 type SessionInfo = session.SessionInfo
 
-// ValidateSessionID checks if the provided session identifier contains only allowed characters.
 func validateSessionID(sessionID string) error {
 	return session.ValidateID(sessionID)
 }
 
-// NewUUID generates a cryptographically random RFC 4122 v4 UUID string.
 func NewUUID() string {
 	return session.NewUUID()
 }
@@ -38,7 +34,6 @@ type JSONLStore struct {
 
 var _ session.Store = (*JSONLStore)(nil)
 
-// NewJSONLStore creates an initialized JSONL-backed session storage engine.
 func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	clean := filepath.Clean(dirPath)
 	if err := os.MkdirAll(clean, 0755); err != nil {
@@ -47,7 +42,7 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	return &JSONLStore{dir: clean}, nil
 }
 
-// SaveMessage appends a message to the specified session.
+// SaveMessage appends a message to the specified session with proper DAG ID and ParentID linkage.
 func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	if err := session.ValidateID(sessionID); err != nil {
 		return err
@@ -60,7 +55,22 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 		return nil
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	var parentID string
+	if entries, err := readEntries(filePath); err == nil && len(entries) > 0 {
+		leaf := session.LeafPath(entries, "")
+		if len(leaf) > 0 {
+			parentID = leaf[len(leaf)-1].ID
+		}
+	}
+
 	record := session.Record{
+		ID:        session.NewUUID(),
+		ParentID:  parentID,
+		Type:      "message",
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 		Message:   msg,
 	}
@@ -70,10 +80,6 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open session file: %w", err)
@@ -88,7 +94,7 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	return nil
 }
 
-// LoadMessages loads all messages for a session.
+// LoadMessages loads the active leaf path of messages for a session.
 func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 	if err := session.ValidateID(sessionID); err != nil {
 		return nil, err
@@ -99,42 +105,36 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 
 	s.mu.RLock()
 	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	entries, err := readEntries(filePath)
 	s.mu.RUnlock()
 
-	f, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to open session file: %w", err)
 	}
-	defer f.Close()
+
+	activeRecords := session.LeafPath(entries, "")
+	if len(activeRecords) == 0 && len(entries) > 0 {
+		activeRecords = entries
+	}
 
 	var messages []message.Message
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
+	for _, record := range activeRecords {
+		if record.Type == "branch" || record.Type == "session" {
 			continue
 		}
-
-		var record session.Record
-		if err := json.Unmarshal(line, &record); err != nil {
+		if record.Message.Role == "" {
 			continue
 		}
-
 		if record.Message.Role == message.RoleUser && record.Message.Content == "" {
 			continue
 		}
 		if strings.HasPrefix(record.Message.Content, "[user manually executed slash command:") {
 			continue
 		}
-
 		messages = append(messages, record.Message)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading session file: %w", err)
 	}
 
 	return messages, nil
@@ -160,7 +160,7 @@ func (s *JSONLStore) HasMessages(sessionID string) bool {
 	return info.Size() > 0
 }
 
-// RewriteSession atomically replaces the messages in a session.
+// RewriteSession atomically replaces the messages in a session while preserving DAG linkage.
 func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message) error {
 	if err := session.ValidateID(sessionID); err != nil {
 		return err
@@ -183,14 +183,20 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 	}()
 
 	now := time.Now().Format("2006-01-02 15:04:05")
+	var parentID string
 	for _, msg := range messages {
 		if msg.Role == message.RoleUser && msg.Content == "" {
 			continue
 		}
+		id := session.NewUUID()
 		record := session.Record{
+			ID:        id,
+			ParentID:  parentID,
+			Type:      "message",
 			Timestamp: now,
 			Message:   msg,
 		}
+		parentID = id
 		jsonData, err := json.Marshal(record)
 		if err != nil {
 			return fmt.Errorf("failed to marshal message: %w", err)
@@ -215,16 +221,11 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 	return nil
 }
 
-// -------------------------------------------------------------------------
-// Global state and backward-compatibility wrappers.
-// -------------------------------------------------------------------------
-
 var (
 	defaultStore *JSONLStore
 	storeMu      sync.RWMutex
 )
 
-// InitDB initializes the global session storage directory.
 func InitDB(dirPath string) error {
 	store, err := NewJSONLStore(dirPath)
 	if err != nil {

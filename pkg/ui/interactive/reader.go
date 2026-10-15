@@ -16,22 +16,14 @@ type ReadResult struct {
 	Err  error
 }
 
-type readResult = ReadResult
-
 type SessionReader struct {
 	chanInput chan byte
 	inputChan chan ReadResult
 	doneChan  chan struct{}
 }
 
-type sessionReader = SessionReader
-
 func NewSessionReader(rlInput io.Reader) *SessionReader {
-	return newSessionReader(rlInput)
-}
-
-func newSessionReader(rlInput io.Reader) *sessionReader {
-	sr := &sessionReader{
+	sr := &SessionReader{
 		doneChan: make(chan struct{}),
 	}
 
@@ -40,7 +32,7 @@ func newSessionReader(rlInput io.Reader) *sessionReader {
 		return sr
 	}
 
-	sr.inputChan = make(chan readResult, 100)
+	sr.inputChan = make(chan ReadResult, 100)
 	go func() {
 		var readBuf [1024]byte
 		for {
@@ -51,7 +43,7 @@ func newSessionReader(rlInput io.Reader) *sessionReader {
 				select {
 				case <-sr.doneChan:
 					return
-				case sr.inputChan <- readResult{Data: data, Err: err}:
+				case sr.inputChan <- ReadResult{Data: data, Err: err}:
 				}
 			}
 			if err != nil {
@@ -72,13 +64,12 @@ func (sr *SessionReader) Close() {
 	}
 }
 
-func (sr *SessionReader) Read(p []byte) (n int, err error) {
+func (sr *SessionReader) Read(p []byte) (int, error) {
 	data, _, err := sr.ReadKeyOrResize(nil)
 	if err != nil {
 		return 0, err
 	}
-	n = copy(p, data)
-	return n, nil
+	return copy(p, data), nil
 }
 
 func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, error) {
@@ -91,7 +82,7 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 				return nil, false, io.EOF
 			}
 			buf := []byte{b}
-			if b == 27 { // Escape character, wait for arrow keys
+			if b == 27 {
 				for {
 					select {
 					case next, ok := <-sr.chanInput:
@@ -105,7 +96,6 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 					}
 				}
 			}
-			// Drain other buffered bytes
 			for {
 				select {
 				case next, ok := <-sr.chanInput:
@@ -134,33 +124,12 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 
 func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 	var line strings.Builder
-	if sr.chanInput != nil {
-		for b := range sr.chanInput {
-			if b == '\r' || b == '\n' {
-				fmt.Fprint(rlOutput, "\r\n")
-				return line.String(), nil
-			}
-			if b == 127 || b == 8 {
-				PopRuneFromBuilder(&line, rlOutput)
-				continue
-			}
-			if b == 3 || b == 4 {
-				return "", fmt.Errorf("cancelled")
-			}
-			if b >= 32 {
-				line.WriteByte(b)
-				rlOutput.Write([]byte{b})
-			}
-		}
-		return "", fmt.Errorf("read error")
-	}
-
 	for {
-		res, ok := <-sr.inputChan
-		if !ok || res.Err != nil {
+		buf, _, err := sr.ReadKeyOrResize(nil)
+		if err != nil {
 			return "", fmt.Errorf("read error")
 		}
-		for _, b := range res.Data {
+		for _, b := range buf {
 			if b == '\r' || b == '\n' {
 				fmt.Fprint(rlOutput, "\r\n")
 				return line.String(), nil
@@ -174,17 +143,13 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 			}
 			if b >= 32 {
 				line.WriteByte(b)
-				rlOutput.Write([]byte{b})
+				_, _ = rlOutput.Write([]byte{b})
 			}
 		}
 	}
 }
 
 func ReadInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
-	return readInputRaw(rlInput, rlOutput)
-}
-
-func readInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 	fmt.Fprint(rlOutput, "\x1b[?25h")
 	defer fmt.Fprint(rlOutput, "\x1b[?25l")
 
@@ -195,59 +160,34 @@ func readInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if n == 0 {
-			continue
-		}
-
 		for i := 0; i < n; i++ {
 			char := buf[i]
-
 			if char == 13 || char == 10 {
 				fmt.Fprint(rlOutput, "\r\n")
 				return sb.String(), nil
 			}
-
 			if char == 127 || char == 8 {
-				str := sb.String()
-				if len(str) > 0 {
-					_, size := utf8.DecodeLastRuneInString(str)
-					if size > 0 {
-						sb.Reset()
-						sb.WriteString(str[:len(str)-size])
-					} else {
-						sb.Reset()
-						sb.WriteString(str[:len(str)-1])
-					}
-					fmt.Fprint(rlOutput, "\b \b")
-				}
+				PopRuneFromBuilder(&sb, rlOutput)
 				continue
 			}
-
 			if char == 3 || char == 4 {
 				return "", fmt.Errorf("cancelled")
 			}
-
 			if char >= 32 {
 				sb.WriteByte(char)
-				rlOutput.Write([]byte{char})
+				_, _ = rlOutput.Write([]byte{char})
 			}
 		}
 	}
 }
 
 func PopRuneFromBuilder(line *strings.Builder, out io.Writer) {
-	popRuneFromBuilder(line, out)
-}
-
-func popRuneFromBuilder(line *strings.Builder, out io.Writer) {
-	if line.Len() > 0 {
-		s := line.String()
-		runes := []rune(s)
-		if len(runes) > 0 {
-			truncated := string(runes[:len(runes)-1])
-			line.Reset()
-			line.WriteString(truncated)
-			fmt.Fprint(out, "\b\x1b[K")
-		}
+	if line.Len() == 0 {
+		return
 	}
+	s := line.String()
+	_, size := utf8.DecodeLastRuneInString(s)
+	line.Reset()
+	line.WriteString(s[:len(s)-size])
+	fmt.Fprint(out, "\b\x1b[K")
 }

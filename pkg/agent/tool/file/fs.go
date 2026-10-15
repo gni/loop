@@ -12,9 +12,6 @@ import (
 	"loop/pkg/domain/ignore"
 )
 
-// AtomicWriteFile writes data to a temporary file in the destination's directory,
-// flushes it to disk via Sync, and atomically renames it to filename.
-// This prevents corrupted or empty files during crashes, timeouts, or interruptions.
 func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -52,11 +49,6 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func atomicWriteFile(filename string, data []byte, perm os.FileMode) error {
-	return AtomicWriteFile(filename, data, perm)
-}
-
-// IsBinary inspects initial bytes to detect if a file is binary.
 func IsBinary(data []byte) bool {
 	limit := len(data)
 	if limit > 8000 {
@@ -70,7 +62,6 @@ func IsBinary(data []byte) bool {
 	return false
 }
 
-// SanitizeUTF8 replaces invalid UTF-8 byte sequences with spaces.
 func SanitizeUTF8(data []byte) string {
 	if utf8.Valid(data) {
 		return string(data)
@@ -79,21 +70,15 @@ func SanitizeUTF8(data []byte) string {
 }
 
 var omissionRegexes = []*regexp.Regexp{
-	// Matches lines containing "rest of code", "rest of method(s)", "unchanged code", etc.
 	regexp.MustCompile(`(?i)(?:rest of|unchanged|same as|original|existing)\s+(?:code|methods?|functions?|class(?:es)?|files?|implementations?)\s*\.{3,}`),
-	// Matches lines with just comments and dots: e.g. // ... or # ... or /* ... */
 	regexp.MustCompile(`(?i)^\s*(?://|#|/\*)\s*\.{3,}\s*(?:\*/)?\s*$`),
-	// Matches brackets with dots: (...)
 	regexp.MustCompile(`^\s*\(\s*\.{3,}\s*\)\s*$`),
-	// Matches TODO comments that suggest omission: e.g. // TODO: implement the rest or // TODO ...
 	regexp.MustCompile(`(?i)(?://|#|/\*)\s*todo\s*[\:\-\s]*\.*(?:\s*(?:implement|add|write)\s+(?:the\s+)?(rest|remaining|code|methods?))?\s*\.{3,}`),
 }
 
-// DetectOmissionPlaceholders searches for code omission comments like '// ... rest of code'.
 func DetectOmissionPlaceholders(text string) []string {
 	var matches []string
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		for _, rx := range omissionRegexes {
 			if rx.MatchString(trimmed) {
@@ -115,10 +100,6 @@ var (
 	fileLocksMu sync.Mutex
 )
 
-// LockPath locks a file path across concurrent operations. The lock key is the
-// symlink-resolved absolute path, so two names for the same file (a symlink and
-// its target, or two symlinks pointing at the same file) share one lock instead
-// of letting a read and an edit run concurrently on the same inode.
 func LockPath(path string) func() {
 	fileLocksMu.Lock()
 	absPath, err := filepath.Abs(path)
@@ -148,11 +129,6 @@ func LockPath(path string) func() {
 	}
 }
 
-func lockPath(path string) func() {
-	return LockPath(path)
-}
-
-// SplitBOM detects and strips a UTF-8 BOM prefix, returning whether it existed.
 func SplitBOM(data []byte) (bool, string) {
 	if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
 		return true, string(data[3:])
@@ -160,18 +136,10 @@ func SplitBOM(data []byte) (bool, string) {
 	return false, string(data)
 }
 
-func splitBOM(data []byte) (bool, string) {
-	return SplitBOM(data)
-}
-
-// DetectLineEnding returns the dominant line ending (\r\n or \n).
 func DetectLineEnding(content string) string {
 	crlf := strings.Index(content, "\r\n")
 	lf := strings.Index(content, "\n")
-	if lf == -1 {
-		return "\n"
-	}
-	if crlf == -1 {
+	if lf == -1 || crlf == -1 {
 		return "\n"
 	}
 	if crlf < lf {
@@ -180,14 +148,6 @@ func DetectLineEnding(content string) string {
 	return "\n"
 }
 
-func detectLineEnding(content string) string {
-	return DetectLineEnding(content)
-}
-
-// HasIgnoredComponent reports whether path has a dependency or artifact component
-// (node_modules, venv, .git, __pycache__, etc.). It delegates to the shared name
-// set in pkg/domain/ignore. Unlike the search tools it does not treat every hidden
-// directory as ignored, so workspace-local hidden folders stay readable.
 func HasIgnoredComponent(path string) bool {
 	return ignore.HasComponent(path, "", false)
 }

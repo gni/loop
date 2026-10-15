@@ -44,10 +44,6 @@ func NewMultiAgentManager(baseAgent *agent.Agent, w io.Writer, theme style.UIThe
 	return mam
 }
 
-func validateAgentName(name string) error {
-	return subagent.ValidateAgentName(name)
-}
-
 func (mam *MultiAgentManager) SpawnAgent(name string, systemPrompt string, parentName string, skillNames []string) error {
 	return mam.spawnAgent(name, systemPrompt, parentName, skillNames, nil, len(skillNames) == 0)
 }
@@ -67,7 +63,7 @@ func (mam *MultiAgentManager) spawnAgent(
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	parentName = strings.TrimSpace(parentName)
 
-	if err := validateAgentName(name); err != nil {
+	if err := subagent.ValidateAgentName(name); err != nil {
 		return err
 	}
 	if systemPrompt == "" {
@@ -140,7 +136,7 @@ func (mam *MultiAgentManager) spawnAgent(
 
 	normalizedLocalSkills := make([]tool.Skill, 0, len(localSkills))
 	for _, localSkill := range localSkills {
-		normalized, err := validateAgentLocalSkill(localSkill)
+		normalized, err := subagent.ValidateAgentLocalSkill(localSkill)
 		if err != nil {
 			return err
 		}
@@ -251,9 +247,7 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 
 	if mam.BaseAgent != nil {
 		mam.BaseAgent.SpawnedAgentsMu.Lock()
-		if mam.BaseAgent.SpawnedAgents != nil {
-			delete(mam.BaseAgent.SpawnedAgents, name)
-		}
+		delete(mam.BaseAgent.SpawnedAgents, name)
 		mam.BaseAgent.SpawnedAgentsMu.Unlock()
 	}
 
@@ -263,15 +257,10 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 		ma.Parent.SubagentsMu.Unlock()
 	}
 
-	toolName := fmt.Sprintf("subagent__%s", name)
-	mam.BaseAgent.Registry.UnregisterPrefix(toolName)
+	mam.BaseAgent.Registry.UnregisterPrefix(fmt.Sprintf("subagent__%s", name))
 
 	if mam.ActiveAgent == ma {
-		if ma.Parent != nil {
-			mam.ActiveAgent = ma.Parent
-		} else {
-			mam.ActiveAgent = nil
-		}
+		mam.ActiveAgent = ma.Parent
 	}
 
 	_ = mam.deleteAgentDef(name)
@@ -322,8 +311,7 @@ func (mam *MultiAgentManager) JoinAgent(name string) bool {
 		mam.ActiveAgent = nil
 		return true
 	}
-	ag, exists := mam.Agents[name]
-	if exists {
+	if ag, exists := mam.Agents[name]; exists {
 		mam.ActiveAgent = ag
 		return true
 	}

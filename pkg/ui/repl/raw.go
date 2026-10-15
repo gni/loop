@@ -27,7 +27,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		ui.GetUI().StateMu.Unlock()
 
 		if inApproval {
-			if b == 3 || b == 4 { // Ctrl+C or Ctrl+D
+			if b == 3 || b == 4 {
 				if cancelFunc != nil {
 					cancelFunc()
 				}
@@ -39,7 +39,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				kiReader.ApprovalChan <- b
 				continue
 			}
-			if b == 27 { // Escape
+			if b == 27 {
 				select {
 				case next := <-rawChan:
 					kiReader.ApprovalChan <- b
@@ -57,15 +57,19 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				}
 				continue
 			}
-			if b == 15 { // Ctrl+O
+			if b == 7 {
+				kiReader.HandleCtrlG()
+				continue
+			}
+			if b == 15 {
 				kiReader.HandleCtrlO()
 				continue
 			}
-			if b == 20 { // Ctrl+T
+			if b == 20 {
 				kiReader.HandleCtrlT()
 				continue
 			}
-			if b == 18 { // Ctrl+R
+			if b == 18 {
 				kiReader.HandleCtrlR()
 				continue
 			}
@@ -83,7 +87,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		}
 
 		if cancelFunc != nil {
-			if b == 3 || b == 4 { // Ctrl+C or Ctrl+D
+			if b == 3 || b == 4 {
 				cancelFunc()
 				ui.GetUI().StateMu.Lock()
 				ui.GetUI().ActiveCancelFunc = nil
@@ -110,17 +114,17 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				}
 				continue
 			}
-			if b == 27 { // Escape
+			if b == 27 {
 				select {
 				case next := <-rawChan:
 					if next == '[' || next == 'O' {
 						select {
 						case dir := <-rawChan:
-							if dir == 'A' { // Up arrow
+							if dir == 'A' {
 								kiReader.NavigateHistory(1)
 								continue
 							}
-							if dir == 'B' { // Down arrow
+							if dir == 'B' {
 								kiReader.NavigateHistory(-1)
 								continue
 							}
@@ -147,7 +151,6 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 								continue
 							}
 							if dir == 'C' || dir == 'D' {
-								// Ignore plain left/right arrow keystrokes during stream
 								continue
 							}
 							kiReader.InputChan <- b
@@ -179,23 +182,27 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				}
 				continue
 			}
-			if b == 16 { // Ctrl+P (Up / Previous history)
+			if b == 16 {
 				kiReader.NavigateHistory(1)
 				continue
 			}
-			if b == 14 { // Ctrl+N (Down / Next history)
+			if b == 14 {
 				kiReader.NavigateHistory(-1)
 				continue
 			}
-			if b == 15 { // Ctrl+O
+			if b == 7 {
+				kiReader.HandleCtrlG()
+				continue
+			}
+			if b == 15 {
 				kiReader.HandleCtrlO()
 				continue
 			}
-			if b == 20 { // Ctrl+T
+			if b == 20 {
 				kiReader.HandleCtrlT()
 				continue
 			}
-			if b == 18 { // Ctrl+R
+			if b == 18 {
 				kiReader.HandleCtrlR()
 				continue
 			}

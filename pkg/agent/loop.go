@@ -14,7 +14,6 @@ import (
 )
 
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) {
-
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return
@@ -29,9 +28,13 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	}()
 
 	writerToUse := w
-	rawW := unwrapWriter(writerToUse)
+	rawW := UnwrapWriter(writerToUse)
 	a.SetTurnState(writerToUse, ctx, theme)
 	defer a.ClearTurnState()
+
+	if a.Guided != nil {
+		a.Guided.ResetForNewUserTurn(a.GetTodos())
+	}
 
 	var loader *turnLoader
 	if a.UI != nil && !isNonInteractive {
@@ -45,8 +48,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	timePrinted := false
 	defer func() {
-		// prompt is guaranteed non-empty here (the function returns earlier on an empty
-		// prompt), so the old `prompt != ""` guard was unreachable.
 		if !timePrinted {
 			elapsed := time.Since(startTime)
 			timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
@@ -58,9 +59,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	if len(*messages) > 0 && (*messages)[0].Role == "system" {
 		currentSysPrompt := a.GetSystemPrompt()
-		if (*messages)[0].Content != currentSysPrompt || a.ForceSystemPromptUpdate {
+		a.stateMu.Lock()
+		forceUpdate := a.ForceSystemPromptUpdate
+		a.ForceSystemPromptUpdate = false
+		a.stateMu.Unlock()
+		if (*messages)[0].Content != currentSysPrompt || forceUpdate {
 			(*messages)[0].Content = currentSysPrompt
-			a.ForceSystemPromptUpdate = false
 			if sessionID != "" {
 				if err := db.RewriteSession(sessionID, *messages); err != nil {
 					a.DebugLogError(sessionID, "db.RewriteSession (system prompt)", err)
@@ -71,11 +75,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	*messages = append(*messages, db.Message{Role: "user", Content: prompt})
 	if sessionID != "" {
-		if !db.HasMessages(sessionID) {
-			if len(*messages) > 1 && (*messages)[0].Role == "system" {
-				if err := db.SaveMessage(sessionID, (*messages)[0]); err != nil {
-					a.DebugLogError(sessionID, "db.SaveMessage (system prompt)", err)
-				}
+		if !db.HasMessages(sessionID) && len(*messages) > 1 && (*messages)[0].Role == "system" {
+			if err := db.SaveMessage(sessionID, (*messages)[0]); err != nil {
+				a.DebugLogError(sessionID, "db.SaveMessage (system prompt)", err)
 			}
 		}
 		if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
@@ -92,15 +94,16 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	if maxSteps <= 0 {
 		maxSteps = 30
 	}
-	// Single shared pipeline: the TurnEngine owns the guard wiring, the tool-call
-	// pipeline and turn awareness (turn count + token budget recap every N turns).
+
 	engine := NewTurnEngine(a, EnginePolicy{
 		SessionKey:    sessionID,
 		AllowApproval: true,
 		RunHooks:      true,
+		GuidedMode:    a.IsGuidedMode(),
 		ShowRecapLine: !isNonInteractive,
 	})
 	sink := NewAgentSink(a, messages, sessionID)
+
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
 			return
@@ -108,15 +111,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		engine.BeginTurn()
 
-		// Turn awareness: every RecapInterval turns the agent receives a recap of how
-		// many turns it has run and how much of its context window it has consumed, so it
-		// can self-regulate when the window is approached. Injected as a user-role message
-		// (always preserved, never orphaned by pairing invariance).
-		autoAdapt := true
-		if a.Config != nil {
-			autoAdapt = a.Config.AutoAdaptContext
-		}
-		if autoAdapt {
+		if a.Config == nil || a.Config.AutoAdaptContext {
 			*messages = CompactHistoricalToolOutputs(*messages)
 		}
 
@@ -144,10 +139,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		go func() {
 			msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
-			// Assign before signalling: the receiver reads assistantMsg after
-			// receiving from streamErrChan, so the channel send is the happens-before
-			// edge. Sending err first let the receiver observe a nil message for a
-			// successful turn.
 			if msg != nil {
 				assistantMsg = msg
 			}
@@ -172,11 +163,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 		sr.SetPrompt(prompt)
 
-		// Suppress an echoed prompt during streaming, not just after the turn: chunks
-		// are printed the moment they arrive, so post-hoc stripping cannot fix what the
-		// user already saw.
 		echoFilter := NewPromptEchoFilter(prompt)
-
 		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 
 		updateStreamStatus := func(generating bool) {
@@ -186,7 +173,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}
 		}
 
-		// No ticker goroutine exists; stopTicker only needs to run once.
 		var stopOnce sync.Once
 		stopTicker := func() {
 			stopOnce.Do(func() {
@@ -198,7 +184,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		updateStreamStatus(true)
 
 		for chunk := range chunkChan {
-			if chunk.Type == "reasoning" {
+			switch chunk.Type {
+			case "reasoning":
 				if loader != nil {
 					loader.PauseDots()
 					loader.Feed()
@@ -206,29 +193,26 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
 					sr.WriteReasoning(cleaned)
 				}
-				continue
-			} else if chunk.Type == "text" {
+			case "text":
 				if loader != nil {
 					loader.PauseDots()
 					loader.Feed()
 				}
 				sr.Write(chunk.Content)
-			} else if chunk.Type == "tool_name" {
+			case "tool_name":
 				sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
 				if loader != nil {
 					loader.ShowDots()
 					loader.Feed()
 				}
-			} else if chunk.Type == "tool_target" {
+			case "tool_target":
 				sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
-			} else if chunk.Type == "tool_call" {
+			case "tool_call":
 				sr.WriteToolCall(chunk.Content)
-				if sr.DidStreamToolBody(chunk.ToolCallIndex) {
-					if loader != nil {
+				if loader != nil {
+					if sr.DidStreamToolBody(chunk.ToolCallIndex) {
 						loader.PauseDots()
-						loader.Feed()
 					}
-				} else if loader != nil {
 					loader.Feed()
 				}
 			}
@@ -247,9 +231,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.CurrentStreamBuffer = nil
 		a.CurrentStreamMu.Unlock()
 
-		streamErr := <-streamErrChan
-
-		if streamErr != nil {
+		if streamErr := <-streamErrChan; streamErr != nil {
 			if loader != nil {
 				loader.Stop()
 			}
@@ -259,29 +241,18 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
 					fmt.Fprintln(writerToUse, cancelStyle.Render("[operation cancelled]"))
 				}
-			} else {
-				if !isNonInteractive {
-					fmt.Fprintln(writerToUse)
-					if a.UI != nil {
-						a.UI.RenderGenerationError(writerToUse, streamErr.Error(), theme)
-					} else {
-						errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-						fmt.Fprintf(writerToUse, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
-					}
-					errMsg := db.Message{
-						Role:    "error",
-						Content: streamErr.Error(),
-					}
-					*messages = append(*messages, errMsg)
-					if sessionID != "" {
-						if err := db.SaveMessage(sessionID, errMsg); err != nil {
-							a.DebugLogError(sessionID, "db.SaveMessage (error turn)", err)
-						}
-					}
+			} else if !isNonInteractive {
+				fmt.Fprintln(writerToUse)
+				if a.UI != nil {
+					a.UI.RenderGenerationError(writerToUse, streamErr.Error(), theme)
 				} else {
 					errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-					fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
+					fmt.Fprintf(writerToUse, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
 				}
+				sink.Append(db.Message{Role: "error", Content: streamErr.Error()})
+			} else {
+				errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+				fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
 			}
 			return
 		}
@@ -296,18 +267,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
-		*messages = append(*messages, *assistantMsg)
-		if sessionID != "" {
-			if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
-				a.DebugLogError(sessionID, "db.SaveMessage (assistant turn)", err)
-			}
-		}
+		sink.Append(*assistantMsg)
 
 		globalPromptTokens, _ := a.GetGlobalTokens(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 		postEffectiveLimit := a.GetEffectiveContextLimit(globalPromptTokens)
-		// The post-turn check must include the completion tokens just generated, otherwise
-		// the threshold is evaluated against prompt tokens only.
 		globalPromptTokens, postEffectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokens, assistantMsg.CompletionTokens, postEffectiveLimit)
 
 		var finalTps float64
@@ -331,19 +295,15 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
 			timeStyled := style.NewStyle().Foreground(theme.Border).Render(timeStr)
 
-			currentCStr := fmt.Sprintf("%d out", assistantMsg.CompletionTokens)
-			if assistantMsg.CompletionTokens >= 1000 {
-				currentCStr = fmt.Sprintf("%.1fk out", float64(assistantMsg.CompletionTokens)/1000.0)
-			}
-
-			cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
-			dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
-
-			var statsText string
+			statsText := timeStyled
 			if a.Config.ShowTokens && assistantMsg.CompletionTokens > 0 {
-				statsText = fmt.Sprintf("%s%s%s", cStyled, dotStyled, timeStyled)
-			} else {
-				statsText = timeStyled
+				currentCStr := fmt.Sprintf("%d out", assistantMsg.CompletionTokens)
+				if assistantMsg.CompletionTokens >= 1000 {
+					currentCStr = fmt.Sprintf("%.1fk out", float64(assistantMsg.CompletionTokens)/1000.0)
+				}
+				cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
+				dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
+				statsText = cStyled + dotStyled + timeStyled
 			}
 
 			_, height := style.GetTerminalSize()
@@ -353,8 +313,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				fmt.Fprintln(writerToUse, statsText)
 			}
 
-			// Surface truncated rendering: the persisted message is complete, but the
-			// UI consumer stopped draining within streamSendTimeout.
 			if dropped := a.TurnDroppedChunks(); dropped > 0 && a.UI != nil {
 				a.UI.RenderGenerationError(writerToUse, fmt.Sprintf("output truncated: %d stream chunk(s) could not be delivered to the UI", dropped), theme)
 			}
@@ -365,17 +323,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		syncPostTurnStatus()
 
-		halted, aborted := engine.ExecuteToolCalls(
-			ctx,
-			assistantMsg,
-			sink,
-			sr,
-			loader,
-			ncw,
-			theme,
-			NewMainRenderer(a),
-			nil,
-		)
+		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), nil)
 		if halted || aborted {
 			return
 		}

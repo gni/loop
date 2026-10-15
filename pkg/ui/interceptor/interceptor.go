@@ -50,7 +50,6 @@ type KeyInterceptorReader struct {
 	PasteLinesOffset int
 	PasteCounter     int
 
-	// Callbacks for decoupling from parent UI
 	OnClearPromptHint       func()
 	OnRedrawScreen          func()
 	OnDrawStaticControls    func(w io.Writer)
@@ -67,23 +66,19 @@ func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
 }
 
 func (ki *KeyInterceptorReader) Drain() {
-	if ki.InputChan != nil {
-		for {
-			select {
-			case <-ki.InputChan:
-			default:
-				goto drainInject
-			}
+	for ki.InputChan != nil {
+		select {
+		case <-ki.InputChan:
+		default:
+			goto drainInject
 		}
 	}
 drainInject:
-	if ki.InjectChan != nil {
-		for {
-			select {
-			case <-ki.InjectChan:
-			default:
-				return
-			}
+	for ki.InjectChan != nil {
+		select {
+		case <-ki.InjectChan:
+		default:
+			return
 		}
 	}
 }
@@ -101,8 +96,7 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 	if ki.MAM != nil && ki.MAM.ActiveAgent != nil {
 		promptPrefix = fmt.Sprintf("[%s]%s", ki.MAM.ActiveAgent.Name, promptPrefix)
 	}
-	promptStyle := style.NewStyle().Foreground(activeTheme.Primary).Bold(true)
-	promptStr := promptStyle.Render(promptPrefix)
+	promptStr := style.NewStyle().Foreground(activeTheme.Primary).Bold(true).Render(promptPrefix)
 
 	p = StylePrompt(p, promptPrefix, promptStr)
 
@@ -110,17 +104,14 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 		if ki.OnRedrawScreen != nil {
 			ki.OnRedrawScreen()
 		}
-		cleaned := bytes.ReplaceAll(p, []byte("\x1b[H\x1b[2J"), nil)
-		cleaned = bytes.ReplaceAll(cleaned, []byte("\x1b[2J\x1b[H"), nil)
-		cleaned = bytes.ReplaceAll(cleaned, []byte("\x1b[2J"), nil)
-		cleaned = bytes.ReplaceAll(cleaned, []byte("\x1b[H"), nil)
-		cleaned = bytes.ReplaceAll(cleaned, []byte("\x1b[1;1H"), nil)
-		var err error
-		if len(cleaned) > 0 {
-			_, err = ki.writeToTerminal(cleaned)
+		cleaned := p
+		for _, seq := range []string{"\x1b[H\x1b[2J", "\x1b[2J\x1b[H", "\x1b[2J", "\x1b[H", "\x1b[1;1H"} {
+			cleaned = bytes.ReplaceAll(cleaned, []byte(seq), nil)
 		}
-		if err != nil {
-			return 0, err
+		if len(cleaned) > 0 {
+			if _, err := ki.writeToTerminal(cleaned); err != nil {
+				return 0, err
+			}
 		}
 		return len(p), nil
 	}
@@ -130,13 +121,13 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 	}
 
 	if ki.IsAtMainPrompt && ki.RL != nil {
-		var targetWriter io.Writer
-		if ki.W != nil {
-			targetWriter = ki.W
-		} else if w, ok := ki.R.(io.Writer); ok {
-			targetWriter = w
-		} else {
-			targetWriter = os.Stderr
+		targetWriter := ki.W
+		if targetWriter == nil {
+			if w, ok := ki.R.(io.Writer); ok {
+				targetWriter = w
+			} else {
+				targetWriter = os.Stderr
+			}
 		}
 		if ki.OnDrawStaticControls != nil {
 			ki.OnDrawStaticControls(targetWriter)
@@ -169,11 +160,11 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 	}
 
 	var n int
-	var err error
 	if ki.InputChan == nil {
 		if ki.R == nil {
 			return 0, io.EOF
 		}
+		var err error
 		n, err = ki.R.Read(p)
 		if err != nil {
 			return n, err
@@ -193,10 +184,8 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 			b = input
 		}
 
-		if b != 4 {
-			if ki.OnClearPromptHint != nil {
-				ki.OnClearPromptHint()
-			}
+		if b != 4 && ki.OnClearPromptHint != nil {
+			ki.OnClearPromptHint()
 		}
 
 		p[0] = b
@@ -215,60 +204,43 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 			break
 		}
 
-		if n == 1 && ki.InputChan != nil {
-			// select prefers a byte that is already buffered, so a complete sequence that has
-			// arrived costs nothing; the timer only bounds a partial one.
+		if n == 1 {
 			select {
 			case input, ok := <-ki.InputChan:
-				if ok {
-					p[n] = input
-					n++
-				} else {
+				if !ok {
 					goto done
 				}
+				p[n] = input
+				n++
 			case <-time.After(3 * time.Millisecond):
 			}
 		}
 
 		for n < len(p) {
-			hasEscape := false
-			for i := 0; i < n; i++ {
-				if p[i] == 27 {
-					hasEscape = true
-					break
-				}
-			}
-
-			if hasEscape {
-				// Escape disambiguation: a lone ESC is held briefly to see whether it begins a
-				// sequence. A byte that is already buffered wins over the timer, so a complete
-				// sequence costs nothing and only a genuine lone keypress pays the window.
+			if bytes.IndexByte(p[:n], 27) >= 0 {
 				select {
 				case input, ok := <-ki.InputChan:
-					if ok {
-						p[n] = input
-						n++
-					} else {
+					if !ok {
 						goto done
 					}
+					p[n] = input
+					n++
 				case <-time.After(limits.EscapeDisambiguation()):
 					goto done
 				}
 			} else {
 				select {
 				case input, ok := <-ki.InputChan:
-					if ok {
-						p[n] = input
-						n++
-					} else {
-						break
+					if !ok {
+						goto done
 					}
+					p[n] = input
+					n++
 				default:
 					goto done
 				}
 			}
 		}
-
 	done:
 	}
 
@@ -277,7 +249,8 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 	writeIdx := 0
 	for i := 0; i < n; i++ {
 		b := p[i]
-		if b == 3 { // Ctrl+C
+		switch b {
+		case 3:
 			if ki.Agent != nil {
 				ki.Agent.TasksMu.Lock()
 				if ki.Agent.StreamingTask != "" {
@@ -301,23 +274,19 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 			if ki.IsAtMainPrompt {
 				ki.CtrlCInterrupted = true
 				p[writeIdx] = '\n'
-				writeIdx++
 			} else {
 				p[writeIdx] = b
-				writeIdx++
 			}
-		} else if b == 4 { // Ctrl+D
-			p[writeIdx] = b
 			writeIdx++
-		} else if b == 20 || b == 18 || b == 15 { // Ctrl+T, Ctrl+R, or Ctrl+O
-			if b == 20 { // Ctrl+T
-				ki.handleCtrlT()
-			} else if b == 18 { // Ctrl+R
-				ki.handleCtrlR()
-			} else if b == 15 { // Ctrl+O
-				ki.handleCtrlO()
-			}
-		} else {
+		case 7:
+			ki.HandleCtrlG()
+		case 15:
+			ki.HandleCtrlO()
+		case 18:
+			ki.HandleCtrlR()
+		case 20:
+			ki.HandleCtrlT()
+		default:
 			p[writeIdx] = b
 			writeIdx++
 		}

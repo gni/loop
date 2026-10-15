@@ -15,6 +15,7 @@ var (
 	endpoint                string
 	modelName               string
 	autoYes                 bool
+	guidedModeFlag          bool
 	showThinking            bool
 	showTokens              bool
 	allowedToolsStr         string
@@ -42,6 +43,14 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	}
 	if autoYes {
 		cfg.AutoApprove = true
+	}
+	if cmd.Flags().Changed("guided") {
+		cfg.GuidedMode = guidedModeFlag
+		if guidedModeFlag {
+			cfg.AutoApprove = false
+			cfg.ApprovalAlwaysAnswer = false
+			cfg.ParallelToolCalls = false
+		}
 	}
 	if showThinking {
 		cfg.ShowThinking = true
@@ -109,6 +118,7 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&endpoint, "endpoint", "", "Override llama.cpp or OpenAI server URL")
 	cmd.PersistentFlags().StringVar(&modelName, "model", "", "Override model name")
 	cmd.PersistentFlags().BoolVarP(&autoYes, "yes", "y", false, "Auto-approve all tool execution prompts without asking")
+	cmd.PersistentFlags().BoolVarP(&guidedModeFlag, "guided", "g", false, "Enable guided mode: require exploration, plan approval, diff previews, and step-by-step confirmation")
 	cmd.PersistentFlags().BoolVar(&showThinking, "thinking", false, "Show streaming LLM thinking/reasoning process")
 	cmd.PersistentFlags().BoolVarP(&showTokens, "tokens", "t", false, "Show token usage metrics under each LLM response")
 	cmd.PersistentFlags().StringVar(&allowedToolsStr, "tools", "", "Comma-separated list of allowed tools (leave empty for all)")

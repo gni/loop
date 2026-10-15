@@ -18,8 +18,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// HandleSlashCommand processes slash commands from the REPL.
-// It returns (handled, quit).
 func HandleSlashCommand(
 	a *agent.Agent,
 	line string,
@@ -56,6 +54,15 @@ func HandleSlashCommand(
 			a.KillAllTasks()
 		}
 		return true, true
+	case "/guided", "/guide":
+		handleGuidedCommand(a, parts, theme, w, kiReader)
+		return true, false
+	case "/plan":
+		handleGuidedCommand(a, []string{"/guided", "plan"}, theme, w, kiReader)
+		return true, false
+	case "/rollback", "/undo":
+		handleRollbackCommand(a, theme, w)
+		return true, false
 	case "/toggle", "/collapse", "/expand":
 		if cmdName == "/collapse" {
 			a.Config.CollapseResults = true
@@ -180,6 +187,9 @@ func HandleSlashCommand(
 		handleExtensionsCommand(a, theme, w)
 		return true, false
 	default:
+		if HandlePromptTemplate(a, cmdName, strings.TrimSpace(strings.TrimPrefix(trimmed, cmdName)), messages, w) {
+			return true, false
+		}
 		handledExt, errExt := ui.RunExtension(a, cmdName, parts[1:], messages, w)
 		if handledExt {
 			if errExt != nil {

@@ -11,8 +11,6 @@ import (
 	"loop/pkg/ui/commands"
 )
 
-// autoCompleteCallback handles Tab completion for slash commands, configurations,
-// sessions, providers, skills, and filesystem paths.
 func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (string, int, bool) {
 	if key != '\t' {
 		return line, pos, false
@@ -29,6 +27,15 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 	}
 
 	candidates := []string{
+		"/guided",
+		"/guided on",
+		"/guided off",
+		"/guided status",
+		"/guided plan",
+		"/guided approve",
+		"/plan",
+		"/rollback",
+		"/undo",
 		"/config ",
 		"/config show",
 		"/config set ",
@@ -115,11 +122,18 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 	}
 
 	if len(matches) == 0 {
-		if strings.HasPrefix(prefixToPos, "/config ") {
+		if strings.HasPrefix(prefixToPos, "/guided ") {
+			filterPrefix := strings.TrimPrefix(prefixToPos, "/guided ")
+			for _, c := range []string{"on", "off", "status", "plan", "approve"} {
+				if strings.HasPrefix(c, filterPrefix) {
+					matches = append(matches, c)
+				}
+			}
+		} else if strings.HasPrefix(prefixToPos, "/config ") {
 			isSet := strings.HasPrefix(prefixToPos, "/config set ")
 			var configCandidates []string
 			configKeys := []string{
-				"endpoint", "model", "temperature", "auto_approve", "show_thinking",
+				"endpoint", "model", "temperature", "guided_mode", "auto_approve", "show_thinking",
 				"collapse_results", "show_tokens", "theme", "syntax_theme", "context_limit", "steps",
 				"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
 				"before_tool_hook", "after_tool_hook", "debug", "debug_file",
@@ -207,7 +221,6 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 					}
 				}
 			} else {
-				// Suggest provider names directly for fast switching
 				var providerKeys []string
 				providerKeys = append(providerKeys, "default")
 				if a != nil && a.Config != nil && a.Config.Providers != nil {
@@ -220,7 +233,6 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 						matches = append(matches, pk)
 					}
 				}
-				// And suggest subcommands
 				for _, c := range providerSubcommands {
 					if strings.HasPrefix(c, filterPrefix) {
 						match := c
