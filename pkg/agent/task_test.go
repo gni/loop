@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,18 @@ func TestKillAllTasksAndClearTasks(t *testing.T) {
 
 	if len(a.ListTasks()) != 0 {
 		t.Fatalf("expected 0 tasks after ClearTasks, got %d", len(a.ListTasks()))
+	}
+
+	// Test RemoveTask
+	taskID3, err := a.SpawnTask("sleep 60", &buf)
+	if err != nil {
+		t.Fatalf("SpawnTask 3 failed: %v", err)
+	}
+	if err := a.RemoveTask(taskID3); err != nil {
+		t.Fatalf("RemoveTask failed: %v", err)
+	}
+	if len(a.ListTasks()) != 0 {
+		t.Fatalf("expected 0 tasks after RemoveTask, got %d", len(a.ListTasks()))
 	}
 }
 
@@ -143,3 +156,70 @@ func TestKillTaskNormalizedIdAndStatus(t *testing.T) {
 		t.Fatalf("timed out waiting for task completion event")
 	}
 }
+
+type mockChatUI struct {
+	mockTurnLoaderUI
+	buf bytes.Buffer
+}
+
+func (m *mockChatUI) GetPPWriter() io.Writer {
+	return &m.buf
+}
+
+func TestToggleStreamingAndChatWriter(t *testing.T) {
+	mockUI := &mockChatUI{}
+	a := &Agent{
+		Tasks:         make(map[string]*Task),
+		SystemEvents:  make(chan string, 10),
+		WorkspaceRoot: t.TempDir(),
+		NextTaskId:    1,
+		UI:            mockUI,
+	}
+
+	task := &Task{
+		ID:             "task_1",
+		Command:        "echo hello",
+		Status:         "running",
+		Stdout:         bytes.NewBufferString("first line\n"),
+		Stderr:         new(bytes.Buffer),
+		StartTime:      time.Now(),
+		LastOutputTime: time.Now(),
+	}
+	a.Tasks["task_1"] = task
+
+	// Toggle streaming on
+	var fallbackBuf bytes.Buffer
+	a.ToggleStreaming("task_1", &fallbackBuf)
+
+	// Verify streaming message and past buffered output went to chat writer, not fallback
+	chatOut := mockUI.buf.String()
+	if !strings.Contains(chatOut, "[streaming output of task_1...]") {
+		t.Fatalf("expected streaming notice in chat writer, got: %q", chatOut)
+	}
+	if !strings.Contains(chatOut, "first line") {
+		t.Fatalf("expected buffered output in chat writer, got: %q", chatOut)
+	}
+	if fallbackBuf.Len() > 0 {
+		t.Fatalf("expected fallback writer to remain empty when chat writer is active, got: %q", fallbackBuf.String())
+	}
+
+	// Write additional output through taskWriter
+	tw := &taskWriter{task: task, agent: a, w: &fallbackBuf, isStderr: false}
+	_, err := tw.Write([]byte("second line\n"))
+	if err != nil {
+		t.Fatalf("tw.Write failed: %v", err)
+	}
+
+	chatOut = mockUI.buf.String()
+	if !strings.Contains(chatOut, "second line") {
+		t.Fatalf("expected live output in chat writer, got: %q", chatOut)
+	}
+
+	// Toggle streaming off
+	a.ToggleStreaming("task_1", &fallbackBuf)
+	chatOut = mockUI.buf.String()
+	if !strings.Contains(chatOut, "[stopped streaming output of task_1]") {
+		t.Fatalf("expected stop notice in chat writer, got: %q", chatOut)
+	}
+}
+

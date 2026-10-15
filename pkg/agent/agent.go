@@ -481,6 +481,25 @@ func (a *Agent) GetLiveWriter() io.Writer {
 	return a.CurrentWriter()
 }
 
+// GetChatWriter returns the active UI chat writer (e.g. PromptPreservingWriter)
+// if available, falling back to currentWriter, or os.Stderr.
+func (a *Agent) GetChatWriter() io.Writer {
+	if a == nil {
+		return os.Stderr
+	}
+	if a.UI != nil {
+		if wh, ok := a.UI.(interface{ GetPPWriter() io.Writer }); ok {
+			if w := wh.GetPPWriter(); w != nil {
+				return w
+			}
+		}
+	}
+	if w := a.CurrentWriter(); w != nil {
+		return w
+	}
+	return os.Stderr
+}
+
 func (a *Agent) SetLiveBodyStreamed(streamed bool) {
 	a.stateMu.Lock()
 	a.liveBodyStreamed = streamed

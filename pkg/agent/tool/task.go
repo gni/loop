@@ -16,16 +16,35 @@ func parseTaskID(arguments string) (string, error) {
 		}
 	} else if strings.HasPrefix(trimmed, "{") {
 		var args struct {
-			TaskID    string `json:"task_id"`
-			TaskIDAlt string `json:"taskId"`
-			ID        string `json:"id"`
-			Task      string `json:"task"`
+			TaskID    interface{} `json:"task_id"`
+			TaskIDAlt interface{} `json:"taskId"`
+			ID        interface{} `json:"id"`
+			Task      interface{} `json:"task"`
 		}
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
 			return "", fmt.Errorf("invalid arguments: %w", err)
 		}
-		if v := FirstNonEmpty(args.TaskID, args.TaskIDAlt, args.ID, args.Task); v != "" {
+		toString := func(v interface{}) string {
+			if v == nil {
+				return ""
+			}
+			switch val := v.(type) {
+			case string:
+				return strings.TrimSpace(val)
+			case float64:
+				return fmt.Sprintf("%.0f", val)
+			case int:
+				return fmt.Sprintf("%d", val)
+			case int64:
+				return fmt.Sprintf("%d", val)
+			default:
+				return fmt.Sprintf("%v", val)
+			}
+		}
+		if v := FirstNonEmpty(toString(args.TaskID), toString(args.TaskIDAlt), toString(args.ID), toString(args.Task)); v != "" {
 			trimmed = v
+		} else {
+			return "", fmt.Errorf("missing required argument: task_id")
 		}
 	}
 	trimmed = strings.TrimSpace(trimmed)
@@ -67,6 +86,10 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 		return "", errors.New(RuntimeMessage("task_missing_arg_status", "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1')."))
 	}
 
+	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
+		taskID = r.ResolveTaskID(taskID)
+	}
+
 	status, output, err := ctx.GetTaskStatus(taskID)
 	if err != nil {
 		return "", errors.New(RuntimeMessagef("task_status_not_found", "task %q not found. The task may have already completed, was killed, or does not exist.", taskID))
@@ -77,7 +100,14 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 		cmdStr = tc.GetTaskCommand(taskID)
 	}
 	if cmdStr != "" {
-		return RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, cmdStr, status, output), nil
+		displayCmd := strings.TrimSpace(cmdStr)
+		if idx := strings.Index(displayCmd, "\n"); idx != -1 {
+			displayCmd = strings.TrimSpace(displayCmd[:idx])
+		}
+		if len(displayCmd) > 50 {
+			displayCmd = displayCmd[:47] + "..."
+		}
+		return RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, displayCmd, status, output), nil
 	}
 
 	return RuntimeMessagef("task_status_output", "Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output), nil
@@ -113,6 +143,10 @@ func (t *taskKillTool) Execute(ctx AgentContext, arguments string) (string, erro
 	taskID, err := parseTaskID(arguments)
 	if err != nil {
 		return "", errors.New(RuntimeMessage("task_missing_arg_kill", "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1')."))
+	}
+
+	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
+		taskID = r.ResolveTaskID(taskID)
 	}
 
 	err = ctx.KillTask(taskID)

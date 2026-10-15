@@ -35,7 +35,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/extensions", "list custom slash command extensions"},
 		{"/reload", "hot-reload plugins and extensions"},
 		{"/agent [list|spawn|remove]", "manage multi-agent swarm threads"},
-		{"/task [list|view|stream|kill]", "manage background tasks"},
+		{"/task [list|view|stream|kill|clear]", "manage background tasks (shorthand: /stop, /kill, /status, /ps)"},
 		{"/queue [list|clear]", "view or clear queued prompts"},
 		{"/compress", "compress history to reclaim context tokens"},
 		{"/context [auto|off|<limit>]", "view or configure adaptive context window scaling"},

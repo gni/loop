@@ -284,7 +284,11 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 					streamingID := ki.Agent.StreamingTask
 					ki.Agent.StreamingTask = ""
 					ki.Agent.TasksMu.Unlock()
-					fmt.Fprintf(os.Stderr, "\n[stopped streaming %s]\n", streamingID)
+					dest := io.Writer(os.Stderr)
+					if chatWriter := ki.Agent.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+						dest = chatWriter
+					}
+					fmt.Fprintf(dest, "\n[stopped streaming %s]\n", streamingID)
 					if ki.IsAtMainPrompt {
 						ki.CtrlCInterrupted = true
 						p[writeIdx] = '\n'

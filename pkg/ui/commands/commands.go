@@ -97,7 +97,39 @@ func HandleSlashCommand(
 		}
 		return true, false
 	case "/task", "/tasks":
-		handleTaskCommand(a, parts, theme, w, kiReader)
+		if cmdName == "/tasks" && len(parts) == 1 {
+			handleTaskCommand(a, []string{"/task", "list"}, theme, w, kiReader)
+		} else {
+			handleTaskCommand(a, parts, theme, w, kiReader)
+		}
+		return true, false
+	case "/task_kill", "/taskkill", "/kill", "/stop", "/task_stop", "/taskstop":
+		taskParts := []string{"/task", "kill"}
+		if len(parts) > 1 {
+			taskParts = append(taskParts, parts[1:]...)
+		}
+		handleTaskCommand(a, taskParts, theme, w, kiReader)
+		return true, false
+	case "/task_status", "/taskstatus", "/task_view", "/taskview", "/status":
+		taskParts := []string{"/task", "status"}
+		if len(parts) > 1 {
+			taskParts = append(taskParts, parts[1:]...)
+		}
+		handleTaskCommand(a, taskParts, theme, w, kiReader)
+		return true, false
+	case "/ps":
+		if len(parts) > 1 {
+			taskParts := append([]string{"/task", "status"}, parts[1:]...)
+			handleTaskCommand(a, taskParts, theme, w, kiReader)
+		} else {
+			handleTaskCommand(a, []string{"/task", "list"}, theme, w, kiReader)
+		}
+		return true, false
+	case "/task_list", "/tasklist":
+		handleTaskCommand(a, []string{"/task", "list"}, theme, w, kiReader)
+		return true, false
+	case "/task_clear", "/taskclear":
+		handleTaskCommand(a, []string{"/task", "clear"}, theme, w, kiReader)
 		return true, false
 	case "/help", "/h", "/commands", "?", "/?", "help", "h":
 		render.RenderHelp(w, *theme)

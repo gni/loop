@@ -302,6 +302,13 @@ func TestDiffStatsAndInstructions(t *testing.T) {
 	if !strings.Contains(rendered, "⎿") {
 		t.Fatalf("expected rendered edit output to contain '⎿', got: %s", rendered)
 	}
+	if strings.Contains(rendered, "✓") {
+		t.Fatalf("expected rendered edit output to not contain '✓', got: %s", rendered)
+	}
+	firstLine := strings.Split(style.StripAnsi(rendered), "\n")[0]
+	if !strings.HasPrefix(firstLine, "⎿  ") {
+		t.Fatalf("expected edit summary to start with '⎿  ', got: %q", firstLine)
+	}
 
 	// 5. Test RenderToolOutput for write produces summary with ⎿
 	var writeBuf bytes.Buffer
@@ -309,6 +316,23 @@ func TestDiffStatsAndInstructions(t *testing.T) {
 	writeRendered := writeBuf.String()
 	if !strings.Contains(writeRendered, "⎿") {
 		t.Fatalf("expected rendered write output to contain '⎿', got: %s", writeRendered)
+	}
+	writeFirstLine := strings.Split(style.StripAnsi(writeRendered), "\n")[0]
+	if !strings.HasPrefix(writeFirstLine, "⎿  ") {
+		t.Fatalf("expected write summary to start with '⎿  ', got: %q", writeFirstLine)
+	}
+
+	// Test RenderToolOutput for error does not have extra leading newline and starts with ⎿
+	var errBuf bytes.Buffer
+	RenderToolOutput(&errBuf, "failed to execute", true, false, theme, "edit", argsWithInstructions, false)
+	errRendered := errBuf.String()
+	strippedErr := style.StripAnsi(errRendered)
+	if strings.HasPrefix(strippedErr, "\n") {
+		t.Fatalf("expected error output not to start with newline supplement, got: %q", strippedErr)
+	}
+	errFirstLine := strings.Split(strippedErr, "\n")[0]
+	if !strings.HasPrefix(errFirstLine, "⎿  ! Error") {
+		t.Fatalf("expected error output first line to be '⎿  ! Error', got: %q", errFirstLine)
 	}
 
 	// 6. Test ExtractToolTarget for task tools
@@ -319,5 +343,24 @@ func TestDiffStatsAndInstructions(t *testing.T) {
 	taskKillTarget := ExtractToolTarget("task_kill", `{"taskId":"task_99"}`)
 	if taskKillTarget != "task_99" {
 		t.Fatalf("expected ExtractToolTarget for task_kill to return 'task_99', got: %q", taskKillTarget)
+	}
+
+	// 7. Test RenderToolOutput for task_status and task_kill
+	var statusBuf bytes.Buffer
+	taskStatusOutput := "Task task_1 (echo tick) is currently: running\n\nOutput:\ntick 1\ntick 2"
+	RenderToolOutput(&statusBuf, taskStatusOutput, false, false, theme, "task_status", `{"task_id":"task_1"}`, false)
+	renderedStatus := statusBuf.String()
+	if !strings.Contains(renderedStatus, "⎿  ") || !strings.Contains(renderedStatus, "task_1") || !strings.Contains(renderedStatus, "running") {
+		t.Fatalf("expected rendered task_status to contain '⎿  ', 'task_1', and 'running', got: %s", renderedStatus)
+	}
+	if !strings.Contains(renderedStatus, "tick 1") {
+		t.Fatalf("expected rendered task_status to contain output 'tick 1', got: %s", renderedStatus)
+	}
+
+	var killBuf bytes.Buffer
+	RenderToolOutput(&killBuf, "Task task_1 successfully terminated.", false, false, theme, "task_kill", `{"task_id":"task_1"}`, false)
+	renderedKill := killBuf.String()
+	if !strings.Contains(renderedKill, "⎿  ") || !strings.Contains(renderedKill, "task_1") || !strings.Contains(renderedKill, "terminated") {
+		t.Fatalf("expected rendered task_kill to contain '⎿  ', 'task_1', and 'terminated', got: %s", renderedKill)
 	}
 }

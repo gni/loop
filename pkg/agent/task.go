@@ -77,7 +77,13 @@ func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	tw.agent.TasksMu.Unlock()
 
 	if isStreaming {
-		return tw.w.Write(p)
+		dest := tw.w
+		if tw.agent != nil {
+			if chatWriter := tw.agent.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+				dest = chatWriter
+			}
+		}
+		return dest.Write(p)
 	}
 
 	return len(p), nil
@@ -149,7 +155,11 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		a.TasksMu.Lock()
 		if a.StreamingTask == task.ID {
 			a.StreamingTask = ""
-			fmt.Fprintf(w, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
+			dest := w
+			if chatWriter := a.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+				dest = chatWriter
+			}
+			fmt.Fprintf(dest, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
 		}
 		a.TasksMu.Unlock()
 
@@ -196,6 +206,54 @@ func (a *Agent) KillTask(id string) error {
 	}
 
 	return nil
+}
+
+func (a *Agent) RemoveTask(id string) error {
+	a.TasksMu.Lock()
+	defer a.TasksMu.Unlock()
+
+	task, exists := a.Tasks[id]
+	if !exists && !strings.HasPrefix(id, "task_") {
+		task, exists = a.Tasks["task_"+id]
+		if exists {
+			id = "task_" + id
+		}
+	}
+
+	if !exists {
+		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", id))
+	}
+
+	task.mu.Lock()
+	if task.Status == "running" {
+		task.Status = "killed"
+		task.EndTime = time.Now()
+		if task.Pgid > 0 {
+			_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
+		}
+		if task.Cmd != nil && task.Cmd.Process != nil {
+			_ = task.Cmd.Process.Kill()
+		}
+	}
+	task.mu.Unlock()
+
+	delete(a.Tasks, id)
+	return nil
+}
+
+// ResolveTaskID canonicalizes a task ID (e.g. "1" -> "task_1" if "task_1" exists).
+func (a *Agent) ResolveTaskID(id string) string {
+	a.TasksMu.Lock()
+	defer a.TasksMu.Unlock()
+	if _, exists := a.Tasks[id]; exists {
+		return id
+	}
+	if !strings.HasPrefix(id, "task_") {
+		if _, exists := a.Tasks["task_"+id]; exists {
+			return "task_" + id
+		}
+	}
+	return id
 }
 
 func (a *Agent) GetTaskStatus(id string) (string, string, error) {
@@ -299,6 +357,13 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
 
+	dest := w
+	if a != nil {
+		if chatWriter := a.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+			dest = chatWriter
+		}
+	}
+
 	if !strings.HasPrefix(id, "task_") {
 		if _, exists := a.Tasks["task_"+id]; exists {
 			id = "task_" + id
@@ -307,18 +372,18 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 
 	if a.StreamingTask == id {
 		a.StreamingTask = ""
-		fmt.Fprintf(w, "\n[stopped streaming output of %s]\n", id)
+		fmt.Fprintf(dest, "\n[stopped streaming output of %s]\n", id)
 		return
 	}
 
 	task, exists := a.Tasks[id]
 	if !exists {
-		fmt.Fprintf(w, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", id))
+		fmt.Fprintf(dest, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", id))
 		return
 	}
 
 	a.StreamingTask = id
-	fmt.Fprintf(w, "\n[streaming output of %s...]\n", id)
+	fmt.Fprintf(dest, "\n[streaming output of %s...]\n", id)
 
 	task.mu.Lock()
 	outBytes := task.Stdout.Bytes()
@@ -326,10 +391,10 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	task.mu.Unlock()
 
 	if len(outBytes) > 0 {
-		_, _ = w.Write(outBytes)
+		_, _ = dest.Write(outBytes)
 	}
 	if len(errBytes) > 0 {
-		_, _ = w.Write(errBytes)
+		_, _ = dest.Write(errBytes)
 	}
 }
 

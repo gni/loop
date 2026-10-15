@@ -94,6 +94,114 @@ func TestSlashCommands_Task(t *testing.T) {
 	if !strings.Contains(output.String(), "echo 'hello from bg task'") {
 		t.Fatalf("expected /task view output to contain command, got: %s", output.String())
 	}
+
+	// Test /task_status alias
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task_status "+taskID, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task_status to be handled")
+	}
+	if !strings.Contains(output.String(), taskID) {
+		t.Fatalf("expected /task_status output to contain taskID, got: %s", output.String())
+	}
+
+	// Spawn a long running task to test /task_kill
+	taskID2, err := a.SpawnTask("sleep 60", &output)
+	if err != nil {
+		t.Fatalf("SpawnTask 2 failed: %v", err)
+	}
+
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task_kill "+taskID2, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task_kill to be handled")
+	}
+	if !strings.Contains(output.String(), "successfully terminated") {
+		t.Fatalf("expected /task_kill to terminate task, got: %s", output.String())
+	}
+
+	// Test /task remove
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task remove "+taskID2, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task remove to be handled")
+	}
+	if !strings.Contains(output.String(), "removed from registry") {
+		t.Fatalf("expected /task remove output, got: %s", output.String())
+	}
+
+	// Test /task clear
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task clear", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task clear to be handled")
+	}
+	if !strings.Contains(output.String(), "cleared") {
+		t.Fatalf("expected /task clear output, got: %s", output.String())
+	}
+
+	// Test /stop, /taskstop, /status, /ps, and numeric task ID aliases
+	taskID3, err := a.SpawnTask("sleep 60", &output)
+	if err != nil {
+		t.Fatalf("SpawnTask 3 failed: %v", err)
+	}
+	num3 := strings.TrimPrefix(taskID3, "task_")
+
+	// Test /status <number>
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/status "+num3, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /status to be handled")
+	}
+	if !strings.Contains(output.String(), taskID3) {
+		t.Fatalf("expected /status output to contain %s, got: %s", taskID3, output.String())
+	}
+
+	// Test /task <number> directly
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/task "+num3, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /task <number> to be handled")
+	}
+	if !strings.Contains(output.String(), taskID3) {
+		t.Fatalf("expected /task <number> output to contain %s, got: %s", taskID3, output.String())
+	}
+
+	// Test /ps listing
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/ps", &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /ps to be handled")
+	}
+	if !strings.Contains(output.String(), taskID3) {
+		t.Fatalf("expected /ps output to list %s, got: %s", taskID3, output.String())
+	}
+
+	// Test /stop <number>
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/stop "+num3, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /stop to be handled")
+	}
+	if !strings.Contains(output.String(), "successfully terminated") {
+		t.Fatalf("expected /stop to terminate task, got: %s", output.String())
+	}
+
+	// Spawn another to test /taskstop
+	taskID4, err := a.SpawnTask("sleep 60", &output)
+	if err != nil {
+		t.Fatalf("SpawnTask 4 failed: %v", err)
+	}
+	num4 := strings.TrimPrefix(taskID4, "task_")
+
+	output.Reset()
+	handled, quit = HandleSlashCommand(a, "/taskstop "+num4, &messages, nil, theme, &output, &sessionID, nil, nil, nil)
+	if !handled || quit {
+		t.Fatalf("expected /taskstop to be handled")
+	}
+	if !strings.Contains(output.String(), "successfully terminated") {
+		t.Fatalf("expected /taskstop to terminate task, got: %s", output.String())
+	}
 }
 
 func TestSlashCommands_Config(t *testing.T) {

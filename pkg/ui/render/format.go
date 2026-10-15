@@ -46,7 +46,7 @@ func GetToolGlyph(toolName string) string {
 	case lower == "task_kill" || lower == "kill":
 		return "✖"
 	case lower == "task_status" || lower == "task_list" || lower == "ps":
-		return "≡"
+		return "⚙"
 	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
 		return "≡"
 	case lower == "ask_user" || strings.Contains(lower, "ask"):
@@ -126,7 +126,7 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 	case lower == "task_kill" || lower == "kill":
 		return style.NewStyle().Foreground(theme.Error).Bold(true)
 	case lower == "task_status" || lower == "task_list" || lower == "ps":
-		return style.NewStyle().Foreground(theme.TextMuted).Bold(true)
+		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
 		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	case lower == "ask_user" || strings.Contains(lower, "ask"):

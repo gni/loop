@@ -3,6 +3,7 @@ package interceptor
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 
 	"loop/pkg/config"
@@ -88,9 +89,16 @@ func (ki *KeyInterceptorReader) handleCtrlO() {
 	if ki.Agent == nil {
 		return
 	}
-	runningTaskId := ki.Agent.GetLastRunningTaskId()
-	if runningTaskId != "" {
-		ki.Agent.ToggleStreaming(runningTaskId, ki.W)
+	targetTaskId := ki.Agent.StreamingTask
+	if targetTaskId == "" {
+		targetTaskId = ki.Agent.GetLastRunningTaskId()
+	}
+	if targetTaskId != "" {
+		dest := ki.W
+		if chatWriter := ki.Agent.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+			dest = chatWriter
+		}
+		ki.Agent.ToggleStreaming(targetTaskId, dest)
 	} else {
 		ki.Agent.Config.CollapseResults = !ki.Agent.Config.CollapseResults
 		_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)

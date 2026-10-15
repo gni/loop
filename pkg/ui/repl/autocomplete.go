@@ -51,6 +51,20 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		"/task view ",
 		"/task stream ",
 		"/task kill ",
+		"/task remove ",
+		"/task clear",
+		"/task_kill ",
+		"/task_status ",
+		"/task_list",
+		"/task_clear",
+		"/kill ",
+		"/stop",
+		"/stop ",
+		"/status",
+		"/status ",
+		"/taskstop ",
+		"/tasks",
+		"/ps",
 		"/toggle",
 		"/collapse",
 		"/expand",
@@ -265,6 +279,56 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 							match += " "
 						}
 						matches = append(matches, match)
+					}
+				}
+			}
+		} else if strings.HasPrefix(prefixToPos, "/task ") || strings.HasPrefix(prefixToPos, "/stop ") || strings.HasPrefix(prefixToPos, "/kill ") || strings.HasPrefix(prefixToPos, "/status ") || strings.HasPrefix(prefixToPos, "/taskstop ") || strings.HasPrefix(prefixToPos, "/task_kill ") || strings.HasPrefix(prefixToPos, "/task_status ") {
+			var cmdPrefix string
+			for _, p := range []string{"/task ", "/stop ", "/kill ", "/status ", "/taskstop ", "/task_kill ", "/task_status "} {
+				if strings.HasPrefix(prefixToPos, p) {
+					cmdPrefix = p
+					break
+				}
+			}
+			filterPrefix := strings.TrimPrefix(prefixToPos, cmdPrefix)
+			if cmdPrefix == "/task " {
+				taskSubcommands := []string{"list", "view", "stream", "kill", "remove", "clear"}
+				for _, sub := range []string{"view ", "stream ", "kill ", "remove "} {
+					if strings.HasPrefix(filterPrefix, sub) {
+						idPrefix := strings.TrimPrefix(filterPrefix, sub)
+						if a != nil {
+							for _, t := range a.ListTasks() {
+								if strings.HasPrefix(t.ID, idPrefix) {
+									matches = append(matches, sub+t.ID)
+								}
+							}
+						}
+					}
+				}
+				if len(matches) == 0 {
+					for _, c := range taskSubcommands {
+						if strings.HasPrefix(c, filterPrefix) {
+							match := c
+							if c != "list" && c != "clear" {
+								match += " "
+							}
+							matches = append(matches, match)
+						}
+					}
+					if a != nil {
+						for _, t := range a.ListTasks() {
+							if strings.HasPrefix(t.ID, filterPrefix) {
+								matches = append(matches, t.ID)
+							}
+						}
+					}
+				}
+			} else {
+				if a != nil {
+					for _, t := range a.ListTasks() {
+						if strings.HasPrefix(t.ID, filterPrefix) {
+							matches = append(matches, t.ID)
+						}
 					}
 				}
 			}
