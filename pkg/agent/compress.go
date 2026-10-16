@@ -159,19 +159,9 @@ func (a *Agent) CompressHistory(
 	modifiedFilesMap := make(map[string]bool)
 
 	for _, m := range toCompress {
-		if transcriptBuilder.Len() >= maxTranscriptChars {
-			transcriptBuilder.WriteString("[transcript truncated: summarization budget reached]\n")
-			break
-		}
 		switch m.Role {
-		case "user":
-			transcriptBuilder.WriteString(fmt.Sprintf("User: %s\n\n", m.Content))
 		case "assistant":
-			if m.Content != "" {
-				transcriptBuilder.WriteString(fmt.Sprintf("Agent: %s\n\n", m.Content))
-			}
 			for _, tc := range m.ToolCalls {
-				transcriptBuilder.WriteString(fmt.Sprintf("Agent requested tool call: %s(%s)\n\n", tc.Function.Name, tc.Function.Arguments))
 				if path := filetool.ExtractFilePath(tc.Function.Arguments); path != "" {
 					switch tc.Function.Name {
 					case "read":
@@ -181,12 +171,44 @@ func (a *Agent) CompressHistory(
 					}
 				}
 			}
+		}
+
+		if transcriptBuilder.Len() >= maxTranscriptChars {
+			continue
+		}
+
+		switch m.Role {
+		case "user":
+			userContent := m.Content
+			if len(userContent) > 1200 {
+				userContent = filetool.UTF8SafePrefix(userContent, 1200) + "... (truncated)"
+			}
+			transcriptBuilder.WriteString(fmt.Sprintf("User: %s\n\n", userContent))
+		case "assistant":
+			if m.Content != "" {
+				asstContent := m.Content
+				if len(asstContent) > 1200 {
+					asstContent = filetool.UTF8SafePrefix(asstContent, 1200) + "... (truncated)"
+				}
+				transcriptBuilder.WriteString(fmt.Sprintf("Agent: %s\n\n", asstContent))
+			}
+			for _, tc := range m.ToolCalls {
+				argsPreview := tc.Function.Arguments
+				if len(argsPreview) > 300 {
+					argsPreview = filetool.UTF8SafePrefix(argsPreview, 300) + "... (truncated)"
+				}
+				transcriptBuilder.WriteString(fmt.Sprintf("Agent requested tool call: %s(%s)\n\n", tc.Function.Name, argsPreview))
+			}
 		case "tool":
 			out := m.Content
 			if len(out) > 400 {
 				out = filetool.UTF8SafePrefix(out, 400) + "... (truncated)"
 			}
 			transcriptBuilder.WriteString(fmt.Sprintf("Tool Output (%s): %s\n\n", m.Name, out))
+		}
+
+		if transcriptBuilder.Len() >= maxTranscriptChars {
+			transcriptBuilder.WriteString("[transcript truncated: summarization budget reached]\n")
 		}
 	}
 

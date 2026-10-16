@@ -328,7 +328,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		syncPostTurnStatus()
 
 		timer.Time("tool", "start")
-		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), nil)
+		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
+			a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
+		})
 		timer.Time("tool", "end")
 		if halted || aborted {
 			return

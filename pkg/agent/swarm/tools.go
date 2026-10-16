@@ -19,6 +19,19 @@ type subagentExecutor = SubagentExecutor
 func (s *SubagentExecutor) Name() string          { return s.def.Function.Name }
 func (s *SubagentExecutor) Definition() tool.Tool { return s.def }
 
+func drainSubagentOutput(ch <-chan db.Message) {
+	if ch == nil {
+		return
+	}
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
 func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	var raw string
 	var args struct {
@@ -38,6 +51,8 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	if s.subagent.Manager == nil {
 		return "", fmt.Errorf("subagent '%s' has no manager reference", s.subagent.Name)
 	}
+
+	drainSubagentOutput(s.subagent.Output)
 
 	taskID := fmt.Sprintf("subtask_%s", db.NewUUID()[:8])
 	s.subagent.Manager.RegisterTask(taskID, s.subagent.Name, prompt)
@@ -61,17 +76,39 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	const timeout = 60 * time.Minute
 	const maxResponseRunes = 10000
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	timeoutTimer := time.NewTimer(timeout)
 	defer timeoutTimer.Stop()
+
+	checkTask := func() (string, bool, error) {
+		task, err := s.subagent.Manager.GetTask(taskID)
+		if err != nil {
+			return "", true, err
+		}
+		switch task.Status {
+		case "completed":
+			drainSubagentOutput(s.subagent.Output)
+			runes := []rune(task.Response)
+			if len(runes) > maxResponseRunes {
+				return string(runes[:maxResponseRunes]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at %d characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", len(runes), maxResponseRunes), true, nil
+			}
+			return task.Response, true, nil
+		case "failed":
+			drainSubagentOutput(s.subagent.Output)
+			return "", true, fmt.Errorf("subagent execution failed: %s", task.Error)
+		default:
+			return "", false, nil
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Context().Done():
 			s.subagent.CancelActiveTurn()
 			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
+			drainSubagentOutput(s.subagent.Output)
 			return "", ctx.Context().Err()
 		case <-s.subagent.Context.Done():
 			errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
@@ -81,21 +118,15 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			s.subagent.CancelActiveTurn()
 			errTimeout := fmt.Errorf("subagent '%s' execution timed out after %v", s.subagent.Name, timeout)
 			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errTimeout)
+			drainSubagentOutput(s.subagent.Output)
 			return "", errTimeout
-		case <-ticker.C:
-			task, err := s.subagent.Manager.GetTask(taskID)
-			if err != nil {
-				return "", err
+		case <-s.subagent.Output:
+			if res, done, err := checkTask(); done {
+				return res, err
 			}
-			switch task.Status {
-			case "completed":
-				runes := []rune(task.Response)
-				if len(runes) > maxResponseRunes {
-					return string(runes[:maxResponseRunes]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at %d characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", len(runes), maxResponseRunes), nil
-				}
-				return task.Response, nil
-			case "failed":
-				return "", fmt.Errorf("subagent execution failed: %s", task.Error)
+		case <-ticker.C:
+			if res, done, err := checkTask(); done {
+				return res, err
 			}
 		}
 	}

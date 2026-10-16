@@ -203,6 +203,10 @@ func (c *mcpClient) close() {
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
+		cmd := c.cmd
+		go func() {
+			_ = cmd.Wait()
+		}()
 	}
 	if c.cancel != nil {
 		c.cancel()
@@ -393,9 +397,11 @@ func (c *mcpClient) callTool(name string, arguments string) (string, error) {
 		return "", fmt.Errorf("client not initialized")
 	}
 
-	var argsMap map[string]interface{}
-	if err := json.Unmarshal([]byte(arguments), &argsMap); err != nil {
-		return "", err
+	argsMap := make(map[string]interface{})
+	if trimmed := strings.TrimSpace(arguments); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
+			return "", err
+		}
 	}
 
 	res, err := c.request("tools/call", map[string]interface{}{

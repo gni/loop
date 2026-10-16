@@ -185,6 +185,15 @@ func resolveTodoAction(action, status, taskID, taskDesc string) (string, string)
 	return action, status
 }
 
+func stripAnyPrefix(s string, prefixes ...string) (string, bool) {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return strings.TrimSpace(s[len(p):]), true
+		}
+	}
+	return s, false
+}
+
 func parseMarkdownTodoLines(raw string) []domaintool.TodoItem {
 	var parsed []domaintool.TodoItem
 	for _, line := range strings.Split(raw, "\n") {
@@ -193,17 +202,14 @@ func parseMarkdownTodoLines(raw string) []domaintool.TodoItem {
 			continue
 		}
 		status := "pending"
-		switch {
-		case strings.HasPrefix(line, "- [x]"), strings.HasPrefix(line, "[x]"), strings.HasPrefix(line, "- [X]"), strings.HasPrefix(line, "[X]"):
+		if rest, ok := stripAnyPrefix(line, "- [x]", "[x]", "- [X]", "[X]"); ok {
 			status = "completed"
-			line = strings.TrimSpace(strings.TrimLeft(line, "- [xX] "))
-		case strings.HasPrefix(line, "- [>]"), strings.HasPrefix(line, "[>]"), strings.HasPrefix(line, "- [~]"), strings.HasPrefix(line, "[~]"), strings.HasPrefix(line, "- [in_progress]"):
+			line = rest
+		} else if rest, ok := stripAnyPrefix(line, "- [>]", "[>]", "- [~]", "[~]", "- [in_progress]", "[in_progress]"); ok {
 			status = "in_progress"
-			line = strings.TrimSpace(strings.TrimLeft(line, "- [>~in_progress] "))
-		case strings.HasPrefix(line, "- [ ]"), strings.HasPrefix(line, "[ ]"):
-			line = strings.TrimSpace(strings.TrimLeft(line, "- [ ] "))
-		case strings.HasPrefix(line, "• "), strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "):
-			line = strings.TrimSpace(line[2:])
+			line = rest
+		} else if rest, ok := stripAnyPrefix(line, "- [ ]", "[ ]", "• ", "- ", "* "); ok {
+			line = rest
 		}
 
 		idx := 0

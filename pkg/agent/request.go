@@ -12,6 +12,11 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
+const (
+	nonFileToolMaxChars         = 30000
+	nonFileToolTruncateNotice   = "\n... (output truncated to 30000 chars for context optimization)"
+)
+
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
 	totalChars := 0
@@ -25,6 +30,8 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		default:
 			continue
 		}
+
+		msg.ReasoningContent = ""
 
 		if msg.Role == "assistant" {
 			msg.Content = StripFallbackToolMarkup(msg.Content)
@@ -47,8 +54,11 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 			if msg.Content == "" && len(msg.ToolCalls) == 0 {
 				continue
 			}
-		} else if msg.Content == "" {
-			msg.Content = " "
+		} else {
+			msg.Content = truncateNonFileToolContent(msg.Role, msg.Name, msg.Content, nonFileToolMaxChars, nonFileToolTruncateNotice)
+			if msg.Content == "" {
+				msg.Content = " "
+			}
 		}
 
 		if msg.Role == "user" && len(validMessages) > 0 && validMessages[len(validMessages)-1].Role == "user" {
@@ -136,15 +146,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 	effectiveLimit := GetAdaptiveContextLimit(pTokensEst, serverLimit, cfgLimit, minWindow, autoAdapt)
 	apiMessages := trimMessagesToCharBudget(validMessages, totalChars, effectiveLimit*4)
-
-	cleanMessages := make([]db.Message, 0, len(apiMessages))
-	for _, m := range apiMessages {
-		msgCopy := m
-		msgCopy.ReasoningContent = ""
-		msgCopy.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, 30000, "\n... (output truncated to 30000 chars for context optimization)")
-		cleanMessages = append(cleanMessages, msgCopy)
-	}
-	cleanMessages = EnforceToolPairingInvariance(cleanMessages)
+	cleanMessages := EnforceToolPairingInvariance(apiMessages)
 
 	finalTools := prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
 	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {

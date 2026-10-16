@@ -20,7 +20,7 @@ var (
 	redirRe   = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
 	rmTouchRe = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
 
-	bashTargetRegexes = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}
+	bashTargetRegexes  = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}
 	bashModifyPrefixes = []string{
 		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add",
 		"mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo ", "gofmt ", "patch ",
@@ -198,7 +198,7 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 	}
 
 	newWindow := isReadWindowNew(toolName, arguments, g.readWindows)
-	if target == g.lastTarget && target != "" && !newWindow {
+	if target != "" && target == g.lastTarget && !newWindow {
 		g.targetStreaks[target]++
 	} else {
 		g.targetStreaks = make(map[string]int)

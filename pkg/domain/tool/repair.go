@@ -4,32 +4,48 @@ import (
 	"strings"
 )
 
-// RepairJSON attempts to repair malformed JSON parameters produced by language models,
-// such as stripping markdown code fences, escaping raw newlines/tabs inside strings,
-// and balancing unmatched brackets and braces.
+func hasClosingDelimiterAhead(s string, idx int) bool {
+	for j := idx; j < len(s); j++ {
+		switch s[j] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '}', ']':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// RepairJSON repairs malformed JSON parameters produced by language models,
+// stripping markdown code fences, escaping raw newlines/tabs inside strings,
+// removing trailing commas before closing delimiters, and balancing unmatched
+// brackets and braces.
 func RepairJSON(js string) string {
 	js = strings.TrimSpace(js)
 	if js == "" {
 		return "{}"
 	}
 
-	// 1. Strip markdown code block wrappers if present
 	if strings.HasPrefix(js, "```") {
 		lines := strings.Split(js, "\n")
-		var cleanLines []string
+		cleanLines := make([]string, 0, len(lines))
 		for _, line := range lines {
-			trimmedLine := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmedLine, "```") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "```") {
 				cleanLines = append(cleanLines, line)
 			}
 		}
 		js = strings.TrimSpace(strings.Join(cleanLines, "\n"))
 	}
 
-	// 2. Fix unescaped newlines/tabs inside JSON string values
 	var sb strings.Builder
+	sb.Grow(len(js) + 8)
 	inString := false
 	inEscape := false
+	openBraces, closeBraces := 0, 0
+	openBrackets, closeBrackets := 0, 0
+
 	for i := 0; i < len(js); i++ {
 		c := js[i]
 		if inEscape {
@@ -47,58 +63,42 @@ func RepairJSON(js string) string {
 			sb.WriteByte(c)
 			continue
 		}
-		if inString && c == '\n' {
-			sb.WriteString(`\n`)
-		} else if inString && c == '\t' {
-			sb.WriteString(`\t`)
-		} else if inString && c == '\r' {
-			sb.WriteString(`\r`)
-		} else {
-			sb.WriteByte(c)
+		if inString {
+			switch c {
+			case '\n':
+				sb.WriteString(`\n`)
+			case '\t':
+				sb.WriteString(`\t`)
+			case '\r':
+				sb.WriteString(`\r`)
+			default:
+				sb.WriteByte(c)
+			}
+			continue
 		}
+
+		if c == ',' && hasClosingDelimiterAhead(js, i+1) {
+			continue
+		}
+
+		switch c {
+		case '{':
+			openBraces++
+		case '}':
+			closeBraces++
+		case '[':
+			openBrackets++
+		case ']':
+			closeBrackets++
+		}
+		sb.WriteByte(c)
 	}
+
 	if inString {
 		sb.WriteByte('"')
 	}
 	js = sb.String()
 
-	// 3. Count braces and brackets outside string literals
-	openBraces := 0
-	closeBraces := 0
-	openBrackets := 0
-	closeBrackets := 0
-	inString = false
-	inEscape = false
-
-	for i := 0; i < len(js); i++ {
-		c := js[i]
-		if inEscape {
-			inEscape = false
-			continue
-		}
-		if c == '\\' {
-			inEscape = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			continue
-		}
-		if !inString {
-			switch c {
-			case '{':
-				openBraces++
-			case '}':
-				closeBraces++
-			case '[':
-				openBrackets++
-			case ']':
-				closeBrackets++
-			}
-		}
-	}
-
-	// 4. Fix extra closing braces/brackets at the end
 	trimExtraClose := func(s, suffix string, closeCount, openCount *int) string {
 		for len(s) > 0 && *closeCount > *openCount && strings.HasSuffix(s, suffix) {
 			s = strings.TrimSpace(strings.TrimSuffix(s, suffix))
@@ -109,7 +109,6 @@ func RepairJSON(js string) string {
 	js = trimExtraClose(js, "}", &closeBraces, &openBraces)
 	js = trimExtraClose(js, "]", &closeBrackets, &openBrackets)
 
-	// 5. Fix missing closing brackets/braces
 	if openBrackets > closeBrackets {
 		js += strings.Repeat("]", openBrackets-closeBrackets)
 	}

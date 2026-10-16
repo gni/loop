@@ -24,6 +24,7 @@ func mcpLog(format string, args ...interface{}) {
 }
 
 type mcpToolExecutor struct {
+	mu       sync.Mutex
 	agent    *Agent
 	server   string
 	client   *mcpClient
@@ -42,11 +43,10 @@ func (m *mcpToolExecutor) Execute(ctx tool.AgentContext, arguments string) (stri
 	return client.callTool(m.toolName, arguments)
 }
 
-// resolveClient connects the owning server on demand when it was deferred at
-// startup. A deferred server has no connection until its first tool call, so the
-// call itself pays for the connect instead of every startup paying for every
-// server.
 func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.client != nil {
 		return m.client, nil
 	}
@@ -64,13 +64,6 @@ func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
 	return client, nil
 }
 
-// StartMCPServers connects configured servers. Servers marked alwaysLoad are awaited
-// because their tools must be present for the first prompt. Servers without it are
-// recorded as deferred and not started: first paint must not wait for a child process
-// that may never be used. A deferred server is connected on first use, either through
-// the load tool or through the registry hook when one of its tools is called.
-// Eager servers connect through a bounded pool, so N servers no longer cost N
-// sequential boot times.
 func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error {
 	if a == nil {
 		return fmt.Errorf("nil agent")
@@ -120,7 +113,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			a.connectServer(name, configs[name], generation)
+			_, _ = a.connectServer(name, configs[name], generation)
 		}(name)
 	}
 	wg.Wait()
@@ -128,9 +121,6 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 	return nil
 }
 
-// LoadMCPServer connects one deferred server and reports what became available. It
-// is the explicit entry point for on-demand loading, and it is also what a tool call
-// through ResolveUnknownTool uses.
 func (a *Agent) LoadMCPServer(name string) (string, error) {
 	if a == nil {
 		return "", fmt.Errorf("nil agent")
@@ -175,13 +165,11 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 	return fmt.Sprintf("connected MCP server '%s': %s", name, strings.Join(loaded, ", ")), nil
 }
 
-// DeferredMCPServers lists configured servers that were not connected at startup,
-// in stable order.
 func (a *Agent) DeferredMCPServers() []string {
 	a.McpClientsMu.Lock()
 	defer a.McpClientsMu.Unlock()
 
-	var names []string
+	names := make([]string, 0, len(a.mcpPending))
 	for name := range a.mcpPending {
 		names = append(names, name)
 	}
@@ -189,8 +177,6 @@ func (a *Agent) DeferredMCPServers() []string {
 	return names
 }
 
-// connectServer boots one server and registers its tools. It is safe to call from
-// the pool, from a deferred goroutine, and from a lazy tool call.
 func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
 	if a == nil {
 		return nil, fmt.Errorf("nil agent")
@@ -203,8 +189,6 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	if a.McpStartErrors == nil {
 		a.McpStartErrors = make(map[string]error)
 	}
-	// A connect clears the pending entry, so the deferred list reflects what is
-	// actually still unconnected rather than what was once deferred.
 	delete(a.mcpPending, name)
 	if existing, ok := a.McpClients[name]; ok && existing != nil && existing.initialized {
 		a.McpClientsMu.Unlock()
@@ -220,9 +204,6 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	}
 
 	a.McpClientsMu.Lock()
-	// A restart (or StopMCPServers) may have happened while this connect was in
-	// flight; the generation changed, so this client belongs to a superseded
-	// config and must not leak into the live map.
 	if a.mcpGeneration != generation {
 		a.McpClientsMu.Unlock()
 		client.close()
@@ -265,9 +246,6 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	return client, nil
 }
 
-// ResolveUnknownTool resolves an MCP tool whose server was deferred at startup. The
-// name is mcp__<server>__<tool>; the server is connected on demand, its tools are
-// registered, and the requested executor is returned.
 func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
 	parts := strings.SplitN(name, "__", 3)
 	if len(parts) != 3 || parts[0] != "mcp" {
@@ -280,14 +258,9 @@ func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
 		return nil, false
 	}
 
-	// connectMCPServer registered the tools; do not re-enter the registry through
-	// Execute while its lock is held by the caller.
-	executor, exists := a.Registry.Lookup(name)
-	return executor, exists
+	return a.Registry.Lookup(name)
 }
 
-// connectMCPServer is the lazy path used by tool executors: it connects using the
-// generation the executor was registered under.
 func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	a.McpClientsMu.Lock()
 	if a.Config == nil {
@@ -310,9 +283,6 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient {
 	connectTimeout := limits.MCPConnectTimeout()
 
-	// Timeout bounds a whole request; ResponseHeaderTimeout bounds only the connect
-	// phase. They are different budgets: a tool call may legitimately take longer than
-	// the time it should take for a server to start answering.
 	transport := &http.Transport{ResponseHeaderTimeout: connectTimeout}
 	if a.Config != nil && (a.Config.CertFile != "" || a.Config.SkipVerify) {
 		if tlsConfig, err := config.GetTLSConfig(a.Config); err == nil && tlsConfig != nil {
@@ -352,8 +322,6 @@ func (a *Agent) StopMCPServers() {
 	a.McpClientsMu.Lock()
 	defer a.McpClientsMu.Unlock()
 
-	// Bump the generation so in-flight connects from the previous config do not
-	// register tools or land in the map after this point.
 	a.mcpGeneration++
 
 	for name, client := range a.McpClients {
@@ -385,19 +353,19 @@ func (a *Agent) GetMCPServersStatus() map[string]string {
 	a.McpClientsMu.Lock()
 	defer a.McpClientsMu.Unlock()
 
-	status := make(map[string]string)
+	status := make(map[string]string, len(a.McpClients))
 	for name, client := range a.McpClients {
 		if client == nil {
 			continue
 		}
-		if client.initialized {
-			if client.isStdio {
-				status[name] = fmt.Sprintf("Connected (stdio: %s)", strings.TrimSpace(client.config.Command+" "+strings.Join(client.config.Args, " ")))
-			} else {
-				status[name] = fmt.Sprintf("Connected (URL: %s)", client.config.URL)
-			}
-		} else {
+		if !client.initialized {
 			status[name] = "Initializing"
+			continue
+		}
+		if client.isStdio {
+			status[name] = fmt.Sprintf("Connected (stdio: %s)", strings.TrimSpace(client.config.Command+" "+strings.Join(client.config.Args, " ")))
+		} else {
+			status[name] = fmt.Sprintf("Connected (URL: %s)", client.config.URL)
 		}
 	}
 	return status

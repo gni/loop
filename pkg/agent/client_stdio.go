@@ -32,16 +32,31 @@ func (c *mcpClient) startStdio() error {
 		cancel()
 		return err
 	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		cancel()
+		return err
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stderr.Close()
 		cancel()
 		return fmt.Errorf("failed to start MCP server '%s': %w", c.name, err)
 	}
 
 	c.cmd = cmd
 	c.stdin = stdin
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			mcpLog("[MCP Stderr %s] %s\n", c.name, scanner.Text())
+		}
+	}()
 
 	go func() {
 		defer c.failPendingRequests()

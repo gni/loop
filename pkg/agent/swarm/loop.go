@@ -153,12 +153,12 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	var guidedMode, allowApproval, runHooks bool
 	if ma.BaseAgent != nil {
 		guidedMode = ma.BaseAgent.IsGuidedMode()
+		runHooks = true
 		if ma.BaseAgent.Config != nil {
 			if ma.BaseAgent.Config.MaxReasoningSteps > 0 {
 				maxSteps = ma.BaseAgent.Config.MaxReasoningSteps
 			}
 			allowApproval = guidedMode
-			runHooks = ma.BaseAgent.Config.BeforeToolHook != "" || ma.BaseAgent.Config.AfterToolHook != ""
 		}
 	}
 
@@ -364,10 +364,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				fmt.Fprintln(ncw)
 			}
 			return *assistantMsg, nil
-		}
-
-		if ma.BaseAgent != nil && ma.BaseAgent.Config != nil && !ma.BaseAgent.Config.ParallelToolCalls && len(assistantMsg.ToolCalls) > 1 {
-			assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
 		}
 
 		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma, theme), func(tc db.ToolCall, output string, toolErr error) {

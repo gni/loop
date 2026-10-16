@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 func normalizeForFuzzyMatch(text string) string {
@@ -11,19 +12,43 @@ func normalizeForFuzzyMatch(text string) string {
 	b.Grow(len(text))
 	for _, r := range text {
 		switch r {
-		case '\u2018', '\u2019', '\u201a', '\u201b': // Smart single quotes
+		case '\u2018', '\u2019', '\u201a', '\u201b':
 			b.WriteRune('\'')
-		case '\u201c', '\u201d', '\u201e', '\u201f': // Smart double quotes
+		case '\u201c', '\u201d', '\u201e', '\u201f':
 			b.WriteRune('"')
-		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212': // Dashes & minus
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212':
 			b.WriteRune('-')
-		case '\u00a0', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200a', '\u202f', '\u205f', '\u3000': // Unicode spaces
+		case '\u00a0', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200a', '\u202f', '\u205f', '\u3000':
 			b.WriteRune(' ')
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+func byteRangeForRuneSpan(s string, runeStart, runeLen int) (int, int, bool) {
+	if runeStart < 0 || runeLen < 0 {
+		return 0, 0, false
+	}
+	startByte := -1
+	curRune := 0
+	for byteIdx := range s {
+		if curRune == runeStart {
+			startByte = byteIdx
+			if runeLen == 0 {
+				return startByte, startByte, true
+			}
+		}
+		if curRune == runeStart+runeLen {
+			return startByte, byteIdx, startByte >= 0
+		}
+		curRune++
+	}
+	if curRune == runeStart+runeLen && startByte >= 0 {
+		return startByte, len(s), true
+	}
+	return 0, 0, false
 }
 
 func normalizeSpace(s string) string {
@@ -71,11 +96,9 @@ func extractWordTokens(s string) []wordToken {
 				})
 				inWord = false
 			}
-		} else {
-			if !inWord {
-				start = i
-				inWord = true
-			}
+		} else if !inWord {
+			start = i
+			inWord = true
 		}
 	}
 	if inWord {
@@ -106,10 +129,7 @@ func matchWordTokens(cw, ow wordToken) bool {
 	}
 	cTrim := strings.TrimRight(cw.norm, ".,;:!?")
 	oTrim := strings.TrimRight(ow.norm, ".,;:!?")
-	if cTrim == oTrim && cTrim != "" {
-		return true
-	}
-	return false
+	return cTrim == oTrim && cTrim != ""
 }
 
 func leadingWhitespace(s string) string {
@@ -126,7 +146,6 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		return nil, nil
 	}
 
-	// Tier 1: Exact substring match
 	exactCount := strings.Count(content, oldText)
 	if exactCount == 1 {
 		start := strings.Index(content, oldText)
@@ -141,39 +160,27 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", exactCount)
 	}
 
-	// Tier 2: Unicode and quote/dash/space normalization
 	normContent := normalizeForFuzzyMatch(content)
 	normOld := normalizeForFuzzyMatch(oldText)
 	if normOld != oldText || normContent != content {
 		normCount := strings.Count(normContent, normOld)
 		if normCount == 1 {
 			normIdx := strings.Index(normContent, normOld)
-			normRunes := []rune(normContent)
-			contentRunes := []rune(content)
-			if len(normRunes) == len(contentRunes) {
-				runeStart := len([]rune(normContent[:normIdx]))
-				runeLen := len([]rune(normOld))
-				if runeStart+runeLen <= len(contentRunes) {
-					matchedRunes := contentRunes[runeStart : runeStart+runeLen]
-					matchedText := string(matchedRunes)
-					startByte := len(string(contentRunes[:runeStart]))
-					endByte := startByte + len(matchedText)
-					if endByte <= len(content) && content[startByte:endByte] == matchedText {
-						return &textMatch{
-							startByte:   startByte,
-							endByte:     endByte,
-							matchedText: matchedText,
-							newText:     newText,
-						}, nil
-					}
-				}
+			runeStart := utf8.RuneCountInString(normContent[:normIdx])
+			runeLen := utf8.RuneCountInString(normOld)
+			if startByte, endByte, ok := byteRangeForRuneSpan(content, runeStart, runeLen); ok {
+				return &textMatch{
+					startByte:   startByte,
+					endByte:     endByte,
+					matchedText: content[startByte:endByte],
+					newText:     newText,
+				}, nil
 			}
 		} else if normCount > 1 {
 			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", normCount)
 		}
 	}
 
-	// Tier 3: Line-by-line whitespace-trimmed and normalized matching
 	fileLines := strings.Split(content, "\n")
 	oldLines := strings.Split(oldText, "\n")
 
@@ -184,7 +191,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		lineStarts[idx] = offset
 		offset += len(fl)
 		lineEnds[idx] = offset
-		offset++ // for newline
+		offset++
 	}
 
 	cleanOldLines := make([]string, len(oldLines))
@@ -210,9 +217,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		for fs := 0; fs <= len(fileLines)-len(coreOldLines); fs++ {
 			matched := true
 			for j := 0; j < len(coreOldLines); j++ {
-				fileLineNorm := normalizeSpace(fileLines[fs+j])
-				oldLineNorm := normalizeSpace(coreOldLines[j])
-				if fileLineNorm != oldLineNorm {
+				if normalizeSpace(fileLines[fs+j]) != normalizeSpace(coreOldLines[j]) {
 					matched = false
 					break
 				}
@@ -282,7 +287,6 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		}
 	}
 
-	// Tier 4: Word-stream sequence matching (Markdown soft-wraps, paragraphs, bullets)
 	contentWords := extractWordTokens(content)
 	oldWords := extractWordTokens(oldText)
 	if len(oldWords) >= 2 || (len(oldWords) == 1 && len(oldWords[0].text) >= 6) {
@@ -324,11 +328,10 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 				}
 			}
 
-			matchedText := content[startByte:endByte]
 			return &textMatch{
 				startByte:   startByte,
 				endByte:     endByte,
-				matchedText: matchedText,
+				matchedText: content[startByte:endByte],
 				newText:     newText,
 			}, nil
 		}
@@ -337,9 +340,9 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		}
 	}
 
-	// Tier 5: Single-line / Partial-line substring resilient match
 	if len(oldLines) == 1 && strings.TrimSpace(oldText) != "" {
 		trimmedOld := strings.TrimSpace(oldText)
+		lowerTrimmedOld := strings.ToLower(trimmedOld)
 		oldNorm := normalizeSpace(trimmedOld)
 		oldLower := strings.ToLower(oldNorm)
 
@@ -353,11 +356,17 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			flLower := strings.ToLower(flNorm)
 			if strings.Contains(flLower, oldLower) || strings.Contains(flNorm, oldNorm) {
 				flOrigLower := strings.ToLower(fl)
-				subIdx := strings.Index(flOrigLower, strings.ToLower(trimmedOld))
-				if subIdx >= 0 {
+				if subIdx := strings.Index(flOrigLower, lowerTrimmedOld); subIdx >= 0 {
 					matchLine = idx
 					matchPhraseStart = subIdx
 					matchPhraseEnd = subIdx + len(trimmedOld)
+					matchCount++
+				} else if flLower == oldLower {
+					leadLen := len(leadingWhitespace(fl))
+					trimmedLine := strings.TrimSpace(fl)
+					matchLine = idx
+					matchPhraseStart = leadLen
+					matchPhraseEnd = leadLen + len(trimmedLine)
 					matchCount++
 				}
 			}
@@ -380,7 +389,6 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		}
 	}
 
-	// Tier 6: Multi-line sliding window fuzzy similarity match (Levenshtein / token similarity)
 	if len(coreOldLines) >= 1 {
 		bestMatchStart := -1
 		bestMatchScore := 0.0
@@ -436,11 +444,10 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			actualEnd := bestMatchStart + len(coreOldLines)
 			startByte := lineStarts[actualStart]
 			endByte := lineEnds[actualEnd-1]
-			matchedText := content[startByte:endByte]
 			return &textMatch{
 				startByte:   startByte,
 				endByte:     endByte,
-				matchedText: matchedText,
+				matchedText: content[startByte:endByte],
 				newText:     newText,
 			}, nil
 		}
@@ -469,14 +476,12 @@ func findClosestLineMatch(content, oldText string) int {
 	coreNorm := normalizeSpace(coreLine)
 	coreLower := strings.ToLower(coreNorm)
 
-	// Pass 1: exact or normalized match
 	for idx, fLine := range fileLines {
 		if strings.Contains(fLine, coreLine) || normalizeSpace(fLine) == coreNorm {
 			return idx + 1
 		}
 	}
 
-	// Pass 2: case-insensitive match
 	for idx, fLine := range fileLines {
 		fNorm := strings.ToLower(normalizeSpace(fLine))
 		if strings.Contains(fNorm, coreLower) {
@@ -484,7 +489,6 @@ func findClosestLineMatch(content, oldText string) int {
 		}
 	}
 
-	// Pass 3: highest word overlap
 	coreWords := strings.Fields(coreLower)
 	if len(coreWords) >= 2 {
 		bestIdx := -1

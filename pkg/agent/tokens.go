@@ -70,16 +70,14 @@ func EstimateMessageTokens(m db.Message) int {
 }
 
 func EstimateMessagesTokens(messages []db.Message) int {
+	trailingTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-			return messages[i].PromptTokens + messages[i].CompletionTokens
+			return messages[i].PromptTokens + messages[i].CompletionTokens + trailingTokens
 		}
+		trailingTokens += TokensFromChars(messageChars(messages[i]))
 	}
-	total := 0
-	for _, m := range messages {
-		total += TokensFromChars(messageChars(m))
-	}
-	return total
+	return trailingTokens
 }
 
 func CacheTokenTotals(history []db.Message) (int, int) {
