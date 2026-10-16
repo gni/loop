@@ -55,7 +55,8 @@ func (s Style) MaxWidth(v int) Style {
 func toColorVal(c color.Color) *colorVal {
 	if lc, ok := c.(colorVal); ok {
 		return &lc
-	} else if c != nil {
+	}
+	if c != nil {
 		r, g, b, _ := c.RGBA()
 		return &colorVal{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8)}
 	}
@@ -63,14 +64,16 @@ func toColorVal(c color.Color) *colorVal {
 }
 
 func parseBoxSpacing(args []int) (top, right, bottom, left int) {
-	if len(args) == 1 {
+	switch len(args) {
+	case 1:
 		return args[0], args[0], args[0], args[0]
-	} else if len(args) == 2 {
+	case 2:
 		return args[0], args[1], args[0], args[1]
-	} else if len(args) == 4 {
+	case 4:
 		return args[0], args[1], args[2], args[3]
+	default:
+		return 0, 0, 0, 0
 	}
-	return 0, 0, 0, 0
 }
 
 func (s Style) Foreground(c color.Color) Style {
@@ -94,27 +97,26 @@ func (s Style) Underline(v bool) Style {
 }
 
 func (s Style) GetSequence() (string, string) {
-	ansiStart := ""
-	ansiEnd := ""
+	var ansiStart strings.Builder
 	if s.bold {
-		ansiStart += "\x1b[1m"
+		ansiStart.WriteString("\x1b[1m")
 	}
 	if s.italic {
-		ansiStart += "\x1b[3m"
+		ansiStart.WriteString("\x1b[3m")
 	}
 	if s.underline {
-		ansiStart += "\x1b[4m"
+		ansiStart.WriteString("\x1b[4m")
 	}
 	if s.fg != nil {
-		ansiStart += fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.fg.R, s.fg.G, s.fg.B)
+		fmt.Fprintf(&ansiStart, "\x1b[38;2;%d;%d;%dm", s.fg.R, s.fg.G, s.fg.B)
 	}
 	if s.bg != nil {
-		ansiStart += fmt.Sprintf("\x1b[48;2;%d;%d;%dm", s.bg.R, s.bg.G, s.bg.B)
+		fmt.Fprintf(&ansiStart, "\x1b[48;2;%d;%d;%dm", s.bg.R, s.bg.G, s.bg.B)
 	}
-	if ansiStart != "" {
-		ansiEnd = "\x1b[0m"
+	if ansiStart.Len() == 0 {
+		return "", ""
 	}
-	return ansiStart, ansiEnd
+	return ansiStart.String(), "\x1b[0m"
 }
 
 func (s Style) MarginLeft(v int) Style {
@@ -132,7 +134,7 @@ func (s Style) Padding(args ...int) Style {
 	return s
 }
 
-func (s Style) Border(b interface{}, args ...bool) Style {
+func (s Style) Border(b interface{}, _ ...bool) Style {
 	if bt, ok := b.(int); ok {
 		s.borderType = bt
 	} else {
@@ -154,112 +156,84 @@ func (s Style) Render(args ...string) string {
 		if s.borderType != noBorder {
 			contentMaxWidth -= 2
 		}
-		contentMaxWidth -= s.paddingLeft + s.paddingRight
-		contentMaxWidth -= s.marginLeft + s.marginRight
+		contentMaxWidth -= s.paddingLeft + s.paddingRight + s.marginLeft + s.marginRight
 		if contentMaxWidth < 10 {
 			contentMaxWidth = 10
 		}
 
 		var wrappedLines []string
-		lines := strings.Split(str, "\n")
-		for _, line := range lines {
+		for _, line := range strings.Split(str, "\n") {
 			wrappedLines = append(wrappedLines, wrapSingleAnsiLine(line, contentMaxWidth)...)
 		}
 		str = strings.Join(wrappedLines, "\n")
 	}
 
 	lines := strings.Split(str, "\n")
-
-	ansiStart := ""
-	ansiEnd := ""
-	if s.bold {
-		ansiStart += "\x1b[1m"
-	}
-	if s.italic {
-		ansiStart += "\x1b[3m"
-	}
-	if s.underline {
-		ansiStart += "\x1b[4m"
-	}
-	if s.fg != nil {
-		ansiStart += fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.fg.R, s.fg.G, s.fg.B)
-	}
-	if s.bg != nil {
-		ansiStart += fmt.Sprintf("\x1b[48;2;%d;%d;%dm", s.bg.R, s.bg.G, s.bg.B)
-	}
-	if ansiStart != "" {
-		ansiEnd = "\x1b[0m"
-	}
+	ansiStart, ansiEnd := s.GetSequence()
 
 	maxWidth := 0
 	for _, line := range lines {
-		w := utf8.RuneCountInString(StripAnsi(line))
-		if w > maxWidth {
+		if w := utf8.RuneCountInString(StripAnsi(line)); w > maxWidth {
 			maxWidth = w
 		}
 	}
 
 	paddedWidth := maxWidth + s.paddingLeft + s.paddingRight
-	var formattedLines []string
-	for _, line := range lines {
+	padL := strings.Repeat(" ", s.paddingLeft)
+	formattedLines := make([]string, len(lines))
+	for i, line := range lines {
 		runeCount := utf8.RuneCountInString(StripAnsi(line))
-		padL := strings.Repeat(" ", s.paddingLeft)
-		var padR string
+		padRCount := s.paddingRight
 		if s.bg != nil || s.borderType != noBorder {
-			padR = strings.Repeat(" ", s.paddingRight+(maxWidth-runeCount))
-		} else {
-			padR = strings.Repeat(" ", s.paddingRight)
+			padRCount += maxWidth - runeCount
 		}
-		formattedLines = append(formattedLines, padL+line+padR)
+		formattedLines[i] = padL + line + strings.Repeat(" ", padRCount)
 	}
 
 	var borderedLines []string
-	borderStart := ""
-	borderEnd := ""
-	if s.borderColor != nil {
-		borderStart = fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.borderColor.R, s.borderColor.G, s.borderColor.B)
-		borderEnd = "\x1b[0m"
-	}
-
 	if s.borderType != noBorder {
-		var tl, tr, bl, br, h, v string
-		if s.borderType == roundedBorder {
-			tl, tr, bl, br, h, v = "╭", "╮", "╰", "╯", "─", "│"
-		} else {
-			tl, tr, bl, br, h, v = "┌", "┐", "└", "┘", "─", "│"
+		var borderStart, borderEnd string
+		if s.borderColor != nil {
+			borderStart = fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.borderColor.R, s.borderColor.G, s.borderColor.B)
+			borderEnd = "\x1b[0m"
 		}
 
-		top := borderStart + tl + strings.Repeat(h, paddedWidth) + tr + borderEnd
-		borderedLines = append(borderedLines, top)
+		tl, tr, bl, br, h, v := "┌", "┐", "└", "┘", "─", "│"
+		if s.borderType == roundedBorder {
+			tl, tr, bl, br = "╭", "╮", "╰", "╯"
+		}
 
-		padLine := borderStart + v + borderEnd + strings.Repeat(" ", paddedWidth) + borderStart + v + borderEnd
+		vBar := borderStart + v + borderEnd
+		hBar := strings.Repeat(h, paddedWidth)
+		padLine := vBar + strings.Repeat(" ", paddedWidth) + vBar
+
+		borderedLines = make([]string, 0, len(formattedLines)+s.paddingTop+s.paddingBottom+2)
+		borderedLines = append(borderedLines, borderStart+tl+hBar+tr+borderEnd)
 		for i := 0; i < s.paddingTop; i++ {
 			borderedLines = append(borderedLines, padLine)
 		}
-
 		for _, line := range formattedLines {
-			contentLine := borderStart + v + borderEnd + ansiStart + line + ansiEnd + borderStart + v + borderEnd
-			borderedLines = append(borderedLines, contentLine)
+			borderedLines = append(borderedLines, vBar+ansiStart+line+ansiEnd+vBar)
 		}
-
 		for i := 0; i < s.paddingBottom; i++ {
 			borderedLines = append(borderedLines, padLine)
 		}
-
-		bottom := borderStart + bl + strings.Repeat(h, paddedWidth) + br + borderEnd
-		borderedLines = append(borderedLines, bottom)
+		borderedLines = append(borderedLines, borderStart+bl+hBar+br+borderEnd)
 	} else {
-		for _, line := range formattedLines {
-			borderedLines = append(borderedLines, ansiStart+line+ansiEnd)
+		borderedLines = make([]string, len(formattedLines))
+		for i, line := range formattedLines {
+			borderedLines[i] = ansiStart + line + ansiEnd
 		}
 	}
 
-	var marginLines []string
+	marginL := strings.Repeat(" ", s.marginLeft)
+	marginR := strings.Repeat(" ", s.marginRight)
+	marginLines := make([]string, 0, len(borderedLines)+s.marginTop+s.marginBottom)
 	for i := 0; i < s.marginTop; i++ {
 		marginLines = append(marginLines, "")
 	}
 	for _, line := range borderedLines {
-		marginLines = append(marginLines, strings.Repeat(" ", s.marginLeft)+line+strings.Repeat(" ", s.marginRight))
+		marginLines = append(marginLines, marginL+line+marginR)
 	}
 	for i := 0; i < s.marginBottom; i++ {
 		marginLines = append(marginLines, "")
@@ -268,7 +242,7 @@ func (s Style) Render(args ...string) string {
 	return strings.Join(marginLines, "\n")
 }
 
-func JoinHorizontal(pos int, strs ...string) string {
+func JoinHorizontal(_ int, strs ...string) string {
 	if len(strs) == 0 {
 		return ""
 	}
@@ -276,44 +250,41 @@ func JoinHorizontal(pos int, strs ...string) string {
 		return strs[0]
 	}
 
-	var splitStrs [][]string
+	splitStrs := make([][]string, len(strs))
+	widths := make([]int, len(strs))
 	maxLines := 0
-	for _, s := range strs {
+
+	for idx, s := range strs {
 		lines := strings.Split(s, "\n")
-		splitStrs = append(splitStrs, lines)
+		splitStrs[idx] = lines
 		if len(lines) > maxLines {
 			maxLines = len(lines)
 		}
-	}
-
-	var widths []int
-	for _, lines := range splitStrs {
 		maxW := 0
 		for _, l := range lines {
-			w := utf8.RuneCountInString(StripAnsi(l))
-			if w > maxW {
+			if w := utf8.RuneCountInString(StripAnsi(l)); w > maxW {
 				maxW = w
 			}
 		}
-		widths = append(widths, maxW)
+		widths[idx] = maxW
 	}
 
-	var joinedLines []string
+	joinedLines := make([]string, maxLines)
 	for i := 0; i < maxLines; i++ {
-		var lineParts []string
+		var lineBuilder strings.Builder
 		for idx, lines := range splitStrs {
-			w := widths[idx]
 			var lineVal string
 			if i < len(lines) {
 				lineVal = lines[i]
 			}
 			visibleW := utf8.RuneCountInString(StripAnsi(lineVal))
-			padR := strings.Repeat(" ", w-visibleW)
-			lineParts = append(lineParts, lineVal+padR)
+			lineBuilder.WriteString(lineVal)
+			if pad := widths[idx] - visibleW; pad > 0 {
+				lineBuilder.WriteString(strings.Repeat(" ", pad))
+			}
 		}
-		joinedLines = append(joinedLines, strings.Join(lineParts, ""))
+		joinedLines[i] = lineBuilder.String()
 	}
 
 	return strings.Join(joinedLines, "\n")
 }
-

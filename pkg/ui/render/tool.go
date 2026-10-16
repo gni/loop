@@ -105,6 +105,12 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 	return body
 }
 
+func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
+	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
+	msg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, lineCount)
+	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(msg))
+}
+
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
 	if !isError {
 		if (IsWriteLikeTool(toolName) || IsCommandLikeTool(toolName)) && bodyWasStreamed {
@@ -122,13 +128,8 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		}
 	}
 
-	status := ToolStatusSuccess
 	if isError {
-		status = ToolStatusError
-	}
-	finalDot := RenderToolSymbol(toolName, status, theme)
-
-	if isError {
+		finalDot := RenderToolSymbol(toolName, ToolStatusError, theme)
 		titleStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 		fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("⎿  %s Error", finalDot)))
 	}
@@ -155,9 +156,7 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	lines := strings.Split(body, "\n")
 
 	if collapse && !isError && len(lines) > 0 {
-		branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
-		collapsedMsg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, len(lines))
-		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(collapsedMsg))
+		renderCollapsedNotice(w, len(lines), theme)
 	} else {
 		bodyStyle := style.NewStyle().Foreground(theme.Text)
 		for _, line := range lines {
@@ -195,7 +194,7 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 	absPath := resolveAbsTargetPath(target)
 
 	var sizeBytes int64 = -1
-	var lineCount int = -1
+	var lineCount = -1
 	if fi, err := os.Stat(absPath); err == nil && !fi.IsDir() {
 		sizeBytes = fi.Size()
 		if data, err := os.ReadFile(absPath); err == nil {
@@ -221,9 +220,9 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
 	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
-	sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
 
 	if sizeDesc != "" {
+		sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
 		fmt.Fprintf(w, "%s%s %s %s\n",
 			branchStyle,
 			checkStyle.Render("✓"),
@@ -242,7 +241,8 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 func formatByteSize(bytes int64) string {
 	if bytes < 1024 {
 		return fmt.Sprintf("%d B", bytes)
-	} else if bytes < 1024*1024 {
+	}
+	if bytes < 1024*1024 {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
 	}
 	return fmt.Sprintf("%.2f MB", float64(bytes)/(1024*1024))
@@ -250,8 +250,7 @@ func formatByteSize(bytes int64) string {
 
 // CountDiffLines counts the number of added and deleted lines from diff output.
 func CountDiffLines(diffText string) (added int, deleted int) {
-	lines := strings.Split(diffText, "\n")
-	for _, rawLine := range lines {
+	for _, rawLine := range strings.Split(diffText, "\n") {
 		stripped := style.StripAnsi(rawLine)
 		trimmed := strings.TrimSpace(stripped)
 		if trimmed == "" || trimmed == "..." {
@@ -265,12 +264,12 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 			deleted++
 			continue
 		}
-		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 {
+		if fields := strings.Fields(trimmed); len(fields) >= 2 {
 			if fields[1] == "+" {
 				added++
 				continue
-			} else if fields[1] == "-" {
+			}
+			if fields[1] == "-" {
 				deleted++
 				continue
 			}
@@ -288,7 +287,6 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 func FormatDiffStats(added, deleted int, theme style.UITheme) string {
 	greenStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
 	redStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-
 	return fmt.Sprintf("%s / %s lines", greenStyle.Render(fmt.Sprintf("+%d", added)), redStyle.Render(fmt.Sprintf("-%d", deleted)))
 }
 
@@ -306,16 +304,9 @@ func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 
 	if statsDesc != "" {
-		fmt.Fprintf(w, "%s%s (%s)\n",
-			branchStyle,
-			pathStyle.Render(absPath),
-			statsDesc,
-		)
+		fmt.Fprintf(w, "%s%s (%s)\n", branchStyle, pathStyle.Render(absPath), statsDesc)
 	} else {
-		fmt.Fprintf(w, "%s%s\n",
-			branchStyle,
-			pathStyle.Render(absPath),
-		)
+		fmt.Fprintf(w, "%s%s\n", branchStyle, pathStyle.Render(absPath))
 	}
 }
 
@@ -323,8 +314,7 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
 	taskID := ExtractToolTarget(toolName, argsJSON)
 	if taskID == "" {
-		fields := strings.Fields(output)
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "Task") {
+		if fields := strings.Fields(output); len(fields) >= 2 && strings.EqualFold(fields[0], "Task") {
 			taskID = fields[1]
 		}
 	}
@@ -332,8 +322,8 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 		taskID = "task"
 	}
 
+	idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 	if toolName == "task_kill" {
-		idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 		statusStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 		fmt.Fprintf(w, "%s%s: %s\n\n", branchStyle, idStyle.Render(taskID), statusStyle.Render("terminated"))
 		return
@@ -348,8 +338,6 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 		statusStr = "killed"
 	case strings.Contains(lower, "currently: failed"), strings.Contains(lower, "status: failed"):
 		statusStr = "failed"
-	case strings.Contains(lower, "currently: running"), strings.Contains(lower, "status: running"):
-		statusStr = "running"
 	}
 
 	var statusColor color.Color
@@ -358,19 +346,16 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 		statusColor = theme.Success
 	case "completed":
 		statusColor = theme.Primary
-	case "killed", "failed":
-		statusColor = theme.Error
 	default:
-		statusColor = theme.TextMuted
+		statusColor = theme.Error
 	}
 
-	idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 	statusStyle := style.NewStyle().Foreground(statusColor).Bold(true)
 
 	cmdDesc := ""
 	firstLine := strings.SplitN(output, "\n", 2)[0]
 	if openParen := strings.Index(firstLine, "("); openParen != -1 {
-		if closeParen := strings.LastIndex(firstLine, ")"); closeParen != -1 && closeParen > openParen {
+		if closeParen := strings.LastIndex(firstLine, ")"); closeParen > openParen {
 			rawCmd := firstLine[openParen+1 : closeParen]
 			if len(rawCmd) > 40 {
 				rawCmd = rawCmd[:37] + "..."
@@ -396,8 +381,7 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	if outBody != "" && outBody != "(no output)" {
 		lines := strings.Split(outBody, "\n")
 		if collapse && len(lines) > 5 {
-			collapsedMsg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, len(lines))
-			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(collapsedMsg))
+			renderCollapsedNotice(w, len(lines), theme)
 		} else {
 			bodyStyle := style.NewStyle().Foreground(theme.Text)
 			for _, line := range lines {

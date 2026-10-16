@@ -84,6 +84,15 @@ func matchTaskID(targetID, itemID string, index int) bool {
 	return st == si || si == tgt || st == itm
 }
 
+func findTaskIndex(tasks []domaintool.TodoItem, targetID string) int {
+	for i, it := range tasks {
+		if matchTaskID(targetID, it.ID, i) {
+			return i
+		}
+	}
+	return -1
+}
+
 func firstNonEmptyList(lists ...[]domaintool.TodoItem) []domaintool.TodoItem {
 	for _, l := range lists {
 		if len(l) > 0 {
@@ -237,13 +246,7 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if taskID == "" {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to update a task"))
 		}
-		matchedIdx := -1
-		for i, it := range currentTasks {
-			if matchTaskID(taskID, it.ID, i) {
-				matchedIdx = i
-				break
-			}
-		}
+		matchedIdx := findTaskIndex(currentTasks, taskID)
 		if matchedIdx == -1 {
 			return nil, "", false, fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
 		}
@@ -265,17 +268,15 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if taskID == "" {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to remove a task"))
 		}
-		matched := false
-		var updated []domaintool.TodoItem
-		for i, it := range currentTasks {
-			if matchTaskID(taskID, it.ID, i) {
-				matched = true
-				continue
-			}
-			updated = append(updated, it)
-		}
-		if !matched {
+		matchedIdx := findTaskIndex(currentTasks, taskID)
+		if matchedIdx == -1 {
 			return nil, "", false, fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
+		}
+		updated := make([]domaintool.TodoItem, 0, len(currentTasks)-1)
+		for i, it := range currentTasks {
+			if !matchTaskID(taskID, it.ID, i) {
+				updated = append(updated, it)
+			}
 		}
 		return updated, "", false, nil
 
@@ -302,14 +303,12 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 			}}, "", false, nil
 		}
 		if taskID != "" {
-			for i, it := range currentTasks {
-				if matchTaskID(taskID, it.ID, i) {
-					currentTasks[i].Task = taskDesc
-					if status != "" {
-						currentTasks[i].Status = status
-					}
-					return currentTasks, "", false, nil
+			if i := findTaskIndex(currentTasks, taskID); i != -1 {
+				currentTasks[i].Task = taskDesc
+				if status != "" {
+					currentTasks[i].Status = status
 				}
+				return currentTasks, "", false, nil
 			}
 		}
 		return nil, "", false, nil

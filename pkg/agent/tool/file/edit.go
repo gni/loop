@@ -106,7 +106,7 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	edits := ExtractEdits(arguments, args.Updates, args.Edits, args.Replacements, topEdits)
 
-	var candidatePaths []string
+	candidatePaths := make([]string, 0, 1+len(edits)*4)
 	if args.Path != "" {
 		candidatePaths = append(candidatePaths, args.Path)
 	}
@@ -147,13 +147,7 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
-	sg, hasSG := ctx.(snapshotGuard)
-	hadSnapshot := hasSG && sg.HasSnapshot(safePath)
-	discardIfUncommitted := func() {
-		if hasSG && !hadSnapshot {
-			sg.DiscardSnapshot(safePath)
-		}
-	}
+	discardIfUncommitted := prepareSnapshotRollback(ctx, safePath)
 
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		if err := fo.CheckMutationAllowed(safePath, true); err != nil {
@@ -191,8 +185,7 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 					continue
 				}
 				discardIfUncommitted()
-				closestLine := findClosestLineMatch(content, edit.OldText)
-				if closestLine > 0 {
+				if closestLine := findClosestLineMatch(content, edit.OldText); closestLine > 0 {
 					snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
 					return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, targetPath, closestLine, snippet)
 				}
@@ -207,24 +200,23 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
-	if contentChanged {
-		diffBuilder.WriteString(GenerateDisplayDiff(initialContent, content, 3))
-		finalStr := content
-		if originalEnding == "\r\n" {
-			finalStr = strings.ReplaceAll(finalStr, "\n", "\r\n")
-		}
-		var finalBytes []byte
-		if hasBOM {
-			finalBytes = append([]byte{0xef, 0xbb, 0xbf}, []byte(finalStr)...)
-		} else {
-			finalBytes = []byte(finalStr)
-		}
-		if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
-			discardIfUncommitted()
-			return "", fmt.Errorf("failed to write modified content back: %w", err)
-		}
-	} else {
+	if !contentChanged {
 		discardIfUncommitted()
+		return diffBuilder.String(), nil
+	}
+
+	diffBuilder.WriteString(GenerateDisplayDiff(initialContent, content, 3))
+	finalStr := content
+	if originalEnding == "\r\n" {
+		finalStr = strings.ReplaceAll(finalStr, "\n", "\r\n")
+	}
+	finalBytes := []byte(finalStr)
+	if hasBOM {
+		finalBytes = append([]byte{0xef, 0xbb, 0xbf}, finalBytes...)
+	}
+	if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
+		discardIfUncommitted()
+		return "", fmt.Errorf("failed to write modified content back: %w", err)
 	}
 
 	return diffBuilder.String(), nil

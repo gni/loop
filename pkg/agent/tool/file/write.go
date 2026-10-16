@@ -39,11 +39,6 @@ func (t *writeTool) Definition() domaintool.Tool {
 	)
 }
 
-type snapshotGuard interface {
-	HasSnapshot(absPath string) bool
-	DiscardSnapshot(absPath string)
-}
-
 func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
 	var args struct {
 		Path    string  `json:"path"`
@@ -79,8 +74,7 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", fmt.Errorf("refusing to write file: detected code omission placeholder(s) like: %q. Please provide the complete file content without shorthand placeholders or comments like '// ... rest of code'.", placeholders)
 	}
 
-	sg, hasSG := ctx.(snapshotGuard)
-	hadSnapshot := hasSG && sg.HasSnapshot(safePath)
+	discardIfUncommitted := prepareSnapshotRollback(ctx, safePath)
 
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		if err := fo.CheckMutationAllowed(safePath, false); err != nil {
@@ -89,16 +83,12 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 	}
 
 	if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
-		if hasSG && !hadSnapshot {
-			sg.DiscardSnapshot(safePath)
-		}
+		discardIfUncommitted()
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	if err := CommitFileMutation(ctx, safePath, []byte(content), 0644); err != nil {
-		if hasSG && !hadSnapshot {
-			sg.DiscardSnapshot(safePath)
-		}
+		discardIfUncommitted()
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 

@@ -10,6 +10,9 @@ import (
 )
 
 func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) string) []*settingItem {
+	askUserOptions := []string{"interactive", "always_ask", "auto_recommended", "disabled"}
+	reasoningOptions := []string{"off", "low", "medium", "high", "max"}
+
 	return []*settingItem{
 		{
 			id:          "temperature",
@@ -40,38 +43,25 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			name:        "ask user mode",
 			value:       func() string { return cloned.AskUserMode },
 			description: "How ask_user prompts are handled (interactive, always_ask, auto_recommended, disabled)",
-			options:     []string{"interactive", "always_ask", "auto_recommended", "disabled"},
+			options:     askUserOptions,
 			onEdit: func(newVal string) error {
-				v := strings.ToLower(strings.TrimSpace(newVal))
-				switch v {
-				case "interactive", "always_ask", "auto_recommended", "disabled":
-					cloned.AskUserMode = v
+				if matched, ok := matchOption(askUserOptions, strings.TrimSpace(newVal)); ok {
+					cloned.AskUserMode = matched
 					return nil
-				default:
-					return fmt.Errorf("invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled", newVal)
 				}
+				return fmt.Errorf("invalid ask_user_mode '%s'. Allowed: %s", newVal, strings.Join(askUserOptions, ", "))
 			},
 			onToggle: func() {
-				opts := []string{"interactive", "always_ask", "auto_recommended", "disabled"}
-				cloned.AskUserMode = cycleOption(opts, cloned.AskUserMode)
+				cloned.AskUserMode = cycleOption(askUserOptions, cloned.AskUserMode)
 			},
 		},
-		{
-			id:          "show_thinking",
-			name:        "show thinking",
-			value:       func() string { return formatBool(cloned.ShowThinking) },
-			description: "Stream LLM reasoning and internal thought tokens directly to console",
-			isBool:      true,
-			onToggle: func() {
-				cloned.ShowThinking = !cloned.ShowThinking
-			},
-		},
+		boolConfigItem("show_thinking", "show thinking", "Stream LLM reasoning and internal thought tokens directly to console", &cloned.ShowThinking, formatBool),
 		{
 			id:          "reasoning_effort",
 			name:        "reasoning effort",
 			value:       func() string { return cloned.ReasoningEffort },
 			description: "Thinking/reasoning budget constraint (off, low, medium, high, max)",
-			options:     []string{"off", "low", "medium", "high", "max"},
+			options:     reasoningOptions,
 			onEdit: func(newVal string) error {
 				v := strings.ToLower(strings.TrimSpace(newVal))
 				switch v {
@@ -82,12 +72,11 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 					cloned.ReasoningEffort = v
 					return nil
 				default:
-					return fmt.Errorf("invalid reasoning effort '%s'. Allowed: off, low, medium, high, max", newVal)
+					return fmt.Errorf("invalid reasoning effort '%s'. Allowed: %s", newVal, strings.Join(reasoningOptions, ", "))
 				}
 			},
 			onToggle: func() {
-				opts := []string{"off", "low", "medium", "high", "max"}
-				cloned.ReasoningEffort = cycleOption(opts, cloned.ReasoningEffort)
+				cloned.ReasoningEffort = cycleOption(reasoningOptions, cloned.ReasoningEffort)
 			},
 		},
 		intConfigItem("context_window_limit", "context window limit", "Maximum prompt context size allocated before compression (tokens)", &cloned.ContextWindowLimit),
@@ -108,7 +97,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 					return fmt.Errorf("must be a positive number (e.g. 0.90 or 90%%)")
 				}
 				if f > 1.0 {
-					f = f / 100.0
+					f /= 100.0
 				}
 				if f > 0.98 {
 					f = 0.98
@@ -197,8 +186,7 @@ func cycleOption(options []string, current string) string {
 			break
 		}
 	}
-	nextIdx := (idx + 1) % len(options)
-	return options[nextIdx]
+	return options[(idx+1)%len(options)]
 }
 
 func intConfigItem(id, name, desc string, target *int) *settingItem {
@@ -328,9 +316,8 @@ func stringListConfigItem(id, name, desc string, target *[]string) *settingItem 
 				*target = nil
 				return nil
 			}
-			parts := strings.Split(trimmed, ",")
 			var result []string
-			for _, p := range parts {
+			for _, p := range strings.Split(trimmed, ",") {
 				if t := strings.TrimSpace(p); t != "" {
 					result = append(result, t)
 				}

@@ -63,28 +63,40 @@ func HandleProviderCommand(
 		syncAgentStatus(a, theme, calcHistoryTokens)
 	}
 
-	switchProvider := func(name string, modelOverride string) {
+	applyMutation := func(mutate func(next *config.Config) bool) bool {
 		next := interactive.CloneProviderConfig(a.Config)
-		if name == "none" {
-			if _, ok := next.Providers["default"]; ok {
-				name = "default"
-			} else {
-				name = ""
-			}
-		}
-		if name != "" {
-			if _, ok := next.Providers[name]; !ok {
-				fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
-				return
-			}
-		}
-		next.ActiveProvider = name
-		if modelOverride != "" {
-			next.Model = modelOverride
-			next.UpdateActiveProvider()
+		if !mutate(next) {
+			return false
 		}
 		if err := commitProviderConfig(a, next); err != nil {
 			fmt.Fprintf(w, "error: %v\n", err)
+			return false
+		}
+		return true
+	}
+
+	switchProvider := func(name string, modelOverride string) {
+		if !applyMutation(func(next *config.Config) bool {
+			if name == "none" {
+				if _, ok := next.Providers["default"]; ok {
+					name = "default"
+				} else {
+					name = ""
+				}
+			}
+			if name != "" {
+				if _, ok := next.Providers[name]; !ok {
+					fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
+					return false
+				}
+			}
+			next.ActiveProvider = name
+			if modelOverride != "" {
+				next.Model = modelOverride
+				next.UpdateActiveProvider()
+			}
+			return true
+		}) {
 			return
 		}
 		printProviderSwitchMessage(w, name, a.Config.Endpoint, a.Config.Model)
@@ -131,21 +143,20 @@ func HandleProviderCommand(
 		if len(parts) > 5 {
 			model = strings.Join(parts[5:], " ")
 		}
-		next := interactive.CloneProviderConfig(a.Config)
-		if next.Providers == nil {
-			next.Providers = make(map[string]config.ProviderConfig)
+		if applyMutation(func(next *config.Config) bool {
+			if next.Providers == nil {
+				next.Providers = make(map[string]config.ProviderConfig)
+			}
+			next.Providers[name] = config.ProviderConfig{
+				Name:     name,
+				Endpoint: endpoint,
+				ApiKey:   apiKey,
+				Model:    model,
+			}
+			return true
+		}) {
+			fmt.Fprintf(w, "Provider '%s' added successfully. To use it, run: /provider select %s (or /provider %s)\n", name, name, name)
 		}
-		next.Providers[name] = config.ProviderConfig{
-			Name:     name,
-			Endpoint: endpoint,
-			ApiKey:   apiKey,
-			Model:    model,
-		}
-		if err := commitProviderConfig(a, next); err != nil {
-			fmt.Fprintf(w, "error: %v\n", err)
-			return
-		}
-		fmt.Fprintf(w, "Provider '%s' added successfully. To use it, run: /provider select %s (or /provider %s)\n", name, name, name)
 	case "select", "use":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider select <name>")
@@ -158,19 +169,18 @@ func HandleProviderCommand(
 			return
 		}
 		model := strings.Join(parts[2:], " ")
-		next := interactive.CloneProviderConfig(a.Config)
-		next.Model = model
-		next.UpdateActiveProvider()
-		if err := commitProviderConfig(a, next); err != nil {
-			fmt.Fprintf(w, "error: %v\n", err)
-			return
+		if applyMutation(func(next *config.Config) bool {
+			next.Model = model
+			next.UpdateActiveProvider()
+			return true
+		}) {
+			if a.Config.ActiveProvider != "" {
+				fmt.Fprintf(w, "Updated model for provider '%s' to '%s'.\n", a.Config.ActiveProvider, model)
+			} else {
+				fmt.Fprintf(w, "Updated model to '%s'.\n", model)
+			}
+			syncStatus()
 		}
-		if a.Config.ActiveProvider != "" {
-			fmt.Fprintf(w, "Updated model for provider '%s' to '%s'.\n", a.Config.ActiveProvider, model)
-		} else {
-			fmt.Fprintf(w, "Updated model to '%s'.\n", model)
-		}
-		syncStatus()
 	case "timeout":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider timeout <seconds>")
@@ -181,45 +191,43 @@ func HandleProviderCommand(
 			fmt.Fprintln(w, "error: timeout must be a non-negative integer")
 			return
 		}
-		next := interactive.CloneProviderConfig(a.Config)
-		next.Timeout = sec
-		next.UpdateActiveProvider()
-		if err := commitProviderConfig(a, next); err != nil {
-			fmt.Fprintf(w, "error: %v\n", err)
-			return
+		if applyMutation(func(next *config.Config) bool {
+			next.Timeout = sec
+			next.UpdateActiveProvider()
+			return true
+		}) {
+			if a.Config.ActiveProvider != "" {
+				fmt.Fprintf(w, "Updated timeout for provider '%s' to %ds.\n", a.Config.ActiveProvider, sec)
+			} else {
+				fmt.Fprintf(w, "Updated default timeout to %ds.\n", sec)
+			}
+			syncStatus()
 		}
-		if a.Config.ActiveProvider != "" {
-			fmt.Fprintf(w, "Updated timeout for provider '%s' to %ds.\n", a.Config.ActiveProvider, sec)
-		} else {
-			fmt.Fprintf(w, "Updated default timeout to %ds.\n", sec)
-		}
-		syncStatus()
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /provider remove <name>")
 			return
 		}
 		name := parts[2]
-		next := interactive.CloneProviderConfig(a.Config)
-		if _, ok := next.Providers[name]; !ok {
-			fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
-			return
-		}
-		delete(next.Providers, name)
-		if next.ActiveProvider == name {
-			next.ActiveProvider = ""
-			if name != "default" {
-				if _, ok := next.Providers["default"]; ok {
-					next.ActiveProvider = "default"
+		if applyMutation(func(next *config.Config) bool {
+			if _, ok := next.Providers[name]; !ok {
+				fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
+				return false
+			}
+			delete(next.Providers, name)
+			if next.ActiveProvider == name {
+				next.ActiveProvider = ""
+				if name != "default" {
+					if _, ok := next.Providers["default"]; ok {
+						next.ActiveProvider = "default"
+					}
 				}
 			}
+			return true
+		}) {
+			fmt.Fprintf(w, "Provider '%s' removed.\n", name)
+			syncStatus()
 		}
-		if err := commitProviderConfig(a, next); err != nil {
-			fmt.Fprintf(w, "error: %v\n", err)
-			return
-		}
-		fmt.Fprintf(w, "Provider '%s' removed.\n", name)
-		syncStatus()
 	default:
 		if _, ok := a.Config.Providers[sub]; ok || sub == "default" || sub == "none" {
 			var modelOverride string
@@ -248,11 +256,14 @@ func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 	}
 	sort.Strings(keys)
 
+	activeMarker := style.NewStyle().Foreground(theme.Success).Render("➔ ")
+	nameStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
+
 	for _, name := range keys {
 		item := cfg.Providers[name]
 		marker := "  "
 		if name == cfg.ActiveProvider {
-			marker = style.NewStyle().Foreground(theme.Success).Render("➔ ")
+			marker = activeMarker
 		}
 
 		apiKeyDisplay := "none"
@@ -270,7 +281,7 @@ func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 
 		fmt.Fprintf(w, " %s %-12s : URL: %s | Model: %s | API Key: %s%s\n",
 			marker,
-			style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name),
+			nameStyle.Render(name),
 			item.Endpoint,
 			item.Model,
 			apiKeyDisplay,
@@ -283,8 +294,8 @@ func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 			defaultTimeoutDisplay = fmt.Sprintf(" | Timeout: %ds", cfg.Timeout)
 		}
 		fmt.Fprintf(w, " %s %-12s : URL: %s | Model: %s%s | (Currently active default settings)\n",
-			style.NewStyle().Foreground(theme.Success).Render("➔ "),
-			style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("default"),
+			activeMarker,
+			nameStyle.Render("default"),
 			cfg.Endpoint,
 			cfg.Model,
 			defaultTimeoutDisplay,

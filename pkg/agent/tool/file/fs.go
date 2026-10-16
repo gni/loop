@@ -13,6 +13,21 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
+type snapshotGuard interface {
+	HasSnapshot(absPath string) bool
+	DiscardSnapshot(absPath string)
+}
+
+func prepareSnapshotRollback(ctx domaintool.AgentContext, safePath string) func() {
+	sg, ok := ctx.(snapshotGuard)
+	if !ok || sg.HasSnapshot(safePath) {
+		return func() {}
+	}
+	return func() {
+		sg.DiscardSnapshot(safePath)
+	}
+}
+
 func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, 0755); err != nil {

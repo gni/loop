@@ -17,6 +17,14 @@ import (
 	"loop/pkg/ui/style"
 )
 
+func removeAllSubagents(mam *swarm.MultiAgentManager) int {
+	agents := mam.ListAgents()
+	for _, ag := range agents {
+		_ = mam.RemoveAgent(ag)
+	}
+	return len(agents)
+}
+
 func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.MultiAgentManager, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
 	if len(parts) < 2 {
 		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
@@ -43,11 +51,12 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("active agents:"))
 		activeName := mam.ActiveAgentName()
+		activeMarker := style.NewStyle().Foreground(theme.Success).Render("➔")
 
 		for _, name := range agentsList {
 			marker := " "
 			if name == activeName {
-				marker = style.NewStyle().Foreground(theme.Success).Render("➔")
+				marker = activeMarker
 			}
 			parentStr := ""
 			if parentName := mam.GetParentName(name); parentName != "" {
@@ -56,7 +65,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintf(w, "  %s %-15s : %s\n", marker, style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name), parentStr)
 		}
 		if activeName == "" {
-			fmt.Fprintf(w, "  %s %-15s : (currently chatting with default base agent)\n", style.NewStyle().Foreground(theme.Success).Render("➔"), "base")
+			fmt.Fprintf(w, "  %s %-15s : (currently chatting with default base agent)\n", activeMarker, "base")
 		}
 
 	case "join":
@@ -126,16 +135,12 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			return
 		}
 
-		var info string
-		switch {
-		case parentName != "" && skillName != "":
-			info = fmt.Sprintf("subagent '%s' under parent '%s' with dedicated skill '%s'", name, parentName, skillName)
-		case parentName != "":
+		info := fmt.Sprintf("independent agent '%s'", name)
+		if parentName != "" {
 			info = fmt.Sprintf("subagent '%s' under parent '%s'", name, parentName)
-		case skillName != "":
-			info = fmt.Sprintf("independent agent '%s' with dedicated skill '%s'", name, skillName)
-		default:
-			info = fmt.Sprintf("independent agent '%s'", name)
+		}
+		if skillName != "" {
+			info += fmt.Sprintf(" with dedicated skill '%s'", skillName)
 		}
 		fmt.Fprintf(w, "successfully spawned %s.\n", info)
 
@@ -188,11 +193,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 		target := parts[2]
 		if target == "all" || target == "*" {
-			agents := mam.ListAgents()
-			for _, ag := range agents {
-				_ = mam.RemoveAgent(ag)
-			}
-			fmt.Fprintf(w, "removed %d subagents.\n", len(agents))
+			fmt.Fprintf(w, "removed %d subagents.\n", removeAllSubagents(mam))
 			return
 		}
 		if err := mam.RemoveAgent(target); err != nil {
@@ -202,11 +203,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 
 	case "clear":
-		agents := mam.ListAgents()
-		for _, ag := range agents {
-			_ = mam.RemoveAgent(ag)
-		}
-		fmt.Fprintf(w, "cleared %d subagents.\n", len(agents))
+		fmt.Fprintf(w, "cleared %d subagents.\n", removeAllSubagents(mam))
 
 	default:
 		fmt.Fprintln(w, "unknown agent subcommand. usage: /agent [list | join <name> | spawn <name> <prompt> [parent_name] [skill_name] | remove <name> | skill [list/load/clear] ...]")

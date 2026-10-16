@@ -333,6 +333,25 @@ func (e *TurnEngine) checkGuardPreExecution(tc db.ToolCall) error {
 	return nil
 }
 
+func (e *TurnEngine) emitRejectedToolCall(
+	idx int,
+	tc db.ToolCall,
+	output string,
+	completeHeader bool,
+	bodyStreamed bool,
+	sink HistorySink,
+	sr StreamRenderer,
+	w io.Writer,
+	theme style.UITheme,
+	render EngineRenderer,
+) {
+	if completeHeader {
+		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
+	}
+	render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
+}
+
 func (e *TurnEngine) finalizeToolCall(
 	idx int,
 	tc db.ToolCall,
@@ -450,9 +469,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 
 		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
 			output := gateErr.Error()
-			sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-			render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
-			sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
+			e.emitRejectedToolCall(idx, tc, output, true, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 			if strings.Contains(output, "aborted by user") {
 				return false, true
 			}
@@ -466,11 +483,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 			a.lastToolOutput = output
 			a.lastToolIsError = true
 			a.stateMu.Unlock()
-			if !approvalRendered {
-				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-			}
-			render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, sr.DidStreamToolBody(idx))
-			sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
+			e.emitRejectedToolCall(idx, tc, output, !approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 			if shouldAbort {
 				return false, true
 			}
@@ -557,9 +570,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 			plan.output = gateErr.Error()
 			plan.guardHit = true
 			if strings.Contains(plan.output, "aborted by user") {
-				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-				render.ToolOutput(w, theme, plan.output, true, tc.Function.Name, tc.Function.Arguments, false)
-				sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: plan.output})
+				e.emitRejectedToolCall(idx, tc, plan.output, true, false, sink, sr, w, theme, render)
 				return false, true
 			}
 			continue
@@ -570,10 +581,8 @@ func (e *TurnEngine) executeToolCallsParallel(
 				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
 			} else if approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc); !approved {
 				rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-				render.ToolOutput(w, theme, rejOutput, true, tc.Function.Name, tc.Function.Arguments, false)
-				sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: rejOutput})
 				if shouldAbort {
+					e.emitRejectedToolCall(idx, tc, rejOutput, true, false, sink, sr, w, theme, render)
 					return false, true
 				}
 				plan.toolErr = fmt.Errorf("rejected by user")

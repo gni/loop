@@ -12,6 +12,35 @@ import (
 	"loop/pkg/ui/style"
 )
 
+func isReadLike(lower string) bool {
+	return lower == "read" || strings.Contains(lower, "read") || strings.Contains(lower, "view")
+}
+
+func isSubagentLike(lower string) bool {
+	return lower == "create_subagent" || lower == "spawn_subagent" ||
+		strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate"
+}
+
+func isTodoLike(lower string) bool {
+	return lower == "todo" || strings.Contains(lower, "todo") || lower == "plan"
+}
+
+func isAskLike(lower string) bool {
+	return lower == "ask_user" || strings.Contains(lower, "ask")
+}
+
+func isSkillLike(lower string) bool {
+	return lower == "load_skill" || strings.Contains(lower, "skill")
+}
+
+func isTaskStatusLike(lower string) bool {
+	return lower == "task_status" || lower == "task_list" || lower == "ps"
+}
+
+func isTaskKillLike(lower string) bool {
+	return lower == "task_kill" || lower == "kill"
+}
+
 func IsWriteLikeTool(toolName string) bool {
 	return toolName == "write" || strings.Contains(toolName, "write") || strings.Contains(toolName, "replace")
 }
@@ -23,33 +52,34 @@ func IsEditLikeTool(toolName string) bool {
 
 func IsCommandLikeTool(toolName string) bool {
 	lower := strings.ToLower(toolName)
-	return lower == "bash" || lower == "exec" || lower == "sh" || strings.Contains(lower, "command") || strings.Contains(lower, "shell") || strings.Contains(lower, "run")
+	return lower == "bash" || lower == "exec" || lower == "sh" ||
+		strings.Contains(lower, "command") || strings.Contains(lower, "shell") || strings.Contains(lower, "run")
 }
 
 func GetToolGlyph(toolName string) string {
 	lower := strings.ToLower(toolName)
 	switch {
-	case lower == "read" || strings.Contains(lower, "read") || strings.Contains(lower, "view"):
+	case isReadLike(lower):
 		return "◈"
 	case lower == "grep" || strings.Contains(lower, "grep") || strings.Contains(lower, "search"):
 		return "⌕"
 	case lower == "write" || strings.Contains(lower, "write"):
 		return "◆"
-	case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace") || strings.Contains(lower, "patch"):
+	case IsEditLikeTool(lower) || strings.Contains(lower, "replace"):
 		return "✎"
 	case lower == "bash" || lower == "exec" || lower == "sh" || strings.Contains(lower, "command"):
 		return "$"
-	case lower == "load_skill" || strings.Contains(lower, "skill"):
+	case isSkillLike(lower):
 		return "✦"
-	case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
+	case isSubagentLike(lower):
 		return "❖"
-	case lower == "task_kill" || lower == "kill":
+	case isTaskKillLike(lower):
 		return "✖"
-	case lower == "task_status" || lower == "task_list" || lower == "ps":
+	case isTaskStatusLike(lower):
 		return "⚙"
-	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
+	case isTodoLike(lower):
 		return "≡"
-	case lower == "ask_user" || strings.Contains(lower, "ask"):
+	case isAskLike(lower):
 		return "?"
 	default:
 		return "●"
@@ -57,39 +87,32 @@ func GetToolGlyph(toolName string) string {
 }
 
 func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITheme) string {
-	glyph := GetToolGlyph(toolName)
 	if status == ToolStatusError {
 		return style.NewStyle().Foreground(theme.Error).Bold(true).Render("!")
 	}
 
-	var color color.Color
+	var c color.Color
 	if status == ToolStatusSuccess {
-		color = theme.Success
+		c = theme.Success
 	} else {
 		lower := strings.ToLower(toolName)
 		switch {
-		case lower == "read" || strings.Contains(lower, "read") || strings.Contains(lower, "view"):
-			color = theme.Primary
-		case lower == "write" || strings.Contains(lower, "write"):
-			color = theme.Highlight
-		case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
-			color = theme.Highlight
-		case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
-			color = theme.Secondary
-		case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
-			color = theme.Secondary
-		case lower == "ask_user" || strings.Contains(lower, "ask"):
-			color = theme.Highlight
-		case lower == "load_skill" || strings.Contains(lower, "skill"):
-			color = theme.Highlight
+		case isReadLike(lower):
+			c = theme.Primary
+		case lower == "write" || strings.Contains(lower, "write") ||
+			lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace") ||
+			isAskLike(lower) || isSkillLike(lower):
+			c = theme.Highlight
+		case isSubagentLike(lower) || isTodoLike(lower):
+			c = theme.Secondary
 		default:
-			color = theme.Primary
+			c = theme.Primary
 		}
 	}
-	return style.NewStyle().Foreground(color).Render(glyph)
+	return style.NewStyle().Foreground(c).Render(GetToolGlyph(toolName))
 }
 
-func FormatBashCommandLine(symbol string, command string, theme style.UITheme) string {
+func FormatBashCommandLine(_ string, command string, theme style.UITheme) string {
 	promptStyle := style.NewStyle().Foreground(theme.Success)
 	cmdStyle := style.NewStyle().Foreground(theme.Text)
 
@@ -101,7 +124,7 @@ func FormatBashCommandLine(symbol string, command string, theme style.UITheme) s
 	}
 
 	lines := strings.Split(command, "\n")
-	var formatted []string
+	formatted := make([]string, len(lines))
 	for idx, line := range lines {
 		cleaned := strings.Map(func(r rune) rune {
 			if (r < 32 && r != '\t') || r == 127 {
@@ -111,9 +134,9 @@ func FormatBashCommandLine(symbol string, command string, theme style.UITheme) s
 		}, line)
 
 		if idx == 0 {
-			formatted = append(formatted, fmt.Sprintf("%s %s", promptStyle.Render("$"), cmdStyle.Render(cleaned)))
+			formatted[idx] = fmt.Sprintf("%s %s", promptStyle.Render("$"), cmdStyle.Render(cleaned))
 		} else {
-			formatted = append(formatted, fmt.Sprintf("  %s", cmdStyle.Render(cleaned)))
+			formatted[idx] = fmt.Sprintf("  %s", cmdStyle.Render(cleaned))
 		}
 	}
 
@@ -122,24 +145,20 @@ func FormatBashCommandLine(symbol string, command string, theme style.UITheme) s
 
 func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 	lower := strings.ToLower(toolName)
+	var c color.Color
 	switch {
-	case lower == "task_kill" || lower == "kill":
-		return style.NewStyle().Foreground(theme.Error).Bold(true)
-	case lower == "task_status" || lower == "task_list" || lower == "ps":
-		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
-	case lower == "todo" || strings.Contains(lower, "todo") || lower == "plan":
-		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
-	case lower == "ask_user" || strings.Contains(lower, "ask"):
-		return style.NewStyle().Foreground(theme.Highlight).Bold(true)
-	case lower == "create_subagent" || lower == "spawn_subagent" || strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate":
-		return style.NewStyle().Foreground(theme.Secondary).Bold(true)
-	case lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
-		return style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	case isTaskKillLike(lower):
+		c = theme.Error
+	case isTaskStatusLike(lower) || isTodoLike(lower) || isSubagentLike(lower):
+		c = theme.Secondary
+	case isAskLike(lower) || lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
+		c = theme.Highlight
 	case lower == "write" || strings.Contains(lower, "write"):
-		return style.NewStyle().Foreground(theme.Success).Bold(true)
+		c = theme.Success
 	default:
-		return style.NewStyle().Foreground(theme.Primary).Bold(true)
+		c = theme.Primary
 	}
+	return style.NewStyle().Foreground(c).Bold(true)
 }
 
 func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
@@ -164,10 +183,11 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 
 	if path != "" {
 		relPath := path
-		isNonFilePathTool := toolName == "create_subagent" || toolName == "spawn_subagent" || strings.HasPrefix(toolName, "subagent__") || toolName == "task_status" || toolName == "task_kill" || toolName == "load_skill" || toolName == "bash"
+		isNonFilePathTool := toolName == "create_subagent" || toolName == "spawn_subagent" ||
+			strings.HasPrefix(toolName, "subagent__") || toolName == "task_status" ||
+			toolName == "task_kill" || toolName == "load_skill" || toolName == "bash"
 		if toolName != "ls" && !isNonFilePathTool {
-			wd, err := os.Getwd()
-			if err == nil {
+			if wd, err := os.Getwd(); err == nil {
 				if rel, err := filepath.Rel(wd, path); err == nil {
 					relPath = rel
 				}
@@ -178,8 +198,7 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 		if maxPathRunes < 8 {
 			maxPathRunes = 8
 		}
-		pathRunes := []rune(relPath)
-		if len(pathRunes) > maxPathRunes {
+		if pathRunes := []rune(relPath); len(pathRunes) > maxPathRunes {
 			relPath = string(pathRunes[:maxPathRunes-3]) + "..."
 		}
 		if symbol != "" {

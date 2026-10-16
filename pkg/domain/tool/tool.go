@@ -26,12 +26,22 @@ type JSONSchema struct {
 	Required   []string              `json:"required,omitempty"`
 }
 
+var schemaPriorityKeys = []string{"path", "target_file", "targetFile", "file_path", "filePath", "file", "target", "command"}
+
+func isPrioritySchemaKey(key string) bool {
+	for _, pk := range schemaPriorityKeys {
+		if key == pk {
+			return true
+		}
+	}
+	return false
+}
+
 // MarshalJSON guarantees deterministic property ordering with file paths first.
 func (j JSONSchema) MarshalJSON() ([]byte, error) {
-	var propsParts []string
+	propsParts := make([]string, 0, len(j.Properties))
 
-	orderedKeys := []string{"path", "target_file", "targetFile", "file_path", "filePath", "file", "target", "command"}
-	for _, key := range orderedKeys {
+	for _, key := range schemaPriorityKeys {
 		if prop, ok := j.Properties[key]; ok {
 			propBytes, err := json.Marshal(prop)
 			if err != nil {
@@ -43,14 +53,7 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 
 	var otherKeys []string
 	for k := range j.Properties {
-		isOrdered := false
-		for _, ok := range orderedKeys {
-			if k == ok {
-				isOrdered = true
-				break
-			}
-		}
-		if !isOrdered {
+		if !isPrioritySchemaKey(k) {
 			otherKeys = append(otherKeys, k)
 		}
 	}
@@ -68,8 +71,8 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 
 	var requiredJSON string
 	if len(j.Required) > 0 {
-		var orderedReq []string
-		for _, key := range orderedKeys {
+		orderedReq := make([]string, 0, len(j.Required))
+		for _, key := range schemaPriorityKeys {
 			for _, rk := range j.Required {
 				if rk == key {
 					orderedReq = append(orderedReq, rk)
@@ -78,14 +81,7 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 			}
 		}
 		for _, rk := range j.Required {
-			isOrdered := false
-			for _, ok := range orderedKeys {
-				if rk == ok {
-					isOrdered = true
-					break
-				}
-			}
-			if !isOrdered {
+			if !isPrioritySchemaKey(rk) {
 				orderedReq = append(orderedReq, rk)
 			}
 		}
@@ -96,11 +92,7 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 		requiredJSON = fmt.Sprintf(",%q:%s", "required", string(reqBytes))
 	}
 
-	typeName := j.Type
-	if typeName == "" {
-		typeName = "object"
-	}
-
+	typeName := FirstNonEmpty(j.Type, "object")
 	fullJSON := fmt.Sprintf("{%q:%q,%q:%s%s}", "type", typeName, "properties", propsJSON, requiredJSON)
 	return []byte(fullJSON), nil
 }
@@ -215,45 +207,41 @@ func (ti *TodoItem) UnmarshalJSON(data []byte) error {
 	}
 
 	for _, taskKey := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"} {
-		if v, ok := raw[taskKey]; ok {
-			if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
-				ti.Task = strings.TrimSpace(str)
+		if str, ok := raw[taskKey].(string); ok {
+			if trimmed := strings.TrimSpace(str); trimmed != "" {
+				ti.Task = trimmed
 				break
 			}
 		}
 	}
 
 	for _, statusKey := range []string{"status", "state"} {
-		if v, ok := raw[statusKey]; ok {
-			if str, ok := v.(string); ok && strings.TrimSpace(str) != "" {
-				ti.Status = strings.TrimSpace(str)
+		if str, ok := raw[statusKey].(string); ok {
+			if trimmed := strings.TrimSpace(str); trimmed != "" {
+				ti.Status = trimmed
 				break
 			}
 		}
 	}
+
 	if ti.Status == "" {
 		if done, ok := raw["done"].(bool); ok {
-			if done {
-				ti.Status = "completed"
-			} else {
-				ti.Status = "pending"
-			}
+			ti.Status = boolTodoStatus(done, "completed")
 		} else if completed, ok := raw["completed"].(bool); ok {
-			if completed {
-				ti.Status = "completed"
-			} else {
-				ti.Status = "pending"
-			}
+			ti.Status = boolTodoStatus(completed, "completed")
 		} else if inProgress, ok := raw["in_progress"].(bool); ok {
-			if inProgress {
-				ti.Status = "in_progress"
-			} else {
-				ti.Status = "pending"
-			}
+			ti.Status = boolTodoStatus(inProgress, "in_progress")
 		}
 	}
 
 	return nil
+}
+
+func boolTodoStatus(flag bool, trueStatus string) string {
+	if flag {
+		return trueStatus
+	}
+	return "pending"
 }
 
 // TodoState is an interface implemented by agent contexts that maintain a task board.
@@ -350,4 +338,3 @@ func IsSafeIdentifier(s string) bool {
 	}
 	return true
 }
-
