@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"math"
 
 	"loop/pkg/agent/tool"
@@ -21,16 +20,35 @@ func TokensFromChars(chars int) int {
 	return tokens
 }
 
+func schemaPropChars(p tool.SchemaProp) int {
+	chars := len(p.Type) + len(p.Description) + 24
+	for _, e := range p.Enum {
+		chars += len(e) + 4
+	}
+	for _, r := range p.Required {
+		chars += len(r) + 4
+	}
+	for k, sub := range p.Properties {
+		chars += len(k) + schemaPropChars(sub) + 8
+	}
+	if p.Items != nil {
+		chars += schemaPropChars(*p.Items)
+	}
+	return chars
+}
+
 func EstimateToolSchemaTokens(tools []tool.Tool) int {
 	if len(tools) == 0 {
 		return 0
 	}
 	chars := 0
 	for _, t := range tools {
-		if b, err := json.Marshal(t); err == nil {
-			chars += len(b)
-		} else {
-			chars += len(t.Function.Name) + len(t.Function.Description)
+		chars += len(t.Type) + len(t.Function.Name) + len(t.Function.Description) + 48
+		for _, req := range t.Function.Parameters.Required {
+			chars += len(req) + 4
+		}
+		for k, prop := range t.Function.Parameters.Properties {
+			chars += len(k) + schemaPropChars(prop) + 8
 		}
 	}
 	return TokensFromChars(chars)

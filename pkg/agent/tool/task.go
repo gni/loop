@@ -1,57 +1,51 @@
 package tool
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 )
 
-func parseTaskID(arguments string) (string, error) {
-	trimmed := strings.TrimSpace(arguments)
-	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
-		var unquoted string
-		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil {
-			trimmed = unquoted
-		}
-	} else if strings.HasPrefix(trimmed, "{") {
-		var args struct {
-			TaskID    interface{} `json:"task_id"`
-			TaskIDAlt interface{} `json:"taskId"`
-			ID        interface{} `json:"id"`
-			Task      interface{} `json:"task"`
-		}
-		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return "", fmt.Errorf("invalid arguments: %w", err)
-		}
-		toString := func(v interface{}) string {
-			if v == nil {
-				return ""
-			}
-			switch val := v.(type) {
-			case string:
-				return strings.TrimSpace(val)
-			case float64:
-				return fmt.Sprintf("%.0f", val)
-			case int:
-				return fmt.Sprintf("%d", val)
-			case int64:
-				return fmt.Sprintf("%d", val)
-			default:
-				return fmt.Sprintf("%v", val)
-			}
-		}
-		if v := FirstNonEmpty(toString(args.TaskID), toString(args.TaskIDAlt), toString(args.ID), toString(args.Task)); v != "" {
-			trimmed = v
-		} else {
-			return "", fmt.Errorf("missing required argument: task_id")
-		}
+func scalarToString(v interface{}) string {
+	if v == nil {
+		return ""
 	}
-	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case float64:
+		return fmt.Sprintf("%.0f", val)
+	case int:
+		return fmt.Sprintf("%d", val)
+	case int64:
+		return fmt.Sprintf("%d", val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+func parseTaskID(arguments string) (string, error) {
+	var raw string
+	var args struct {
+		TaskID    interface{} `json:"task_id"`
+		TaskIDAlt interface{} `json:"taskId"`
+		ID        interface{} `json:"id"`
+		Task      interface{} `json:"task"`
+	}
+	if err := ParseToolArguments(arguments, &args, func(s string) { raw = s }); err != nil {
+		return "", err
+	}
+	id := FirstNonEmpty(
+		strings.TrimSpace(raw),
+		scalarToString(args.TaskID),
+		scalarToString(args.TaskIDAlt),
+		scalarToString(args.ID),
+		scalarToString(args.Task),
+	)
+	if id == "" {
 		return "", fmt.Errorf("missing required argument: task_id")
 	}
-	return trimmed, nil
+	return id, nil
 }
 
 type taskStatusTool struct{}
@@ -71,10 +65,7 @@ func (t *taskStatusTool) Definition() Tool {
 		"task_status",
 		FormatToolDescription("task_status", "Retrieve the execution status and buffered stdout/stderr output of a background task."),
 		map[string]SchemaProp{
-			"task_id": {
-				Type:        "string",
-				Description: FormatParamDescription("task_status", "task_id", "The ID of the background task (e.g. 'task_1')."),
-			},
+			"task_id": StringProp(FormatParamDescription("task_status", "task_id", "The ID of the background task (e.g. 'task_1').")),
 		},
 		"task_id",
 	)
@@ -130,10 +121,7 @@ func (t *taskKillTool) Definition() Tool {
 		"task_kill",
 		FormatToolDescription("task_kill", "Terminate a running background task."),
 		map[string]SchemaProp{
-			"task_id": {
-				Type:        "string",
-				Description: FormatParamDescription("task_kill", "task_id", "The ID of the task to terminate."),
-			},
+			"task_id": StringProp(FormatParamDescription("task_kill", "task_id", "The ID of the task to terminate.")),
 		},
 		"task_id",
 	)
@@ -149,8 +137,7 @@ func (t *taskKillTool) Execute(ctx AgentContext, arguments string) (string, erro
 		taskID = r.ResolveTaskID(taskID)
 	}
 
-	err = ctx.KillTask(taskID)
-	if err != nil {
+	if err := ctx.KillTask(taskID); err != nil {
 		return "", fmt.Errorf(RuntimeMessage("task_kill_failed", "failed to terminate task %q: %w"), taskID, err)
 	}
 

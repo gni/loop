@@ -12,7 +12,6 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-// FileObservation holds the content hash and timestamps of a file inspected during the session.
 type FileObservation struct {
 	Path    string
 	SHA256  string
@@ -20,22 +19,18 @@ type FileObservation struct {
 	ReadAt  time.Time
 }
 
-// FileObservationTracker tracks files inspected during the session and enforces
-// read-before-edit and compare-and-swap (CAS) freshness guarantees.
 type FileObservationTracker struct {
 	mu           sync.RWMutex
 	observations map[string]FileObservation
 	disabled     bool
 }
 
-// NewFileObservationTracker creates a new thread-safe file observation registry.
 func NewFileObservationTracker() *FileObservationTracker {
 	return &FileObservationTracker{
 		observations: make(map[string]FileObservation),
 	}
 }
 
-// SetDisabled enables or disables observation policy enforcement.
 func (fot *FileObservationTracker) SetDisabled(disabled bool) {
 	if fot == nil {
 		return
@@ -57,7 +52,6 @@ func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
 
 	cleanPath := filepath.Clean(absPath)
 	hash := sha256.Sum256(data)
-	hashStr := hex.EncodeToString(hash[:])
 
 	modTime := time.Now()
 	if fi, err := os.Stat(cleanPath); err == nil {
@@ -66,19 +60,16 @@ func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
 
 	fot.observations[cleanPath] = FileObservation{
 		Path:    cleanPath,
-		SHA256:  hashStr,
+		SHA256:  hex.EncodeToString(hash[:]),
 		ModTime: modTime,
 		ReadAt:  time.Now(),
 	}
 }
 
-// RecordRead records that the agent has inspected the content of absPath.
 func (fot *FileObservationTracker) RecordRead(absPath string, data []byte) {
 	fot.recordFile(absPath, data)
 }
 
-// CheckMutationAllowed verifies that a mutation (write/edit) adheres to the read-before-edit
-// and CAS freshness policy.
 func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit bool) error {
 	if fot == nil {
 		return nil
@@ -90,7 +81,6 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 	}
 
 	cleanPath := filepath.Clean(absPath)
-	displayPath := cleanPath
 	base := filepath.Base(cleanPath)
 
 	fi, err := os.Stat(cleanPath)
@@ -99,28 +89,21 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 			if isEdit {
 				return fmt.Errorf("cannot edit '%s': file does not exist on disk. Call 'write' to create new files", base)
 			}
-			// Writing a brand new non-existent file is always allowed
 			return nil
 		}
-		// Unreadable stat (permissions, etc) -> let provider fail naturally
 		return nil
 	}
 
-	// File exists on disk
 	obs, exists := fot.observations[cleanPath]
 	if !exists {
-		// Existing file has NOT been read in this session
-		return fmt.Errorf("cannot modify '%s': file has not been read in this session. You must call 'read' with path '%s' first to inspect its contents before editing or overwriting", base, displayPath)
+		return fmt.Errorf("cannot modify '%s': file has not been read in this session. You must call 'read' with path '%s' first to inspect its contents before editing or overwriting", base, cleanPath)
 	}
 
-	// File was read, check freshness (Compare-And-Swap)
-	if fi.Size() <= 20*1024*1024 { // Only hash files <= 20MB
-		diskData, err := os.ReadFile(cleanPath)
-		if err == nil {
+	if fi.Size() <= 20*1024*1024 {
+		if diskData, err := os.ReadFile(cleanPath); err == nil {
 			diskHash := sha256.Sum256(diskData)
-			diskHashStr := hex.EncodeToString(diskHash[:])
-			if diskHashStr != obs.SHA256 {
-				return fmt.Errorf("cannot modify '%s': file was modified on disk since your last read (SHA256 mismatch). Please call 'read' with path '%s' first to view the latest contents before making modifications", base, displayPath)
+			if hex.EncodeToString(diskHash[:]) != obs.SHA256 {
+				return fmt.Errorf("cannot modify '%s': file was modified on disk since your last read (SHA256 mismatch). Please call 'read' with path '%s' first to view the latest contents before making modifications", base, cleanPath)
 			}
 		}
 	}
@@ -128,16 +111,10 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 	return nil
 }
 
-// RecordMutation updates the observation record after a successful write or edit.
 func (fot *FileObservationTracker) RecordMutation(absPath string, data []byte) {
 	fot.recordFile(absPath, data)
 }
 
-// Forget drops the observation record for absPath, marking any prior read of
-// that file as stale. It is used when a file is mutated outside the tracked
-// write/edit path (e.g. a bash command such as `sed -i`, `cat > f`, `touch`, or
-// `rm`), so the next read-before-edit / CAS check forces a fresh inspection
-// instead of trusting a hash captured before the external mutation.
 func (fot *FileObservationTracker) Forget(absPath string) {
 	if fot == nil {
 		return
@@ -146,15 +123,22 @@ func (fot *FileObservationTracker) Forget(absPath string) {
 	if cleanPath == "" {
 		return
 	}
-
 	fot.mu.Lock()
 	defer fot.mu.Unlock()
-	if fot.disabled {
-		return
+	if !fot.disabled {
+		delete(fot.observations, cleanPath)
 	}
-	delete(fot.observations, cleanPath)
 }
 
-// FileObserver is an optional interface implemented by AgentContext to enforce
-// read-before-edit and CAS policies on file operations.
+func (fot *FileObservationTracker) ForgetAll() {
+	if fot == nil {
+		return
+	}
+	fot.mu.Lock()
+	defer fot.mu.Unlock()
+	if !fot.disabled {
+		fot.observations = make(map[string]FileObservation)
+	}
+}
+
 type FileObserver = domaintool.FileObserver

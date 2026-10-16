@@ -13,6 +13,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -24,24 +25,8 @@ func renderTurnPromptHeader(
 	fromQueue bool,
 	kiReader *interceptor.KeyInterceptorReader,
 ) {
-	borderStyle := style.NewStyle().Foreground(theme.Border)
-	statusStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-	thinkingText := "off"
-	effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
-	if effort != "off" && effort != "none" && effort != "" {
-		thinkingText = effort
-	}
-	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
-	prefix := "─── prompt "
 	width, _ := ui.GetTerminalSize()
-	statusLen := len(ui.StripAnsi(statusPart))
-	prefixLen := len(prefix)
-	dashesCount := width - prefixLen - statusLen - 2
-	if dashesCount < 3 {
-		dashesCount = 3
-	}
-	dashes := strings.Repeat("─", dashesCount)
-	fmt.Fprintf(w, "%s%s\n", borderStyle.Render(prefix+dashes), statusStyle.Render(statusPart))
+	fmt.Fprint(w, render.FormatPromptSeparator(cfg.ShowThinking, cfg.ReasoningEffort, theme, width))
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	if fromQueue {
@@ -80,8 +65,7 @@ func executeREPLTurn(
 		ui.GetUI().ActiveCancelFunc = mam.ActiveAgent.CancelActiveTurn
 		ui.GetUI().StateMu.Unlock()
 
-		err := mam.SendMessage(mam.ActiveAgent.Name, line)
-		if err != nil {
+		if err := mam.SendMessage(mam.ActiveAgent.Name, line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending message: %v\n", err)
 		} else {
 			select {

@@ -103,6 +103,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		ShowRecapLine: !isNonInteractive,
 	})
 	sink := NewAgentSink(a, messages, sessionID)
+	timer := GetTimingRecorder()
 
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
@@ -111,13 +112,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		engine.BeginTurn()
 
-		if a.Config == nil || a.Config.AutoAdaptContext {
-			*messages = CompactHistoricalToolOutputs(*messages)
-		}
-
 		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
 		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
+		timer.Time("compaction", "start")
 		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+		timer.Time("compaction", "end")
 
 		if engine.ShouldRecap() {
 			engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, writerToUse, theme)
@@ -137,6 +136,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		streamErrChan := make(chan error, 1)
 		var assistantMsg *db.Message
 
+		timer.Time("llm", "start")
 		go func() {
 			msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
 			if msg != nil {
@@ -217,6 +217,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 			}
 		}
+		timer.Time("llm", "end")
+
 		if pending := echoFilter.Flush(); pending != "" {
 			sr.WriteReasoning(pending)
 		}
@@ -272,7 +274,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		globalPromptTokens, _ := a.GetGlobalTokens(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 		postEffectiveLimit := a.GetEffectiveContextLimit(globalPromptTokens)
+		timer.Time("compaction", "start")
 		globalPromptTokens, postEffectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokens, assistantMsg.CompletionTokens, postEffectiveLimit)
+		timer.Time("compaction", "end")
 
 		var finalTps float64
 		if dur := a.LastGenerationDuration(); dur > 0 {
@@ -323,7 +327,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		syncPostTurnStatus()
 
+		timer.Time("tool", "start")
 		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), nil)
+		timer.Time("tool", "end")
 		if halted || aborted {
 			return
 		}

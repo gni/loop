@@ -35,6 +35,21 @@ type ToolEntry struct {
 	Guidelines []string
 }
 
+var noBashReplacer = strings.NewReplacer(
+	", and run shell commands in the workspace.", ".",
+	"and run shell commands in the workspace.", ".",
+	", and run shell commands in the workspace", "",
+	"and run shell commands in the workspace", "",
+	", and execute commands in the workspace.", ".",
+	"and execute commands in the workspace.", ".",
+	", and execute commands in the workspace", "",
+	"and execute commands in the workspace", "",
+	"Never use bash for file operations.", "",
+	"Never use bash for file operations", "",
+	"over bash", "for file operations",
+	" in bash", "",
+)
+
 func splitInstruction(instruction string) (identity, guidelines string) {
 	const marker = "Guidelines:"
 	if idx := strings.Index(instruction, marker); idx != -1 {
@@ -62,7 +77,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
-	baseInstruction = strings.TrimSpace(baseInstruction)
 	if userGuidelines == "" {
 		userGuidelines = cfg.UserGuidelines
 	}
@@ -72,10 +86,13 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
+	canSpawnSubagents := false
 	for _, entry := range tools {
 		if entry.Name == "bash" {
 			hasBash = true
-			break
+		}
+		if entry.Name == "create_subagent" || entry.Name == "spawn_subagent" {
+			canSpawnSubagents = true
 		}
 	}
 
@@ -149,9 +166,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		}
 	}
 	if userGuidelines != "" {
-		if !hasBash {
-			userGuidelines = sanitizeNoBashInstruction(userGuidelines)
-		}
 		lines := strings.Split(userGuidelines, "\n")
 		var customLines []string
 		for _, line := range lines {
@@ -180,14 +194,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))
 	} else if cfg.CompactPrompt {
 		sb.WriteString(fmt.Sprintf(t.SkillsEmptySection, skillsDir))
-	}
-
-	canSpawnSubagents := false
-	for _, entry := range tools {
-		if entry.Name == "create_subagent" || entry.Name == "spawn_subagent" {
-			canSpawnSubagents = true
-			break
-		}
 	}
 
 	var maLines strings.Builder
@@ -302,20 +308,8 @@ func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 }
 
 func sanitizeNoBashInstruction(s string) string {
-	s = strings.ReplaceAll(s, ", and run shell commands in the workspace.", ".")
-	s = strings.ReplaceAll(s, "and run shell commands in the workspace.", ".")
-	s = strings.ReplaceAll(s, ", and run shell commands in the workspace", "")
-	s = strings.ReplaceAll(s, "and run shell commands in the workspace", "")
-	s = strings.ReplaceAll(s, ", and execute commands in the workspace.", ".")
-	s = strings.ReplaceAll(s, "and execute commands in the workspace.", ".")
-	s = strings.ReplaceAll(s, ", and execute commands in the workspace", "")
-	s = strings.ReplaceAll(s, "and execute commands in the workspace", "")
-	s = strings.ReplaceAll(s, "Never use bash for file operations.", "")
-	s = strings.ReplaceAll(s, "Never use bash for file operations", "")
-	s = strings.ReplaceAll(s, "over bash", "for file operations")
-	s = strings.ReplaceAll(s, " in bash", "")
-	s = strings.ReplaceAll(s, "  ", " ")
-	return strings.TrimSpace(s)
+	cleaned := noBashReplacer.Replace(s)
+	return strings.TrimSpace(strings.ReplaceAll(cleaned, "  ", " "))
 }
 
 func normalizeRuleKey(rule string) string {

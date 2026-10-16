@@ -10,6 +10,8 @@ import (
 )
 
 var (
+	reJSONStringKV = regexp.MustCompile(`"([a-zA-Z0-9_]+)"\s*:\s*"((?:\\.|[^"\\])*)"`)
+
 	commandKeys = []string{
 		"CommandLine", "command", "cmd", "script", "code", "input",
 		"arguments", "args", "c", "exec", "run", "shell", "sh",
@@ -39,6 +41,27 @@ var (
 	}
 )
 
+func extractRawJSONStrings(raw string) map[string]string {
+	matches := reJSONStringKV.FindAllStringSubmatch(raw, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(matches))
+	for _, m := range matches {
+		k := strings.ToLower(m[1])
+		if _, exists := out[k]; exists {
+			continue
+		}
+		var unquoted string
+		if err := json.Unmarshal([]byte(`"`+m[2]+`"`), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
+			out[k] = strings.TrimSpace(unquoted)
+		} else if trimmed := strings.TrimSpace(m[2]); trimmed != "" {
+			out[k] = trimmed
+		}
+	}
+	return out
+}
+
 func ExtractToolTarget(toolName string, argsJSON string) string {
 	trimmed := strings.TrimSpace(argsJSON)
 	if trimmed == "" {
@@ -55,6 +78,7 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
 		_ = json.Unmarshal([]byte(RepairArgsJSON(trimmed)), &argsMap)
 	}
+	var regexPairs map[string]string
 
 	getString := func(keys ...string) string {
 		for _, key := range keys {
@@ -70,13 +94,11 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 					}
 				}
 			}
-			regex := regexp.MustCompile(fmt.Sprintf(`"(?i)%s"\s*:\s*"((?:\\.|[^"\\])*)"`, regexp.QuoteMeta(key)))
-			if matches := regex.FindStringSubmatch(trimmed); len(matches) > 1 {
-				var unquoted string
-				if err := json.Unmarshal([]byte(`"`+matches[1]+`"`), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
-					return strings.TrimSpace(unquoted)
-				}
-				return strings.TrimSpace(matches[1])
+			if regexPairs == nil {
+				regexPairs = extractRawJSONStrings(trimmed)
+			}
+			if v := regexPairs[strings.ToLower(key)]; v != "" {
+				return v
 			}
 		}
 		return ""
@@ -221,14 +243,10 @@ func ExtractToolInstructions(argsJSON string) string {
 		}
 	}
 
+	regexPairs := extractRawJSONStrings(trimmed)
 	for _, k := range instructionKeys {
-		regex := regexp.MustCompile(fmt.Sprintf(`"(?i)%s"\s*:\s*"((?:\\.|[^"\\])*)"`, regexp.QuoteMeta(k)))
-		if matches := regex.FindStringSubmatch(trimmed); len(matches) > 1 {
-			var unquoted string
-			if err := json.Unmarshal([]byte(`"`+matches[1]+`"`), &unquoted); err == nil && strings.TrimSpace(unquoted) != "" {
-				return strings.TrimSpace(unquoted)
-			}
-			return strings.TrimSpace(matches[1])
+		if v := regexPairs[strings.ToLower(k)]; v != "" {
+			return v
 		}
 	}
 

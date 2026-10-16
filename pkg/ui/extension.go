@@ -9,15 +9,69 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/tool"
+	"loop/pkg/ui/render"
 )
 
-// RunExtension checks for a custom executable script matching the slash command and runs it securely.
+type ExtensionInfo = render.ExtensionInfo
+
+func init() {
+	render.ExtensionCounter = func(workspaceRoot string) int {
+		return len(ListExtensions(workspaceRoot))
+	}
+}
+
+func ListExtensions(workspaceRoot string) []ExtensionInfo {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
+	}
+	if workspaceRoot != "" {
+		dirs = append(dirs, filepath.Join(workspaceRoot, "extensions"))
+	}
+
+	var exts []ExtensionInfo
+	seen := make(map[string]bool)
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		loc := "project"
+		if strings.Contains(dir, ".loop") {
+			loc = "global"
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if info, err := os.Stat(path); err == nil && info.Mode()&0111 != 0 {
+				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+				cmdName := "/" + strings.ToLower(base)
+				if !seen[cmdName] {
+					seen[cmdName] = true
+					exts = append(exts, ExtensionInfo{
+						Name:     cmdName,
+						Path:     path,
+						Location: loc,
+					})
+				}
+			}
+		}
+	}
+
+	sort.Slice(exts, func(i, j int) bool { return exts[i].Name < exts[j].Name })
+	return exts
+}
+
 func RunExtension(
 	a *agent.Agent,
 	cmdName string,
@@ -29,62 +83,32 @@ func RunExtension(
 		return true, fmt.Errorf("local extensions are disabled for this workspace (run with trust to enable)")
 	}
 
-	// Strip leading slash (e.g. "/stats" -> "stats")
 	name := strings.TrimPrefix(cmdName, "/")
 	if !tool.IsSafeIdentifier(name) {
 		return false, nil
 	}
 
-	// Define extension directories (both global and workspace-local)
-	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
-	}
-	dirs = append(dirs, filepath.Join(a.GetWorkspaceRoot(), "extensions"))
-
+	targetCmd := "/" + strings.ToLower(name)
 	var extPath string
-	for _, dir := range dirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			continue
-		}
-
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-
-			// Match base filename (e.g. "stats" matches "stats.py", "stats.sh", "stats")
-			base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			if strings.EqualFold(base, name) {
-				pluginPath := filepath.Join(dir, entry.Name())
-				info, err := os.Stat(pluginPath)
-				if err == nil && info.Mode()&0111 != 0 {
-					extPath = pluginPath
-					break
-				}
-			}
-		}
-		if extPath != "" {
+	for _, ext := range ListExtensions(a.GetWorkspaceRoot()) {
+		if ext.Name == targetCmd {
+			extPath = ext.Path
 			break
 		}
 	}
 
 	if extPath == "" {
-		return false, nil // No matching extension found
+		return false, nil
 	}
 
-	// Enforce 15-second execution timeout
-	ctxTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	parentCtx := context.Background()
+	if a != nil {
+		parentCtx = a.Context()
+	}
+	ctxTimeout, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctxTimeout, extPath, args...)
-
-	// Pass current conversation messages as a JSON array to stdin
 	if messages != nil {
 		if jsonData, err := json.Marshal(*messages); err == nil {
 			cmd.Stdin = bytes.NewReader(jsonData)
@@ -100,7 +124,6 @@ func RunExtension(
 		return true, fmt.Errorf("extension timed out after 15 seconds")
 	}
 
-	// Output stdout directly to the terminal writer
 	if stdout.Len() > 0 {
 		_, _ = io.Copy(w, &stdout)
 	}

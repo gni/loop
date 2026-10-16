@@ -55,88 +55,84 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				ma.HistoryMu.Unlock()
 
 				taskID := msg.ToolCallID
-				if taskID != "" && ma.Manager != nil {
-					ma.Manager.UpdateTaskStatus(taskID, "running", "", nil)
-					_ = ma.Manager.SaveAgentState(ma, "running")
-				} else if ma.Manager != nil {
+				if ma.Manager != nil {
+					if taskID != "" {
+						ma.Manager.UpdateTaskStatus(taskID, "running", "", nil)
+					}
 					_ = ma.Manager.SaveAgentState(ma, "running")
 				}
 
-				if msg.Role == "user" {
-					writer := w
-					if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
-						writer = ma.BaseAgent.CurrentWriter()
-					}
-					fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
-						style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-						msg.Name,
-						msg.Content,
-					)
+				if msg.Role != "user" {
+					continue
+				}
 
-					turnCtx, turnCancel := context.WithCancel(ma.Context)
-					ma.HistoryMu.Lock()
-					ma.ActiveContext = turnCtx
-					ma.ActiveCancel = turnCancel
-					ma.ActiveStarted = time.Now()
-					ma.HistoryMu.Unlock()
+				writer := w
+				if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
+					writer = ma.BaseAgent.CurrentWriter()
+				}
+				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
+					style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+					msg.Name,
+					msg.Content,
+				)
 
-					response, err := ma.executeLoop(turnCtx, writer, theme)
+				turnCtx, turnCancel := context.WithCancel(ma.Context)
+				ma.HistoryMu.Lock()
+				ma.ActiveContext = turnCtx
+				ma.ActiveCancel = turnCancel
+				ma.ActiveStarted = time.Now()
+				ma.HistoryMu.Unlock()
 
-					turnCancel()
-					ma.HistoryMu.Lock()
-					ma.ActiveContext = nil
-					ma.ActiveCancel = nil
-					ma.ActiveStarted = time.Time{}
-					ma.HistoryMu.Unlock()
+				response, err := ma.executeLoop(turnCtx, writer, theme)
 
-					if err != nil {
-						if taskID != "" && ma.Manager != nil {
+				turnCancel()
+				ma.HistoryMu.Lock()
+				ma.ActiveContext = nil
+				ma.ActiveCancel = nil
+				ma.ActiveStarted = time.Time{}
+				ma.HistoryMu.Unlock()
+
+				if err != nil {
+					if ma.Manager != nil {
+						if taskID != "" {
 							ma.Manager.UpdateTaskStatus(taskID, "failed", "", err)
 						}
-						if ma.Manager != nil {
-							_ = ma.Manager.SaveAgentState(ma, "failed")
-						}
+						_ = ma.Manager.SaveAgentState(ma, "failed")
+					}
 
+					if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled) {
+						label := "error"
 						if errors.Is(err, context.DeadlineExceeded) {
-							errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-							fmt.Fprintf(writer, "\n%s [%s] timed out: %v\n",
-								errStyle.Render("!"),
-								style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-								err,
-							)
-						} else if !errors.Is(err, context.Canceled) {
-							errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-							fmt.Fprintf(writer, "\n%s [%s] error: %v\n",
-								errStyle.Render("!"),
-								style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-								err,
-							)
+							label = "timed out"
 						}
-						errMsg := db.Message{
-							Role:    "assistant",
-							Name:    ma.Name,
-							Content: fmt.Sprintf("Error: %v", err),
-						}
-						select {
-						case ma.Output <- errMsg:
-						case <-ma.Context.Done():
-							return
-						}
-						continue
-					}
-
-					if taskID != "" && ma.Manager != nil {
-						ma.Manager.UpdateTaskStatus(taskID, "completed", response.Content, nil)
-					}
-					if ma.Manager != nil {
-						_ = ma.Manager.SaveAgentState(ma, "idle")
+						errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+						fmt.Fprintf(writer, "\n%s [%s] %s: %v\n",
+							errStyle.Render("!"),
+							style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+							label,
+							err,
+						)
 					}
 
 					select {
-					case ma.Output <- response:
+					case ma.Output <- db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", err)}:
 					case <-ma.Context.Done():
 						return
 					}
+					continue
+				}
+
+				if ma.Manager != nil {
+					if taskID != "" {
+						ma.Manager.UpdateTaskStatus(taskID, "completed", response.Content, nil)
+					}
+					_ = ma.Manager.SaveAgentState(ma, "idle")
+				}
+
+				select {
+				case ma.Output <- response:
+				case <-ma.Context.Done():
+					return
 				}
 			}
 		}
@@ -150,17 +146,14 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	}
 	rawW := agent.UnwrapWriter(writer)
 
-	maxSteps := ma.BaseAgent.Config.MaxReasoningSteps
-	if maxSteps <= 0 {
-		maxSteps = 30
-	}
-
-	guidedMode := false
-	allowApproval := false
-	runHooks := false
+	maxSteps := 30
+	var guidedMode, allowApproval, runHooks bool
 	if ma.BaseAgent != nil {
 		guidedMode = ma.BaseAgent.IsGuidedMode()
 		if ma.BaseAgent.Config != nil {
+			if ma.BaseAgent.Config.MaxReasoningSteps > 0 {
+				maxSteps = ma.BaseAgent.Config.MaxReasoningSteps
+			}
 			allowApproval = guidedMode
 			runHooks = ma.BaseAgent.Config.BeforeToolHook != "" || ma.BaseAgent.Config.AfterToolHook != ""
 		}
@@ -178,6 +171,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		},
 	})
 	sink := newSwarmSink(ma)
+
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
 			return db.Message{}, ctx.Err()
@@ -197,8 +191,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		copy(historyCopy, ma.History)
 		ma.HistoryMu.RUnlock()
 
+		allowlist := ma.GetToolAllowlist()
 		if ma.BaseAgent != nil {
-			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(ma.GetToolAllowlist())
+			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
 			ma.BaseAgent.DebugLogLLMRequest("subagent:"+ma.Name, iter, ma.BaseAgent.Config.Model, ma.BaseAgent.Config.Endpoint, historyCopy, toolsForLog)
 		}
 
@@ -208,7 +203,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		var assistantMsg *db.Message
 		go func() {
-			allowlist := ma.GetToolAllowlist()
 			msg, err := ma.BaseAgent.StreamChatCompletions(ctx, historyCopy, allowlist, chunkChan)
 			if msg != nil {
 				assistantMsg = msg
@@ -220,8 +214,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		ma.StreamBufferMu.Lock()
 		ma.StreamBuffer = new(bytes.Buffer)
 		ma.StreamBufferMu.Unlock()
-		teeWriter := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
-		writer = teeWriter
+		teeW := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
+
 		var lastUserPrompt string
 		for i := len(historyCopy) - 1; i >= 0; i-- {
 			if historyCopy[i].Role == "user" {
@@ -230,13 +224,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 		}
 
-		ncw := agent.NewNewlineCounterWriter(writer)
-		var sr agent.StreamRenderer
+		ncw := agent.NewNewlineCounterWriter(teeW)
 		enableThinking := false
 		if ma.BaseAgent != nil && ma.BaseAgent.Config != nil {
 			effort := strings.ToLower(strings.TrimSpace(ma.BaseAgent.Config.ReasoningEffort))
 			enableThinking = ma.BaseAgent.Config.ShowThinking && effort != "off" && effort != "none"
 		}
+		var sr agent.StreamRenderer
 		if ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
 			sr = ma.BaseAgent.UI.NewStreamRenderer(ncw, theme, enableThinking, ma.BaseAgent.Config.StreamWrites, ma.Name)
 		} else {
@@ -247,14 +241,26 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
 
 		var responseHeaderStarted bool
-		var subagentStreamChars int
-		subagentCompletionTokens := 0
-		var subagentGenStart time.Time
-		var lastDraw time.Time
+		var subagentStreamChars, subagentCompletionTokens int
+		var subagentGenStart, lastDraw time.Time
 		subagentCtxLimit := 128000
 		if ma.BaseAgent != nil {
-			estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, ma.GetToolAllowlist())
+			estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, allowlist)
 			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
+		}
+
+		startResponseHeader := func() {
+			if !responseHeaderStarted {
+				fmt.Fprintf(ncw, "\n[%s] response: ", style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name))
+				responseHeaderStarted = true
+			}
+		}
+
+		updateSubagentStatus := func(generating bool, tps float64, tokens int) {
+			if ma.Parent == nil && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
+				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
+			}
 		}
 
 		for chunk := range chunkChan {
@@ -270,66 +276,48 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 			if chunk.Type == "reasoning" {
 				if enableThinking {
-					cleaned := echoFilter.Write(chunk.Content)
-					if cleaned == "" {
-						continue
+					if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
+						startResponseHeader()
+						sr.WriteReasoning(cleaned)
 					}
-					if !responseHeaderStarted {
-						fmt.Fprintf(ncw, "\n[%s] response: ",
-							style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-						)
-						responseHeaderStarted = true
-					}
-					sr.WriteReasoning(cleaned)
 				}
 			} else {
-				if !responseHeaderStarted {
-					fmt.Fprintf(ncw, "\n[%s] response: ",
-						style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-					)
-					responseHeaderStarted = true
-				}
-
-				if chunk.Type == "text" {
+				startResponseHeader()
+				switch chunk.Type {
+				case "text":
 					sr.Write(chunk.Content)
-				} else if chunk.Type == "tool_name" {
+				case "tool_name":
 					if chunk.ToolCallIndex == 0 {
 						sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
 					}
-				} else if chunk.Type == "tool_target" {
+				case "tool_target":
 					if chunk.ToolCallIndex == 0 {
 						sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
 					}
-				} else if chunk.Type == "tool_call" {
+				case "tool_call":
 					if chunk.ToolCallIndex == 0 {
 						sr.WriteToolCall(chunk.Content)
 					}
 				}
 			}
 
-			now := time.Now()
-			if ma.Parent == nil && now.Sub(lastDraw) >= 100*time.Millisecond && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-				elapsed := now.Sub(subagentGenStart).Seconds()
+			if now := time.Now(); now.Sub(lastDraw) >= 100*time.Millisecond {
 				var tps float64
-				if elapsed > 0 {
+				if elapsed := now.Sub(subagentGenStart).Seconds(); elapsed > 0 {
 					tps = float64(subagentCompletionTokens) / elapsed
 				}
-
-				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, subagentCtxLimit, true, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
-				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
+				updateSubagentStatus(true, tps, subagentCompletionTokens)
 				lastDraw = now
 			}
 		}
+
 		if dropped := ma.BaseAgent.DroppedChunks() - dropsBefore; dropped > 0 && ma.BaseAgent.UI != nil {
 			fmt.Fprintf(ncw, "\n[%s] output truncated: %d stream chunk(s) could not be delivered\n",
 				style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), dropped)
 		}
 
 		if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
-			fmt.Fprintf(ncw, "\n[%s] response: ",
-				style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-			)
-			responseHeaderStarted = true
+			startResponseHeader()
 			sr.WriteReasoning(pending)
 		}
 		sr.Flush()
@@ -338,26 +326,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			subagentCompletionTokens = assistantMsg.CompletionTokens
 		}
 
-		if ma.Parent == nil && ma.BaseAgent != nil && !subagentGenStart.IsZero() {
-			elapsed := time.Since(subagentGenStart).Seconds()
+		if !subagentGenStart.IsZero() {
 			var finalTps float64
-			if elapsed > 0 {
+			if elapsed := time.Since(subagentGenStart).Seconds(); elapsed > 0 {
 				finalTps = float64(subagentCompletionTokens) / elapsed
 			}
-
-			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, subagentCompletionTokens, subagentCtxLimit, false, finalTps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
-			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
+			updateSubagentStatus(false, finalTps, subagentCompletionTokens)
 		}
 
 		ma.StreamBufferMu.Lock()
 		ma.StreamBuffer = nil
 		ma.StreamBufferMu.Unlock()
 
-		err := <-errChan
-		if err != nil {
+		if err := <-errChan; err != nil {
 			return db.Message{}, err
 		}
-
 		if assistantMsg == nil {
 			return db.Message{}, fmt.Errorf("received empty completion response")
 		}
@@ -370,10 +353,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		ma.History = append(ma.History, *assistantMsg)
 		ma.HistoryMu.Unlock()
 
-		if ma.Parent == nil && ma.BaseAgent != nil && ma.BaseAgent.UI != nil && assistantMsg.CompletionTokens > 0 {
-			ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, assistantMsg.CompletionTokens, subagentCtxLimit, false, 0, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
-			ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
-		}
 		if ma.BaseAgent != nil {
 			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, ma.BaseAgent.LastGenerationDuration())
 		}
@@ -404,8 +383,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		})
 		if halted || aborted {
 			haltMsg := engine.HaltNotice()
-			last := sink.Messages()
-			if len(last) > 0 && last[len(last)-1].Role == "assistant" {
+			if last := sink.Messages(); len(last) > 0 && last[len(last)-1].Role == "assistant" {
 				haltMsg = last[len(last)-1].Content
 			}
 			if ma.Manager != nil && halted {

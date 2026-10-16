@@ -18,15 +18,10 @@ type ToolCall = message.ToolCall
 type Message = message.Message
 type SessionInfo = session.SessionInfo
 
-func validateSessionID(sessionID string) error {
-	return session.ValidateID(sessionID)
-}
-
 func NewUUID() string {
 	return session.NewUUID()
 }
 
-// JSONLStore implements session.Store using JSONL files stored in a designated directory.
 type JSONLStore struct {
 	dir string
 	mu  sync.RWMutex
@@ -42,15 +37,22 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	return &JSONLStore{dir: clean}, nil
 }
 
-// SaveMessage appends a message to the specified session with proper DAG ID and ParentID linkage.
-func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
-	if err := session.ValidateID(sessionID); err != nil {
-		return err
+func (s *JSONLStore) checkReady(sessionID string) error {
+	if sessionID != "" {
+		if err := session.ValidateID(sessionID); err != nil {
+			return err
+		}
 	}
 	if s == nil || s.dir == "" {
 		return fmt.Errorf("sessions directory not initialized")
 	}
+	return nil
+}
 
+func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
+	if err := s.checkReady(sessionID); err != nil {
+		return err
+	}
 	if msg.Role == message.RoleUser && msg.Content == "" {
 		return nil
 	}
@@ -61,8 +63,7 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	filePath := filepath.Join(s.dir, sessionID+".jsonl")
 	var parentID string
 	if entries, err := readEntries(filePath); err == nil && len(entries) > 0 {
-		leaf := session.LeafPath(entries, "")
-		if len(leaf) > 0 {
+		if leaf := session.LeafPath(entries, ""); len(leaf) > 0 {
 			parentID = leaf[len(leaf)-1].ID
 		}
 	}
@@ -94,13 +95,9 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	return nil
 }
 
-// LoadMessages loads the active leaf path of messages for a session.
 func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
-	if err := session.ValidateID(sessionID); err != nil {
+	if err := s.checkReady(sessionID); err != nil {
 		return nil, err
-	}
-	if s == nil || s.dir == "" {
-		return nil, fmt.Errorf("sessions directory not initialized")
 	}
 
 	s.mu.RLock()
@@ -122,10 +119,7 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 
 	var messages []message.Message
 	for _, record := range activeRecords {
-		if record.Type == "branch" || record.Type == "session" {
-			continue
-		}
-		if record.Message.Role == "" {
+		if record.Type == "branch" || record.Type == "session" || record.Message.Role == "" {
 			continue
 		}
 		if record.Message.Role == message.RoleUser && record.Message.Content == "" {
@@ -140,33 +134,21 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 	return messages, nil
 }
 
-// HasMessages checks if a session has any persisted messages.
 func (s *JSONLStore) HasMessages(sessionID string) bool {
-	if err := session.ValidateID(sessionID); err != nil {
+	if s.checkReady(sessionID) != nil {
 		return false
 	}
-	if s == nil || s.dir == "" {
-		return false
-	}
-
 	s.mu.RLock()
 	filePath := filepath.Join(s.dir, sessionID+".jsonl")
 	s.mu.RUnlock()
 
 	info, err := os.Stat(filePath)
-	if err != nil {
-		return false
-	}
-	return info.Size() > 0
+	return err == nil && info.Size() > 0
 }
 
-// RewriteSession atomically replaces the messages in a session while preserving DAG linkage.
 func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message) error {
-	if err := session.ValidateID(sessionID); err != nil {
+	if err := s.checkReady(sessionID); err != nil {
 		return err
-	}
-	if s == nil || s.dir == "" {
-		return fmt.Errorf("sessions directory not initialized")
 	}
 
 	s.mu.Lock()
@@ -231,11 +213,9 @@ func InitDB(dirPath string) error {
 	if err != nil {
 		return err
 	}
-
 	storeMu.Lock()
 	defaultStore = store
 	storeMu.Unlock()
-
 	return nil
 }
 
@@ -248,12 +228,16 @@ func getStore() (*JSONLStore, error) {
 	return defaultStore, nil
 }
 
-func SaveMessage(sessionID string, msg Message) error {
+func withStore(fn func(*JSONLStore) error) error {
 	store, err := getStore()
 	if err != nil {
 		return err
 	}
-	return store.SaveMessage(sessionID, msg)
+	return fn(store)
+}
+
+func SaveMessage(sessionID string, msg Message) error {
+	return withStore(func(s *JSONLStore) error { return s.SaveMessage(sessionID, msg) })
 }
 
 func LoadMessages(sessionID string) ([]Message, error) {
@@ -266,16 +250,9 @@ func LoadMessages(sessionID string) ([]Message, error) {
 
 func HasMessages(sessionID string) bool {
 	store, err := getStore()
-	if err != nil {
-		return false
-	}
-	return store.HasMessages(sessionID)
+	return err == nil && store.HasMessages(sessionID)
 }
 
 func RewriteSession(sessionID string, messages []Message) error {
-	store, err := getStore()
-	if err != nil {
-		return err
-	}
-	return store.RewriteSession(sessionID, messages)
+	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
 }

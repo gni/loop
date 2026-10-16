@@ -80,39 +80,38 @@ func handleContextCommand(
 		rl = kiReader.RL
 	}
 
-	arg := strings.ToLower(parts[1])
-	if arg == "auto" || arg == "on" || arg == "enable" || arg == "off" || arg == "disable" {
-		enable := (arg == "auto" || arg == "on" || arg == "enable")
-		a.Config.AutoAdaptContext = enable
+	syncContextBar := func(activeLimit int) {
 		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().LastStatusBarText = ""
+		ui.GetUI().StateMu.Unlock()
+		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, activeLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+		ui.DrawStatusBar(os.Stderr, *theme)
+	}
+
+	switch strings.ToLower(parts[1]) {
+	case "auto", "on", "enable", "off", "disable":
+		arg := strings.ToLower(parts[1])
+		enable := arg == "auto" || arg == "on" || arg == "enable"
+		a.Config.AutoAdaptContext = enable
 		newLimit := a.GetEffectiveContextLimit(pTok)
 		if enable {
 			fmt.Fprintf(w, "context auto-adaptation enabled (active tier: %d tokens).\n", newLimit)
 		} else {
 			fmt.Fprintf(w, "context auto-adaptation disabled (ceiling: %d tokens).\n", newLimit)
 		}
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().LastStatusBarText = ""
-		ui.GetUI().StateMu.Unlock()
-		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, newLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
-		ui.DrawStatusBar(os.Stderr, *theme)
-		return
-	}
+		syncContextBar(newLimit)
 
-	newLimit, err := strconv.Atoi(parts[1])
-	if err != nil || newLimit <= 0 {
-		fmt.Fprintf(w, "Invalid context limit value: %v (must be positive integer or 'auto')\n", parts[1])
-		return
+	default:
+		newLimit, err := strconv.Atoi(parts[1])
+		if err != nil || newLimit <= 0 {
+			fmt.Fprintf(w, "Invalid context limit value: %v (must be positive integer or 'auto')\n", parts[1])
+			return
+		}
+		a.Config.ContextWindowLimit = newLimit
+		activeLimit := a.GetEffectiveContextLimit(pTok)
+		fmt.Fprintf(w, "context window limit set to %d tokens (active limit: %d tokens).\n", newLimit, activeLimit)
+		syncContextBar(activeLimit)
 	}
-	a.Config.ContextWindowLimit = newLimit
-	_ = config.SaveConfig(a.ConfigPath, a.Config)
-	activeLimit := a.GetEffectiveContextLimit(pTok)
-	fmt.Fprintf(w, "context window limit set to %d tokens (active limit: %d tokens).\n", newLimit, activeLimit)
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().LastStatusBarText = ""
-	ui.GetUI().StateMu.Unlock()
-	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, activeLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-	ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
-	ui.DrawStatusBar(os.Stderr, *theme)
 }

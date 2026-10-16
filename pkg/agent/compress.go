@@ -2,23 +2,19 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"time"
 
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
 
-// compressionThreshold is the single source of truth for the compression trigger
-// ratio. It was previously hard-coded at 0.80 in three places (main loop pre- and
-// post-iteration blocks and the subagent path), so a config change could not be
-// applied consistently.
 func (a *Agent) CompressionThreshold() float64 {
 	if a != nil && a.Config != nil && a.Config.CompressionThreshold > 0 {
 		return a.Config.CompressionThreshold
@@ -26,11 +22,6 @@ func (a *Agent) CompressionThreshold() float64 {
 	return 0.95
 }
 
-// CompactionTrigger reports whether history should be compressed. The trigger is
-// reserve-based rather than a bare ratio: the window must leave room for the
-// summarizer call itself plus the completion floor, otherwise a ratio trigger
-// fires too late and the next request overflows. The ratio is kept as a
-// secondary ceiling so a low configured ratio still fires early.
 func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio ...float64) bool {
 	if effectiveLimit <= 0 || promptTokens <= 0 {
 		return false
@@ -41,9 +32,6 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 	r := CompressionThresholdRatio()
 	if len(ratio) > 0 && ratio[0] > 0 {
 		r = ratio[0]
-		// When a custom ratio is supplied (e.g. 0.90 or 0.95), do not allow the default
-		// reserve to prematurely force compression before the target ratio, provided
-		// a safe headroom floor (4096 tokens) is preserved.
 		ratioHeadroom := int((1.0 - r) * float64(effectiveLimit))
 		const minSafeHeadroom = 4096
 		if ratioHeadroom < reserve && ratioHeadroom >= minSafeHeadroom {
@@ -54,8 +42,6 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 	if decision >= effectiveLimit-reserve {
 		return true
 	}
-	// The configured ratio is kept as a secondary ceiling so a low ratio still
-	// fires early for large windows.
 	return decision >= int(r*float64(effectiveLimit))
 }
 
@@ -71,8 +57,6 @@ func CompressionThresholdRatio() float64 {
 	return 0.80
 }
 
-// maybeCompress is the single compression call site shared by the pre- and
-// post-iteration blocks of the main loop.
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
 	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
 		a.CompressHistory(ctx, messages, sessionID, theme, w)
@@ -82,8 +66,6 @@ func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessi
 	return promptTokens, effectiveLimit, false
 }
 
-// keepRecentMessageCount returns the size of the recent suffix of history that
-// fits inside the token budget reserved for kept messages.
 func keepRecentMessageCount(messages []db.Message) int {
 	budget := limits.CompactionKeepRecentTokens()
 	kept := 0
@@ -96,11 +78,12 @@ func keepRecentMessageCount(messages []db.Message) int {
 		used += cost
 		kept++
 	}
+	for kept < len(messages)-1 && messages[len(messages)-kept].Role == "tool" {
+		kept++
+	}
 	return kept
 }
 
-// CompactHistoricalToolOutputs condenses verbose tool outputs from completed earlier turns,
-// preserving the latest turn's tool outputs in full to protect prefix cache and prevent token explosion.
 func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 	if len(messages) == 0 {
 		return messages
@@ -116,11 +99,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 
 	out := make([]db.Message, len(messages))
 	for i, m := range messages {
-		// Only compact historical tool outputs that occur before the latest assistant turn
-		// Idempotency: the main loop compacts *messages in place and request.go runs
-		// again on the same slice, so an already-compact output must not be truncated
-		// a second time (that would fold the omission marker into a new truncation).
-		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 && !strings.Contains(m.Content, "omitted") {
+		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 && !strings.Contains(m.Content, "omitted") && !strings.Contains(m.Content, "truncated from historical") {
 			msgCopy := m
 			lines := strings.Split(m.Content, "\n")
 			if len(lines) > 20 {
@@ -128,7 +107,9 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 				tail := strings.Join(lines[len(lines)-5:], "\n")
 				msgCopy.Content = fmt.Sprintf("%s\n\n[... %d lines omitted from historical '%s' output to preserve context cache; call '%s' again if needed ...]\n\n%s", head, len(lines)-15, m.Name, m.Name, tail)
 			} else {
-				msgCopy.Content = m.Content[:750] + fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", m.Name) + m.Content[len(m.Content)-250:]
+				head := filetool.UTF8SafePrefix(m.Content, 750)
+				tail := filetool.UTF8SafeSuffix(m.Content, 250)
+				msgCopy.Content = head + fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", m.Name) + tail
 			}
 			out[i] = msgCopy
 		} else {
@@ -139,8 +120,6 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 	return out
 }
 
-// CompressHistory summarizes older turns into a compact technical summary message
-// when conversation context approaches token limits.
 func (a *Agent) CompressHistory(
 	ctx context.Context,
 	messages *[]db.Message,
@@ -148,9 +127,6 @@ func (a *Agent) CompressHistory(
 	theme style.UITheme,
 	w io.Writer,
 ) {
-	// Keep-recent is token-budgeted rather than a fixed message count: the tail
-	// that survives compression is the largest recent suffix that still fits
-	// inside the compaction budget.
 	keepMsgCount := keepRecentMessageCount(*messages)
 	if keepMsgCount < 2 {
 		keepMsgCount = 2
@@ -164,10 +140,7 @@ func (a *Agent) CompressHistory(
 
 	toCompress := (*messages)[1:keepIdx]
 
-	// Cap the transcript: without a global bound a long history produced an
-	// unbounded summarization prompt that could itself exceed the context window.
 	const maxTranscriptChars = 24000
-
 	var transcriptBuilder strings.Builder
 	readFilesMap := make(map[string]bool)
 	modifiedFilesMap := make(map[string]bool)
@@ -177,31 +150,28 @@ func (a *Agent) CompressHistory(
 			transcriptBuilder.WriteString("[transcript truncated: summarization budget reached]\n")
 			break
 		}
-		if m.Role == "user" {
+		switch m.Role {
+		case "user":
 			transcriptBuilder.WriteString(fmt.Sprintf("User: %s\n\n", m.Content))
-		} else if m.Role == "assistant" {
+		case "assistant":
 			if m.Content != "" {
 				transcriptBuilder.WriteString(fmt.Sprintf("Agent: %s\n\n", m.Content))
 			}
-			if len(m.ToolCalls) > 0 {
-				for _, tc := range m.ToolCalls {
-					transcriptBuilder.WriteString(fmt.Sprintf("Agent requested tool call: %s(%s)\n\n", tc.Function.Name, tc.Function.Arguments))
-					var fileArg struct {
-						Path string `json:"path"`
-					}
-					if json.Unmarshal([]byte(tc.Function.Arguments), &fileArg) == nil && fileArg.Path != "" {
-						if tc.Function.Name == "read" {
-							readFilesMap[fileArg.Path] = true
-						} else if tc.Function.Name == "write" || tc.Function.Name == "edit" {
-							modifiedFilesMap[fileArg.Path] = true
-						}
+			for _, tc := range m.ToolCalls {
+				transcriptBuilder.WriteString(fmt.Sprintf("Agent requested tool call: %s(%s)\n\n", tc.Function.Name, tc.Function.Arguments))
+				if path := filetool.ExtractFilePath(tc.Function.Arguments); path != "" {
+					switch tc.Function.Name {
+					case "read":
+						readFilesMap[path] = true
+					case "write", "edit":
+						modifiedFilesMap[path] = true
 					}
 				}
 			}
-		} else if m.Role == "tool" {
+		case "tool":
 			out := m.Content
 			if len(out) > 400 {
-				out = out[:400] + "... (truncated)"
+				out = filetool.UTF8SafePrefix(out, 400) + "... (truncated)"
 			}
 			transcriptBuilder.WriteString(fmt.Sprintf("Tool Output (%s): %s\n\n", m.Name, out))
 		}
@@ -217,28 +187,17 @@ func (a *Agent) CompressHistory(
 	sort.Strings(readFiles)
 	sort.Strings(modifiedFiles)
 
-	transcript := transcriptBuilder.String()
-	summaryPrompt := fmt.Sprintf(MasterSystemPrompts.CompressionPrompt, transcript)
-
-	summaryMsgs := []db.Message{
-		{
-			Role:    "user",
-			Content: summaryPrompt,
-		},
-	}
+	summaryPrompt := fmt.Sprintf(MasterSystemPrompts.CompressionPrompt, transcriptBuilder.String())
+	summaryMsgs := []db.Message{{Role: "user", Content: summaryPrompt}}
 
 	infoStyle := style.NewStyle().Foreground(theme.Primary).Italic(true)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, infoStyle.Render("[system: context usage threshold reached. compressing older conversation history...]"))
 
-	// The summarizer has no renderer, so its chunks are discarded. The drain loop
-	// must outlive the call and exit when the channel is closed, otherwise every
-	// compression leaks one goroutine that holds the channel forever.
 	dummyChan := make(chan StreamChunk, 100)
 	drained := make(chan struct{})
 	go func() {
 		for range dummyChan {
-			// Discard summarizer stream chunks
 		}
 		close(drained)
 	}()
@@ -255,16 +214,23 @@ func (a *Agent) CompressHistory(
 		return
 	}
 
-	summaryText := summaryAssistantMsg.Content
 	var fileOpsHeader string
 	if len(readFiles) > 0 || len(modifiedFiles) > 0 {
 		fileOpsHeader = fmt.Sprintf("\n- Files Read: %s\n- Files Modified: %s\n", strings.Join(readFiles, ", "), strings.Join(modifiedFiles, ", "))
 	}
-	// The summary scaffold is the fixed template from the catalog so the shape of
-	// a compressed summary stays stable across sessions and agents.
+	if a != nil {
+		if todos := a.GetTodos(); len(todos) > 0 {
+			var todoParts []string
+			for _, t := range todos {
+				todoParts = append(todoParts, fmt.Sprintf("[%s] %s: %s", t.Status, t.ID, t.Task))
+			}
+			fileOpsHeader += fmt.Sprintf("- Active Plan: %s\n", strings.Join(todoParts, " | "))
+		}
+	}
+
 	summaryMsg := db.Message{
 		Role:    "system",
-		Content: fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryText),
+		Content: fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
 	}
 
 	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))
@@ -274,9 +240,9 @@ func (a *Agent) CompressHistory(
 	}
 
 	newMessages := make([]db.Message, 0, 2+len(keptMessages))
-	newMessages = append(newMessages, (*messages)[0])  // Keep system prompt
-	newMessages = append(newMessages, summaryMsg)      // Add summary
-	newMessages = append(newMessages, keptMessages...) // Add latest messages
+	newMessages = append(newMessages, (*messages)[0], summaryMsg)
+	newMessages = append(newMessages, keptMessages...)
+	newMessages = EnforceToolPairingInvariance(newMessages)
 
 	if sessionID != "" {
 		if err := db.RewriteSession(sessionID, newMessages); err != nil {

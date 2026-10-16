@@ -242,7 +242,7 @@ func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("Configured Endpoint Providers:"))
 
-	var keys []string
+	keys := make([]string, 0, len(cfg.Providers))
 	for k := range cfg.Providers {
 		keys = append(keys, k)
 	}

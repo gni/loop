@@ -25,26 +25,13 @@ func parseManualCommand(line string, enabled bool) (bool, string) {
 	if strings.HasPrefix(line, "!") {
 		return true, strings.TrimSpace(strings.TrimPrefix(line, "!"))
 	}
-
 	if !enabled {
 		return false, ""
 	}
-
 	parts := strings.Fields(line)
-	if len(parts) == 0 {
-		return false, ""
-	}
-
-	firstWord := parts[0]
-	directCommands := map[string]bool{
-		"ls": true,
-		"cd": true,
-	}
-
-	if directCommands[firstWord] {
+	if len(parts) > 0 && (parts[0] == "ls" || parts[0] == "cd") {
 		return true, line
 	}
-
 	return false, ""
 }
 
@@ -74,42 +61,23 @@ func executeManualShellCommand(
 		}
 	}
 
+	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	ppWriter.ForceReposition()
+	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
+
 	if isPureCd {
-		if target == "" {
-			home, err := os.UserHomeDir()
-			if err == nil {
+		target = strings.Trim(target, "\"'")
+		if target == "" || target == "~" {
+			if home, err := os.UserHomeDir(); err == nil {
 				target = home
 			}
-		} else {
-			if (strings.HasPrefix(target, "\"") && strings.HasSuffix(target, "\"")) ||
-				(strings.HasPrefix(target, "'") && strings.HasSuffix(target, "'")) {
-				if len(target) >= 2 {
-					target = target[1 : len(target)-1]
-				}
-			}
-			if target == "~" {
-				home, err := os.UserHomeDir()
-				if err == nil {
-					target = home
-				}
-			} else if strings.HasPrefix(target, "~/") {
-				home, err := os.UserHomeDir()
-				if err == nil {
-					target = filepath.Join(home, target[2:])
-				}
-			} else if strings.HasPrefix(target, "~\\") {
-				home, err := os.UserHomeDir()
-				if err == nil {
-					target = filepath.Join(home, target[2:])
-				}
+		} else if strings.HasPrefix(target, "~/") || strings.HasPrefix(target, "~\\") {
+			if home, err := os.UserHomeDir(); err == nil {
+				target = filepath.Join(home, target[2:])
 			}
 		}
 
-		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-		ppWriter.ForceReposition()
-		fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
-		err := os.Chdir(target)
-		if err != nil {
+		if err := os.Chdir(target); err != nil {
 			fmt.Fprintf(ppWriter, "cd: %v\n", err)
 		} else {
 			pwd, _ := os.Getwd()
@@ -121,18 +89,9 @@ func executeManualShellCommand(
 		_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
 		ppWriter.ForceReposition()
 		kiReader.Drain()
-		activeTasks := a.CountActiveTasks()
-		pTok, cTok, estimated := interceptor.CalculateActiveTokenUsage(a, *messages, allowedTools, mam)
-		latestTurnTokens := a.GetLatestAssistantCompletionTokens(*messages)
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, activeTasks, a.Config.ShowTokens, estimated)
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+		refreshREPLStatus(a, *messages, allowedTools, mam, kiReader, rl, false)
 		return
 	}
-
-	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	ppWriter.ForceReposition()
-	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
 	cmd := exec.Command("bash", "-c", cmdStr)
 	cmd.Dir = a.WorkspaceRoot
@@ -144,6 +103,10 @@ func executeManualShellCommand(
 	cmd.Stdin = os.Stdin
 	err := cmd.Run()
 
+	if err == nil && a.FileObservations != nil {
+		a.FileObservations.ForgetAll()
+	}
+
 	output := tool.SanitizeUTF8(stdout.Bytes())
 	errOutput := tool.SanitizeUTF8(stderr.Bytes())
 
@@ -151,7 +114,7 @@ func executeManualShellCommand(
 		fmt.Fprintf(ppWriter, "command failed: %v\n", err)
 	}
 
-	combined := ""
+	var combined string
 	if output != "" {
 		combined += fmt.Sprintf("stdout:\n%s\n", output)
 	}

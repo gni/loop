@@ -14,9 +14,6 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-// The search caps come from the resolved limits (config-overridable, clamped to
-// safety ceilings in pkg/domain/limits). The named wrappers below keep the call
-// sites readable and preserve the historical names.
 func defaultGrepLimit() int   { return limits.GrepDefaultLimit() }
 func maxGrepLimit() int       { return limits.GrepMaxLimit() }
 func maxGrepLineLength() int  { return limits.GrepMaxLineLength() }
@@ -25,7 +22,6 @@ func maxGrepFileSize() int    { return limits.GrepMaxFileBytes() }
 
 type grepTool struct{}
 
-// NewGrepTool initializes a new recursive content search tool.
 func NewGrepTool() domaintool.ToolExecutor {
 	return &grepTool{}
 }
@@ -41,26 +37,20 @@ func (t *grepTool) PromptGuidelines() []string {
 }
 
 func (t *grepTool) Definition() domaintool.Tool {
-	return domaintool.Tool{
-		Type: "function",
-		Function: domaintool.FunctionDefinition{
-			Name:        "grep",
-			Description: domaintool.FormatToolDescription("grep", "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories. Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue."),
-			Parameters: domaintool.JSONSchema{
-				Type: "object",
-				Properties: map[string]domaintool.SchemaProp{
-					"pattern":     domaintool.StringProp(domaintool.FormatParamDescription("grep", "pattern", "Regular expression pattern to search for (or literal string). If empty and glob is provided, matches file names.")),
-					"path":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "path", "Directory or file to search in (default: current directory).")),
-					"glob":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "glob", "Optional file glob pattern to filter files by name (e.g. '*.go', '*.py').")),
-					"ignore_case": domaintool.BoolProp(domaintool.FormatParamDescription("grep", "ignore_case", "Case-insensitive search (default: false).")),
-					"literal":     domaintool.BoolProp(domaintool.FormatParamDescription("grep", "literal", "Treat pattern as a literal string instead of a regular expression (default: false).")),
-					"context":     domaintool.NumberProp(domaintool.FormatParamDescription("grep", "context", "Number of lines of leading and trailing context to show around each match (default: 0).")),
-					"limit":       domaintool.NumberProp(domaintool.FormatParamDescription("grep", "limit", "Maximum number of matching lines to return (default: 100, max: 500).")),
-					"offset":      domaintool.NumberProp(domaintool.FormatParamDescription("grep", "offset", file.DefaultLimitTexts["grep_param_offset"])),
-				},
-			},
+	return domaintool.NewFunctionTool(
+		"grep",
+		domaintool.FormatToolDescription("grep", "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories. Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue."),
+		map[string]domaintool.SchemaProp{
+			"pattern":     domaintool.StringProp(domaintool.FormatParamDescription("grep", "pattern", "Regular expression pattern to search for (or literal string). If empty and glob is provided, matches file names.")),
+			"path":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "path", "Directory or file to search in (default: current directory).")),
+			"glob":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "glob", "Optional file glob pattern to filter files by name (e.g. '*.go', '*.py').")),
+			"ignore_case": domaintool.BoolProp(domaintool.FormatParamDescription("grep", "ignore_case", "Case-insensitive search (default: false).")),
+			"literal":     domaintool.BoolProp(domaintool.FormatParamDescription("grep", "literal", "Treat pattern as a literal string instead of a regular expression (default: false).")),
+			"context":     domaintool.NumberProp(domaintool.FormatParamDescription("grep", "context", "Number of lines of leading and trailing context to show around each match (default: 0).")),
+			"limit":       domaintool.NumberProp(domaintool.FormatParamDescription("grep", "limit", "Maximum number of matching lines to return (default: 100, max: 500).")),
+			"offset":      domaintool.NumberProp(domaintool.FormatParamDescription("grep", "offset", file.DefaultLimitTexts["grep_param_offset"])),
 		},
-	}
+	)
 }
 
 func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
@@ -83,27 +73,13 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	pattern := args.Pattern
-	if pattern == "" {
-		if args.Query != "" {
-			pattern = args.Query
-		} else if args.Q != "" {
-			pattern = args.Q
-		}
-	}
+	pattern := domaintool.FirstNonEmpty(args.Pattern, args.Query, args.Q)
 	globPattern := strings.TrimSpace(args.Glob)
 	if pattern == "" && globPattern == "" {
 		return "", fmt.Errorf("pattern is required for grep (or provide a glob pattern to list matching files, e.g. glob='*.py')")
 	}
 
-	searchPath := args.Path
-	if searchPath == "" {
-		searchPath = args.SearchPath
-	}
-	if searchPath == "" {
-		searchPath = "."
-	}
-
+	searchPath := domaintool.FirstNonEmpty(args.Path, args.SearchPath, ".")
 	safePath, err := ctx.SafePath(searchPath)
 	if err != nil {
 		return "", err
@@ -119,8 +95,6 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		limit = maxGrepLimit()
 	}
 
-	// offset lets the model continue from the exact position a previous
-	// truncation notice reported.
 	offset := int(args.Offset)
 	if offset < 1 {
 		offset = 1
@@ -155,9 +129,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			if err != nil {
 				return "", fmt.Errorf("invalid regular expression '%s': %w", pattern, err)
 			}
-			matchFunc = func(line string) bool {
-				return re.MatchString(line)
-			}
+			matchFunc = re.MatchString
 		}
 	}
 
@@ -227,8 +199,6 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		for idx, line := range fileLines {
 			if matchFunc(line) {
 				totalMatches++
-				// Counting continues past the cap so the notice can state the
-				// exact total and the exact next offset.
 				if totalMatches >= offset && totalMatches < offset+limit {
 					matchedIndices[idx] = true
 					shownMatches++
@@ -236,10 +206,6 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 					limitReached = true
 				}
 			}
-		}
-
-		if len(matchedIndices) == 0 {
-			return nil
 		}
 
 		if len(matchedIndices) == 0 {
@@ -352,8 +318,6 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if limitReached || outputSizeReached {
-		// The next offset is the match number after the last one shown, so a
-		// paginated call continues exactly where this one stopped.
 		next := offset + shownMatches
 		if outputSizeReached && !limitReached {
 			result += file.GrepOutputNotice(maxGrepOutputBytes()/1024, shownMatches, totalMatches, next)
@@ -365,8 +329,6 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	return result, nil
 }
 
-// truncateGrepLine caps a single match line through the shared truncation core
-// so every match line carries the same marker.
 func truncateGrepLine(s string, maxRunes int) string {
 	return file.TruncateLine(s, maxRunes)
 }

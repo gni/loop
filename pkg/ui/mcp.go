@@ -28,7 +28,11 @@ func HandleMCPCommand(
 		if kiReader != nil {
 			mam = kiReader.MAM
 		}
-		return calculateActiveTokenUsage(a, *messages, activeToolAllowlist(kiReader), mam)
+		var msgs []db.Message
+		if messages != nil {
+			msgs = *messages
+		}
+		return calculateActiveTokenUsage(a, msgs, activeToolAllowlist(kiReader), mam)
 	}
 
 	restartAndSyncMCP := func() {
@@ -61,11 +65,7 @@ func HandleMCPCommand(
 		RestoreAfterModal(w, a, kiReader, rl)
 
 		if errInteractive == nil && newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers) {
-			a.StopMCPServers()
-			if len(a.Config.MCPServers) > 0 {
-				_ = a.StartMCPServers(a.Config.MCPServers)
-				syncAgentStatus(a, theme, calcHistoryTokens)
-			}
+			restartAndSyncMCP()
 		}
 		return
 	}
@@ -81,7 +81,7 @@ func HandleMCPCommand(
 		mcpStatuses := a.GetMCPServersStatus()
 		if len(a.Config.MCPServers) > 0 {
 			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("\nmcp connection status:"))
-			var keys []string
+			keys := make([]string, 0, len(a.Config.MCPServers))
 			for k := range a.Config.MCPServers {
 				keys = append(keys, k)
 			}

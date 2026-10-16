@@ -64,20 +64,21 @@ func HandleSlashCommand(
 		handleRollbackCommand(a, theme, w)
 		return true, false
 	case "/toggle", "/collapse", "/expand":
-		if cmdName == "/collapse" {
+		switch cmdName {
+		case "/collapse":
 			a.Config.CollapseResults = true
-		} else if cmdName == "/expand" {
+		case "/expand":
 			a.Config.CollapseResults = false
-		} else {
+		default:
 			a.Config.CollapseResults = !a.Config.CollapseResults
 		}
 		_ = config.SaveConfig(a.ConfigPath, a.Config)
 		ui.SetCollapseStatus(a.Config.CollapseResults)
+		var rl *term.Terminal
 		if kiReader != nil {
-			ui.RedrawScreen(w, a, kiReader, kiReader.RL)
-		} else {
-			ui.RedrawScreen(w, a, nil, nil)
+			rl = kiReader.RL
 		}
+		ui.RedrawScreen(w, a, kiReader, rl)
 		return true, false
 	case "/queue", "/queues":
 		if kiReader == nil {
@@ -111,23 +112,14 @@ func HandleSlashCommand(
 		}
 		return true, false
 	case "/task_kill", "/taskkill", "/kill", "/stop", "/task_stop", "/taskstop":
-		taskParts := []string{"/task", "kill"}
-		if len(parts) > 1 {
-			taskParts = append(taskParts, parts[1:]...)
-		}
-		handleTaskCommand(a, taskParts, theme, w, kiReader)
+		handleTaskCommand(a, append([]string{"/task", "kill"}, parts[1:]...), theme, w, kiReader)
 		return true, false
 	case "/task_status", "/taskstatus", "/task_view", "/taskview", "/status":
-		taskParts := []string{"/task", "status"}
-		if len(parts) > 1 {
-			taskParts = append(taskParts, parts[1:]...)
-		}
-		handleTaskCommand(a, taskParts, theme, w, kiReader)
+		handleTaskCommand(a, append([]string{"/task", "status"}, parts[1:]...), theme, w, kiReader)
 		return true, false
 	case "/ps":
 		if len(parts) > 1 {
-			taskParts := append([]string{"/task", "status"}, parts[1:]...)
-			handleTaskCommand(a, taskParts, theme, w, kiReader)
+			handleTaskCommand(a, append([]string{"/task", "status"}, parts[1:]...), theme, w, kiReader)
 		} else {
 			handleTaskCommand(a, []string{"/task", "list"}, theme, w, kiReader)
 		}

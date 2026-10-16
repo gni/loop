@@ -13,6 +13,54 @@ import (
 )
 
 func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader) {
+	abortOperation := func(cancelFunc func(), clearQueue bool) {
+		if cancelFunc != nil {
+			cancelFunc()
+		}
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().ActiveCancelFunc = nil
+		kiReader.ResetTypeAheadLocked()
+		ui.GetUI().StateMu.Unlock()
+		kiReader.PrintCancelMessage()
+
+		if clearQueue {
+			cleared := kiReader.ClearQueue()
+			ui.GetUI().StateMu.Lock()
+			ui.GetUI().State.QueuedPromptsCount = 0
+			ui.GetUI().StateMu.Unlock()
+			activeTheme := ui.GetConfiguredTheme(kiReader.Agent.Config)
+			ui.DrawStatusBar(os.Stderr, activeTheme)
+			if cleared > 0 {
+				output := kiReader.W
+				if kiReader.Agent != nil && kiReader.Agent.CurrentWriter() != nil {
+					output = kiReader.Agent.CurrentWriter()
+				} else if kiReader.Agent != nil {
+					if uiImpl, ok := kiReader.Agent.UI.(*ui.AgentUIImpl); ok && uiImpl.PPWriter != nil {
+						output = uiImpl.PPWriter
+					}
+				}
+				qStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
+				fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
+			}
+		}
+	}
+
+	handleShortcutKey := func(b byte) bool {
+		switch b {
+		case 7:
+			kiReader.HandleCtrlG()
+		case 15:
+			kiReader.HandleCtrlO()
+		case 18:
+			kiReader.HandleCtrlR()
+		case 20:
+			kiReader.HandleCtrlT()
+		default:
+			return false
+		}
+		return true
+	}
+
 	for {
 		b, ok := <-rawChan
 		if !ok {
@@ -28,14 +76,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 
 		if inApproval {
 			if b == 3 || b == 4 {
-				if cancelFunc != nil {
-					cancelFunc()
-				}
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().ActiveCancelFunc = nil
-				kiReader.ResetTypeAheadLocked()
-				ui.GetUI().StateMu.Unlock()
-				kiReader.PrintCancelMessage()
+				abortOperation(cancelFunc, false)
 				kiReader.ApprovalChan <- b
 				continue
 			}
@@ -45,73 +86,28 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 					kiReader.ApprovalChan <- b
 					kiReader.ApprovalChan <- next
 				case <-time.After(50 * time.Millisecond):
-					if cancelFunc != nil {
-						cancelFunc()
-					}
-					ui.GetUI().StateMu.Lock()
-					ui.GetUI().ActiveCancelFunc = nil
-					kiReader.ResetTypeAheadLocked()
-					ui.GetUI().StateMu.Unlock()
-					kiReader.PrintCancelMessage()
+					abortOperation(cancelFunc, false)
 					kiReader.ApprovalChan <- b
 				}
 				continue
 			}
-			if b == 7 {
-				kiReader.HandleCtrlG()
-				continue
-			}
-			if b == 15 {
-				kiReader.HandleCtrlO()
-				continue
-			}
-			if b == 20 {
-				kiReader.HandleCtrlT()
-				continue
-			}
-			if b == 18 {
-				kiReader.HandleCtrlR()
+			if handleShortcutKey(b) {
 				continue
 			}
 			kiReader.ApprovalChan <- b
 			continue
 		}
 
-		if b == 3 || b == 4 {
-			if kiReader.MAM != nil {
-				if activeName, active := kiReader.MAM.ActiveSubagentName(); active {
-					kiReader.HandleSubagentCancellation(rawChan, cancelFunc, activeName)
-					continue
-				}
+		if (b == 3 || b == 4) && kiReader.MAM != nil {
+			if activeName, active := kiReader.MAM.ActiveSubagentName(); active {
+				kiReader.HandleSubagentCancellation(rawChan, cancelFunc, activeName)
+				continue
 			}
 		}
 
 		if cancelFunc != nil {
 			if b == 3 || b == 4 {
-				cancelFunc()
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().ActiveCancelFunc = nil
-				kiReader.ResetTypeAheadLocked()
-				ui.GetUI().StateMu.Unlock()
-				kiReader.PrintCancelMessage()
-				cleared := kiReader.ClearQueue()
-				ui.GetUI().StateMu.Lock()
-				ui.GetUI().State.QueuedPromptsCount = 0
-				ui.GetUI().StateMu.Unlock()
-				activeTheme := ui.GetConfiguredTheme(kiReader.Agent.Config)
-				ui.DrawStatusBar(os.Stderr, activeTheme)
-				if cleared > 0 {
-					output := kiReader.W
-					if kiReader.Agent != nil && kiReader.Agent.CurrentWriter() != nil {
-						output = kiReader.Agent.CurrentWriter()
-					} else if kiReader.Agent != nil {
-						if uiImpl, ok := kiReader.Agent.UI.(*ui.AgentUIImpl); ok && uiImpl.PPWriter != nil {
-							output = uiImpl.PPWriter
-						}
-					}
-					qStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
-					fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
-				}
+				abortOperation(cancelFunc, true)
 				continue
 			}
 			if b == 27 {
@@ -120,42 +116,36 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 					if next == '[' || next == 'O' {
 						select {
 						case dir := <-rawChan:
-							if dir == 'A' {
+							switch dir {
+							case 'A':
 								kiReader.NavigateHistory(1)
-								continue
-							}
-							if dir == 'B' {
+							case 'B':
 								kiReader.NavigateHistory(-1)
-								continue
-							}
-							if dir == '[' {
+							case '[':
 								select {
 								case dir2 := <-rawChan:
-									if dir2 == 'A' {
+									switch dir2 {
+									case 'A':
 										kiReader.NavigateHistory(1)
-										continue
-									}
-									if dir2 == 'B' {
+									case 'B':
 										kiReader.NavigateHistory(-1)
-										continue
+									default:
+										kiReader.InputChan <- b
+										kiReader.InputChan <- next
+										kiReader.InputChan <- dir
+										kiReader.InputChan <- dir2
 									}
-									kiReader.InputChan <- b
-									kiReader.InputChan <- next
-									kiReader.InputChan <- dir
-									kiReader.InputChan <- dir2
 								case <-time.After(20 * time.Millisecond):
 									kiReader.InputChan <- b
 									kiReader.InputChan <- next
 									kiReader.InputChan <- dir
 								}
-								continue
+							case 'C', 'D':
+							default:
+								kiReader.InputChan <- b
+								kiReader.InputChan <- next
+								kiReader.InputChan <- dir
 							}
-							if dir == 'C' || dir == 'D' {
-								continue
-							}
-							kiReader.InputChan <- b
-							kiReader.InputChan <- next
-							kiReader.InputChan <- dir
 						case <-time.After(20 * time.Millisecond):
 							kiReader.InputChan <- b
 							kiReader.InputChan <- next
@@ -165,23 +155,11 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 						kiReader.InputChan <- next
 					}
 				case <-time.After(50 * time.Millisecond):
-					if cancelFunc != nil {
-						cancelFunc()
-						ui.GetUI().StateMu.Lock()
-						ui.GetUI().ActiveCancelFunc = nil
-						kiReader.ResetTypeAheadLocked()
-						ui.GetUI().StateMu.Unlock()
-						kiReader.PrintCancelMessage()
-						kiReader.ClearQueue()
-						ui.GetUI().StateMu.Lock()
-						ui.GetUI().State.QueuedPromptsCount = 0
-						ui.GetUI().StateMu.Unlock()
-						activeTheme := ui.GetConfiguredTheme(kiReader.Agent.Config)
-						ui.DrawStatusBar(os.Stderr, activeTheme)
-					}
+					abortOperation(cancelFunc, true)
 				}
 				continue
 			}
+
 			if b == 16 {
 				kiReader.NavigateHistory(1)
 				continue
@@ -190,20 +168,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				kiReader.NavigateHistory(-1)
 				continue
 			}
-			if b == 7 {
-				kiReader.HandleCtrlG()
-				continue
-			}
-			if b == 15 {
-				kiReader.HandleCtrlO()
-				continue
-			}
-			if b == 20 {
-				kiReader.HandleCtrlT()
-				continue
-			}
-			if b == 18 {
-				kiReader.HandleCtrlR()
+			if handleShortcutKey(b) {
 				continue
 			}
 
@@ -230,18 +195,14 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				kiReader.ResetTypeAheadLocked()
 				ui.GetUI().StateMu.Unlock()
 
-				trimmed := strings.TrimSpace(typed)
-				if trimmed != "" {
+				if trimmed := strings.TrimSpace(typed); trimmed != "" {
 					count := kiReader.EnqueuePrompt(trimmed)
 					ui.GetUI().StateMu.Lock()
 					ui.GetUI().State.QueuedPromptsCount = count
 					ui.GetUI().StateMu.Unlock()
-					activeTheme := ui.GetConfiguredTheme(kiReader.Agent.Config)
-					ui.DrawStatusBar(os.Stderr, activeTheme)
-					kiReader.RedrawTypeAhead()
-				} else {
-					kiReader.RedrawTypeAhead()
+					ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(kiReader.Agent.Config))
 				}
+				kiReader.RedrawTypeAhead()
 				continue
 			}
 
@@ -254,10 +215,8 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				}
 				continue
 			}
-
-			kiReader.InputChan <- b
-		} else {
-			kiReader.InputChan <- b
 		}
+
+		kiReader.InputChan <- b
 	}
 }

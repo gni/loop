@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+	domaintool "loop/pkg/domain/tool"
 )
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
@@ -18,65 +20,53 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	enableThinking := effort != "off" && effort != "none" && effort != ""
 	budget := -1
 	if enableThinking {
-		// Per-effort thinking budgets are config-adjustable (limits.reasoning_token_budgets);
-		// -1 means unbounded.
 		budget = limits.ReasoningBudget(effort)
 	}
 
-	autoAdapt := true
-	if p.Config != nil {
-		autoAdapt = p.Config.AutoAdaptContext
-	}
-
+	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
 	inputMsgs := messages
 	if autoAdapt {
 		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
 	}
 
-	var validMessages []db.Message
+	validMessages := make([]db.Message, 0, len(inputMsgs))
 	totalChars := 0
 
 	for _, msg := range inputMsgs {
 		if strings.HasPrefix(msg.Content, "[user manually executed slash command:") {
 			continue
 		}
-		// Never send internal messages (like error banners) to the LLM API
 		if msg.Role != "system" && msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
 			continue
 		}
 		if msg.Role == "assistant" {
 			msg.Content = StripFallbackToolMarkup(msg.Content)
-		}
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			// Chosen option: keep the call with empty arguments instead of dropping it.
-			// Dropping breaks tool-call pairing (the matching tool response becomes an
-			// orphan and EnforceToolPairingInvariance then removes the whole turn), so the
-			// context loss was silent. Normalising unparseable arguments to "{}" keeps the
-			// call, its tool response, and the turn intact.
-			// Copy the slice so the caller's stored message is not mutated.
-			normalisedTCs := make([]db.ToolCall, len(msg.ToolCalls))
-			copy(normalisedTCs, msg.ToolCalls)
-			for i, tc := range normalisedTCs {
-				var dummy map[string]interface{}
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &dummy); err != nil {
-					normalisedTCs[i].Function.Arguments = "{}"
+			if len(msg.ToolCalls) > 0 {
+				normalisedTCs := make([]db.ToolCall, len(msg.ToolCalls))
+				copy(normalisedTCs, msg.ToolCalls)
+				for i, tc := range normalisedTCs {
+					var dummy map[string]interface{}
+					if json.Unmarshal([]byte(tc.Function.Arguments), &dummy) != nil {
+						repaired := domaintool.RepairJSON(tc.Function.Arguments)
+						if json.Unmarshal([]byte(repaired), &dummy) == nil {
+							normalisedTCs[i].Function.Arguments = repaired
+						} else {
+							normalisedTCs[i].Function.Arguments = "{}"
+						}
+					}
 				}
+				msg.ToolCalls = normalisedTCs
 			}
-			msg.ToolCalls = normalisedTCs
+			if msg.Content == "" && len(msg.ToolCalls) == 0 {
+				continue
+			}
+		} else if msg.Content == "" {
+			msg.Content = " "
 		}
-		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
-			continue
-		}
-		if msg.Role != "assistant" && msg.Content == "" {
-			msgCopy := msg
-			msgCopy.Content = " "
-			msg = msgCopy
-		}
-		// If consecutive user messages occur (e.g. user retrying a prompt after an error turn), merge them
+
 		if msg.Role == "user" && len(validMessages) > 0 && validMessages[len(validMessages)-1].Role == "user" {
 			lastIdx := len(validMessages) - 1
 			if validMessages[lastIdx].Content == msg.Content {
-				// Same message repeated, keep single copy
 				continue
 			}
 			totalChars -= len(validMessages[lastIdx].Content)
@@ -85,10 +75,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 			continue
 		}
 		validMessages = append(validMessages, msg)
-		totalChars += len(validMessages[len(validMessages)-1].Content)
-		if validMessages[len(validMessages)-1].Role == "assistant" {
-			totalChars += len(validMessages[len(validMessages)-1].ReasoningContent)
-		}
+		totalChars += len(msg.Content)
 	}
 
 	pTokensEst := EstimateMessagesTokens(validMessages)
@@ -107,9 +94,11 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	limitChars := effectiveLimit * 4
 
 	startIndex := 0
-	if len(validMessages) > 0 && validMessages[0].Role == "system" {
-		startIndex = 1
+	for startIndex < len(validMessages) && validMessages[startIndex].Role == "system" {
+		startIndex++
 	}
+	prefixCount := startIndex
+
 	for totalChars > limitChars && startIndex < len(validMessages)-1 {
 		dropEnd := startIndex + 1
 		if validMessages[startIndex].Role == "assistant" && len(validMessages[startIndex].ToolCalls) > 0 {
@@ -118,24 +107,17 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 			}
 		}
 		for k := startIndex; k < dropEnd; k++ {
-			dropMsg := validMessages[k]
-			dropChars := len(dropMsg.Content)
-			if dropMsg.Role == "assistant" {
-				dropChars += len(dropMsg.ReasoningContent)
-			}
-			totalChars -= dropChars
+			totalChars -= len(validMessages[k].Content)
 		}
 		startIndex = dropEnd
 	}
 
 	var apiMessages []db.Message
-	if startIndex > 0 && len(validMessages) > 0 && validMessages[0].Role == "system" {
-		apiMessages = append(apiMessages, validMessages[0])
+	if startIndex > prefixCount {
+		apiMessages = append(apiMessages, validMessages[:prefixCount]...)
 		if startIndex < len(validMessages) {
 			apiMessages = append(apiMessages, validMessages[startIndex:]...)
 		}
-	} else if startIndex > 0 && len(validMessages) > 0 {
-		apiMessages = validMessages[startIndex:]
 	} else {
 		apiMessages = validMessages
 	}
@@ -143,25 +125,24 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	cleanMessages := make([]db.Message, 0, len(apiMessages))
 	for _, m := range apiMessages {
 		msgCopy := m
-		// Omit historical reasoning content from outgoing API messages; saves thousands of prompt tokens per turn.
 		msgCopy.ReasoningContent = ""
-		// Only truncate massive non-file tool outputs (like runaway bash logs) if they exceed 30000 chars.
 		msgCopy.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, 30000, "\n... (output truncated to 30000 chars for context optimization)")
 		cleanMessages = append(cleanMessages, msgCopy)
 	}
 
 	cleanMessages = EnforceToolPairingInvariance(cleanMessages)
 
-	finalTools := prepareToolDefinitions(tools, p.Config.CompactPrompt)
-	if p.Config != nil && strings.ToLower(strings.TrimSpace(p.Config.ToolProtocol)) == "xml" {
+	finalTools := prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
+	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
 		finalTools = nil
 	}
 
 	reasoningEffort := ""
 	if enableThinking {
-		if effort == "max" {
+		switch effort {
+		case "max":
 			reasoningEffort = "high"
-		} else if effort == "low" || effort == "medium" || effort == "high" {
+		case "low", "medium", "high":
 			reasoningEffort = effort
 		}
 	}
@@ -171,8 +152,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		maxCompTokens = p.Config.MaxCompletionTokens
 	}
 	finalPromptTokensEst := EstimateMessagesTokens(cleanMessages)
-	remainingTokens := effectiveLimit - finalPromptTokensEst
-	if remainingTokens > 0 && maxCompTokens > remainingTokens {
+	if remainingTokens := effectiveLimit - finalPromptTokensEst; remainingTokens > 0 && maxCompTokens > remainingTokens {
 		maxCompTokens = remainingTokens
 	}
 	if maxCompTokens < limits.CompletionTokenFloor() {
@@ -183,26 +163,26 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 
 	reqBody := ChatCompletionRequest{
-		Model:       p.Config.Model,
-		Messages:    cleanMessages,
-		Tools:       finalTools,
-		Temperature: p.Config.Temperature,
-		Stream:      true,
-		StreamOptions: &StreamOptions{
-			IncludeUsage: true,
-		},
+		Model:               p.Config.Model,
+		Messages:            cleanMessages,
+		Tools:               finalTools,
+		Temperature:         p.Config.Temperature,
+		Stream:              true,
+		StreamOptions:       &StreamOptions{IncludeUsage: true},
 		ReasoningEffort:     reasoningEffort,
 		MaxCompletionTokens: maxCompTokens,
 		MaxTokens:           maxCompTokens,
 	}
 
-	if p.Config != nil && p.Config.FrequencyPenalty != 0 {
-		fp := p.Config.FrequencyPenalty
-		reqBody.FrequencyPenalty = &fp
-	}
-	if p.Config != nil && p.Config.PresencePenalty != 0 {
-		pp := p.Config.PresencePenalty
-		reqBody.PresencePenalty = &pp
+	if p.Config != nil {
+		if p.Config.FrequencyPenalty != 0 {
+			fp := p.Config.FrequencyPenalty
+			reqBody.FrequencyPenalty = &fp
+		}
+		if p.Config.PresencePenalty != 0 {
+			pp := p.Config.PresencePenalty
+			reqBody.PresencePenalty = &pp
+		}
 	}
 
 	if p.ThinkingEnabled() {
@@ -232,10 +212,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	if len(reqBody.Tools) == 0 {
 		reqBody.Tools = nil
 	} else {
-		parallelCalls := false
-		if p.Config != nil && p.Config.ParallelToolCalls {
-			parallelCalls = true
-		}
+		parallelCalls := p.Config != nil && p.Config.ParallelToolCalls
 		reqBody.ParallelToolCalls = &parallelCalls
 	}
 
@@ -247,10 +224,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	return reqBody, cleanMessages, jsonData, nil
 }
 
-// truncateNonFileToolContent truncates non-file tool output exceeding maxChars.
 func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
 	if role == "tool" && name != "read" && name != "write" && name != "edit" && len(content) > maxChars {
-		return content[:maxChars] + suffix
+		return filetool.UTF8SafePrefix(content, maxChars) + suffix
 	}
 	return content
 }

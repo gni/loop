@@ -69,6 +69,8 @@ type ChatCompletionResponseChunk struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		CacheReadTokens  int `json:"cache_read_input_tokens,omitempty"`
+		CacheWriteTokens int `json:"cache_creation_input_tokens,omitempty"`
 	} `json:"usage,omitempty"`
 	Timings *struct {
 		PromptN    int `json:"prompt_n"`
@@ -124,8 +126,7 @@ func (a *Agent) CheckThinkingSupport() bool {
 			timeout = t
 		}
 	}
-	parent := a.Context()
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(a.Context(), timeout)
 	defer cancel()
 	return provider.CheckThinkingSupport(ctx)
 }
@@ -148,9 +149,7 @@ func (a *Agent) StreamChatCompletions(
 		tools = a.Registry.GetAvailableTools(allowlist)
 	}
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)
-
 	a.SetLastGenerationDuration(generationDuration)
-
 	return msg, err
 }
 

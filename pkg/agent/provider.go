@@ -190,7 +190,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var rawTextBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	var cleanReasoningBuilder strings.Builder
-	var toolCallsMap = make(map[int]*db.ToolCall)
+	toolCallsMap := make(map[int]*db.ToolCall)
+
 	setupFilterCallbacks := func(filter *FallbackToolTextFilter) {
 		filter.SetToolCallbacks(
 			func(toolName string, idx int) {
@@ -218,6 +219,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		rawTextBuilder.WriteString(text)
 		textFilter.Write(text)
 	}
+
 	reasoningFilter := NewFallbackToolTextFilter(func(text string) {
 		cleanReasoningBuilder.WriteString(text)
 		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text}, p.ChunkDropObserver)
@@ -236,7 +238,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var generationStart time.Time
 
 	thinkingFilter := transportllm.NewThinkingStreamFilter(emitText, emitReasoning)
-	var chunk ChatCompletionResponseChunk
 
 	buildMessage := func() *db.Message {
 		thinkingFilter.Flush()
@@ -292,7 +293,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			break
 		}
 
-		chunk = ChatCompletionResponseChunk{}
+		var chunk ChatCompletionResponseChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
@@ -304,6 +305,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			if chunk.Usage.CompletionTokens > 0 {
 				completionTokens = chunk.Usage.CompletionTokens
 			}
+			if chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheWriteTokens > 0 {
+				cacheReadTokens = chunk.Usage.CacheReadTokens
+				cacheWriteTokens = chunk.Usage.CacheWriteTokens
+			}
 		}
 		if chunk.Timings != nil {
 			if promptTokens == 0 && chunk.Timings.PromptN > 0 {
@@ -314,28 +319,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			}
 		}
 
-		if u, err := transportllm.ParseUsage(data); err == nil && u != nil {
-			if u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
-				cacheReadTokens, cacheWriteTokens = u.CacheReadTokens, u.CacheWriteTokens
-			}
-		}
-
 		if len(chunk.Choices) == 0 {
 			continue
 		}
 
 		choice := chunk.Choices[0]
-
-		if choice.Delta.ReasoningContent != "" || choice.Delta.Content != "" {
-			if generationStart.IsZero() {
-				generationStart = time.Now()
-			}
+		if (choice.Delta.ReasoningContent != "" || choice.Delta.Content != "") && generationStart.IsZero() {
+			generationStart = time.Now()
 		}
 
 		if choice.Delta.ReasoningContent != "" {
 			emitReasoning(choice.Delta.ReasoningContent)
 		}
-
 		if choice.Delta.Content != "" {
 			thinkingFilter.Feed(choice.Delta.Content)
 		}
@@ -348,7 +343,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				if tc.Index != nil {
 					idx = *tc.Index
 				}
-
 				if p.Config != nil && !p.Config.ParallelToolCalls && idx > 0 {
 					continue
 				}

@@ -1,7 +1,5 @@
 package repl
 
-// [STDLIB-READ]: Mapping linux-amd64 file descriptors. Architecture: Byte-Buffered state loop, Max Matrix: 80x24 Strict, Mode: Raw syscall manipulation.
-
 import (
 	"errors"
 	"fmt"
@@ -25,33 +23,26 @@ import (
 )
 
 func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
-
 	ui.IsInteractive = true
 	defer func() { ui.IsInteractive = false }()
 
 	currentSessionID := initialSessionID
 	if currentSessionID == "" {
 		currentSessionID = db.NewUUID()
-		// Persist the pointer immediately so a crash or os.Exit path still leaves
-		// the session resumable via --resume; the graceful-exit write at the end of
-		// RunREPL stays as the authoritative update.
 		_ = db.SetLatestSessionID(currentSessionID)
 	}
 
 	var messages []db.Message
 	if dbHistory, err := db.LoadMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
 		messages = dbHistory
-		if len(messages) > 0 && messages[0].Role == "system" {
-			currentSysPrompt := a.GetSystemPrompt()
-			if messages[0].Content != currentSysPrompt {
+		if messages[0].Role == "system" {
+			if currentSysPrompt := a.GetSystemPrompt(); messages[0].Content != currentSysPrompt {
 				messages[0].Content = currentSysPrompt
 				_ = db.RewriteSession(currentSessionID, messages)
 			}
 		}
 	} else {
-		messages = []db.Message{
-			{Role: "system", Content: a.GetSystemPrompt()},
-		}
+		messages = []db.Message{{Role: "system", Content: a.GetSystemPrompt()}}
 	}
 
 	activeTasks := a.CountActiveTasks()
@@ -83,11 +74,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 	mam := swarm.NewMultiAgentManager(a, ppWriter, theme)
 	a.MultiAgentManager = mam
-
-	a.ClearAgentsFunc = func() {
-		mam.ClearAllAgents()
-	}
-
+	a.ClearAgentsFunc = func() { mam.ClearAllAgents() }
 	_ = mam.LoadSavedAgents()
 
 	kiReader := &interceptor.KeyInterceptorReader{
@@ -104,16 +91,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		Hist:         hist,
 		HistoryIndex: -1,
 	}
-	kiReader.OnClearPromptHint = func() {
-		ui.GetUI().ClearPromptHint()
-	}
-	kiReader.OnRedrawScreen = func() {
-		if kiReader.RL != nil {
-			ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, kiReader.RL)
-		} else {
-			ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, nil)
-		}
-	}
+	kiReader.OnClearPromptHint = func() { ui.GetUI().ClearPromptHint() }
+	kiReader.OnRedrawScreen = func() { ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, kiReader.RL) }
 	kiReader.OnDrawStaticControls = func(targetWriter io.Writer) {
 		ui.TerminalMu.Lock()
 		ui.DrawConsoleStaticControlsLocked(targetWriter, kiReader.Agent, kiReader, kiReader.RL, true)
@@ -155,9 +134,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 	go func() {
 		for event := range a.SystemEvents {
-			activeTheme := ui.GetConfiguredTheme(a.Config)
-			ui.DrawStatusBar(os.Stderr, activeTheme)
-
+			ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(a.Config))
 			if event != "" && kiReader.IsAtMainPrompt {
 				ui.GetUI().SetPromptHint(fmt.Sprintf("[%s]", event), 3*time.Second, nil)
 			}
@@ -225,9 +202,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			})
 		}
 	}()
-	defer func() {
-		signal.Stop(sigChan)
-	}()
+	defer signal.Stop(sigChan)
 
 	for {
 		promptPrefix := ui.GetPromptSymbol(a.Config)
@@ -305,7 +280,6 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 				fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", height-2)
 			}
 
-			// Redraw clean prompt prefix so submitted input does not linger on input line
 			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 			fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
 			ppWriter.SetPromptCol(1 + utf8.RuneCountInString(promptPrefix))
@@ -314,7 +288,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 		if !fromQueue {
 			if kiReader.PastedText != "" {
-				line = line + kiReader.PastedText
+				line += kiReader.PastedText
 				kiReader.PastedText = ""
 				ui.GetUI().PasteLinesOffset = 0
 				ui.InitStatusBar(os.Stderr)
@@ -329,11 +303,9 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 				ui.GetUI().StateMu.Lock()
 				kiReader.ResetTypeAheadLocked()
 				ui.GetUI().PasteLinesOffset = 0
-				ui.GetUI().StateMu.Unlock()
-				kiReader.ClearQueue()
-				ui.GetUI().StateMu.Lock()
 				ui.GetUI().State.QueuedPromptsCount = 0
 				ui.GetUI().StateMu.Unlock()
+				kiReader.ClearQueue()
 				kiReader.Drain()
 				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, true)
 				continue
@@ -369,11 +341,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			kiReader.PastedCodeBlocks = nil
 		}
 
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-
-		if strings.HasPrefix(line, "/system_event ") {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" || strings.HasPrefix(line, "/system_event ") {
 			continue
 		}
 
@@ -399,34 +368,16 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			continue
 		}
 
-		trimmedLine := strings.TrimSpace(line)
 		isHelpCmd := trimmedLine == "help" || trimmedLine == "h" || trimmedLine == "?" || trimmedLine == "/help" || trimmedLine == "/commands" || trimmedLine == "/h" || trimmedLine == "/?"
-		isSlashCmd := strings.HasPrefix(trimmedLine, "/") || isHelpCmd
-
-		var handled, quit bool
-		if isSlashCmd {
-			handled, quit = commands.HandleSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl.History, mam, kiReader)
+		if strings.HasPrefix(trimmedLine, "/") || isHelpCmd {
+			handled, quit := commands.HandleSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl.History, mam, kiReader)
 			kiReader.Drain()
-
 			if handled {
 				if quit {
 					break
 				}
 				continue
 			}
-		}
-
-		if handled {
-			if quit {
-				break
-			}
-			ui.DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, theme)
-			ui.GetUI().StateMu.Lock()
-			savedStats = ui.GetUI().LastStatsText
-			ui.GetUI().StateMu.Unlock()
-			ui.DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
-			ui.DrawStatusBar(os.Stderr, theme)
-			continue
 		}
 
 		ppWriter.ForceReposition()

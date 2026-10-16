@@ -3,13 +3,19 @@ package render
 import (
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"loop/pkg/agent"
 	"loop/pkg/ui/style"
 )
+
+type ExtensionInfo struct {
+	Name     string
+	Path     string
+	Location string
+}
+
+var ExtensionCounter func(workspaceRoot string) int
 
 func PrintBanner(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	if a == nil || a.Config == nil {
@@ -42,37 +48,8 @@ func PrintBanner(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	}
 
 	extensionsCount := 0
-	var dirs []string
-	home, err := os.UserHomeDir()
-	if err == nil {
-		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
-	}
-	dirs = append(dirs, filepath.Join(a.GetWorkspaceRoot(), "extensions"))
-
-	seen := make(map[string]bool)
-	for _, dir := range dirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			continue
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			path := filepath.Join(dir, entry.Name())
-			info, err := os.Stat(path)
-			if err == nil && info.Mode()&0111 != 0 {
-				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-				cmdName := "/" + strings.ToLower(base)
-				if !seen[cmdName] {
-					seen[cmdName] = true
-					extensionsCount++
-				}
-			}
-		}
+	if ExtensionCounter != nil {
+		extensionsCount = ExtensionCounter(a.GetWorkspaceRoot())
 	}
 
 	tagStr := ""

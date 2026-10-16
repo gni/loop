@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 )
 
@@ -15,38 +16,23 @@ var (
 	catFileRe = regexp.MustCompile(`(?:cat|head|tail|wc)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
 	sedFileRe = regexp.MustCompile(`sed\s+-[a-zA-Z0-9]+\s+['"][^'"]+['"]\s+['"]?([^\s'"]+)`)
 	lsDirRe   = regexp.MustCompile(`(?:ls|dir)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
+	redirRe   = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
+	rmTouchRe = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
 )
 
-// ConsecutiveLimit is the number of identical calls in a row required before
-// the guard blocks. Streaks are measured back-to-back, never accumulated over
-// a turn or session: a call followed by any different call resets the streak.
-var ConsecutiveLimit = limits.DefaultConsecutiveLimit
+var (
+	ConsecutiveLimit    = limits.DefaultConsecutiveLimit
+	maxWindowsPerTarget = limits.DefaultWindowsPerTarget
+)
 
-// ObservationInvalidator is the narrow contract the guard uses to mark a file's
-// prior read as stale when the file is mutated outside the tracked write/edit path
-// (e.g. a bash command such as `sed -i`, `cat > f`, `touch`, or `rm`). Forgetting an
-// observation forces the next read-before-edit / CAS freshness check to demand a fresh
-// inspection instead of trusting a hash captured before the external mutation.
 type ObservationInvalidator interface {
 	Forget(absPath string)
+	ForgetAll()
 }
 
-// maxWindowsPerTarget is the compiled default for the number of distinct read
-// windows recorded for a single target, so a pathological session that inspects
-// many slices of one file cannot grow the window cache without limit. The live
-// value is resolved from config through limits.WindowsPerTarget().
-var maxWindowsPerTarget = limits.DefaultWindowsPerTarget
-
-// TurnExecutionGuard blocks tool calls that are repeated back-to-back past
-// ConsecutiveLimit. Every counter tracks a consecutive streak, not a total, so
-// a model that inspects the same file ten times across a long session is never
-// penalised as long as the calls are interleaved with other work.
 type TurnExecutionGuard struct {
-	targetStreaks map[string]int
-	lastTarget    string
-	// readWindows records which (offset, limit) windows have already been observed for a
-	// target. A read of the same file with a different window is a genuinely new inspection,
-	// so it must not count towards the repetition streak.
+	targetStreaks          map[string]int
+	lastTarget             string
 	readWindows            map[string]map[string]bool
 	invalidator            ObservationInvalidator
 	pathResolver           func(string) string
@@ -60,12 +46,10 @@ type TurnExecutionGuard struct {
 	reminderThresholds     []int
 }
 
-// NewTurnExecutionGuard creates a new execution guard for an active turn.
 func NewTurnExecutionGuard() *TurnExecutionGuard {
 	return NewTurnExecutionGuardWithConfig(limits.ConsecutiveLimit(), []int{3, 5})
 }
 
-// NewTurnExecutionGuardWithConfig creates a new execution guard with customizable limits and reminder thresholds.
 func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecutionGuard {
 	if limit <= 0 {
 		limit = limits.ConsecutiveLimit()
@@ -85,7 +69,6 @@ func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecution
 	}
 }
 
-// ConsecutiveIdenticalCount returns the current consecutive identical tool call streak.
 func (g *TurnExecutionGuard) ConsecutiveIdenticalCount() int {
 	if g == nil {
 		return 0
@@ -93,27 +76,18 @@ func (g *TurnExecutionGuard) ConsecutiveIdenticalCount() int {
 	return g.callStreaks[g.lastCallKey]
 }
 
-// SetObservationInvalidator wires an observer that the guard notifies when a bash
-// mutation changes a file outside the tracked write/edit path. A nil invalidator leaves
-// the guard as a pure repetition detector.
 func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidator) {
-	if g == nil {
-		return
+	if g != nil {
+		g.invalidator = inv
 	}
-	g.invalidator = inv
 }
 
-// SetPathResolver supplies the function that turns a raw tool path argument into the
-// absolute path key used by the observation tracker. Without it the guard falls back to
-// the cleaned argument as-is.
 func (g *TurnExecutionGuard) SetPathResolver(resolver func(string) string) {
-	if g == nil {
-		return
+	if g != nil {
+		g.pathResolver = resolver
 	}
-	g.pathResolver = resolver
 }
 
-// resolvePath maps a cleaned tool-target to the absolute key the tracker stores under.
 func (g *TurnExecutionGuard) resolvePath(target string) string {
 	if g == nil || target == "" {
 		return ""
@@ -126,7 +100,6 @@ func (g *TurnExecutionGuard) resolvePath(target string) string {
 	return filepath.Clean(target)
 }
 
-// FileReadCount returns the current consecutive inspection streak for target.
 func (g *TurnExecutionGuard) FileReadCount(target string) int {
 	if g == nil {
 		return 0
@@ -134,7 +107,6 @@ func (g *TurnExecutionGuard) FileReadCount(target string) int {
 	return g.targetStreaks[filepath.Clean(target)]
 }
 
-// CanonicalizeArguments produces a canonical JSON string where object keys are sorted recursively.
 func CanonicalizeArguments(arguments string) string {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
@@ -144,15 +116,12 @@ func CanonicalizeArguments(arguments string) string {
 	if err := json.Unmarshal([]byte(trimmed), &val); err != nil {
 		return trimmed
 	}
-	b, err := json.Marshal(val)
-	if err != nil {
-		return trimmed
+	if b, err := json.Marshal(val); err == nil {
+		return string(b)
 	}
-	return string(b)
+	return trimmed
 }
 
-// GetAdvisoryReminder returns a gentle or detailed advisory message
-// if the model is repeating identical tool calls, nudging it before hitting ConsecutiveLimit.
 func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) string {
 	if g == nil {
 		return ""
@@ -175,13 +144,9 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 		}
 		return RuntimeMessagef("warning_second", "Advisory Loop Warning: Repeated tool call detected:\n- tool: %s\n- consecutive_calls: %d\n- arguments: %s\nThe repeated calls are not making progress. Do not repeat this exact call again. Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.", toolName, streak, preview)
 	}
-
 	return ""
 }
 
-// CheckPreExecution evaluates a proposed tool call BEFORE execution.
-// Only back-to-back repetition past ConsecutiveLimit is blocked; a call that
-// is interleaved with other work is always allowed.
 func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error {
 	if g == nil {
 		return nil
@@ -189,21 +154,16 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 
 	callKey := toolName + ":" + CanonicalizeArguments(arguments)
 
-	// 1. Same failing command run ConsecutiveLimit times in a row.
 	if toolName == "bash" {
-		cmd := extractBashCommand(arguments)
-		if cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
+		if cmd := extractBashCommand(arguments); cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
 			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'"), cmd, g.failedStreaks[cmd])
 		}
 	}
 
-	// 2. Same target inspected ConsecutiveLimit times in a row.
-	target := g.ExtractTargetFile(toolName, arguments)
-	if target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads {
+	if target := g.ExtractTargetFile(toolName, arguments); target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads {
 		return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code"), target, g.targetStreaks[target])
 	}
 
-	// 3. Same tool call executed ConsecutiveLimit times in a row.
 	if g.callStreaks[callKey] >= g.maxConsecutiveCalls {
 		return fmt.Errorf(RuntimeMessage("loop_identical_call", "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action"), g.callStreaks[callKey])
 	}
@@ -211,31 +171,25 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 	return nil
 }
 
-// RecordPostExecution updates streak counters after a tool call completes.
-// Streaks are strictly back-to-back: any call that differs from the previous
-// one clears every streak, so counts never accumulate across a turn or session.
-func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, output string, err error) {
+func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ string, err error) {
 	if g == nil {
 		return
 	}
 
 	callKey := toolName + ":" + CanonicalizeArguments(arguments)
 	target := g.ExtractTargetFile(toolName, arguments)
-	cmd := cmdForTool(toolName, arguments)
+	var cmd string
+	if toolName == "bash" {
+		cmd = extractBashCommand(arguments)
+	}
 
-	// Identical call: extend the streak.
 	if callKey == g.lastCallKey {
 		g.callStreaks[callKey]++
 	} else {
-		g.callStreaks = make(map[string]int)
+		g.callStreaks = map[string]int{callKey: 1}
 		g.lastCallKey = callKey
-		g.callStreaks[callKey] = 1
 	}
 
-	// Same target in a row: extend the inspection streak. Any call on a
-	// different target (including targetless work like grep) ends it. A read that
-	// asks for a different slice of the file (different offset/limit) is a new
-	// observation, so it restarts the streak instead of inflating it.
 	newWindow := isReadWindowNew(toolName, arguments, g.readWindows)
 	if target == g.lastTarget && target != "" && !newWindow {
 		g.targetStreaks[target]++
@@ -247,8 +201,6 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 		}
 	}
 
-	// Same failing command in a row: extend the failure streak. A different
-	// command, or a success, ends it.
 	if toolName == "bash" && cmd != "" {
 		if err != nil && cmd == g.lastFailedCmd {
 			g.failedStreaks[cmd]++
@@ -262,27 +214,22 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 		}
 	}
 
-	// A modification invalidates previous inspections: the file content changed,
-	// so re-reading it is legitimate again.
 	isModifying := toolName == "write" || toolName == "edit" || (toolName == "bash" && isBashModifying(cmd) && err == nil)
 	if isModifying {
 		g.targetStreaks = make(map[string]int)
 		g.lastTarget = ""
 		g.readWindows = make(map[string]map[string]bool)
 
-		// A successful mutation invalidates the tracker's record for the affected
-		// target. This closes the gap where a bash command (sed -i, cat > f, touch,
-		// rm) changes a file outside the write/edit path, so the next edit cannot rely
-		// on a stale read observation and must re-inspect the file.
-		if err == nil && g.invalidator != nil && target != "" {
-			g.invalidator.Forget(g.resolvePath(target))
+		if err == nil && g.invalidator != nil {
+			if target != "" {
+				g.invalidator.Forget(g.resolvePath(target))
+			} else if toolName == "bash" {
+				g.invalidator.ForgetAll()
+			}
 		}
 	}
 }
 
-// isReadWindowNew records the (offset, limit) window of a read call for its target and
-// reports whether this window has not been observed before. Non-read tools, or reads whose
-// window was already seen, return false so the repetition streak keeps counting.
 func isReadWindowNew(toolName, arguments string, windows map[string]map[string]bool) bool {
 	if toolName != "read" || windows == nil {
 		return false
@@ -312,8 +259,6 @@ func isReadWindowNew(toolName, arguments string, windows map[string]map[string]b
 		return false
 	}
 
-	// Bound the per-target window set: once full, evict one recorded window before
-	// recording this one so the cache cannot grow without limit.
 	if len(seen) >= limits.WindowsPerTarget() {
 		for key := range seen {
 			delete(seen, key)
@@ -325,70 +270,34 @@ func isReadWindowNew(toolName, arguments string, windows map[string]map[string]b
 	return true
 }
 
-func cmdForTool(toolName, arguments string) string {
-	if toolName != "bash" {
-		return ""
-	}
-	return extractBashCommand(arguments)
-}
-
-// ExtractTargetFile extracts the file or directory path being inspected by read, list, or bash commands.
 func (g *TurnExecutionGuard) ExtractTargetFile(toolName, arguments string) string {
-	if toolName == "read" {
+	switch toolName {
+	case "read", "write", "edit":
 		return extractPathArg(arguments, "")
-	}
-
-	if toolName == "list" || toolName == "ls" {
+	case "list", "ls":
 		return extractPathArg(arguments, ".")
-	}
-
-	if toolName == "bash" {
+	case "bash":
 		cmd := extractBashCommand(arguments)
-		if m := pathlibRe.FindStringSubmatch(cmd); len(m) > 1 {
-			return filepath.Clean(m[1])
-		}
-		if m := sedFileRe.FindStringSubmatch(cmd); len(m) > 1 {
-			return filepath.Clean(m[1])
-		}
-		if m := catFileRe.FindStringSubmatch(cmd); len(m) > 1 {
-			return filepath.Clean(m[1])
-		}
-		if m := lsDirRe.FindStringSubmatch(cmd); len(m) > 1 {
-			return filepath.Clean(m[1])
+		for _, re := range []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe} {
+			if m := re.FindStringSubmatch(cmd); len(m) > 1 {
+				cand := strings.TrimSpace(m[1])
+				if cand != "" && !strings.HasPrefix(cand, "/dev/") && !strings.HasPrefix(cand, "-") {
+					return filepath.Clean(cand)
+				}
+			}
 		}
 	}
-
 	return ""
 }
 
 func extractPathArg(arguments string, fallback string) string {
-	var args struct {
-		Path     string `json:"path"`
-		File     string `json:"file"`
-		FilePath string `json:"file_path"`
-		Dir      string `json:"dir"`
-		DirPath  string `json:"dir_path"`
-	}
-	if err := json.Unmarshal([]byte(arguments), &args); err == nil {
-		for _, candidate := range []string{args.Path, args.FilePath, args.File, args.DirPath, args.Dir} {
-			if candidate != "" {
-				return filepath.Clean(candidate)
-			}
-		}
-	}
-	var raw string
-	if err := json.Unmarshal([]byte(arguments), &raw); err == nil && raw != "" {
-		return filepath.Clean(raw)
+	if p := filetool.ExtractFilePath(arguments); p != "" {
+		return filepath.Clean(p)
 	}
 	return fallback
 }
 
 func extractBashCommand(arguments string) string {
-	var args struct {
-		Command   string `json:"command"`
-		Cmd       string `json:"cmd"`
-		Arguments string `json:"arguments"`
-	}
 	trimmed := strings.TrimSpace(arguments)
 	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
 		var unquoted string
@@ -396,15 +305,14 @@ func extractBashCommand(arguments string) string {
 			return strings.TrimSpace(unquoted)
 		}
 	}
+	var args struct {
+		Command   string `json:"command"`
+		Cmd       string `json:"cmd"`
+		Arguments string `json:"arguments"`
+	}
 	if err := json.Unmarshal([]byte(arguments), &args); err == nil {
-		if args.Command != "" {
-			return strings.TrimSpace(args.Command)
-		}
-		if args.Cmd != "" {
-			return strings.TrimSpace(args.Cmd)
-		}
-		if args.Arguments != "" {
-			return strings.TrimSpace(args.Arguments)
+		if v := strings.TrimSpace(filetool.ExtractFilePath("", args.Command, args.Cmd, args.Arguments)); v != "" {
+			return v
 		}
 	}
 	return trimmed
@@ -415,14 +323,10 @@ func isBashModifying(cmd string) bool {
 	if trimmed == "" {
 		return false
 	}
-	prefixes := []string{"git commit", "git add", "mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo "}
-	for _, p := range prefixes {
+	for _, p := range []string{"git commit", "git checkout", "git restore", "git reset", "git apply", "git add", "mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo ", "gofmt ", "patch "} {
 		if strings.HasPrefix(trimmed, p) {
 			return true
 		}
 	}
-	if strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, " > ") || strings.Contains(trimmed, " >> ") || strings.Contains(trimmed, "> ") {
-		return true
-	}
-	return false
+	return strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, " > ") || strings.Contains(trimmed, " >> ") || strings.Contains(trimmed, "> ")
 }
