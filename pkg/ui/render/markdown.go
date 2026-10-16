@@ -40,6 +40,15 @@ func IsNumberedList(trimmed string) (bool, string, string) {
 	return true, prefix, trimmed[spIdx+1:]
 }
 
+func extractBulletPrefix(trimmed string) (string, string, bool) {
+	for _, p := range []string{"- ", "* ", "• "} {
+		if strings.HasPrefix(trimmed, p) {
+			return p, trimmed[len(p):], true
+		}
+	}
+	return "", "", false
+}
+
 // WrapMarkdownLine wraps a single markdown line respecting list and blockquote prefixes.
 func WrapMarkdownLine(line string, width int) []string {
 	if width <= 10 {
@@ -52,15 +61,9 @@ func WrapMarkdownLine(line string, width int) []string {
 	if strings.HasPrefix(trimmed, ">") {
 		prefix = "> "
 		content = strings.TrimSpace(trimmed[1:])
-	} else if strings.HasPrefix(trimmed, "- ") {
-		prefix = "- "
-		content = trimmed[2:]
-	} else if strings.HasPrefix(trimmed, "* ") {
-		prefix = "* "
-		content = trimmed[2:]
-	} else if strings.HasPrefix(trimmed, "• ") {
-		prefix = "• "
-		content = trimmed[2:]
+	} else if bulletPrefix, rest, ok := extractBulletPrefix(trimmed); ok {
+		prefix = bulletPrefix
+		content = rest
 	} else if ok, numPrefix, listText := IsNumberedList(trimmed); ok {
 		prefix = numPrefix + " "
 		content = listText
@@ -70,12 +73,9 @@ func WrapMarkdownLine(line string, width int) []string {
 
 	var leadingSpaces string
 	if prefix == "" {
-		for _, r := range line {
-			if r == ' ' {
-				leadingSpaces += " "
-			} else {
-				break
-			}
+		leadingLen := len(line) - len(strings.TrimLeft(line, " "))
+		if leadingLen > 0 {
+			leadingSpaces = line[:leadingLen]
 		}
 	}
 
@@ -116,7 +116,6 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 	n := len(runes)
 
 	for i := 0; i < n; {
-		// 1. Inline code: `code`
 		if runes[i] == '`' {
 			j := i + 1
 			for j < n && runes[j] != '`' {
@@ -136,7 +135,6 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 			}
 		}
 
-		// 2. Bold: **bold**
 		if i+1 < n && runes[i] == '*' && runes[i+1] == '*' {
 			j := i + 2
 			found := false
@@ -149,11 +147,12 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 			}
 			if found {
 				boldVal := string(runes[i+2 : j])
+				inner := RenderInlineMarkdown(boldVal, inThinking, theme)
 				var styled string
 				if inThinking {
-					styled = style.NewStyle().Foreground(theme.Border).Bold(true).Italic(true).Render(RenderInlineMarkdown(boldVal, inThinking, theme))
+					styled = style.NewStyle().Foreground(theme.Border).Bold(true).Italic(true).Render(inner)
 				} else {
-					styled = style.NewStyle().Foreground(theme.Primary).Bold(true).Render(RenderInlineMarkdown(boldVal, inThinking, theme))
+					styled = style.NewStyle().Foreground(theme.Primary).Bold(true).Render(inner)
 				}
 				result.WriteString(styled)
 				i = j + 2
@@ -161,7 +160,6 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 			}
 		}
 
-		// 3. Italic: *italic*
 		if runes[i] == '*' {
 			j := i + 1
 			for j < n && runes[j] != '*' {
@@ -169,11 +167,12 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 			}
 			if j < n {
 				italicVal := string(runes[i+1 : j])
+				inner := RenderInlineMarkdown(italicVal, inThinking, theme)
 				var styled string
 				if inThinking {
-					styled = style.NewStyle().Foreground(theme.Border).Italic(true).Render(RenderInlineMarkdown(italicVal, inThinking, theme))
+					styled = style.NewStyle().Foreground(theme.Border).Italic(true).Render(inner)
 				} else {
-					styled = style.NewStyle().Italic(true).Render(RenderInlineMarkdown(italicVal, inThinking, theme))
+					styled = style.NewStyle().Italic(true).Render(inner)
 				}
 				result.WriteString(styled)
 				i = j + 1
@@ -192,30 +191,25 @@ func RenderInlineMarkdown(text string, inThinking bool, theme style.UITheme) str
 func PrintNormalMarkdownLine(w io.Writer, line string, theme style.UITheme) {
 	trimmed := strings.TrimSpace(line)
 
-	// 0. Handle delimiter: make a space instead of "----"
 	if trimmed == "----" {
 		fmt.Fprint(w, " ")
 		return
 	}
 
-	// 1. Handle headers: e.g. "# Header", "## Header", etc.
 	if strings.HasPrefix(trimmed, "#") {
 		hashes := 0
 		for hashes < len(trimmed) && trimmed[hashes] == '#' {
 			hashes++
 		}
 		headerText := strings.TrimSpace(trimmed[hashes:])
-		var styled string
+		headerStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 		if hashes == 1 {
-			styled = style.NewStyle().Foreground(theme.Secondary).Bold(true).Underline(true).Render(headerText)
-		} else {
-			styled = style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(headerText)
+			headerStyle = headerStyle.Underline(true)
 		}
-		fmt.Fprint(w, styled)
+		fmt.Fprint(w, headerStyle.Render(headerText))
 		return
 	}
 
-	// 2. Handle blockquotes: e.g. "> text"
 	if strings.HasPrefix(trimmed, ">") {
 		quoteText := strings.TrimSpace(trimmed[1:])
 		styled := style.NewStyle().Foreground(theme.Border).Italic(true).Render("┃ " + quoteText)
@@ -223,102 +217,70 @@ func PrintNormalMarkdownLine(w io.Writer, line string, theme style.UITheme) {
 		return
 	}
 
-	// 3. Handle bullet points: e.g. "- item" or "* item"
-	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "• ") {
-		bulletText := trimmed[2:]
+	if _, bulletText, ok := extractBulletPrefix(trimmed); ok {
 		bulletSymbol := style.NewStyle().Foreground(theme.Primary).Render("•")
 		fmt.Fprintf(w, "  %s %s", bulletSymbol, RenderInlineMarkdown(bulletText, false, theme))
 		return
 	}
 
-	// 3.5 Handle numbered lists: e.g. "1. item"
 	if ok, numPrefix, listText := IsNumberedList(trimmed); ok {
 		numSymbol := style.NewStyle().Foreground(theme.Primary).Render(numPrefix)
 		fmt.Fprintf(w, "  %s %s", numSymbol, RenderInlineMarkdown(listText, false, theme))
 		return
 	}
 
-	// 4. Standard text line: parse inline styles (bold, code, italic)
 	fmt.Fprint(w, RenderInlineMarkdown(line, false, theme))
+}
+
+func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string), onTextLine func(string)) {
+	lines := strings.Split(content, "\n")
+	inCodeBlock := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if inCodeBlock {
+			onCodeLine(line)
+		} else {
+			termW, _ := terminal.GetDimensions()
+			wrapLimit := termW - 5
+			if wrapLimit < 20 {
+				wrapLimit = 20
+			}
+			wrapped := WrapMarkdownLine(line, wrapLimit)
+			for idx, wl := range wrapped {
+				onTextLine(wl)
+				if idx < len(wrapped)-1 {
+					fmt.Fprintln(w)
+				}
+			}
+		}
+		if i < len(lines)-1 {
+			fmt.Fprintln(w)
+		}
+	}
 }
 
 // RenderMarkdownContent renders multiline markdown including code blocks and wrapped lines.
 func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
-	lines := strings.Split(content, "\n")
-	inCodeBlock := false
-	for i, line := range lines {
-		if inCodeBlock {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inCodeBlock = false
-			} else {
-				fmt.Fprint(w, style.NewStyle().Foreground(theme.Highlight).Render(line))
-				if i < len(lines)-1 {
-					fmt.Fprintln(w)
-				}
-			}
-		} else {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inCodeBlock = true
-			} else {
-				termW, _ := terminal.GetDimensions()
-				wrapLimit := termW - 5
-				if wrapLimit < 20 {
-					wrapLimit = 20
-				}
-				wrapped := WrapMarkdownLine(line, wrapLimit)
-				for idx, wl := range wrapped {
-					PrintNormalMarkdownLine(w, wl, theme)
-					if idx < len(wrapped)-1 {
-						fmt.Fprintln(w)
-					}
-				}
-				if i < len(lines)-1 {
-					fmt.Fprintln(w)
-				}
-			}
-		}
-	}
+	codeStyle := style.NewStyle().Foreground(theme.Highlight)
+	renderMarkdownBlocks(
+		w,
+		content,
+		func(line string) { fmt.Fprint(w, codeStyle.Render(line)) },
+		func(line string) { PrintNormalMarkdownLine(w, line, theme) },
+	)
 }
 
 // RenderReasoningMarkdownContent renders reasoning/thinking markdown content.
 func RenderReasoningMarkdownContent(w io.Writer, content string, theme style.UITheme) {
-	lines := strings.Split(content, "\n")
-	inCodeBlock := false
 	dimStyle := GetThinkingStyle(theme)
-	for i, line := range lines {
-		if inCodeBlock {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inCodeBlock = false
-			} else {
-				fmt.Fprint(w, dimStyle.Render("  "+line))
-				if i < len(lines)-1 {
-					fmt.Fprintln(w)
-				}
-			}
-		} else {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inCodeBlock = true
-			} else {
-				termW, _ := terminal.GetDimensions()
-				wrapLimit := termW - 5
-				if wrapLimit < 20 {
-					wrapLimit = 20
-				}
-				wrapped := WrapMarkdownLine(line, wrapLimit)
-				for idx, wl := range wrapped {
-					fmt.Fprint(w, dimStyle.Render(wl))
-					if idx < len(wrapped)-1 {
-						fmt.Fprintln(w)
-					}
-				}
-				if i < len(lines)-1 {
-					fmt.Fprintln(w)
-				}
-			}
-		}
-	}
+	renderMarkdownBlocks(
+		w,
+		content,
+		func(line string) { fmt.Fprint(w, dimStyle.Render("  "+line)) },
+		func(line string) { fmt.Fprint(w, dimStyle.Render(line)) },
+	)
 }

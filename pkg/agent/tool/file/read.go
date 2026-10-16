@@ -13,7 +13,13 @@ import (
 
 const readDefaultLimit = 1000
 
-var DirectoryTreeLister func(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
+var (
+	DirectoryTreeLister func(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
+
+	fallbackFileExts = [...]string{".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".json", ".md", ".yaml", ".yml"}
+	fallbackDirExts  = [...]string{".py", ".ts", ".js", ".tsx", ".jsx", ".go"}
+	packageEntries   = [...]string{"__init__.py", "index.ts", "index.js", "index.tsx", "index.jsx", "main.go"}
+)
 
 type readTool struct{}
 
@@ -44,6 +50,44 @@ func (t *readTool) Definition() domaintool.Tool {
 		},
 		"path",
 	)
+}
+
+func resolveMissingReadTarget(safePath, targetPath, workspaceRoot string) (string, os.FileInfo, string, bool) {
+	for _, ext := range fallbackFileExts {
+		candidate := safePath + ext
+		if cInfo, cErr := os.Stat(candidate); cErr == nil && !cInfo.IsDir() {
+			relPath, _ := filepath.Rel(workspaceRoot, candidate)
+			if relPath == "" {
+				relPath = targetPath + ext
+			}
+			header := fmt.Sprintf("[Notice: Resolved '%s' to '%s']\n\n", targetPath, relPath)
+			return candidate, cInfo, header, true
+		}
+	}
+	for _, ext := range fallbackDirExts {
+		if strings.HasSuffix(safePath, ext) {
+			trimmed := strings.TrimSuffix(safePath, ext)
+			if dInfo, dErr := os.Stat(trimmed); dErr == nil && dInfo.IsDir() {
+				return trimmed, dInfo, "", true
+			}
+		}
+	}
+	return safePath, nil, "", false
+}
+
+func resolveDirEntrypoint(safePath, targetPath, workspaceRoot string) (string, os.FileInfo, string, bool) {
+	for _, entryName := range packageEntries {
+		entryPath := filepath.Join(safePath, entryName)
+		if entryInfo, err := os.Stat(entryPath); err == nil && !entryInfo.IsDir() && entryInfo.Size() > 0 {
+			relEntry, _ := filepath.Rel(workspaceRoot, entryPath)
+			if relEntry == "" {
+				relEntry = filepath.Join(targetPath, entryName)
+			}
+			header := fmt.Sprintf("[Notice: '%s' is a directory. Automatically reading package entrypoint '%s':]\n\n", targetPath, relEntry)
+			return entryPath, entryInfo, header, true
+		}
+	}
+	return safePath, nil, "", false
 }
 
 func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
@@ -96,69 +140,34 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	unlock := LockPath(safePath)
 	defer unlock()
 
+	workspaceRoot := ctx.GetWorkspaceRoot()
 	var entryHeader string
 	info, err := os.Stat(safePath)
 	if err != nil {
-		found := false
-		for _, ext := range []string{".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".json", ".md", ".yaml", ".yml"} {
-			candidate := safePath + ext
-			if cInfo, cErr := os.Stat(candidate); cErr == nil && !cInfo.IsDir() {
-				safePath = candidate
-				info = cInfo
-				found = true
-				relPath, _ := filepath.Rel(ctx.GetWorkspaceRoot(), candidate)
-				if relPath == "" {
-					relPath = targetPath + ext
-				}
-				entryHeader = fmt.Sprintf("[Notice: Resolved '%s' to '%s']\n\n", targetPath, relPath)
-				break
-			}
-		}
-		if !found {
-			for _, ext := range []string{".py", ".ts", ".js", ".tsx", ".jsx", ".go"} {
-				if strings.HasSuffix(safePath, ext) {
-					trimmed := strings.TrimSuffix(safePath, ext)
-					if dInfo, dErr := os.Stat(trimmed); dErr == nil && dInfo.IsDir() {
-						safePath = trimmed
-						info = dInfo
-						found = true
-						break
-					}
-				}
-			}
-		}
+		resolvedPath, resolvedInfo, header, found := resolveMissingReadTarget(safePath, targetPath, workspaceRoot)
 		if !found {
 			return "", fmt.Errorf("failed to read file info: %w", err)
 		}
+		safePath = resolvedPath
+		info = resolvedInfo
+		entryHeader = header
 	}
 
 	if info.IsDir() {
-		foundEntry := false
-		for _, entryName := range []string{"__init__.py", "index.ts", "index.js", "index.tsx", "index.jsx", "main.go"} {
-			entryPath := filepath.Join(safePath, entryName)
-			if entryInfo, err := os.Stat(entryPath); err == nil && !entryInfo.IsDir() && entryInfo.Size() > 0 {
-				safePath = entryPath
-				info = entryInfo
-				foundEntry = true
-				relEntry, _ := filepath.Rel(ctx.GetWorkspaceRoot(), entryPath)
-				if relEntry == "" {
-					relEntry = filepath.Join(targetPath, entryName)
-				}
-				entryHeader = fmt.Sprintf("[Notice: '%s' is a directory. Automatically reading package entrypoint '%s':]\n\n", targetPath, relEntry)
-				break
-			}
-		}
-
+		resolvedPath, resolvedInfo, header, foundEntry := resolveDirEntrypoint(safePath, targetPath, workspaceRoot)
 		if !foundEntry {
 			if DirectoryTreeLister != nil {
-				tree, err := DirectoryTreeLister(safePath, ctx.GetWorkspaceRoot(), 2, 150)
-				if err != nil {
-					return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, err)
+				tree, treeErr := DirectoryTreeLister(safePath, workspaceRoot, 2, 150)
+				if treeErr != nil {
+					return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, treeErr)
 				}
 				return fmt.Sprintf("[Path '%s' is a directory. Use 'list' to view directories, or call 'read' with a specific file path to view its content:]\n\n%s", targetPath, tree), nil
 			}
 			return fmt.Sprintf("[Path '%s' is a directory. Use 'list' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", targetPath), nil
 		}
+		safePath = resolvedPath
+		info = resolvedInfo
+		entryHeader = header
 	}
 
 	maxReadBytes := limits.MaxReadFileBytes()

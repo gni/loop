@@ -1,15 +1,25 @@
 package swarm
 
 import (
+	"context"
 	"sort"
 	"time"
 )
 
-func (ma *MultiAgent) CancelActiveTurn() {
+func (ma *MultiAgent) activeTurn() (context.Context, context.CancelFunc, time.Time, bool) {
 	ma.HistoryMu.RLock()
+	ctx := ma.ActiveContext
 	cancel := ma.ActiveCancel
+	started := ma.ActiveStarted
 	ma.HistoryMu.RUnlock()
-	if cancel != nil {
+	if ctx == nil || cancel == nil || ctx.Err() != nil {
+		return nil, nil, time.Time{}, false
+	}
+	return ctx, cancel, started, true
+}
+
+func (ma *MultiAgent) CancelActiveTurn() {
+	if _, cancel, _, ok := ma.activeTurn(); ok {
 		cancel()
 	}
 }
@@ -31,20 +41,12 @@ func (mam *MultiAgentManager) ActiveSubagentName() (string, bool) {
 	var current candidate
 	found := false
 	for _, ma := range agents {
-		ma.HistoryMu.RLock()
-		activeContext := ma.ActiveContext
-		activeCancel := ma.ActiveCancel
-		started := ma.ActiveStarted
-		ma.HistoryMu.RUnlock()
-		if activeContext == nil || activeCancel == nil || activeContext.Err() != nil {
+		_, _, started, ok := ma.activeTurn()
+		if !ok {
 			continue
 		}
 
-		depth := 0
-		for parent := ma.Parent; parent != nil; parent = parent.Parent {
-			depth++
-		}
-		next := candidate{name: ma.Name, started: started, depth: depth}
+		next := candidate{name: ma.Name, started: started, depth: ma.Depth()}
 		if !found ||
 			next.started.After(current.started) ||
 			(next.started.Equal(current.started) && next.depth > current.depth) ||
@@ -65,11 +67,8 @@ func (mam *MultiAgentManager) CancelSubagentTurn(name string) bool {
 		return false
 	}
 
-	ma.HistoryMu.RLock()
-	activeContext := ma.ActiveContext
-	cancel := ma.ActiveCancel
-	ma.HistoryMu.RUnlock()
-	if activeContext == nil || cancel == nil || activeContext.Err() != nil {
+	_, cancel, _, ok := ma.activeTurn()
+	if !ok {
 		return false
 	}
 	cancel()

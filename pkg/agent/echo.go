@@ -6,13 +6,12 @@ import (
 	"unicode/utf8"
 )
 
-// echoWrappers are the ways a model wraps an echoed prompt before thinking or writing.
 var echoWrappers = []string{`"`, "'", "`", "> ", "# ", "## ", "### ", "#### ", "##### ", "###### ", "**"}
 
 func normalizeDashVariants(s string) string {
 	s = strings.ReplaceAll(s, `\u2014`, "-")
-	s = strings.ReplaceAll(s, "\u2014", "-") // em-dash —
-	s = strings.ReplaceAll(s, "\u2013", "-") // en-dash –
+	s = strings.ReplaceAll(s, "\u2014", "-")
+	s = strings.ReplaceAll(s, "\u2013", "-")
 	for strings.Contains(s, "--") {
 		s = strings.ReplaceAll(s, "--", "-")
 	}
@@ -26,24 +25,40 @@ func matchNormalizedPrefix(text, target string) int {
 	}
 
 	var normText strings.Builder
+	normText.Grow(len(normTarget) + 8)
+	lastWasDash := false
+
 	for i := 0; i < len(text); {
+		var r rune
 		if strings.HasPrefix(text[i:], `\u2014`) {
-			normText.WriteString("-")
+			r = '-'
 			i += 6
 		} else {
-			r, size := utf8.DecodeRuneInString(text[i:])
+			var size int
+			r, size = utf8.DecodeRuneInString(text[i:])
 			if r == '\u2014' || r == '\u2013' {
-				normText.WriteString("-")
+				r = '-'
 			} else {
-				normText.WriteRune(unicode.ToLower(r))
+				r = unicode.ToLower(r)
 			}
 			i += size
 		}
-		currentNorm := normText.String()
-		for strings.Contains(currentNorm, "--") {
-			currentNorm = strings.ReplaceAll(currentNorm, "--", "-")
+
+		if r == '-' {
+			if lastWasDash {
+				continue
+			}
+			lastWasDash = true
+		} else {
+			lastWasDash = false
 		}
-		if currentNorm == normTarget {
+
+		normText.WriteRune(r)
+		currentNorm := normText.String()
+		if len(currentNorm) > len(normTarget) || !strings.HasPrefix(normTarget, currentNorm) {
+			return -1
+		}
+		if len(currentNorm) == len(normTarget) {
 			return i
 		}
 	}
@@ -67,7 +82,6 @@ func extractPromptTargets(prompt string) []string {
 
 	addTarget(norm)
 
-	// If prompt has multiple lines, also match the title/first line
 	lines := strings.Split(norm, "\n")
 	if len(lines) > 1 {
 		firstLine := strings.TrimSpace(lines[0])
@@ -80,7 +94,6 @@ func extractPromptTargets(prompt string) []string {
 		}
 	}
 
-	// Also add title with leading markdown heading stripped if present
 	cleanNorm := strings.TrimLeft(norm, "#*_ \t\"'`")
 	if len(cleanNorm) >= 3 {
 		addTarget(cleanNorm)
@@ -107,8 +120,6 @@ func matchPromptInText(clean string, targets []string) (matchedTarget string, re
 	return "", "", ""
 }
 
-// stripPromptEcho removes a leading echoed prompt (optionally wrapped) plus the
-// closing wrapper and any separator punctuation that follows it.
 func stripPromptEcho(reasoning, normPrompt string) string {
 	if normPrompt == "" || reasoning == "" {
 		return reasoning
@@ -123,37 +134,32 @@ func stripPromptEcho(reasoning, normPrompt string) string {
 	return reasoning
 }
 
-// trimEchoResidue drops the closing wrapper and the separator punctuation the model
-// uses to transition from the echo into its actual thought or text.
+func trimLeadingEchoPunctuation(s string) string {
+	s = strings.TrimLeft(s, "\r\n\t ")
+	for len(s) > 0 && strings.ContainsRune(".:-,#", rune(s[0])) {
+		s = s[1:]
+		s = strings.TrimLeft(s, "\r\n\t ")
+	}
+	return s
+}
+
 func trimEchoResidue(rest, wrapper string) string {
 	rest = strings.TrimLeft(rest, "\r\n\t ")
 	if wrapper != "" && strings.HasPrefix(rest, wrapper) {
 		rest = strings.TrimPrefix(rest, wrapper)
 	}
-	rest = strings.TrimLeft(rest, "\r\n\t ")
-	for len(rest) > 0 && strings.ContainsRune(".:-,#", rune(rest[0])) {
-		rest = rest[1:]
-		rest = strings.TrimLeft(rest, "\r\n\t ")
-	}
-	return rest
+	return trimLeadingEchoPunctuation(rest)
 }
 
-// StripEchoedPrompt strips leading echoed prompt text and trailing newlines/whitespace
-// from model content if the model begins by repeating the user's prompt or title.
 func StripEchoedPrompt(content, prompt string) string {
 	return stripPromptEcho(content, strings.TrimSpace(prompt))
 }
 
-// PromptEchoFilter suppresses an echoed prompt as it streams. Post-hoc stripping was
-// not enough: chunks are printed the moment they arrive, so a model that opens its
-// response by repeating the prompt printed the echo (and the trailing quote and
-// separator punctuation) before anything could be removed. The filter holds back only
-// the runes needed to decide, then passes everything through.
 type PromptEchoFilter struct {
 	normPrompt string
 	targets    []string
 	held       strings.Builder
-	phase      int // 0 deciding, 1 skipping echo residue, 2 passing through
+	phase      int
 }
 
 func NewPromptEchoFilter(prompt string) *PromptEchoFilter {
@@ -162,7 +168,6 @@ func NewPromptEchoFilter(prompt string) *PromptEchoFilter {
 	return &PromptEchoFilter{normPrompt: norm, targets: targets}
 }
 
-// Write returns the portion of chunk that is safe to print.
 func (f *PromptEchoFilter) Write(chunk string) string {
 	if f.phase == 2 || f.normPrompt == "" || len(f.targets) == 0 {
 		return chunk
@@ -182,7 +187,6 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 		cleanDash := normalizeDashVariants(clean)
 		lowerCleanDash := strings.ToLower(cleanDash)
 
-		// Ambiguous: the echo could still complete in a later chunk, so hold.
 		for _, target := range f.targets {
 			normTarget := normalizeDashVariants(target)
 			lowerTarget := strings.ToLower(normTarget)
@@ -202,7 +206,6 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 			}
 		}
 
-		// Confirmed not an echo: emit what was held.
 		f.phase = 2
 		f.held.Reset()
 		return clean
@@ -211,8 +214,6 @@ func (f *PromptEchoFilter) Write(chunk string) string {
 	return f.skipResidue(f.held.String())
 }
 
-// skipResidue consumes the closing wrapper and separator punctuation that separates the
-// echo from the real text, and emits from the first character of that text.
 func (f *PromptEchoFilter) skipResidue(s string) string {
 	for _, wrapper := range echoWrappers {
 		s = strings.TrimLeft(s, "\r\n\t ")
@@ -225,11 +226,7 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 			break
 		}
 	}
-	s = strings.TrimLeft(s, "\r\n\t ")
-	for len(s) > 0 && strings.ContainsRune(".:-,#", rune(s[0])) {
-		s = s[1:]
-		s = strings.TrimLeft(s, "\r\n\t ")
-	}
+	s = trimLeadingEchoPunctuation(s)
 	if s == "" {
 		f.held.Reset()
 		return ""
@@ -239,7 +236,6 @@ func (f *PromptEchoFilter) skipResidue(s string) string {
 	return s
 }
 
-// Flush returns anything still held when the stream ends before the decision resolved.
 func (f *PromptEchoFilter) Flush() string {
 	if f.phase == 1 {
 		f.held.Reset()

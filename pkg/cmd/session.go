@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -20,8 +19,7 @@ var sessionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all saved conversation sessions and metadata",
 	Run: func(cmd *cobra.Command, args []string) {
-		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
-		if err := db.InitDB(sessionsDir); err != nil {
+		if err := initSessionStore(); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			return
 		}
@@ -38,22 +36,25 @@ var sessionListCmd = &cobra.Command{
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."
 			}
-			fmt.Printf("  - %s [%s] (%d messages) - %s\n", s.SessionID, s.Timestamp[:16], s.MsgCount, preview)
+			ts := s.Timestamp
+			if len(ts) > 16 {
+				ts = ts[:16]
+			}
+			fmt.Printf("  - %s [%s] (%d messages) - %s\n", s.SessionID, ts, s.MsgCount, preview)
 		}
 	},
 }
 
 var (
-	forkFrom   string
-	forkEntry  string
+	forkFrom  string
+	forkEntry string
 )
 
 var sessionNewCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Start a new session and output its UUID",
 	Run: func(cmd *cobra.Command, args []string) {
-		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
-		if err := db.InitDB(sessionsDir); err != nil {
+		if err := initSessionStore(); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			return
 		}
@@ -87,8 +88,7 @@ var sessionClearCmd = &cobra.Command{
 	Use:   "clear",
 	Short: "Clear all saved conversation sessions from disk",
 	Run: func(cmd *cobra.Command, args []string) {
-		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
-		if err := db.InitDB(sessionsDir); err != nil {
+		if err := initSessionStore(); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			return
 		}

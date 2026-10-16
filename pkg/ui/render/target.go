@@ -39,7 +39,21 @@ var (
 		"explanation", "Explanation", "summary", "Summary",
 		"message", "Message",
 	}
+	todoListKeys = []string{
+		"tasks", "todos", "items", "plan", "content", "data", "list", "todo_list",
+	}
+	todoDescKeys = []string{
+		"task", "content", "description", "title", "name", "text", "desc", "summary",
+	}
 )
+
+func parseToolArgsMap(trimmed string) map[string]interface{} {
+	var argsMap map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
+		_ = json.Unmarshal([]byte(RepairArgsJSON(trimmed)), &argsMap)
+	}
+	return argsMap
+}
 
 func extractRawJSONStrings(raw string) map[string]string {
 	matches := reJSONStringKV.FindAllStringSubmatch(raw, -1)
@@ -62,6 +76,56 @@ func extractRawJSONStrings(raw string) map[string]string {
 	return out
 }
 
+func findMapStringByKeys(m map[string]interface{}, keys []string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func extractTodoTargetFromMap(argsMap map[string]interface{}) string {
+	if argsMap == nil {
+		return ""
+	}
+	for _, key := range todoListKeys {
+		taskList, ok := argsMap[key].([]interface{})
+		if !ok {
+			continue
+		}
+		var inProgressTask, firstPendingTask string
+		for _, item := range taskList {
+			switch m := item.(type) {
+			case map[string]interface{}:
+				taskDesc := findMapStringByKeys(m, todoDescKeys)
+				status, _ := m["status"].(string)
+				if strings.EqualFold(status, "in_progress") && taskDesc != "" {
+					inProgressTask = taskDesc
+					break
+				}
+				if firstPendingTask == "" && taskDesc != "" {
+					firstPendingTask = taskDesc
+				}
+			case string:
+				if firstPendingTask == "" && strings.TrimSpace(m) != "" {
+					firstPendingTask = strings.TrimSpace(m)
+				}
+			}
+			if inProgressTask != "" {
+				break
+			}
+		}
+		if inProgressTask != "" {
+			return inProgressTask
+		}
+		if firstPendingTask != "" {
+			return firstPendingTask
+		}
+	}
+	return ""
+}
+
 func ExtractToolTarget(toolName string, argsJSON string) string {
 	trimmed := strings.TrimSpace(argsJSON)
 	if trimmed == "" {
@@ -74,10 +138,7 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 		}
 	}
 
-	var argsMap map[string]interface{}
-	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
-		_ = json.Unmarshal([]byte(RepairArgsJSON(trimmed)), &argsMap)
-	}
+	argsMap := parseToolArgsMap(trimmed)
 	var regexPairs map[string]string
 
 	getString := func(keys ...string) string {
@@ -152,44 +213,7 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 	}
 
 	if strings.Contains(toolName, "todo") || strings.Contains(toolName, "plan") {
-		if argsMap != nil {
-			for _, key := range []string{"tasks", "todos", "items", "plan", "content", "data", "list", "todo_list"} {
-				if taskList, ok := argsMap[key].([]interface{}); ok {
-					var inProgressTask, firstPendingTask string
-					for _, item := range taskList {
-						switch m := item.(type) {
-						case map[string]interface{}:
-							var taskDesc string
-							for _, descKey := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary"} {
-								if s, ok := m[descKey].(string); ok && strings.TrimSpace(s) != "" {
-									taskDesc = strings.TrimSpace(s)
-									break
-								}
-							}
-							status, _ := m["status"].(string)
-							if strings.EqualFold(status, "in_progress") && taskDesc != "" {
-								inProgressTask = taskDesc
-								break
-							}
-							if firstPendingTask == "" && taskDesc != "" {
-								firstPendingTask = taskDesc
-							}
-						case string:
-							if firstPendingTask == "" && strings.TrimSpace(m) != "" {
-								firstPendingTask = strings.TrimSpace(m)
-							}
-						}
-					}
-					if inProgressTask != "" {
-						return inProgressTask
-					}
-					if firstPendingTask != "" {
-						return firstPendingTask
-					}
-				}
-			}
-		}
-		return ""
+		return extractTodoTargetFromMap(argsMap)
 	}
 
 	return getString(fallbackTargetKeys...)
@@ -201,27 +225,13 @@ func ExtractToolInstructions(argsJSON string) string {
 		return ""
 	}
 
-	var argsMap map[string]interface{}
-	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
-		_ = json.Unmarshal([]byte(RepairArgsJSON(trimmed)), &argsMap)
-	}
-
-	findInstructionInMap := func(m map[string]interface{}) string {
-		for _, k := range instructionKeys {
-			if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
-			}
-		}
-		return ""
-	}
-
-	if argsMap != nil {
-		if s := findInstructionInMap(argsMap); s != "" {
+	if argsMap := parseToolArgsMap(trimmed); argsMap != nil {
+		if s := findMapStringByKeys(argsMap, instructionKeys); s != "" {
 			return s
 		}
 		for _, wrapper := range []string{"parameters", "params", "input", "arguments", "edit"} {
 			if subMap, ok := argsMap[wrapper].(map[string]interface{}); ok {
-				if s := findInstructionInMap(subMap); s != "" {
+				if s := findMapStringByKeys(subMap, instructionKeys); s != "" {
 					return s
 				}
 			}
@@ -231,7 +241,7 @@ func ExtractToolInstructions(argsJSON string) string {
 				var itemInstructions []string
 				for _, item := range slice {
 					if itemMap, ok := item.(map[string]interface{}); ok {
-						if s := findInstructionInMap(itemMap); s != "" {
+						if s := findMapStringByKeys(itemMap, instructionKeys); s != "" {
 							itemInstructions = append(itemInstructions, s)
 						}
 					}

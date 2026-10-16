@@ -46,7 +46,7 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 }
 
 func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
-	thresh := 0.80
+	thresh := CompressionThresholdRatio()
 	if a != nil {
 		thresh = a.CompressionThreshold()
 	}
@@ -96,28 +96,41 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 			break
 		}
 	}
+	if lastAssistantIdx <= 0 {
+		return messages
+	}
 
 	out := make([]db.Message, len(messages))
-	for i, m := range messages {
-		if m.Role == "tool" && lastAssistantIdx != -1 && i < lastAssistantIdx && len(m.Content) > 1000 && !strings.Contains(m.Content, "omitted") && !strings.Contains(m.Content, "truncated from historical") {
-			msgCopy := m
-			lines := strings.Split(m.Content, "\n")
-			if len(lines) > 20 {
-				head := strings.Join(lines[:10], "\n")
-				tail := strings.Join(lines[len(lines)-5:], "\n")
-				msgCopy.Content = fmt.Sprintf("%s\n\n[... %d lines omitted from historical '%s' output to preserve context cache; call '%s' again if needed ...]\n\n%s", head, len(lines)-15, m.Name, m.Name, tail)
-			} else {
-				head := filetool.UTF8SafePrefix(m.Content, 750)
-				tail := filetool.UTF8SafeSuffix(m.Content, 250)
-				msgCopy.Content = head + fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", m.Name) + tail
-			}
-			out[i] = msgCopy
-		} else {
-			out[i] = m
+	copy(out, messages)
+
+	for i := 0; i < lastAssistantIdx; i++ {
+		m := out[i]
+		if m.Role != "tool" || len(m.Content) <= 1000 || strings.Contains(m.Content, "omitted") || strings.Contains(m.Content, "truncated from historical") {
+			continue
 		}
+		lines := strings.Split(m.Content, "\n")
+		if len(lines) > 20 {
+			head := strings.Join(lines[:10], "\n")
+			tail := strings.Join(lines[len(lines)-5:], "\n")
+			m.Content = fmt.Sprintf("%s\n\n[... %d lines omitted from historical '%s' output to preserve context cache; call '%s' again if needed ...]\n\n%s", head, len(lines)-15, m.Name, m.Name, tail)
+		} else {
+			head := filetool.UTF8SafePrefix(m.Content, 750)
+			tail := filetool.UTF8SafeSuffix(m.Content, 250)
+			m.Content = head + fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", m.Name) + tail
+		}
+		out[i] = m
 	}
 
 	return out
+}
+
+func sortedMapKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (a *Agent) CompressHistory(
@@ -177,15 +190,8 @@ func (a *Agent) CompressHistory(
 		}
 	}
 
-	var readFiles, modifiedFiles []string
-	for f := range readFilesMap {
-		readFiles = append(readFiles, f)
-	}
-	for f := range modifiedFilesMap {
-		modifiedFiles = append(modifiedFiles, f)
-	}
-	sort.Strings(readFiles)
-	sort.Strings(modifiedFiles)
+	readFiles := sortedMapKeys(readFilesMap)
+	modifiedFiles := sortedMapKeys(modifiedFilesMap)
 
 	summaryPrompt := fmt.Sprintf(MasterSystemPrompts.CompressionPrompt, transcriptBuilder.String())
 	summaryMsgs := []db.Message{{Role: "user", Content: summaryPrompt}}
@@ -220,7 +226,7 @@ func (a *Agent) CompressHistory(
 	}
 	if a != nil {
 		if todos := a.GetTodos(); len(todos) > 0 {
-			var todoParts []string
+			todoParts := make([]string, 0, len(todos))
 			for _, t := range todos {
 				todoParts = append(todoParts, fmt.Sprintf("[%s] %s: %s", t.Status, t.ID, t.Task))
 			}

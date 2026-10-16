@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,38 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	return &JSONLStore{dir: clean}, nil
 }
 
+func (s *JSONLStore) sessionPath(sessionID string) string {
+	return filepath.Join(s.dir, sessionID+".jsonl")
+}
+
+func (s *JSONLStore) latestSessionPath() string {
+	return filepath.Join(s.dir, ".latest_session")
+}
+
+func nowTimestamp() string {
+	return time.Now().Format("2006-01-02 15:04:05")
+}
+
+func validSessionEntry(entry os.DirEntry) (string, bool) {
+	if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		return "", false
+	}
+	sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+	if session.ValidateID(sessionID) != nil {
+		return "", false
+	}
+	return sessionID, true
+}
+
+func writeJSONLine(w io.Writer, v any) error {
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(jsonData, '\n'))
+	return err
+}
+
 func (s *JSONLStore) checkReady(sessionID string) error {
 	if sessionID != "" {
 		if err := session.ValidateID(sessionID); err != nil {
@@ -60,7 +93,7 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	filePath := s.sessionPath(sessionID)
 	var parentID string
 	if entries, err := readEntries(filePath); err == nil && len(entries) > 0 {
 		if leaf := session.LeafPath(entries, ""); len(leaf) > 0 {
@@ -72,13 +105,8 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 		ID:        session.NewUUID(),
 		ParentID:  parentID,
 		Type:      "message",
-		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Timestamp: nowTimestamp(),
 		Message:   msg,
-	}
-
-	jsonData, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -87,7 +115,7 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 	}
 	defer f.Close()
 
-	if _, err := f.Write(append(jsonData, '\n')); err != nil {
+	if err := writeJSONLine(f, record); err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
@@ -101,7 +129,7 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 	}
 
 	s.mu.RLock()
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	filePath := s.sessionPath(sessionID)
 	entries, err := readEntries(filePath)
 	s.mu.RUnlock()
 
@@ -139,7 +167,7 @@ func (s *JSONLStore) HasMessages(sessionID string) bool {
 		return false
 	}
 	s.mu.RLock()
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	filePath := s.sessionPath(sessionID)
 	s.mu.RUnlock()
 
 	info, err := os.Stat(filePath)
@@ -164,7 +192,7 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 		_ = os.Remove(tmpPath)
 	}()
 
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now := nowTimestamp()
 	var parentID string
 	for _, msg := range messages {
 		if msg.Role == message.RoleUser && msg.Content == "" {
@@ -179,11 +207,7 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 			Message:   msg,
 		}
 		parentID = id
-		jsonData, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
-		}
-		if _, err := tmpFile.Write(append(jsonData, '\n')); err != nil {
+		if err := writeJSONLine(tmpFile, record); err != nil {
 			return fmt.Errorf("failed to write message to temp file: %w", err)
 		}
 	}
@@ -195,8 +219,7 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	targetPath := filepath.Join(s.dir, sessionID+".jsonl")
-	if err := os.Rename(tmpPath, targetPath); err != nil {
+	if err := os.Rename(tmpPath, s.sessionPath(sessionID)); err != nil {
 		return fmt.Errorf("failed to atomically replace session file: %w", err)
 	}
 

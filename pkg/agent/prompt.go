@@ -266,7 +266,7 @@ func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 		MemoryContext:   a.LoadMemoryContext(),
 		ActiveTasks:     activeTasks,
 		Allowlist:       allowlist,
-		Tools:           promptToolEntries(a.Registry),
+		Tools:           PromptToolEntries(a.Registry, true),
 	})
 }
 
@@ -287,7 +287,7 @@ func filterToolEntries(entries []ToolEntry, allowlist []string) []ToolEntry {
 	return out
 }
 
-func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
+func PromptToolEntries(registry *tool.ToolRegistry, includeSubagentTools bool) []ToolEntry {
 	if registry == nil {
 		return nil
 	}
@@ -295,6 +295,9 @@ func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 	entries := make([]ToolEntry, 0, len(executors))
 	for name, executor := range executors {
 		if registry.IsDisabled(name) {
+			continue
+		}
+		if !includeSubagentTools && tool.IsSubagentTool(name) {
 			continue
 		}
 		entries = append(entries, ToolEntry{
@@ -305,6 +308,10 @@ func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries
+}
+
+func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
+	return PromptToolEntries(registry, true)
 }
 
 func sanitizeNoBashInstruction(s string) string {

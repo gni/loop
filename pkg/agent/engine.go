@@ -165,6 +165,13 @@ func (e *TurnEngine) Awareness() *TurnAwareness  { return e.awareness }
 func (e *TurnEngine) Guided() *GuidedController  { return e.guided }
 func (e *TurnEngine) SetGuidedMode(enabled bool) { e.guided.SetEnabled(enabled) }
 
+func (e *TurnEngine) agentLabel() string {
+	if e.policy.AgentName != "" {
+		return e.policy.AgentName
+	}
+	return "agent"
+}
+
 func (e *TurnEngine) ShouldRecap() bool {
 	if e.agent != nil && e.agent.Config != nil && e.agent.Config.DisableRecap {
 		return false
@@ -178,11 +185,7 @@ func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion,
 	if !e.ShouldRecap() {
 		return ""
 	}
-	who := e.policy.AgentName
-	if who == "" {
-		who = "agent"
-	}
-	content := e.awareness.Format(who, promptTokens, totalCompletion, effectiveLimit)
+	content := e.awareness.Format(e.agentLabel(), promptTokens, totalCompletion, effectiveLimit)
 	sink.Append(db.Message{Role: "user", Content: content})
 	if e.policy.ShowRecapLine && e.agent != nil && e.agent.UI != nil {
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(content))
@@ -276,12 +279,13 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 	}
 }
 
-func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
+func (e *TurnEngine) needsInteractiveApproval(toolName string) bool {
 	a := e.agent
-	if !e.policy.AllowApproval || a.Config == nil || !NeedsApproval(tc.Function.Name) || a.Config.AutoApprove || a.Config.ApprovalAlwaysAnswer {
-		return true, false
-	}
-	if a.UI == nil {
+	return e.policy.AllowApproval && a != nil && a.Config != nil && NeedsApproval(toolName) && !a.Config.AutoApprove && !a.Config.ApprovalAlwaysAnswer
+}
+
+func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
+	if !e.needsInteractiveApproval(tc.Function.Name) || e.agent.UI == nil {
 		return true, false
 	}
 
@@ -293,19 +297,40 @@ func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w i
 		e.renderPreApprovalDiffPreview(w, theme, tc.Function.Name, tc.Function.Arguments)
 	}
 
-	approved, always := a.UI.AskForApproval(GetScreenWriter(w), theme)
+	approved, always := e.agent.UI.AskForApproval(GetScreenWriter(w), theme)
 	if loader != nil {
 		loader.Resume()
 	}
 	if always {
-		a.Config.AutoApprove = true
-		if a.ConfigPath != "" {
-			if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
-				a.DebugLogError(e.policy.SessionKey, "config.SaveConfig (auto-approve)", err)
-			}
+		e.agent.Config.AutoApprove = true
+		if e.agent.ConfigPath != "" {
+			_ = config.SaveConfig(e.agent.ConfigPath, e.agent.Config)
 		}
 	}
 	return approved, true
+}
+
+func (e *TurnEngine) renderSubagentToolPrefix(w io.Writer, theme style.UITheme) {
+	if e.policy.AgentName == "" {
+		return
+	}
+	prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	fmt.Fprintf(w, "%s [%s] calling tool:\n",
+		style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
+		prefixStyle.Render(e.policy.AgentName))
+}
+
+func (e *TurnEngine) checkGuardPreExecution(tc db.ToolCall) error {
+	guardErr := e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments)
+	if guardErr != nil {
+		e.consecutiveGuardRejections++
+		if e.agent != nil && e.agent.DebugLogger != nil {
+			e.agent.DebugLogRepetition(e.policy.SessionKey, tc.Function.Name, tc.Function.Arguments, e.guard.ConsecutiveIdenticalCount(), guardErr.Error())
+		}
+		return guardErr
+	}
+	e.consecutiveGuardRejections = 0
+	return nil
 }
 
 func (e *TurnEngine) finalizeToolCall(
@@ -417,11 +442,8 @@ func (e *TurnEngine) ExecuteToolCalls(
 		if sr.GetToolTitleLineNumber(idx) == -1 {
 			if e.policy.AgentName == "" && idx == 0 && strings.TrimSpace(assistantMsg.Content) != "" {
 				fmt.Fprintln(w)
-			} else if e.policy.AgentName != "" {
-				prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-				fmt.Fprintf(w, "%s [%s] calling tool:\n",
-					style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
-					prefixStyle.Render(e.policy.AgentName))
+			} else {
+				e.renderSubagentToolPrefix(w, theme)
 			}
 			render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 		}
@@ -458,15 +480,10 @@ func (e *TurnEngine) ExecuteToolCalls(
 		var toolOutput string
 		var toolErr error
 
-		if guardErr := e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments); guardErr != nil {
+		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
 			toolErr = guardErr
 			toolOutput = guardErr.Error()
-			e.consecutiveGuardRejections++
-			if a.DebugLogger != nil {
-				a.DebugLogRepetition(e.policy.SessionKey, tc.Function.Name, tc.Function.Arguments, e.guard.ConsecutiveIdenticalCount(), guardErr.Error())
-			}
 		} else {
-			e.consecutiveGuardRejections = 0
 			if e.policy.RunHooks {
 				if allowed, reason := a.runBeforeToolHook(tc); !allowed {
 					toolErr = fmt.Errorf("blocked by hook")
@@ -530,11 +547,8 @@ func (e *TurnEngine) executeToolCallsParallel(
 			return true, false
 		}
 
-		if sr.GetToolTitleLineNumber(idx) == -1 && e.policy.AgentName != "" {
-			prefixStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-			fmt.Fprintf(w, "%s [%s] calling tool:\n",
-				style.NewStyle().Foreground(theme.Secondary).Bold(true).Render("❖"),
-				prefixStyle.Render(e.policy.AgentName))
+		if sr.GetToolTitleLineNumber(idx) == -1 {
+			e.renderSubagentToolPrefix(w, theme)
 		}
 		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 
@@ -551,37 +565,28 @@ func (e *TurnEngine) executeToolCallsParallel(
 			continue
 		}
 
-		if e.policy.AllowApproval && a.Config != nil && !a.Config.AutoApprove && NeedsApproval(tc.Function.Name) && !a.Config.ApprovalAlwaysAnswer {
+		if e.needsInteractiveApproval(tc.Function.Name) {
 			if a.UI == nil {
 				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
-			} else {
-				approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc)
-				if !approved {
-					rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-					sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
-					render.ToolOutput(w, theme, rejOutput, true, tc.Function.Name, tc.Function.Arguments, false)
-					sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: rejOutput})
-					if shouldAbort {
-						return false, true
-					}
-					plan.toolErr = fmt.Errorf("rejected by user")
-					plan.output = rejOutput
-					plan.guardHit = true
-					continue
+			} else if approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc); !approved {
+				rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
+				sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
+				render.ToolOutput(w, theme, rejOutput, true, tc.Function.Name, tc.Function.Arguments, false)
+				sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: rejOutput})
+				if shouldAbort {
+					return false, true
 				}
+				plan.toolErr = fmt.Errorf("rejected by user")
+				plan.output = rejOutput
+				plan.guardHit = true
+				continue
 			}
 		}
 
-		if guardErr := e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments); guardErr != nil {
+		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
 			plan.toolErr = guardErr
 			plan.output = guardErr.Error()
-			e.consecutiveGuardRejections++
 			plan.guardHit = true
-			if a.DebugLogger != nil {
-				a.DebugLogRepetition(e.policy.SessionKey, tc.Function.Name, tc.Function.Arguments, e.guard.ConsecutiveIdenticalCount(), guardErr.Error())
-			}
-		} else {
-			e.consecutiveGuardRejections = 0
 		}
 	}
 
@@ -677,11 +682,7 @@ func executionContext(e *TurnEngine, a *Agent) tool.AgentContext {
 }
 
 func (e *TurnEngine) HaltNotice() string {
-	who := e.policy.AgentName
-	if who == "" {
-		who = "agent"
-	}
-	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", who, e.guard.maxConsecutiveCalls)
+	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", e.agentLabel(), e.guard.maxConsecutiveCalls)
 }
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {

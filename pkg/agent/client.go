@@ -44,6 +44,43 @@ type MCPTool struct {
 	InputSchema map[string]interface{} `json:"inputSchema"`
 }
 
+func (c *mcpClient) applyHeaders(req *http.Request, contentType string) {
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range c.config.Headers {
+		req.Header.Set(k, v)
+	}
+}
+
+func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, err
+	}
+	c.applyHeaders(req, "application/json")
+	return c.client.Do(req)
+}
+
+func decodeRPCResponse(raw string, resultDest interface{}) error {
+	var env struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return err
+	}
+	if env.Error != nil {
+		return fmt.Errorf("MCP error: %s", env.Error.Message)
+	}
+	if resultDest != nil && len(env.Result) > 0 {
+		return json.Unmarshal(env.Result, resultDest)
+	}
+	return nil
+}
+
 func (c *mcpClient) start() error {
 	if strings.EqualFold(c.config.Type, "stdio") || (c.config.URL == "" && c.config.Command != "") {
 		c.isStdio = true
@@ -66,9 +103,7 @@ func (c *mcpClient) startSSE() error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	for k, v := range c.config.Headers {
-		req.Header.Set(k, v)
-	}
+	c.applyHeaders(req, "")
 
 	sseClient := *c.client
 	sseClient.Timeout = 0
@@ -95,7 +130,9 @@ func (c *mcpClient) startSSE() error {
 	endpointChan := make(chan string, 1)
 
 	go func() {
+		defer c.failPendingRequests()
 		scanner := bufio.NewScanner(c.sseBody)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		var lastEvent string
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -104,14 +141,7 @@ func (c *mcpClient) startSSE() error {
 			} else if strings.HasPrefix(line, "data:") {
 				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 				if lastEvent == "endpoint" {
-					postURL := data
-					if !strings.HasPrefix(postURL, "http://") && !strings.HasPrefix(postURL, "https://") {
-						parsedBase, errBase := url.Parse(c.config.URL)
-						parsedRel, errRel := url.Parse(postURL)
-						if errBase == nil && errRel == nil {
-							postURL = parsedBase.ResolveReference(parsedRel).String()
-						}
-					}
+					postURL := c.resolveEndpointURL(data)
 					mcpLog("[MCP] Resolved POST endpoint: %s\n", postURL)
 					select {
 					case endpointChan <- postURL:
@@ -146,9 +176,30 @@ func (c *mcpClient) startSSE() error {
 	return nil
 }
 
+func (c *mcpClient) resolveEndpointURL(endpoint string) string {
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		return endpoint
+	}
+	parsedBase, errBase := url.Parse(c.config.URL)
+	parsedRel, errRel := url.Parse(endpoint)
+	if errBase == nil && errRel == nil {
+		return parsedBase.ResolveReference(parsedRel).String()
+	}
+	return endpoint
+}
+
+func (c *mcpClient) failPendingRequests() {
+	c.requestMu.Lock()
+	for id, ch := range c.requests {
+		close(ch)
+		delete(c.requests, id)
+	}
+	c.requestMu.Unlock()
+}
+
 func (c *mcpClient) close() {
 	if c.stdin != nil {
-		c.stdin.Close()
+		_ = c.stdin.Close()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
@@ -157,8 +208,9 @@ func (c *mcpClient) close() {
 		c.cancel()
 	}
 	if c.sseBody != nil {
-		c.sseBody.Close()
+		_ = c.sseBody.Close()
 	}
+	c.failPendingRequests()
 }
 
 func (c *mcpClient) handleMessage(data string) {
@@ -250,17 +302,7 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), limits.MCPRequestTimeout())
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data))
-	if err != nil {
-		c.clearPendingRequest(id)
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range c.config.Headers {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := c.client.Do(req)
+	resp, err := c.postJSON(ctx, data)
 	if err != nil {
 		c.clearPendingRequest(id)
 		return "", err
@@ -273,7 +315,10 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	}
 
 	select {
-	case res := <-ch:
+	case res, ok := <-ch:
+		if !ok {
+			return "", fmt.Errorf("MCP connection closed while waiting for '%s'", method)
+		}
 		return res, nil
 	case <-ctx.Done():
 		c.clearPendingRequest(id)
@@ -295,17 +340,8 @@ func (c *mcpClient) handshake() error {
 	if err != nil {
 		return err
 	}
-
-	var resp struct {
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(res), &resp); err != nil {
+	if err := decodeRPCResponse(res, nil); err != nil {
 		return err
-	}
-	if resp.Error != nil {
-		return fmt.Errorf("MCP error: %s", resp.Error.Message)
 	}
 
 	data, _ := json.Marshal(map[string]interface{}{
@@ -325,14 +361,8 @@ func (c *mcpClient) handshake() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(data)); err == nil {
-		req.Header.Set("Content-Type", "application/json")
-		for k, v := range c.config.Headers {
-			req.Header.Set(k, v)
-		}
-		if respDrop, errDrop := c.client.Do(req); errDrop == nil {
-			respDrop.Body.Close()
-		}
+	if respDrop, errDrop := c.postJSON(ctx, data); errDrop == nil {
+		respDrop.Body.Close()
 	}
 
 	c.initialized = true
@@ -349,21 +379,13 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 		return nil, err
 	}
 
-	var resp struct {
-		Result struct {
-			Tools []MCPTool `json:"tools"`
-		} `json:"result"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	var result struct {
+		Tools []MCPTool `json:"tools"`
 	}
-	if err := json.Unmarshal([]byte(res), &resp); err != nil {
+	if err := decodeRPCResponse(res, &result); err != nil {
 		return nil, err
 	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("MCP error: %s", resp.Error.Message)
-	}
-	return resp.Result.Tools, nil
+	return result.Tools, nil
 }
 
 func (c *mcpClient) callTool(name string, arguments string) (string, error) {
@@ -384,34 +406,26 @@ func (c *mcpClient) callTool(name string, arguments string) (string, error) {
 		return "", err
 	}
 
-	var resp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			IsError bool `json:"isError"`
-		} `json:"result"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
 	}
-	if err := json.Unmarshal([]byte(res), &resp); err != nil {
+	if err := decodeRPCResponse(res, &result); err != nil {
 		return "", err
-	}
-	if resp.Error != nil {
-		return "", fmt.Errorf("MCP error: %s", resp.Error.Message)
 	}
 
 	var output []string
-	for _, comp := range resp.Result.Content {
+	for _, comp := range result.Content {
 		if comp.Type == "text" {
 			output = append(output, comp.Text)
 		}
 	}
 
 	joined := strings.Join(output, "\n")
-	if resp.Result.IsError {
+	if result.IsError {
 		return joined, fmt.Errorf("tool execution failed")
 	}
 	return joined, nil

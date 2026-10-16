@@ -33,11 +33,10 @@ var providerAddCmd = &cobra.Command{
 		}
 		name := args[0]
 		url := args[1]
-		key := ""
+		var key, model string
 		if len(args) > 2 {
 			key = args[2]
 		}
-		model := ""
 		if len(args) > 3 {
 			model = strings.Join(args[3:], " ")
 		}
@@ -51,9 +50,7 @@ var providerAddCmd = &cobra.Command{
 			ApiKey:   key,
 			Model:    model,
 		}
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		fmt.Printf("Provider '%s' successfully added/updated.\n", name)
@@ -77,9 +74,6 @@ var providerSelectCmd = &cobra.Command{
 			return
 		}
 
-		if cfg.Providers == nil {
-			cfg.Providers = make(map[string]config.ProviderConfig)
-		}
 		if _, ok := cfg.Providers[name]; !ok {
 			fmt.Printf("Error: provider '%s' not found.\n", name)
 			return
@@ -87,9 +81,7 @@ var providerSelectCmd = &cobra.Command{
 
 		cfg.ActiveProvider = name
 		cfg.SyncActiveProvider()
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		fmt.Printf("Switched active provider to '%s'.\n", name)
@@ -108,9 +100,7 @@ var providerModelCmd = &cobra.Command{
 		model := strings.Join(args, " ")
 		cfg.Model = model
 		cfg.UpdateActiveProvider()
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		if cfg.ActiveProvider != "" {
@@ -131,9 +121,6 @@ var providerRemoveCmd = &cobra.Command{
 			return
 		}
 		name := args[0]
-		if cfg.Providers == nil {
-			cfg.Providers = make(map[string]config.ProviderConfig)
-		}
 		if _, ok := cfg.Providers[name]; !ok {
 			fmt.Printf("Error: provider '%s' not found.\n", name)
 			return
@@ -143,9 +130,7 @@ var providerRemoveCmd = &cobra.Command{
 		if cfg.ActiveProvider == name {
 			cfg.ActiveProvider = ""
 		}
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		fmt.Printf("Provider '%s' removed.\n", name)
@@ -168,9 +153,7 @@ var providerTimeoutCmd = &cobra.Command{
 		}
 		cfg.Timeout = sec
 		cfg.UpdateActiveProvider()
-		err = config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		if cfg.ActiveProvider != "" {

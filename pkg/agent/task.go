@@ -48,6 +48,15 @@ type taskWriter struct {
 	isStderr bool
 }
 
+func (a *Agent) resolveTaskOutputWriter(fallback io.Writer) io.Writer {
+	if a != nil {
+		if chatWriter := a.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
+			return chatWriter
+		}
+	}
+	return fallback
+}
+
 func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	tw.task.mu.Lock()
 	const maxLen = 100 * 1024
@@ -67,13 +76,7 @@ func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	tw.agent.TasksMu.Unlock()
 
 	if isStreaming {
-		dest := tw.w
-		if tw.agent != nil {
-			if chatWriter := tw.agent.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
-				dest = chatWriter
-			}
-		}
-		return dest.Write(p)
+		return tw.agent.resolveTaskOutputWriter(tw.w).Write(p)
 	}
 
 	return len(p), nil
@@ -166,10 +169,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		a.TasksMu.Lock()
 		if a.StreamingTask == task.ID {
 			a.StreamingTask = ""
-			dest := w
-			if chatWriter := a.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
-				dest = chatWriter
-			}
+			dest := a.resolveTaskOutputWriter(w)
 			fmt.Fprintf(dest, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
 		}
 		a.TasksMu.Unlock()
@@ -281,7 +281,7 @@ func (a *Agent) ListTasks() []TaskInfo {
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
 
-	var list []TaskInfo
+	list := make([]TaskInfo, 0, len(a.Tasks))
 	for _, t := range a.Tasks {
 		t.mu.Lock()
 		end := t.EndTime
@@ -308,13 +308,7 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
 
-	dest := w
-	if a != nil {
-		if chatWriter := a.GetChatWriter(); chatWriter != nil && chatWriter != os.Stderr {
-			dest = chatWriter
-		}
-	}
-
+	dest := a.resolveTaskOutputWriter(w)
 	resolvedID, task := a.findTaskLocked(id)
 	if a.StreamingTask == resolvedID && resolvedID != "" {
 		a.StreamingTask = ""

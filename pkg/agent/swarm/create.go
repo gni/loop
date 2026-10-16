@@ -24,24 +24,31 @@ func (s *CreateSubagentTool) Name() string { return "create_subagent" }
 func (s *CreateSubagentTool) PromptSnippet() string {
 	return tool.FormatToolSnippet(s.Name(), "Create a specialized subagent")
 }
-func (s *CreateSubagentTool) Definition() tool.Tool {
-	availableSkillNames := []string{}
-	if s != nil && s.mam != nil && s.mam.BaseAgent != nil {
-		seen := make(map[string]struct{}, len(s.mam.BaseAgent.ActiveSkills))
-		for _, skill := range s.mam.BaseAgent.ActiveSkills {
-			name := strings.TrimSpace(skill.Name)
-			key := strings.ToLower(name)
-			if name == "" {
-				continue
-			}
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			availableSkillNames = append(availableSkillNames, name)
-		}
-		sort.Strings(availableSkillNames)
+
+func (s *CreateSubagentTool) activeSkillNames() []string {
+	if s == nil || s.mam == nil || s.mam.BaseAgent == nil {
+		return []string{}
 	}
+	seen := make(map[string]struct{}, len(s.mam.BaseAgent.ActiveSkills))
+	names := make([]string, 0, len(s.mam.BaseAgent.ActiveSkills))
+	for _, skill := range s.mam.BaseAgent.ActiveSkills {
+		name := strings.TrimSpace(skill.Name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (s *CreateSubagentTool) Definition() tool.Tool {
+	availableSkillNames := s.activeSkillNames()
 
 	tpl := tool.MasterAgentTemplates
 	skillNamesDescription := tpl.SkillNamesBase
@@ -131,7 +138,7 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	var parentName string
 	if mac, ok := ctx.(*multiAgentContext); ok {
 		maxDepth := 0
-		if s.mam.BaseAgent != nil && s.mam.BaseAgent.Config != nil {
+		if s.mam.BaseAgent.Config != nil {
 			maxDepth = s.mam.BaseAgent.Config.MaxSubagentDepth
 		}
 		if err := subagent.MaxDepthAllowed(maxDepth, mac.ma.Depth()); err != nil {
@@ -164,7 +171,7 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 
 	referenceSkillNames := make([]string, 0, len(args.SkillNames))
 	referenceNamesSeen := make(map[string]struct{}, len(args.SkillNames))
-	convertedSkillNames := []string{}
+	var convertedSkillNames []string
 	for _, requestedName := range args.SkillNames {
 		requestedName = strings.TrimSpace(requestedName)
 		key := strings.ToLower(requestedName)

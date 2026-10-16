@@ -40,9 +40,7 @@ var mcpAddCmd = &cobra.Command{
 			URL:     url,
 			Headers: headers,
 		}
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		fmt.Printf("MCP Server '%s' successfully added/updated.\n", name)
@@ -59,18 +57,13 @@ var mcpRemoveCmd = &cobra.Command{
 			return
 		}
 		name := args[0]
-		if cfg.MCPServers == nil {
-			cfg.MCPServers = make(map[string]config.MCPServerConfig)
-		}
 		if _, ok := cfg.MCPServers[name]; !ok {
 			fmt.Printf("Error: MCP server '%s' not found.\n", name)
 			return
 		}
 
 		delete(cfg.MCPServers, name)
-		err := config.SaveConfig(configPath, cfg)
-		if err != nil {
-			fmt.Printf("Error saving config: %v\n", err)
+		if !saveConfigOrPrintErr(cfg) {
 			return
 		}
 		fmt.Printf("MCP Server '%s' removed.\n", name)

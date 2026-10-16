@@ -14,7 +14,6 @@ import (
 	"loop/pkg/db"
 )
 
-// MultiAgent represents an independent agent node in a multi-agent swarm.
 type MultiAgent struct {
 	Name         string
 	SystemPrompt string
@@ -37,15 +36,10 @@ type MultiAgent struct {
 	ActiveCancel  context.CancelFunc
 	ActiveStarted time.Time
 
-	// Per-agent stream buffer: the tee writer in executeLoop tees this agent's output
-	// here. It must not be BaseAgent.CurrentStreamBuffer, which the main loop owns and
-	// which pkg/ui/redraw.go reads; sharing it made concurrent subagents overwrite each
-	// other's redraw content.
 	StreamBuffer   *bytes.Buffer
 	StreamBufferMu sync.Mutex
 }
 
-// GetSystemPrompt generates the system instructions and reference guides list for the agent.
 func (ma *MultiAgent) GetSystemPrompt() string {
 	var activeAgents []string
 	if ma != nil {
@@ -70,8 +64,9 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 		allSkills = ma.BaseAgent.ActiveSkills
 	}
 
+	allowlist := ma.GetToolAllowlist()
 	canSpawn := false
-	for _, toolName := range ma.GetToolAllowlist() {
+	for _, toolName := range allowlist {
 		if tool.IsSpawnTool(toolName) {
 			canSpawn = true
 			break
@@ -79,22 +74,8 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	}
 
 	var tools []agent.ToolEntry
-	if ma.BaseAgent != nil && ma.BaseAgent.Registry != nil {
-		executors := ma.BaseAgent.Registry.GetAllExecutors()
-		for name, executor := range executors {
-			if ma.BaseAgent.Registry.IsDisabled(name) {
-				continue
-			}
-			if !canSpawn && tool.IsSubagentTool(name) {
-				continue
-			}
-			tools = append(tools, agent.ToolEntry{
-				Name:       name,
-				Snippet:    tool.GetPromptSnippet(executor),
-				Guidelines: tool.GetPromptGuidelines(executor),
-			})
-		}
-		sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
+	if ma.BaseAgent != nil {
+		tools = agent.PromptToolEntries(ma.BaseAgent.Registry, canSpawn)
 	}
 
 	return agent.BuildSystemPrompt(agent.SystemPromptConfig{
@@ -105,7 +86,7 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 		ActiveAgents:    activeAgents,
 		Skills:          ma.GetEffectiveSkills(),
 		AllSkills:       allSkills,
-		Allowlist:       ma.GetToolAllowlist(),
+		Allowlist:       allowlist,
 		Tools:           tools,
 	})
 }
@@ -119,9 +100,6 @@ func newMultiAgentWithSkills(
 	localSkills []tool.Skill,
 	inheritAllSkills bool,
 ) *MultiAgent {
-	// Derive from the base agent's active context so the process root context from
-	// lifecycle.Default() propagates to subagents; Ctrl+C then cancels the whole tree
-	// instead of relying on CancelActiveTurn for the active agent only.
 	parentCtx := context.Background()
 	if baseAgent != nil {
 		parentCtx = baseAgent.Context()
@@ -164,10 +142,8 @@ func (ma *MultiAgent) GetEffectiveSkills() []tool.Skill {
 
 func (ma *MultiAgent) Depth() int {
 	depth := 0
-	curr := ma.Parent
-	for curr != nil {
+	for curr := ma.Parent; curr != nil; curr = curr.Parent {
 		depth++
-		curr = curr.Parent
 	}
 	return depth
 }
@@ -177,14 +153,11 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 		return nil
 	}
 
-	depth := ma.Depth()
-
 	maxDepth := 0
 	if ma.BaseAgent.Config != nil {
 		maxDepth = ma.BaseAgent.Config.MaxSubagentDepth
 	}
-
-	canSpawn := depth < subagent.EffectiveMaxDepth(maxDepth)
+	canSpawn := ma.Depth() < subagent.EffectiveMaxDepth(maxDepth)
 
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()
 	var allowlist []string

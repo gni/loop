@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"loop/pkg/domain/ignore"
+	domaintool "loop/pkg/domain/tool"
 )
 
 func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
@@ -46,6 +47,27 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		return os.WriteFile(filename, data, perm)
 	}
 	tmpName = ""
+	return nil
+}
+
+func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
+	useAtomic := true
+	if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
+		useAtomic = cp.IsAtomicWritesEnabled()
+	}
+	var err error
+	if useAtomic {
+		err = AtomicWriteFile(safePath, data, perm)
+	} else {
+		err = os.WriteFile(safePath, data, perm)
+	}
+	if err != nil {
+		return err
+	}
+	if fo, ok := ctx.(domaintool.FileObserver); ok {
+		fo.RecordMutation(safePath, data)
+	}
+	ctx.ReloadSkills()
 	return nil
 }
 

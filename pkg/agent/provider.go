@@ -353,13 +353,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					if newTC.ID == "" {
 						newTC.ID = fmt.Sprintf("call_%d_%s", idx, db.NewUUID()[:8])
 					}
-					if newTC.Function.Name != "" {
-						newTC.Function.Name = tool.NormalizeName(newTC.Function.Name)
-					}
 					toolCallsMap[idx] = &newTC
-					if newTC.Function.Name != "" {
-						emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: newTC.Function.Name, ToolCallIndex: idx}, p.ChunkDropObserver)
-					}
+					existing = &newTC
 				} else {
 					if tc.ID != "" {
 						existing.ID = tc.ID
@@ -367,12 +362,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					if tc.Type != "" {
 						existing.Type = tc.Type
 					}
-					if tc.Function.Name != "" {
-						tcName := tool.NormalizeName(tc.Function.Name)
-						existing.Function.Name = tcName
-						emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx}, p.ChunkDropObserver)
-					}
 					existing.Function.Arguments += tc.Function.Arguments
+				}
+				if tc.Function.Name != "" {
+					tcName := tool.NormalizeName(tc.Function.Name)
+					existing.Function.Name = tcName
+					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx}, p.ChunkDropObserver)
 				}
 				if tc.Function.Arguments != "" {
 					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx}, p.ChunkDropObserver)

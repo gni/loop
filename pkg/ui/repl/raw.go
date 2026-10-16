@@ -12,6 +12,69 @@ import (
 	"loop/pkg/ui/style"
 )
 
+func readNextRawByte(rawChan <-chan byte, timeout time.Duration) (byte, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case b, ok := <-rawChan:
+		if !ok {
+			return 0, false
+		}
+		return b, true
+	case <-timer.C:
+		return 0, false
+	}
+}
+
+func forwardToInputChan(kiReader *interceptor.KeyInterceptorReader, data ...byte) {
+	for _, b := range data {
+		kiReader.InputChan <- b
+	}
+}
+
+func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader, esc byte, onBareEscape func()) {
+	next, ok := readNextRawByte(rawChan, 50*time.Millisecond)
+	if !ok {
+		onBareEscape()
+		return
+	}
+	if next != '[' && next != 'O' {
+		forwardToInputChan(kiReader, esc, next)
+		return
+	}
+
+	dir, ok := readNextRawByte(rawChan, 20*time.Millisecond)
+	if !ok {
+		forwardToInputChan(kiReader, esc, next)
+		return
+	}
+
+	switch dir {
+	case 'A':
+		kiReader.NavigateHistory(1)
+	case 'B':
+		kiReader.NavigateHistory(-1)
+	case '[':
+		dir2, ok := readNextRawByte(rawChan, 20*time.Millisecond)
+		if !ok {
+			forwardToInputChan(kiReader, esc, next, dir)
+			return
+		}
+		switch dir2 {
+		case 'A':
+			kiReader.NavigateHistory(1)
+		case 'B':
+			kiReader.NavigateHistory(-1)
+		default:
+			forwardToInputChan(kiReader, esc, next, dir, dir2)
+		}
+	case 'C', 'D':
+	default:
+		forwardToInputChan(kiReader, esc, next, dir)
+	}
+}
+
 func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader) {
 	abortOperation := func(cancelFunc func(), clearQueue bool) {
 		if cancelFunc != nil {
@@ -81,11 +144,10 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				continue
 			}
 			if b == 27 {
-				select {
-				case next := <-rawChan:
+				if next, ok := readNextRawByte(rawChan, 50*time.Millisecond); ok {
 					kiReader.ApprovalChan <- b
 					kiReader.ApprovalChan <- next
-				case <-time.After(50 * time.Millisecond):
+				} else {
 					abortOperation(cancelFunc, false)
 					kiReader.ApprovalChan <- b
 				}
@@ -106,73 +168,19 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		}
 
 		if cancelFunc != nil {
-			if b == 3 || b == 4 {
+			switch {
+			case b == 3 || b == 4:
 				abortOperation(cancelFunc, true)
-				continue
-			}
-			if b == 27 {
-				select {
-				case next := <-rawChan:
-					if next == '[' || next == 'O' {
-						select {
-						case dir := <-rawChan:
-							switch dir {
-							case 'A':
-								kiReader.NavigateHistory(1)
-							case 'B':
-								kiReader.NavigateHistory(-1)
-							case '[':
-								select {
-								case dir2 := <-rawChan:
-									switch dir2 {
-									case 'A':
-										kiReader.NavigateHistory(1)
-									case 'B':
-										kiReader.NavigateHistory(-1)
-									default:
-										kiReader.InputChan <- b
-										kiReader.InputChan <- next
-										kiReader.InputChan <- dir
-										kiReader.InputChan <- dir2
-									}
-								case <-time.After(20 * time.Millisecond):
-									kiReader.InputChan <- b
-									kiReader.InputChan <- next
-									kiReader.InputChan <- dir
-								}
-							case 'C', 'D':
-							default:
-								kiReader.InputChan <- b
-								kiReader.InputChan <- next
-								kiReader.InputChan <- dir
-							}
-						case <-time.After(20 * time.Millisecond):
-							kiReader.InputChan <- b
-							kiReader.InputChan <- next
-						}
-					} else {
-						kiReader.InputChan <- b
-						kiReader.InputChan <- next
-					}
-				case <-time.After(50 * time.Millisecond):
+			case b == 27:
+				handleActiveTurnEscape(rawChan, kiReader, b, func() {
 					abortOperation(cancelFunc, true)
-				}
-				continue
-			}
-
-			if b == 16 {
+				})
+			case b == 16:
 				kiReader.NavigateHistory(1)
-				continue
-			}
-			if b == 14 {
+			case b == 14:
 				kiReader.NavigateHistory(-1)
-				continue
-			}
-			if handleShortcutKey(b) {
-				continue
-			}
-
-			if b == 127 || b == 8 {
+			case handleShortcutKey(b):
+			case b == 127 || b == 8:
 				ui.GetUI().StateMu.Lock()
 				if len(kiReader.TypeAheadBuffer) > 0 {
 					r, size := utf8.DecodeLastRune(kiReader.TypeAheadBuffer)
@@ -186,10 +194,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				if len(rawChan) == 0 {
 					kiReader.RedrawTypeAhead()
 				}
-				continue
-			}
-
-			if b == 10 || b == 13 {
+			case b == 10 || b == 13:
 				ui.GetUI().StateMu.Lock()
 				typed := string(kiReader.TypeAheadBuffer)
 				kiReader.ResetTypeAheadLocked()
@@ -203,18 +208,15 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 					ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(kiReader.Agent.Config))
 				}
 				kiReader.RedrawTypeAhead()
-				continue
-			}
-
-			if b >= 32 || b == '\t' {
+			case b >= 32 || b == '\t':
 				ui.GetUI().StateMu.Lock()
 				kiReader.TypeAheadBuffer = append(kiReader.TypeAheadBuffer, b)
 				ui.GetUI().StateMu.Unlock()
 				if len(rawChan) == 0 {
 					kiReader.RedrawTypeAhead()
 				}
-				continue
 			}
+			continue
 		}
 
 		kiReader.InputChan <- b

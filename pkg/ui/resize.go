@@ -63,17 +63,32 @@ func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 	}
 }
 
-func getTerminalLine(rl *term.Terminal) (string, int) {
+func getTerminalLine(rl *term.Terminal) (line string, pos int) {
 	if rl == nil {
 		return "", 0
 	}
-	val := reflect.ValueOf(rl).Elem()
-	lineField := val.FieldByName("line")
-	posField := val.FieldByName("pos")
-	if lineField.IsValid() && posField.IsValid() {
+	defer func() {
+		if recover() != nil {
+			line = ""
+			pos = 0
+		}
+	}()
+
+	val := reflect.ValueOf(rl)
+	if val.Kind() != reflect.Ptr || val.IsNil() {
+		return "", 0
+	}
+	elem := val.Elem()
+	if elem.Kind() != reflect.Struct {
+		return "", 0
+	}
+	lineField := elem.FieldByName("line")
+	posField := elem.FieldByName("pos")
+	if lineField.IsValid() && lineField.CanAddr() && lineField.Kind() == reflect.Slice &&
+		posField.IsValid() && posField.CanAddr() && posField.Kind() == reflect.Int {
 		runes := *(*[]rune)(unsafe.Pointer(lineField.UnsafeAddr()))
-		pos := *(*int)(unsafe.Pointer(posField.UnsafeAddr()))
-		return string(runes), pos
+		posVal := *(*int)(unsafe.Pointer(posField.UnsafeAddr()))
+		return string(runes), posVal
 	}
 	return "", 0
 }

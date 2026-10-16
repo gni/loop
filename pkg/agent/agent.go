@@ -136,13 +136,9 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	}
 
 	a := &Agent{
-		Config:     cfg,
-		ConfigPath: configPath,
-		HttpClient: httpClient,
-		LLMProvider: &OpenAICompatibleProvider{
-			Config:     cfg,
-			HttpClient: httpClient,
-		},
+		Config:           cfg,
+		ConfigPath:       configPath,
+		HttpClient:       httpClient,
 		McpClients:       make(map[string]*mcpClient),
 		McpStartErrors:   make(map[string]error),
 		mcpPending:       make(map[string]config.MCPServerConfig),
@@ -156,14 +152,14 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		FileObservations: tool.NewFileObservationTracker(),
 		Guided:           NewGuidedController(guidedEnabled),
 	}
+	a.LLMProvider = &OpenAICompatibleProvider{
+		Config:            cfg,
+		HttpClient:        httpClient,
+		ChunkDropObserver: a.recordDroppedChunk,
+	}
 
 	a.Registry.UnknownToolHook = a.ResolveUnknownTool
 	a.Registry.Register(tool.NewLoadMCPTool())
-
-	if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
-		provider.ChunkDropObserver = a.recordDroppedChunk
-	}
-
 	a.Registry.Register(tool.NewBashTool())
 	a.Registry.Register(tool.NewReadTool())
 	a.Registry.Register(tool.NewWriteTool())
@@ -178,8 +174,9 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	a.Registry.Register(tool.NewAskUserTool())
 
 	if a.Config != nil && !a.Config.DisableLocalPlugins {
-		pluginsDir := filepath.Join(absWorkspace, "plugins")
-		_ = tool.RegisterPlugins(a.Registry, pluginsDir)
+		for _, dir := range getPluginDirs(absWorkspace) {
+			_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
+		}
 	}
 
 	if a.Config != nil && len(a.Config.DisabledTools) > 0 {
@@ -187,6 +184,15 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	}
 
 	return a
+}
+
+func (a *Agent) markSystemPromptDirty() {
+	if a == nil {
+		return
+	}
+	a.stateMu.Lock()
+	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
 }
 
 func (a *Agent) ensureGuided() *GuidedController {
@@ -225,9 +231,7 @@ func (a *Agent) SetGuidedMode(enabled bool) {
 		}
 	}
 	a.ensureGuided().SetEnabled(enabled)
-	a.stateMu.Lock()
-	a.ForceSystemPromptUpdate = true
-	a.stateMu.Unlock()
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) RollbackChanges() ([]string, error) {
@@ -323,28 +327,7 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 
 	a.Config = cfg
 	a.ensureGuided().SetEnabled(cfg.GuidedMode)
-
-	switch provider := a.LLMProvider.(type) {
-	case nil:
-		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:     cfg,
-			HttpClient: a.HttpClient,
-		}
-	case *OpenAICompatibleProvider:
-		httpClient := provider.HttpClient
-		if httpClient == nil {
-			httpClient = a.HttpClient
-		}
-		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:            cfg,
-			HttpClient:        httpClient,
-			ChunkDropObserver: a.recordDroppedChunk,
-		}
-	}
-
-	if p, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
-		p.ResetThinkingCapabilities()
-	}
+	a.syncOpenAIProviderLocked(cfg, true)
 
 	if a.DebugLogger != nil {
 		a.DebugLogger.Close()
@@ -357,9 +340,7 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 			a.Registry.Disable(cfg.DisabledTools...)
 		}
 	}
-	a.stateMu.Lock()
-	a.ForceSystemPromptUpdate = true
-	a.stateMu.Unlock()
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) DisableTools(names ...string) {
@@ -370,9 +351,7 @@ func (a *Agent) DisableTools(names ...string) {
 	if a.Config != nil {
 		a.Config.DisabledTools = a.Registry.GetDisabledTools()
 	}
-	a.stateMu.Lock()
-	a.ForceSystemPromptUpdate = true
-	a.stateMu.Unlock()
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) EnableTools(names ...string) {
@@ -383,9 +362,7 @@ func (a *Agent) EnableTools(names ...string) {
 	if a.Config != nil {
 		a.Config.DisabledTools = a.Registry.GetDisabledTools()
 	}
-	a.stateMu.Lock()
-	a.ForceSystemPromptUpdate = true
-	a.stateMu.Unlock()
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) EnableAllTools() {
@@ -396,9 +373,7 @@ func (a *Agent) EnableAllTools() {
 	if a.Config != nil {
 		a.Config.DisabledTools = nil
 	}
-	a.stateMu.Lock()
-	a.ForceSystemPromptUpdate = true
-	a.stateMu.Unlock()
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) IsToolDisabled(name string) bool {
@@ -522,9 +497,7 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 	skills, err := LoadSkillsFromDirs(dirs...)
 	if err == nil && (len(skills) > 0 || len(a.ActiveSkills) == 0) {
 		a.ActiveSkills = skills
-		a.stateMu.Lock()
-		a.ForceSystemPromptUpdate = true
-		a.stateMu.Unlock()
+		a.markSystemPromptDirty()
 	}
 	return a.ActiveSkills
 }
@@ -562,17 +535,21 @@ func (a *Agent) DidStreamLiveBody() bool {
 	return a.liveBodyStreamed
 }
 
+func defaultAskUserSelection(options []tool.AskUserOption, recommended string) string {
+	if recommended != "" {
+		return recommended
+	}
+	if len(options) > 0 {
+		return options[0].Label
+	}
+	return "Confirmed"
+}
+
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
 	if a.Config != nil && !a.IsGuidedMode() {
 		switch a.Config.AskUserMode {
 		case "auto_recommended":
-			if recommended != "" {
-				return recommended, nil
-			}
-			if len(options) > 0 {
-				return options[0].Label, nil
-			}
-			return "Confirmed", nil
+			return defaultAskUserSelection(options, recommended), nil
 		case "disabled":
 			return "", fmt.Errorf("ask_user tool is disabled by configuration")
 		case "always_ask":
@@ -582,7 +559,7 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 		}
 	}
 
-	var optStrings []string
+	optStrings := make([]string, 0, len(options))
 	for _, opt := range options {
 		optStrings = append(optStrings, opt.Label)
 	}
@@ -604,13 +581,7 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 		return a.UI.AskUserQuestion(w, theme, question, optStrings, recommended)
 	}
 
-	if recommended != "" {
-		return recommended, nil
-	}
-	if len(options) > 0 {
-		return options[0].Label, nil
-	}
-	return "Confirmed", nil
+	return defaultAskUserSelection(options, recommended), nil
 }
 
 func (a *Agent) IsPersistentBashEnabled() bool {
@@ -627,6 +598,10 @@ func (a *Agent) IsAtomicWritesEnabled() bool {
 	return a.Config.AtomicWrites
 }
 
+func getPluginDirs(workspaceRoot string) []string {
+	return tool.PluginSearchDirs(workspaceRoot)
+}
+
 func (a *Agent) ReloadPlugins() error {
 	if a.Config.DisableLocalPlugins {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
@@ -634,8 +609,10 @@ func (a *Agent) ReloadPlugins() error {
 
 	a.Registry.UnregisterPrefix("plugin__")
 
-	pluginsDir := filepath.Join(a.WorkspaceRoot, "plugins")
-	return tool.RegisterPlugins(a.Registry, pluginsDir)
+	for _, dir := range getPluginDirs(a.WorkspaceRoot) {
+		_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
+	}
+	return nil
 }
 
 func (a *Agent) HasSubagent(name string) bool {

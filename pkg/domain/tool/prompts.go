@@ -12,9 +12,6 @@ import (
 	"unicode"
 )
 
-// ToolPrompt defines the complete prompting contract for a single agent tool.
-// This includes its catalog snippet in <tools>, runtime function description,
-// operational guidelines rendered into <rules>, and parameter descriptions.
 type ToolPrompt struct {
 	Name              string            `json:"name"`
 	Description       string            `json:"description"`
@@ -23,8 +20,6 @@ type ToolPrompt struct {
 	ParamDescriptions map[string]string `json:"param_descriptions"`
 }
 
-// SystemPrompts defines the master agent identity, core operating mandates,
-// and background compression prompts.
 type SystemPrompts struct {
 	DefaultIdentity      string   `json:"default_identity"`
 	CoreRules            []string `json:"core_rules"`
@@ -32,8 +27,6 @@ type SystemPrompts struct {
 	CompressionPrompt    string   `json:"compression_prompt"`
 }
 
-// PromptTemplates are the render scaffolds for the system prompt sections.
-// Every string the model sees is data here, not a literal in Go code.
 type PromptTemplates struct {
 	CwdSection              string `json:"cwd_section"`
 	ToolsSection            string `json:"tools_section"`
@@ -55,7 +48,6 @@ type PromptTemplates struct {
 	BackgroundTaskLine      string `json:"background_task_line"`
 }
 
-// AgentToolTemplates holds the dynamic descriptions for per-agent subagent tools.
 type AgentToolTemplates struct {
 	SubagentPrompt      string `json:"subagent_prompt"`
 	SubagentParamPrompt string `json:"subagent_param_prompt"`
@@ -65,46 +57,31 @@ type AgentToolTemplates struct {
 	SkillNamesUnknown   string `json:"skill_names_unknown"`
 }
 
-// RuntimeMessages are the strings the agent injects back into model history:
-// defensive error advice, loop-guard warnings, recap lines, memory headers, and
-// audit report scaffolds. They are instructions the model acts on, so they live
-// in the adjustable catalog rather than in Go literals.
-// RuntimeMessages is a key -> format-string map. Keys are looked up by name at
-// call sites, so adding or changing an entry in prompts.json needs no Go change.
 type RuntimeMessages map[string]string
 
-// PromptCatalog is the full adjustable prompt data set (system prompts, tool
-// prompts, and section templates).
 type PromptCatalog struct {
-	SystemPrompts     SystemPrompts      `json:"system_prompts"`
-	ToolPrompts       map[string]ToolPrompt `json:"tool_prompts"`
-	Templates         PromptTemplates    `json:"templates"`
-	AgentToolTemplates AgentToolTemplates `json:"agent_tool_templates"`
-	RuntimeMessages   RuntimeMessages    `json:"runtime_messages"`
+	SystemPrompts      SystemPrompts         `json:"system_prompts"`
+	ToolPrompts        map[string]ToolPrompt `json:"tool_prompts"`
+	Templates          PromptTemplates       `json:"templates"`
+	AgentToolTemplates AgentToolTemplates    `json:"agent_tool_templates"`
+	RuntimeMessages    RuntimeMessages       `json:"runtime_messages"`
 }
 
 //go:embed prompts.json
 var embeddedPromptCatalog []byte
 
-// MasterSystemPrompts, MasterToolPrompts, and MasterTemplates are the live,
-// runtime-adjustable catalogs. They start from the embedded prompts.json and
-// can be overridden at startup via LoadPromptCatalog.
 var (
-	MasterSystemPrompts      SystemPrompts
-	MasterToolPrompts        map[string]ToolPrompt
-	MasterTemplates          PromptTemplates
-	MasterAgentTemplates     AgentToolTemplates
-	MasterRuntimeMessages    RuntimeMessages
+	MasterSystemPrompts   SystemPrompts
+	MasterToolPrompts     map[string]ToolPrompt
+	MasterTemplates       PromptTemplates
+	MasterAgentTemplates  AgentToolTemplates
+	MasterRuntimeMessages RuntimeMessages
 )
 
 func init() {
-	LoadPromptCatalog("")
+	_ = LoadPromptCatalog("")
 }
 
-// LoadPromptCatalog restores the embedded default catalog. When path is
-// non-empty, the JSON file at path is layered on top of the defaults so users
-// can adjust instructions without recompiling. A missing or invalid file is
-// not fatal; defaults are kept.
 func LoadPromptCatalog(path string) error {
 	catalog, err := decodeCatalog(embeddedPromptCatalog)
 	if err != nil {
@@ -129,9 +106,6 @@ func LoadPromptCatalog(path string) error {
 	return nil
 }
 
-// applyCatalog writes the catalog into the live variables. The tool map is
-// mutated in place so package-level aliases in pkg/agent keep pointing at the
-// same live map.
 func applyCatalog(catalog PromptCatalog) {
 	MasterSystemPrompts = catalog.SystemPrompts
 	MasterTemplates = catalog.Templates
@@ -162,30 +136,24 @@ func decodeCatalog(data []byte) (PromptCatalog, error) {
 	return c, nil
 }
 
-// mergeCatalog layers non-empty user values over the defaults. Tool prompts are
-// merged per tool and per parameter so users can adjust a single line without
-// redefining the whole entry.
-func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
-	if user.SystemPrompts.DefaultIdentity != "" {
-		base.SystemPrompts.DefaultIdentity = user.SystemPrompts.DefaultIdentity
+func overrideString(dst *string, src string) {
+	if src != "" {
+		*dst = src
 	}
+}
+
+func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
+	overrideString(&base.SystemPrompts.DefaultIdentity, user.SystemPrompts.DefaultIdentity)
 	if len(user.SystemPrompts.CoreRules) > 0 {
 		base.SystemPrompts.CoreRules = user.SystemPrompts.CoreRules
 	}
-	if user.SystemPrompts.MultiAgentGuidelines != "" {
-		base.SystemPrompts.MultiAgentGuidelines = user.SystemPrompts.MultiAgentGuidelines
-	}
-	if user.SystemPrompts.CompressionPrompt != "" {
-		base.SystemPrompts.CompressionPrompt = user.SystemPrompts.CompressionPrompt
-	}
+	overrideString(&base.SystemPrompts.MultiAgentGuidelines, user.SystemPrompts.MultiAgentGuidelines)
+	overrideString(&base.SystemPrompts.CompressionPrompt, user.SystemPrompts.CompressionPrompt)
+
 	for name, p := range user.ToolPrompts {
 		existing := base.ToolPrompts[name]
-		if p.Description != "" {
-			existing.Description = p.Description
-		}
-		if p.Snippet != "" {
-			existing.Snippet = p.Snippet
-		}
+		overrideString(&existing.Description, p.Description)
+		overrideString(&existing.Snippet, p.Snippet)
 		if len(p.Guidelines) > 0 {
 			existing.Guidelines = p.Guidelines
 		}
@@ -198,83 +166,36 @@ func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
 		existing.Name = name
 		base.ToolPrompts[name] = existing
 	}
-	if user.Templates.CwdSection != "" {
-		base.Templates.CwdSection = user.Templates.CwdSection
-	}
-	if user.Templates.ToolsSection != "" {
-		base.Templates.ToolsSection = user.Templates.ToolsSection
-	}
-	if user.Templates.ToolLine != "" {
-		base.Templates.ToolLine = user.Templates.ToolLine
-	}
-	if user.Templates.SubagentLine != "" {
-		base.Templates.SubagentLine = user.Templates.SubagentLine
-	}
-	if user.Templates.RulesSection != "" {
-		base.Templates.RulesSection = user.Templates.RulesSection
-	}
-	if user.Templates.RuleLine != "" {
-		base.Templates.RuleLine = user.Templates.RuleLine
-	}
-	if user.Templates.UserGuidelinesSection != "" {
-		base.Templates.UserGuidelinesSection = user.Templates.UserGuidelinesSection
-	}
-	if user.Templates.SkillsSection != "" {
-		base.Templates.SkillsSection = user.Templates.SkillsSection
-	}
-	if user.Templates.SkillsEmptySection != "" {
-		base.Templates.SkillsEmptySection = user.Templates.SkillsEmptySection
-	}
-	if user.Templates.SkillLine != "" {
-		base.Templates.SkillLine = user.Templates.SkillLine
-	}
-	if user.Templates.MultiAgentSection != "" {
-		base.Templates.MultiAgentSection = user.Templates.MultiAgentSection
-	}
-	if user.Templates.SubagentSkillAssignment != "" {
-		base.Templates.SubagentSkillAssignment = user.Templates.SubagentSkillAssignment
-	}
-	if user.Templates.MultiAgentSkillList != "" {
-		base.Templates.MultiAgentSkillList = user.Templates.MultiAgentSkillList
-	}
-	if user.Templates.MultiAgentNoSkills != "" {
-		base.Templates.MultiAgentNoSkills = user.Templates.MultiAgentNoSkills
-	}
-	if user.Templates.MultiAgentSpawnRules != "" {
-		base.Templates.MultiAgentSpawnRules = user.Templates.MultiAgentSpawnRules
-	}
-	if user.Templates.MemorySection != "" {
-		base.Templates.MemorySection = user.Templates.MemorySection
-	}
-	if user.Templates.BackgroundTasksSection != "" {
-		base.Templates.BackgroundTasksSection = user.Templates.BackgroundTasksSection
-	}
-	if user.Templates.BackgroundTaskLine != "" {
-		base.Templates.BackgroundTaskLine = user.Templates.BackgroundTaskLine
-	}
-	// Runtime messages merged generically by JSON key so users can adjust any
-	// single advice string without listing them all.
+
+	overrideString(&base.Templates.CwdSection, user.Templates.CwdSection)
+	overrideString(&base.Templates.ToolsSection, user.Templates.ToolsSection)
+	overrideString(&base.Templates.ToolLine, user.Templates.ToolLine)
+	overrideString(&base.Templates.SubagentLine, user.Templates.SubagentLine)
+	overrideString(&base.Templates.RulesSection, user.Templates.RulesSection)
+	overrideString(&base.Templates.RuleLine, user.Templates.RuleLine)
+	overrideString(&base.Templates.UserGuidelinesSection, user.Templates.UserGuidelinesSection)
+	overrideString(&base.Templates.SkillsSection, user.Templates.SkillsSection)
+	overrideString(&base.Templates.SkillsEmptySection, user.Templates.SkillsEmptySection)
+	overrideString(&base.Templates.SkillLine, user.Templates.SkillLine)
+	overrideString(&base.Templates.MultiAgentSection, user.Templates.MultiAgentSection)
+	overrideString(&base.Templates.SubagentSkillAssignment, user.Templates.SubagentSkillAssignment)
+	overrideString(&base.Templates.MultiAgentSkillList, user.Templates.MultiAgentSkillList)
+	overrideString(&base.Templates.MultiAgentNoSkills, user.Templates.MultiAgentNoSkills)
+	overrideString(&base.Templates.MultiAgentSpawnRules, user.Templates.MultiAgentSpawnRules)
+	overrideString(&base.Templates.MemorySection, user.Templates.MemorySection)
+	overrideString(&base.Templates.BackgroundTasksSection, user.Templates.BackgroundTasksSection)
+	overrideString(&base.Templates.BackgroundTaskLine, user.Templates.BackgroundTaskLine)
+
 	mergeRuntimeMessages(base.RuntimeMessages, user.RuntimeMessages)
-	if user.AgentToolTemplates.SubagentPrompt != "" { base.AgentToolTemplates.SubagentPrompt = user.AgentToolTemplates.SubagentPrompt }
-	if user.AgentToolTemplates.SubagentParamPrompt != "" {
-		base.AgentToolTemplates.SubagentParamPrompt = user.AgentToolTemplates.SubagentParamPrompt
-	}
-	if user.AgentToolTemplates.SkillNamesBase != "" {
-		base.AgentToolTemplates.SkillNamesBase = user.AgentToolTemplates.SkillNamesBase
-	}
-	if user.AgentToolTemplates.SkillNamesNone != "" {
-		base.AgentToolTemplates.SkillNamesNone = user.AgentToolTemplates.SkillNamesNone
-	}
-	if user.AgentToolTemplates.SkillNamesAvailable != "" {
-		base.AgentToolTemplates.SkillNamesAvailable = user.AgentToolTemplates.SkillNamesAvailable
-	}
-	if user.AgentToolTemplates.SkillNamesUnknown != "" {
-		base.AgentToolTemplates.SkillNamesUnknown = user.AgentToolTemplates.SkillNamesUnknown
-	}
+
+	overrideString(&base.AgentToolTemplates.SubagentPrompt, user.AgentToolTemplates.SubagentPrompt)
+	overrideString(&base.AgentToolTemplates.SubagentParamPrompt, user.AgentToolTemplates.SubagentParamPrompt)
+	overrideString(&base.AgentToolTemplates.SkillNamesBase, user.AgentToolTemplates.SkillNamesBase)
+	overrideString(&base.AgentToolTemplates.SkillNamesNone, user.AgentToolTemplates.SkillNamesNone)
+	overrideString(&base.AgentToolTemplates.SkillNamesAvailable, user.AgentToolTemplates.SkillNamesAvailable)
+	overrideString(&base.AgentToolTemplates.SkillNamesUnknown, user.AgentToolTemplates.SkillNamesUnknown)
 }
 
-// RuntimeMessage returns an adjustable runtime message template, or fallback
-// when the key is missing.
 func RuntimeMessage(key, fallback string) string {
 	if v := MasterRuntimeMessages[key]; v != "" {
 		return v
@@ -282,9 +203,6 @@ func RuntimeMessage(key, fallback string) string {
 	return fallback
 }
 
-// RuntimeMessagef renders a runtime message template with args. The key must
-// exist in the catalog; callers pass a fallback so behavior is safe even if the
-// catalog file is malformed.
 func RuntimeMessagef(key, fallback string, args ...any) string {
 	tplStr := MasterRuntimeMessages[key]
 	if tplStr == "" {
@@ -293,9 +211,6 @@ func RuntimeMessagef(key, fallback string, args ...any) string {
 	return fmt.Sprintf(tplStr, args...)
 }
 
-// mergeRuntimeMessages layers non-empty user values over defaults using the
-// JSON key names, so any key in the struct is adjustable without code changes
-// to the merge function.
 func mergeRuntimeMessages(base RuntimeMessages, user RuntimeMessages) {
 	if base == nil {
 		return
@@ -307,7 +222,6 @@ func mergeRuntimeMessages(base RuntimeMessages, user RuntimeMessages) {
 	}
 }
 
-// DefaultPromptCatalogPath resolves the user-editable catalog file.
 func DefaultPromptCatalogPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -316,8 +230,6 @@ func DefaultPromptCatalogPath() string {
 	return filepath.Join(homeDir, ".loop", "prompts.json")
 }
 
-// GetToolPrompt retrieves the prompt configuration for a named tool.
-// Returns an empty ToolPrompt if the tool is not found.
 func GetToolPrompt(name string) ToolPrompt {
 	if p, ok := MasterToolPrompts[name]; ok {
 		return p
@@ -325,7 +237,6 @@ func GetToolPrompt(name string) ToolPrompt {
 	return ToolPrompt{Name: name}
 }
 
-// SetToolPrompt updates or registers a custom prompt definition for a tool.
 func SetToolPrompt(p ToolPrompt) {
 	if MasterToolPrompts == nil {
 		MasterToolPrompts = map[string]ToolPrompt{}
@@ -333,8 +244,6 @@ func SetToolPrompt(p ToolPrompt) {
 	MasterToolPrompts[p.Name] = p
 }
 
-// FormatParamDescription returns the documented description for a tool's parameter,
-// falling back to fallbackDesc if not configured.
 func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
 	if p, ok := MasterToolPrompts[toolName]; ok {
 		if desc, found := p.ParamDescriptions[paramName]; found && desc != "" {
@@ -344,8 +253,6 @@ func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
 	return fallbackDesc
 }
 
-// FormatToolDescription returns the documented function description for a tool,
-// falling back to fallbackDesc if not configured.
 func FormatToolDescription(toolName, fallbackDesc string) string {
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Description != "" {
 		return p.Description
@@ -353,7 +260,6 @@ func FormatToolDescription(toolName, fallbackDesc string) string {
 	return fallbackDesc
 }
 
-// FormatToolSnippet returns the documented prompt catalog snippet for a tool.
 func FormatToolSnippet(toolName, fallbackSnippet string) string {
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Snippet != "" {
 		return p.Snippet
@@ -361,7 +267,6 @@ func FormatToolSnippet(toolName, fallbackSnippet string) string {
 	return fallbackSnippet
 }
 
-// FormatToolGuidelines returns the guidelines slice for a tool.
 func FormatToolGuidelines(toolName string, fallbackGuidelines []string) []string {
 	if p, ok := MasterToolPrompts[toolName]; ok && len(p.Guidelines) > 0 {
 		return p.Guidelines
@@ -369,7 +274,6 @@ func FormatToolGuidelines(toolName string, fallbackGuidelines []string) []string
 	return fallbackGuidelines
 }
 
-// FormatCoreRules builds the master rules slice for the system prompt.
 func FormatCoreRules(workspaceRoot string) []string {
 	rules := make([]string, 0, len(MasterSystemPrompts.CoreRules))
 	for _, r := range MasterSystemPrompts.CoreRules {
@@ -382,7 +286,6 @@ func FormatCoreRules(workspaceRoot string) []string {
 	return rules
 }
 
-// PromptTemplate is a markdown prompt template loaded from disk.
 type PromptTemplate struct {
 	Name        string
 	Description string
@@ -390,7 +293,6 @@ type PromptTemplate struct {
 	FilePath    string
 }
 
-// ParseCommandArgs parses bash-style quoted arguments.
 func ParseCommandArgs(argsString string) []string {
 	var args []string
 	var current string
@@ -421,8 +323,6 @@ func ParseCommandArgs(argsString string) []string {
 
 var argPattern = regexp.MustCompile(`\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)`)
 
-// SubstituteArgs replaces $1..$9, $@, $ARGUMENTS, ${N:-default} and ${@:N:L}.
-// Substitution is non-recursive.
 func SubstituteArgs(content string, args []string) string {
 	all := strings.Join(args, " ")
 	return argPattern.ReplaceAllStringFunc(content, func(m string) string {
@@ -444,10 +344,12 @@ func SubstituteArgs(content string, args []string) string {
 			if n, _ := strconv.Atoi(parts[3]); n > 0 {
 				start = n - 1
 			}
+			if start >= len(args) {
+				return ""
+			}
 			slice := args[start:]
 			if parts[4] != "" {
-				l, _ := strconv.Atoi(parts[4])
-				if start+l < len(slice) {
+				if l, _ := strconv.Atoi(parts[4]); l >= 0 && l < len(slice) {
 					slice = slice[:l]
 				}
 			}
@@ -457,8 +359,7 @@ func SubstituteArgs(content string, args []string) string {
 		case "@", "ARGUMENTS":
 			return all
 		default:
-			n, _ := strconv.Atoi(parts[5])
-			if n > 0 && n <= len(args) {
+			if n, _ := strconv.Atoi(parts[5]); n > 0 && n <= len(args) {
 				return args[n-1]
 			}
 			return ""
@@ -466,8 +367,6 @@ func SubstituteArgs(content string, args []string) string {
 	})
 }
 
-// LoadPromptTemplates reads markdown templates under ~/.loop/prompts/.
-// Frontmatter supplies name/description.
 func LoadPromptTemplates(dir string) []PromptTemplate {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

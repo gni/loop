@@ -370,6 +370,13 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 		isHelpCmd := trimmedLine == "help" || trimmedLine == "h" || trimmedLine == "?" || trimmedLine == "/help" || trimmedLine == "/commands" || trimmedLine == "/h" || trimmedLine == "/?"
 		if strings.HasPrefix(trimmedLine, "/") || isHelpCmd {
+			parts := strings.Fields(trimmedLine)
+			if len(parts) > 0 {
+				if expanded, isTpl := commands.ExpandPromptTemplate(parts[0], strings.TrimSpace(strings.TrimPrefix(trimmedLine, parts[0]))); isTpl {
+					line = expanded
+					goto runAgentTurn
+				}
+			}
 			handled, quit := commands.HandleSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl.History, mam, kiReader)
 			kiReader.Drain()
 			if handled {
@@ -380,6 +387,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			}
 		}
 
+	runAgentTurn:
 		ppWriter.ForceReposition()
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader)

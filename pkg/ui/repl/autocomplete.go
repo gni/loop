@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/domain/tool"
+	"loop/pkg/ui"
 	"loop/pkg/ui/commands"
 )
 
@@ -23,7 +24,7 @@ var baseAutocompleteCandidates = []string{
 	"/kill ", "/stop", "/stop ", "/status", "/status ", "/taskstop ", "/tasks", "/ps",
 	"/toggle", "/collapse", "/expand",
 	"/provider ", "/provider list", "/provider add ", "/provider select ", "/provider model ", "/provider timeout ", "/provider remove ", "/p ",
-	"/templates",
+	"/templates", "/plugins", "/extensions", "/reload",
 	"/agent ", "/agent list", "/agent join ", "/agent spawn ",
 	"/agents ", "/agents list", "/agents join ", "/agents spawn ",
 	"/stats", "/tokens", "/usage", "/compress",
@@ -75,16 +76,25 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 	var matches []string
 	if strings.HasPrefix(wordToComplete, "/") {
-		for _, c := range baseAutocompleteCandidates {
-			if strings.HasPrefix(c, prefixToPos) {
-				matches = append(matches, c)
-			}
-		}
-		for _, t := range tool.LoadPromptTemplates(commands.PromptTemplateCommandDir()) {
-			cand := "/" + t.Name
-			if strings.HasPrefix(cand, prefixToPos) {
+		seen := make(map[string]bool)
+		addCandidate := func(cand string) {
+			if strings.HasPrefix(cand, prefixToPos) && !seen[cand] {
+				seen[cand] = true
 				matches = append(matches, cand)
 			}
+		}
+		for _, c := range baseAutocompleteCandidates {
+			addCandidate(c)
+		}
+		for _, t := range tool.LoadPromptTemplates(commands.PromptTemplateCommandDir()) {
+			addCandidate("/" + t.Name)
+		}
+		workspaceRoot := ""
+		if a != nil {
+			workspaceRoot = a.GetWorkspaceRoot()
+		}
+		for _, ext := range ui.ListExtensions(workspaceRoot) {
+			addCandidate(ext.Name)
 		}
 	}
 
@@ -129,7 +139,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 			}
 
 		case strings.HasPrefix(prefixToPos, "/skills "):
-			matches = matchPrefixWithSpace([]string{"load"}, strings.TrimPrefix(prefixToPos, "/skills "), map[string]bool{"load": true})
+			matches = matchPrefixWithSpace([]string{"load", "reload"}, strings.TrimPrefix(prefixToPos, "/skills "), map[string]bool{"load": true})
 
 		default:
 			if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/provider ", "/providers ", "/p "); ok {

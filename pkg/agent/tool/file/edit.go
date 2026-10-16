@@ -53,6 +53,43 @@ func (t *editTool) Definition() domaintool.Tool {
 	)
 }
 
+func tryApplyNonOverlappingBatch(initialContent string, edits []ReplaceEdit) (string, bool) {
+	if len(edits) <= 1 {
+		return "", false
+	}
+	matches := make([]*textMatch, len(edits))
+	for i := range edits {
+		m, err := locateEditMatch(initialContent, edits[i].OldText, edits[i].NewText)
+		if err != nil || m == nil {
+			return "", false
+		}
+		matches[i] = m
+	}
+
+	for a := 0; a < len(matches); a++ {
+		for b := a + 1; b < len(matches); b++ {
+			if matches[a].startByte < matches[b].endByte && matches[b].startByte < matches[a].endByte {
+				return "", false
+			}
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].startByte > matches[j].startByte
+	})
+
+	content := initialContent
+	changed := false
+	for _, m := range matches {
+		updated := content[:m.startByte] + m.newText + content[m.endByte:]
+		if updated != content {
+			changed = true
+		}
+		content = updated
+	}
+	return content, changed
+}
+
 func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
 	var args struct {
 		Path         string        `json:"path"`
@@ -137,74 +174,39 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	var diffBuilder strings.Builder
 	contentChanged := false
 
-	if len(edits) > 1 {
-		matches := make([]*textMatch, len(edits))
-		allMatched := true
+	if batchContent, ok := tryApplyNonOverlappingBatch(initialContent, edits); ok {
+		content = batchContent
+		contentChanged = true
+	} else {
 		for i := range edits {
-			m, err := locateEditMatch(initialContent, edits[i].OldText, edits[i].NewText)
-			if err != nil || m == nil {
-				allMatched = false
-				break
+			edit := &edits[i]
+			m, err := locateEditMatch(content, edit.OldText, edit.NewText)
+			if err != nil {
+				discardIfUncommitted()
+				return "", fmt.Errorf("edit[%d]: %w", i, err)
 			}
-			matches[i] = m
-		}
-
-		if allMatched {
-			hasOverlap := false
-			for a := 0; a < len(matches); a++ {
-				for b := a + 1; b < len(matches); b++ {
-					if matches[a].startByte < matches[b].endByte && matches[b].startByte < matches[a].endByte {
-						hasOverlap = true
-						break
-					}
+			if m == nil {
+				if replacementAlreadyApplied(content, edit.NewText) {
+					diffBuilder.WriteString(fmt.Sprintf("edit[%d]: requested replacement already present; file unchanged\n", i))
+					continue
 				}
-				if hasOverlap {
-					break
+				discardIfUncommitted()
+				closestLine := findClosestLineMatch(content, edit.OldText)
+				if closestLine > 0 {
+					snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
+					return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, targetPath, closestLine, snippet)
 				}
+				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nRecommendation: Read the file again using 'read' to verify its current contents, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.", i, targetPath)
 			}
 
-			if !hasOverlap {
-				sort.Slice(matches, func(i, j int) bool {
-					return matches[i].startByte > matches[j].startByte
-				})
-				for _, m := range matches {
-					content = content[:m.startByte] + m.newText + content[m.endByte:]
-					contentChanged = true
-				}
-				goto writeBack
+			updatedContent := content[:m.startByte] + m.newText + content[m.endByte:]
+			if updatedContent != content {
+				contentChanged = true
 			}
+			content = updatedContent
 		}
 	}
 
-	for i := range edits {
-		edit := &edits[i]
-		m, err := locateEditMatch(content, edit.OldText, edit.NewText)
-		if err != nil {
-			discardIfUncommitted()
-			return "", fmt.Errorf("edit[%d]: %w", i, err)
-		}
-		if m == nil {
-			if replacementAlreadyApplied(content, edit.NewText) {
-				diffBuilder.WriteString(fmt.Sprintf("edit[%d]: requested replacement already present; file unchanged\n", i))
-				continue
-			}
-			discardIfUncommitted()
-			closestLine := findClosestLineMatch(content, edit.OldText)
-			if closestLine > 0 {
-				snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
-				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, targetPath, closestLine, snippet)
-			}
-			return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nRecommendation: Read the file again using 'read' to verify its current contents, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.", i, targetPath)
-		}
-
-		updatedContent := content[:m.startByte] + m.newText + content[m.endByte:]
-		if updatedContent != content {
-			contentChanged = true
-		}
-		content = updatedContent
-	}
-
-writeBack:
 	if contentChanged {
 		diffBuilder.WriteString(GenerateDisplayDiff(initialContent, content, 3))
 		finalStr := content
@@ -217,23 +219,10 @@ writeBack:
 		} else {
 			finalBytes = []byte(finalStr)
 		}
-		useAtomic := true
-		if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
-			useAtomic = cp.IsAtomicWritesEnabled()
-		}
-		if useAtomic {
-			err = AtomicWriteFile(safePath, finalBytes, 0644)
-		} else {
-			err = os.WriteFile(safePath, finalBytes, 0644)
-		}
-		if err != nil {
+		if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
 			discardIfUncommitted()
 			return "", fmt.Errorf("failed to write modified content back: %w", err)
 		}
-		if fo, ok := ctx.(domaintool.FileObserver); ok {
-			fo.RecordMutation(safePath, finalBytes)
-		}
-		ctx.ReloadSkills()
 	} else {
 		discardIfUncommitted()
 	}

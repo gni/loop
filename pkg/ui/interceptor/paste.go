@@ -7,35 +7,59 @@ import (
 	"time"
 )
 
+const pasteDrainTimeout = 50 * time.Millisecond
+
+var (
+	bracketedPasteStart = []byte("\x1b[200~")
+	bracketedPasteEnd   = []byte("\x1b[201~")
+)
+
+func drainPasteBytes(ch <-chan byte, buf []byte, stop func([]byte) bool) []byte {
+	if ch == nil {
+		return buf
+	}
+	timer := time.NewTimer(pasteDrainTimeout)
+	defer timer.Stop()
+
+	for stop == nil || !stop(buf) {
+		select {
+		case b, ok := <-ch:
+			if !ok {
+				return buf
+			}
+			buf = append(buf, b)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(pasteDrainTimeout)
+		case <-timer.C:
+			return buf
+		}
+	}
+	return buf
+}
+
 func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 	var isPaste bool
 	var pasteBytes []byte
 
-	if bytes.Contains(p[:n], []byte("\x1b[200~")) || ki.InBracketedPaste {
+	if bytes.Contains(p[:n], bracketedPasteStart) || ki.InBracketedPaste {
 		isPaste = true
 		ki.InBracketedPaste = true
 		ki.BracketedBuffer = append(ki.BracketedBuffer, p[:n]...)
+		ki.BracketedBuffer = drainPasteBytes(ki.InputChan, ki.BracketedBuffer, func(b []byte) bool {
+			return bytes.Contains(b, bracketedPasteEnd)
+		})
 
-		if ki.InputChan != nil {
-			for !bytes.Contains(ki.BracketedBuffer, []byte("\x1b[201~")) {
-				select {
-				case b, ok := <-ki.InputChan:
-					if !ok {
-						goto bracketedDrainDone
-					}
-					ki.BracketedBuffer = append(ki.BracketedBuffer, b)
-				case <-time.After(50 * time.Millisecond):
-					goto bracketedDrainDone
-				}
-			}
+		if startIdx := bytes.Index(ki.BracketedBuffer, bracketedPasteStart); startIdx >= 0 {
+			ki.BracketedBuffer = ki.BracketedBuffer[startIdx+len(bracketedPasteStart):]
 		}
-	bracketedDrainDone:
-		if startIdx := bytes.Index(ki.BracketedBuffer, []byte("\x1b[200~")); startIdx >= 0 {
-			ki.BracketedBuffer = ki.BracketedBuffer[startIdx+6:]
-		}
-		if endIdx := bytes.Index(ki.BracketedBuffer, []byte("\x1b[201~")); endIdx >= 0 {
+		if endIdx := bytes.Index(ki.BracketedBuffer, bracketedPasteEnd); endIdx >= 0 {
 			pasteBytes = ki.BracketedBuffer[:endIdx]
-			remainder := ki.BracketedBuffer[endIdx+6:]
+			remainder := ki.BracketedBuffer[endIdx+len(bracketedPasteEnd):]
 			ki.BracketedBuffer = nil
 			ki.InBracketedPaste = false
 			if len(remainder) > 0 {
@@ -50,20 +74,7 @@ func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 		if len(trimmed) > 0 && bytes.ContainsAny(trimmed, "\r\n") {
 			isPaste = true
 			pasteBytes = append([]byte(nil), p[:n]...)
-			if ki.InputChan != nil {
-				for {
-					select {
-					case b, ok := <-ki.InputChan:
-						if !ok {
-							goto rawPasteDrainDone
-						}
-						pasteBytes = append(pasteBytes, b)
-					case <-time.After(50 * time.Millisecond):
-						goto rawPasteDrainDone
-					}
-				}
-			}
-		rawPasteDrainDone:
+			pasteBytes = drainPasteBytes(ki.InputChan, pasteBytes, nil)
 		}
 	}
 

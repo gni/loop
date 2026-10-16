@@ -38,47 +38,100 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
 		return
 	}
-	title := FormatToolTitle(symbol, toolName, pathVal, theme)
-	fmt.Fprintln(w, title)
+	fmt.Fprintln(w, FormatToolTitle(symbol, toolName, pathVal, theme))
+}
+
+func isCodeContentTool(toolName string) bool {
+	if strings.Contains(toolName, "edit") || strings.Contains(toolName, "replace") {
+		return false
+	}
+	return toolName == "read" || toolName == "write" ||
+		strings.Contains(toolName, "read") ||
+		strings.Contains(toolName, "write") ||
+		strings.Contains(toolName, "view") ||
+		strings.Contains(toolName, "content") ||
+		strings.Contains(toolName, "file")
+}
+
+func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed bool, theme style.UITheme) string {
+	lang := "plaintext"
+	if isJSON {
+		lang = "json"
+	} else {
+		if filePath := ExtractToolTarget(toolName, argsJSON); filePath != "" {
+			if ext := filepath.Ext(filePath); len(ext) > 1 {
+				lang = ext[1:]
+			}
+		}
+
+		if IsWriteLikeTool(toolName) && !bodyWasStreamed && argsJSON != "" {
+			var args struct {
+				Content            string `json:"content"`
+				WriteContent       string `json:"write_content"`
+				CodeContent        string `json:"CodeContent"`
+				ReplacementContent string `json:"ReplacementContent"`
+				Text               string `json:"text"`
+				Body               string `json:"body"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+				body = argsJSON
+				lang = "json"
+			} else {
+				body = domaintool.FirstNonEmpty(
+					args.CodeContent,
+					args.ReplacementContent,
+					args.Content,
+					args.WriteContent,
+					args.Text,
+					args.Body,
+				)
+			}
+		}
+	}
+
+	chromaStyle := theme.ChromaStyle
+	if chromaStyle == "" || chromaStyle == "bw" {
+		chromaStyle = "friendly"
+	}
+	var codeBuf bytes.Buffer
+	err := quick.Highlight(&codeBuf, body, lang, "terminal256", chromaStyle)
+	if err != nil {
+		codeBuf.Reset()
+		err = quick.Highlight(&codeBuf, body, lang, "terminal16", chromaStyle)
+	}
+	if err == nil && codeBuf.Len() > 0 {
+		return codeBuf.String()
+	}
+	return body
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
-	if !isError && IsWriteLikeTool(toolName) && bodyWasStreamed {
-		return
+	if !isError {
+		if (IsWriteLikeTool(toolName) || IsCommandLikeTool(toolName)) && bodyWasStreamed {
+			return
+		}
+		if IsWriteLikeTool(toolName) {
+			renderWriteSummary(w, theme, toolName, argsJSON, output)
+		}
+		if IsEditLikeTool(toolName) {
+			renderEditSummary(w, theme, toolName, argsJSON, output)
+		}
+		if toolName == "task_status" || toolName == "task_kill" {
+			renderTaskSummary(w, theme, toolName, argsJSON, output, collapse)
+			return
+		}
 	}
-	if !isError && IsWriteLikeTool(toolName) {
-		renderWriteSummary(w, theme, toolName, argsJSON, output)
-	}
-	if !isError && IsEditLikeTool(toolName) {
-		renderEditSummary(w, theme, toolName, argsJSON, output)
-	}
-	if !isError && IsCommandLikeTool(toolName) && bodyWasStreamed {
-		return
-	}
-	if !isError && (toolName == "task_status" || toolName == "task_kill") {
-		renderTaskSummary(w, theme, toolName, argsJSON, output, collapse)
-		return
-	}
+
 	status := ToolStatusSuccess
 	if isError {
 		status = ToolStatusError
 	}
 	finalDot := RenderToolSymbol(toolName, status, theme)
-	inlineSuccessfulOutput := !isError
 
-	borderColor := theme.Success
-	title := fmt.Sprintf("⎿  %s Output", finalDot)
 	if isError {
-		borderColor = theme.Error
-		title = fmt.Sprintf("⎿  %s Error", finalDot)
+		titleStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+		fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("⎿  %s Error", finalDot)))
 	}
-
-	titleStyle := style.NewStyle().
-		Foreground(borderColor).
-		Bold(true)
-
-	bodyStyle := style.NewStyle().
-		Foreground(theme.Text)
 
 	body := output
 	isJSON := false
@@ -93,100 +146,39 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 				}
 			}
 		}
-	}
-
-	isCodeTool := (toolName == "read" || toolName == "write" ||
-		strings.Contains(toolName, "read") ||
-		strings.Contains(toolName, "write") ||
-		strings.Contains(toolName, "view") ||
-		strings.Contains(toolName, "content") ||
-		strings.Contains(toolName, "file")) &&
-		!strings.Contains(toolName, "edit") &&
-		!strings.Contains(toolName, "replace")
-
-	if !isError && (isCodeTool || isJSON) && !strings.Contains(body, "\x1b[") {
-		lang := "plaintext"
-		if isJSON {
-			lang = "json"
-		} else {
-			filePath := ExtractToolTarget(toolName, argsJSON)
-			if filePath != "" {
-				ext := filepath.Ext(filePath)
-				if len(ext) > 1 {
-					lang = ext[1:]
-				}
-			}
-
-			if IsWriteLikeTool(toolName) && !bodyWasStreamed {
-				var args struct {
-					Content            string `json:"content"`
-					WriteContent       string `json:"write_content"`
-					CodeContent        string `json:"CodeContent"`
-					ReplacementContent string `json:"ReplacementContent"`
-					Text               string `json:"text"`
-					Body               string `json:"body"`
-				}
-				if argsJSON != "" {
-					err := json.Unmarshal([]byte(argsJSON), &args)
-					if err != nil {
-						body = argsJSON
-						lang = "json"
-					} else {
-						body = domaintool.FirstNonEmpty(
-							args.CodeContent,
-							args.ReplacementContent,
-							args.Content,
-							args.WriteContent,
-							args.Text,
-							args.Body,
-						)
-					}
-				}
-			}
+		if (isCodeContentTool(toolName) || isJSON) && !strings.Contains(body, "\x1b[") {
+			body = highlightToolBody(body, toolName, argsJSON, isJSON, bodyWasStreamed, theme)
 		}
-
-		chromaStyle := theme.ChromaStyle
-		if chromaStyle == "" || chromaStyle == "bw" {
-			chromaStyle = "friendly"
-		}
-		var codeBuf bytes.Buffer
-		err := quick.Highlight(&codeBuf, body, lang, "terminal256", chromaStyle)
-		if err != nil {
-			codeBuf.Reset()
-			err = quick.Highlight(&codeBuf, body, lang, "terminal16", chromaStyle)
-		}
-		if err == nil && codeBuf.Len() > 0 {
-			body = codeBuf.String()
-		}
-	}
-
-	if !inlineSuccessfulOutput {
-		fmt.Fprintln(w, titleStyle.Render(title))
 	}
 
 	body = strings.TrimRight(body, "\r\n")
 	lines := strings.Split(body, "\n")
-	printLine := func(line string) {
-		var renderedLine string
-		if strings.Contains(line, "\x1b[") {
-			renderedLine = line
-		} else {
-			renderedLine = bodyStyle.Render(line)
-		}
-		fmt.Fprintln(w, renderedLine)
-	}
 
 	if collapse && !isError && len(lines) > 0 {
-		collapsedCount := len(lines)
 		branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
-		collapsedMsg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, collapsedCount)
+		collapsedMsg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, len(lines))
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(collapsedMsg))
 	} else {
+		bodyStyle := style.NewStyle().Foreground(theme.Text)
 		for _, line := range lines {
-			printLine(line)
+			if strings.Contains(line, "\x1b[") {
+				fmt.Fprintln(w, line)
+			} else {
+				fmt.Fprintln(w, bodyStyle.Render(line))
+			}
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+func resolveAbsTargetPath(target string) string {
+	if target == "" || filepath.IsAbs(target) {
+		return target
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return filepath.Join(cwd, target)
+	}
+	return target
 }
 
 func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
@@ -200,12 +192,7 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 		return
 	}
 
-	absPath := target
-	if !filepath.IsAbs(absPath) {
-		if cwd, err := os.Getwd(); err == nil {
-			absPath = filepath.Join(cwd, target)
-		}
-	}
+	absPath := resolveAbsTargetPath(target)
 
 	var sizeBytes int64 = -1
 	var lineCount int = -1
@@ -270,8 +257,6 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 		if trimmed == "" || trimmed == "..." {
 			continue
 		}
-		// Check for ANSI color markers from GenerateDisplayDiff:
-		// \x1b[32m is green (diffInsert), \x1b[31m is red (diffDelete)
 		if strings.Contains(rawLine, "\x1b[32m") {
 			added++
 			continue
@@ -280,7 +265,6 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 			deleted++
 			continue
 		}
-		// Fallback for stripped or non-colored diffs:
 		fields := strings.Fields(trimmed)
 		if len(fields) >= 2 {
 			if fields[1] == "+" {
@@ -291,7 +275,6 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 				continue
 			}
 		}
-		// Fallback for standard unified diff format:
 		if strings.HasPrefix(trimmed, "+") && !strings.HasPrefix(trimmed, "+++") {
 			added++
 		} else if strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "---") {
@@ -315,13 +298,7 @@ func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 		return
 	}
 
-	absPath := target
-	if !filepath.IsAbs(absPath) {
-		if cwd, err := os.Getwd(); err == nil {
-			absPath = filepath.Join(cwd, target)
-		}
-	}
-
+	absPath := resolveAbsTargetPath(target)
 	added, deleted := CountDiffLines(output)
 	statsDesc := FormatDiffStats(added, deleted, theme)
 
@@ -364,13 +341,14 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 
 	statusStr := "running"
 	lower := strings.ToLower(output)
-	if strings.Contains(lower, "currently: completed") || strings.Contains(lower, "status: completed") || strings.Contains(lower, "status: done") {
+	switch {
+	case strings.Contains(lower, "currently: completed"), strings.Contains(lower, "status: completed"), strings.Contains(lower, "status: done"):
 		statusStr = "completed"
-	} else if strings.Contains(lower, "currently: killed") || strings.Contains(lower, "status: killed") {
+	case strings.Contains(lower, "currently: killed"), strings.Contains(lower, "status: killed"):
 		statusStr = "killed"
-	} else if strings.Contains(lower, "currently: failed") || strings.Contains(lower, "status: failed") {
+	case strings.Contains(lower, "currently: failed"), strings.Contains(lower, "status: failed"):
 		statusStr = "failed"
-	} else if strings.Contains(lower, "currently: running") || strings.Contains(lower, "status: running") {
+	case strings.Contains(lower, "currently: running"), strings.Contains(lower, "status: running"):
 		statusStr = "running"
 	}
 
@@ -429,4 +407,3 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	}
 	fmt.Fprintln(w)
 }
-

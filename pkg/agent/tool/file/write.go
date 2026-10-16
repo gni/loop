@@ -95,25 +95,12 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	useAtomic := true
-	if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
-		useAtomic = cp.IsAtomicWritesEnabled()
-	}
-	rawBytes := []byte(content)
-	if useAtomic {
-		err = AtomicWriteFile(safePath, rawBytes, 0644)
-	} else {
-		err = os.WriteFile(safePath, rawBytes, 0644)
-	}
-	if err != nil {
+	if err := CommitFileMutation(ctx, safePath, []byte(content), 0644); err != nil {
 		if hasSG && !hadSnapshot {
 			sg.DiscardSnapshot(safePath)
 		}
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
-	if fo, ok := ctx.(domaintool.FileObserver); ok {
-		fo.RecordMutation(safePath, rawBytes)
-	}
-	ctx.ReloadSkills()
+
 	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), targetPath), nil
 }

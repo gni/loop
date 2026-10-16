@@ -83,15 +83,24 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 			}
 			buf := []byte{b}
 			if b == 27 {
+				timeout := limits.EscapeDisambiguation()
+				timer := time.NewTimer(timeout)
+				defer timer.Stop()
 				for {
 					select {
 					case next, ok := <-sr.chanInput:
-						if ok {
-							buf = append(buf, next)
-						} else {
+						if !ok {
 							return buf, false, nil
 						}
-					case <-time.After(limits.EscapeDisambiguation()):
+						buf = append(buf, next)
+						if !timer.Stop() {
+							select {
+							case <-timer.C:
+							default:
+							}
+						}
+						timer.Reset(timeout)
+					case <-timer.C:
 						return buf, false, nil
 					}
 				}
@@ -99,11 +108,10 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 			for {
 				select {
 				case next, ok := <-sr.chanInput:
-					if ok {
-						buf = append(buf, next)
-					} else {
+					if !ok {
 						return buf, false, nil
 					}
+					buf = append(buf, next)
 				default:
 					return buf, false, nil
 				}
@@ -122,6 +130,24 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 	}
 }
 
+func consumeLineBytes(chunk []byte, line *strings.Builder, out io.Writer) (bool, error) {
+	for _, b := range chunk {
+		switch {
+		case b == '\r' || b == '\n':
+			fmt.Fprint(out, "\r\n")
+			return true, nil
+		case b == 127 || b == 8:
+			PopRuneFromBuilder(line, out)
+		case b == 3 || b == 4:
+			return false, fmt.Errorf("cancelled")
+		case b >= 32:
+			line.WriteByte(b)
+			_, _ = out.Write([]byte{b})
+		}
+	}
+	return false, nil
+}
+
 func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 	var line strings.Builder
 	for {
@@ -129,22 +155,12 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read error")
 		}
-		for _, b := range buf {
-			if b == '\r' || b == '\n' {
-				fmt.Fprint(rlOutput, "\r\n")
-				return line.String(), nil
-			}
-			if b == 127 || b == 8 {
-				PopRuneFromBuilder(&line, rlOutput)
-				continue
-			}
-			if b == 3 || b == 4 {
-				return "", fmt.Errorf("cancelled")
-			}
-			if b >= 32 {
-				line.WriteByte(b)
-				_, _ = rlOutput.Write([]byte{b})
-			}
+		done, lineErr := consumeLineBytes(buf, &line, rlOutput)
+		if lineErr != nil {
+			return "", lineErr
+		}
+		if done {
+			return line.String(), nil
 		}
 	}
 }
@@ -160,23 +176,12 @@ func ReadInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		for i := 0; i < n; i++ {
-			char := buf[i]
-			if char == 13 || char == 10 {
-				fmt.Fprint(rlOutput, "\r\n")
-				return sb.String(), nil
-			}
-			if char == 127 || char == 8 {
-				PopRuneFromBuilder(&sb, rlOutput)
-				continue
-			}
-			if char == 3 || char == 4 {
-				return "", fmt.Errorf("cancelled")
-			}
-			if char >= 32 {
-				sb.WriteByte(char)
-				_, _ = rlOutput.Write([]byte{char})
-			}
+		done, lineErr := consumeLineBytes(buf[:n], &sb, rlOutput)
+		if lineErr != nil {
+			return "", lineErr
+		}
+		if done {
+			return sb.String(), nil
 		}
 	}
 }

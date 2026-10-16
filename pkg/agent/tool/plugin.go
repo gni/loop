@@ -26,13 +26,11 @@ func (p *pluginTool) Definition() Tool {
 }
 
 func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error) {
-	// Securely verify path is absolute and within workspace or plugin directory
 	absPath, err := filepath.Abs(p.path)
 	if err != nil {
 		return "", fmt.Errorf("invalid plugin path: %w", err)
 	}
 
-	// Double check file existence and executable bits
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", fmt.Errorf("plugin file error: %w", err)
@@ -41,9 +39,6 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 		return "", fmt.Errorf("plugin path is a directory")
 	}
 
-	// 10-second execution timeout derived from the caller's context so cancellation
-	// from the supervisor reaches the plugin process. Guard the nil agent context the
-	// same way other call sites do.
 	parent := context.Background()
 	if ctx != nil && ctx.Context() != nil {
 		parent = ctx.Context()
@@ -69,18 +64,110 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 	return stdout.String(), nil
 }
 
-// RegisterPlugins scans the specified directory for executables and registers them.
-// It is the context-less form of RegisterPluginsContext; prefer the latter so the
-// supervisor's root cancellation reaches the --info probe.
+func dedupeExistingDirs(candidates []string) []string {
+	seen := make(map[string]bool, len(candidates))
+	var dirs []string
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		abs, err := filepath.Abs(c)
+		if err != nil || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		if fi, err := os.Stat(abs); err == nil && fi.IsDir() {
+			dirs = append(dirs, abs)
+		}
+	}
+	return dirs
+}
+
+func PluginSearchDirs(workspaceRoot string) []string {
+	var candidates []string
+	if workspaceRoot != "" {
+		candidates = append(candidates,
+			filepath.Join(workspaceRoot, "plugins"),
+			filepath.Join(workspaceRoot, "addons", "plugins"),
+			filepath.Join(workspaceRoot, "addons"),
+		)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".loop", "plugins"),
+			filepath.Join(home, ".loop", "addons", "plugins"),
+			filepath.Join(home, ".loop", "addons"),
+		)
+	}
+	if workspaceRoot != "/workspace" {
+		candidates = append(candidates,
+			"/workspace/plugins",
+			"/workspace/addons/plugins",
+			"/workspace/addons",
+		)
+	}
+	return dedupeExistingDirs(candidates)
+}
+
+func ExtensionSearchDirs(workspaceRoot string) []string {
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".loop", "extensions"),
+			filepath.Join(home, ".loop", "addons", "extensions"),
+			filepath.Join(home, ".loop", "addons"),
+		)
+	}
+	if workspaceRoot != "" {
+		candidates = append(candidates,
+			filepath.Join(workspaceRoot, "extensions"),
+			filepath.Join(workspaceRoot, "addons", "extensions"),
+			filepath.Join(workspaceRoot, "addons"),
+		)
+	}
+	if workspaceRoot != "/workspace" {
+		candidates = append(candidates,
+			"/workspace/extensions",
+			"/workspace/addons/extensions",
+			"/workspace/addons",
+		)
+	}
+	return dedupeExistingDirs(candidates)
+}
+
+func LocalAddonDirs(workspaceRoot string) []string {
+	if workspaceRoot == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(workspaceRoot, "plugins"),
+		filepath.Join(workspaceRoot, "extensions"),
+		filepath.Join(workspaceRoot, "addons"),
+		filepath.Join(workspaceRoot, "addons", "plugins"),
+		filepath.Join(workspaceRoot, "addons", "extensions"),
+	}
+}
+
+func HasPluginDescriptor(pluginPath string) (string, bool) {
+	jsonPath1 := pluginPath + ".json"
+	if _, err := os.Stat(jsonPath1); err == nil {
+		return jsonPath1, true
+	}
+	baseWithoutExt := strings.TrimSuffix(pluginPath, filepath.Ext(pluginPath))
+	jsonPath2 := baseWithoutExt + ".json"
+	if _, err := os.Stat(jsonPath2); err == nil {
+		return jsonPath2, true
+	}
+	return "", false
+}
+
 func RegisterPlugins(registry *ToolRegistry, dir string) error {
 	return RegisterPluginsContext(context.Background(), registry, dir)
 }
 
-// RegisterPluginsContext scans dir and registers plugins, deriving the --info probe
-// timeout from ctx instead of an orphaned context.Background().
 func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil // Plugins directory optional
+		return nil
 	}
 
 	absDir, err := filepath.Abs(dir)
@@ -93,81 +180,55 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 		return err
 	}
 
+	isDedicatedPluginDir := strings.EqualFold(filepath.Base(absDir), "plugins")
+
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || filepath.Ext(entry.Name()) == ".json" {
 			continue
 		}
 
 		pluginPath := filepath.Join(absDir, entry.Name())
-
-		// Verify file is executable (on Unix, check executable permission)
 		info, err := os.Stat(pluginPath)
-		if err != nil {
+		if err != nil || info.Mode()&0111 == 0 {
 			continue
 		}
-
-		// Simple executable check: check if it's executable by current user
-		if info.Mode()&0111 == 0 {
-			continue
-		}
-
-		// Skip .json files themselves
-		if filepath.Ext(pluginPath) == ".json" {
-			continue
-		}
-
-		// Look for matching json descriptor (e.g. plugin.sh.json or plugin.json)
-		baseWithoutExt := strings.TrimSuffix(pluginPath, filepath.Ext(pluginPath))
-		jsonPath1 := pluginPath + ".json"
-		jsonPath2 := baseWithoutExt + ".json"
 
 		var jsonBytes []byte
-		var errRead error
-
-		if _, err := os.Stat(jsonPath1); err == nil {
-			jsonBytes, errRead = os.ReadFile(jsonPath1)
-		} else if _, err := os.Stat(jsonPath2); err == nil {
-			jsonBytes, errRead = os.ReadFile(jsonPath2)
-		}
-
-		if errRead != nil || len(jsonBytes) == 0 {
-			// If no companion json file exists, probe the script with --info flag as documented
+		if descPath, ok := HasPluginDescriptor(pluginPath); ok {
+			jsonBytes, _ = os.ReadFile(descPath)
+		} else if isDedicatedPluginDir {
 			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 			cmd := exec.CommandContext(ctxTimeout, pluginPath, "--info")
 			out, err := cmd.Output()
 			cancel()
 			if err == nil && len(out) > 0 {
 				jsonBytes = out
-			} else {
-				// Skip plugins without a valid descriptor json file or working --info
-				continue
 			}
 		}
 
-		var functionDef FunctionDefinition
-		if err := json.Unmarshal(jsonBytes, &functionDef); err != nil {
-			// Skip if descriptor is not a valid JSON function definition
+		if len(jsonBytes) == 0 {
 			continue
 		}
 
-		// Enforce a naming prefix for security and clarity
+		var functionDef FunctionDefinition
+		if err := json.Unmarshal(jsonBytes, &functionDef); err != nil || functionDef.Name == "" {
+			continue
+		}
+
 		if !strings.HasPrefix(functionDef.Name, "plugin__") {
 			functionDef.Name = "plugin__" + functionDef.Name
 		}
 
-		// Enforce alphanumeric characters in the name to prevent any registry injection
 		if !IsSafeIdentifier(functionDef.Name) {
 			continue
 		}
 
-		toolDef := Tool{
-			Type:     "function",
-			Function: functionDef,
-		}
-
 		registry.Register(&pluginTool{
 			path: pluginPath,
-			def:  toolDef,
+			def: Tool{
+				Type:     "function",
+				Function: functionDef,
+			},
 		})
 	}
 

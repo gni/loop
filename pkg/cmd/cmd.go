@@ -21,8 +21,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "loop [prompt]",
-	Short: "loop is a minimalist, resilient AI coding agent CLI.",
-	Long:  `loop is a Unix-style agent harness and interactive REPL that supports persistent session tracking, tool execution sandboxes, and advanced terminal visual themes.`,
+	Short: "loop is a minimalist, resilient coding agent CLI.",
+	Long:  `loop is a Unix-style agent harness and interactive REPL that supports persistent session tracking, tool execution sandboxes, and terminal visual themes.`,
 	Args:  cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig(configPath)
@@ -35,8 +35,7 @@ var rootCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to load prompt catalog: %v\n", err)
 		}
 
-		sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
-		if err := db.InitDB(sessionsDir); err != nil {
+		if err := initSessionStore(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to initialize session storage: %v\n", err)
 		}
 
@@ -62,17 +61,14 @@ var rootCmd = &cobra.Command{
 
 		ensureWorkspaceTrust(cwd, cfg, isNonInteractive)
 
-		// Instantiate Agent context
 		a := agent.NewAgent(cfg, configPath, httpClient)
 		a.UI = ui.NewAgentUI(cfg, theme)
 
-		// Load reference skills
 		a.ActiveSkills, err = agent.LoadSkills(cfg.SkillsDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to load skills: %v\n", err)
 		}
 
-		// Start MCP servers
 		if len(cfg.MCPServers) > 0 {
 			_ = a.StartMCPServers(cfg.MCPServers)
 			defer a.StopMCPServers()
@@ -94,7 +90,7 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		if pipedData != "" || hasPromptArgs {
+		if isNonInteractive {
 			var promptBuilder strings.Builder
 			if pipedData != "" {
 				promptBuilder.WriteString("<stdin>\n")
@@ -105,26 +101,22 @@ var rootCmd = &cobra.Command{
 				promptBuilder.WriteString(strings.Join(args, " "))
 			}
 
-			prompt := promptBuilder.String()
 			var messages []db.Message
 			if sessionID != "" {
-				var err error
 				messages, err = db.LoadMessages(sessionID)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to load session %s: %v\n", sessionID, err)
 				}
 			}
+			currentSysPrompt := a.GetSystemPrompt()
 			if len(messages) == 0 {
 				messages = []db.Message{
-					{Role: "system", Content: a.GetSystemPrompt()},
+					{Role: "system", Content: currentSysPrompt},
 				}
-			} else if messages[0].Role == "system" {
-				currentSysPrompt := a.GetSystemPrompt()
-				if messages[0].Content != currentSysPrompt {
-					messages[0].Content = currentSysPrompt
-					if sessionID != "" {
-						_ = db.RewriteSession(sessionID, messages)
-					}
+			} else if messages[0].Role == "system" && messages[0].Content != currentSysPrompt {
+				messages[0].Content = currentSysPrompt
+				if sessionID != "" {
+					_ = db.RewriteSession(sessionID, messages)
 				}
 			}
 
@@ -132,18 +124,21 @@ var rootCmd = &cobra.Command{
 			if runCtx == nil {
 				runCtx = context.Background()
 			}
-			a.RunAgentLoop(runCtx, os.Stdout, &messages, prompt, allowedTools, theme, true, sessionID)
+			a.RunAgentLoop(runCtx, os.Stdout, &messages, promptBuilder.String(), allowedTools, theme, true, sessionID)
 			return
 		}
 
-		// Interactive REPL Mode
 		repl.RunREPL(a, allowedTools, theme, sessionID)
 	},
 }
 
-// ExecuteContext runs the root command bounded by the provided context.
 func ExecuteContext(ctx context.Context) error {
 	return rootCmd.ExecuteContext(ctx)
+}
+
+func initSessionStore() error {
+	sessionsDir := filepath.Join(filepath.Dir(configPath), "sessions")
+	return db.InitDB(sessionsDir)
 }
 
 func loadConfigOrPrintErr() *config.Config {
@@ -158,9 +153,14 @@ func loadConfigOrPrintErr() *config.Config {
 	return cfg
 }
 
-// applyPromptCatalog layers the user-editable prompt catalog file over the
-// embedded defaults so instructions, rules, and tool descriptions can be
-// adjusted without recompiling.
+func saveConfigOrPrintErr(cfg *config.Config) bool {
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		return false
+	}
+	return true
+}
+
 func applyPromptCatalog(cfg *config.Config) error {
 	path := cfg.PromptsFile
 	if path == "" {

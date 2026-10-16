@@ -65,22 +65,32 @@ func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
 	return n
 }
 
-func (ki *KeyInterceptorReader) Drain() {
-	for ki.InputChan != nil {
-		select {
-		case <-ki.InputChan:
-		default:
-			goto drainInject
-		}
+func drainByteChannel(ch <-chan byte) {
+	if ch == nil {
+		return
 	}
-drainInject:
-	for ki.InjectChan != nil {
+	for {
 		select {
-		case <-ki.InjectChan:
+		case <-ch:
 		default:
 			return
 		}
 	}
+}
+
+func (ki *KeyInterceptorReader) Drain() {
+	drainByteChannel(ki.InputChan)
+	drainByteChannel(ki.InjectChan)
+}
+
+func (ki *KeyInterceptorReader) resolveTargetWriter(fallback io.Writer) io.Writer {
+	if ki.W != nil {
+		return ki.W
+	}
+	if w, ok := ki.R.(io.Writer); ok {
+		return w
+	}
+	return fallback
 }
 
 func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
@@ -121,16 +131,8 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 	}
 
 	if ki.IsAtMainPrompt && ki.RL != nil {
-		targetWriter := ki.W
-		if targetWriter == nil {
-			if w, ok := ki.R.(io.Writer); ok {
-				targetWriter = w
-			} else {
-				targetWriter = os.Stderr
-			}
-		}
 		if ki.OnDrawStaticControls != nil {
-			ki.OnDrawStaticControls(targetWriter)
+			ki.OnDrawStaticControls(ki.resolveTargetWriter(os.Stderr))
 		}
 		return len(p), nil
 	}
@@ -139,17 +141,110 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 }
 
 func (ki *KeyInterceptorReader) writeToTerminal(p []byte) (int, error) {
-	if ki.W != nil {
-		return ki.W.Write(p)
-	}
-	if w, ok := ki.R.(io.Writer); ok {
-		return w.Write(p)
-	}
-	return os.Stdout.Write(p)
+	return ki.resolveTargetWriter(os.Stdout).Write(p)
 }
 
 func (ki *KeyInterceptorReader) GetInputChan() chan byte {
 	return ki.InputChan
+}
+
+func (ki *KeyInterceptorReader) readFromChannels(p []byte) (int, error) {
+	var b byte
+	select {
+	case injected, ok := <-ki.InjectChan:
+		if !ok {
+			return 0, io.EOF
+		}
+		b = injected
+	case input, ok := <-ki.InputChan:
+		if !ok {
+			return 0, io.EOF
+		}
+		b = input
+	}
+
+	if b != 4 && ki.OnClearPromptHint != nil {
+		ki.OnClearPromptHint()
+	}
+
+	p[0] = b
+	n := 1
+
+	for n < len(p) {
+		select {
+		case injected, ok := <-ki.InjectChan:
+			if !ok {
+				return n, nil
+			}
+			p[n] = injected
+			n++
+		default:
+			goto readInputChannel
+		}
+	}
+	return n, nil
+
+readInputChannel:
+	if n == 1 && n < len(p) {
+		timer := time.NewTimer(3 * time.Millisecond)
+		select {
+		case input, ok := <-ki.InputChan:
+			timer.Stop()
+			if !ok {
+				return n, nil
+			}
+			p[n] = input
+			n++
+		case <-timer.C:
+		}
+	}
+
+	var escTimer *time.Timer
+	defer func() {
+		if escTimer != nil {
+			escTimer.Stop()
+		}
+	}()
+
+	for n < len(p) {
+		if bytes.IndexByte(p[:n], 27) >= 0 {
+			timeout := limits.EscapeDisambiguation()
+			if escTimer == nil {
+				escTimer = time.NewTimer(timeout)
+			} else {
+				if !escTimer.Stop() {
+					select {
+					case <-escTimer.C:
+					default:
+					}
+				}
+				escTimer.Reset(timeout)
+			}
+			select {
+			case input, ok := <-ki.InputChan:
+				if !ok {
+					return n, nil
+				}
+				p[n] = input
+				n++
+			case <-escTimer.C:
+				return n, nil
+			}
+		} else {
+			select {
+			case input, ok := <-ki.InputChan:
+				if !ok {
+					return n, nil
+				}
+				p[n] = input
+				n++
+			default:
+				return n, nil
+			}
+		}
+	}
+
+	return n, nil
 }
 
 func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
@@ -160,88 +255,17 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 	}
 
 	var n int
+	var err error
 	if ki.InputChan == nil {
 		if ki.R == nil {
 			return 0, io.EOF
 		}
-		var err error
 		n, err = ki.R.Read(p)
-		if err != nil {
-			return n, err
-		}
 	} else {
-		var b byte
-		select {
-		case injected, ok := <-ki.InjectChan:
-			if !ok {
-				return 0, io.EOF
-			}
-			b = injected
-		case input, ok := <-ki.InputChan:
-			if !ok {
-				return 0, io.EOF
-			}
-			b = input
-		}
-
-		if b != 4 && ki.OnClearPromptHint != nil {
-			ki.OnClearPromptHint()
-		}
-
-		p[0] = b
-		n = 1
-
-		for n < len(p) {
-			select {
-			case injected, ok := <-ki.InjectChan:
-				if ok {
-					p[n] = injected
-					n++
-					continue
-				}
-			default:
-			}
-			break
-		}
-
-		if n == 1 {
-			select {
-			case input, ok := <-ki.InputChan:
-				if !ok {
-					goto done
-				}
-				p[n] = input
-				n++
-			case <-time.After(3 * time.Millisecond):
-			}
-		}
-
-		for n < len(p) {
-			if bytes.IndexByte(p[:n], 27) >= 0 {
-				select {
-				case input, ok := <-ki.InputChan:
-					if !ok {
-						goto done
-					}
-					p[n] = input
-					n++
-				case <-time.After(limits.EscapeDisambiguation()):
-					goto done
-				}
-			} else {
-				select {
-				case input, ok := <-ki.InputChan:
-					if !ok {
-						goto done
-					}
-					p[n] = input
-					n++
-				default:
-					goto done
-				}
-			}
-		}
-	done:
+		n, err = ki.readFromChannels(p)
+	}
+	if err != nil {
+		return n, err
 	}
 
 	n, _ = ki.handlePasteData(p, n)

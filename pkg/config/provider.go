@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -21,22 +22,25 @@ type ProvidersFile struct {
 	Providers      map[string]ProviderConfig `json:"providers"`
 }
 
-func (p ProviderConfig) ResolvedApiKey() string {
-	key := strings.TrimSpace(p.ApiKey)
-	if strings.HasPrefix(key, "$") {
-		return os.Getenv(strings.TrimPrefix(key, "$"))
+func parseEnvVarKey(key string) (string, bool) {
+	trimmed := strings.TrimSpace(key)
+	if strings.HasPrefix(trimmed, "$") {
+		return strings.TrimPrefix(trimmed, "$"), true
 	}
-	if strings.HasPrefix(key, "env:") {
-		return os.Getenv(strings.TrimPrefix(key, "env:"))
+	if strings.HasPrefix(trimmed, "env:") {
+		return strings.TrimPrefix(trimmed, "env:"), true
+	}
+	return "", false
+}
+
+func (p ProviderConfig) ResolvedApiKey() string {
+	if envVar, ok := parseEnvVarKey(p.ApiKey); ok {
+		return os.Getenv(envVar)
 	}
 	return p.ApiKey
 }
 
-// AuthStatus reports whether the provider has credentials available before
-// dispatch, validating provider authentication before resolving a model.
 func (p ProviderConfig) AuthStatus() error {
-	// A declared-but-unresolved credential is the failure mode; a provider with no
-	// api_key at all stays allowed (keyless local endpoints, existing behaviour).
 	raw := strings.TrimSpace(p.ApiKey)
 	if raw == "" {
 		return nil
@@ -47,18 +51,15 @@ func (p ProviderConfig) AuthStatus() error {
 	return nil
 }
 
-// ResolveModelAlias prefers an alias over a dated version of the same model
-// Exact aliases win; otherwise partial matches
-// are split into aliases and dated versions, aliases sorted descending and the
-// highest alias picked, falling back to the latest dated version.
 func (c *Config) ResolveModelAlias(pattern string) string {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" || c == nil || len(c.Providers) == 0 {
 		return pattern
 	}
 	var candidates []string
+	lowerPattern := strings.ToLower(pattern)
 	for _, p := range c.Providers {
-		if m := strings.TrimSpace(p.Model); m != "" && (m == pattern || strings.Contains(strings.ToLower(m), strings.ToLower(pattern))) {
+		if m := strings.TrimSpace(p.Model); m != "" && (m == pattern || strings.Contains(strings.ToLower(m), lowerPattern)) {
 			candidates = append(candidates, m)
 		}
 	}
@@ -74,7 +75,7 @@ func (c *Config) ResolveModelAlias(pattern string) string {
 		}
 	}
 	pick := func(list []string) string {
-		sortDesc(list)
+		sort.Slice(list, func(i, j int) bool { return list[i] > list[j] })
 		return list[0]
 	}
 	if len(aliases) > 0 {
@@ -86,7 +87,7 @@ func (c *Config) ResolveModelAlias(pattern string) string {
 func isModelAlias(model string) bool {
 	for _, seg := range strings.Split(model, "-") {
 		if len(seg) == 8 && allDigits(seg) {
-			return false // dated version suffix, e.g. claude-sonnet-4-5-20250929
+			return false
 		}
 	}
 	return true
@@ -99,16 +100,6 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
-}
-
-func sortDesc(list []string) {
-	for i := 1; i < len(list); i++ {
-		for j := 0; j < i; j++ {
-			if list[j] < list[i] {
-				list[j], list[i] = list[i], list[j]
-			}
-		}
-	}
 }
 
 func (c *Config) ActivateProvider(name string) error {
@@ -159,7 +150,8 @@ func (c *Config) UpdateActiveProvider() {
 		return
 	}
 	p.Endpoint = c.Endpoint
-	if p.ApiKey == "" || (!strings.HasPrefix(p.ApiKey, "$") && !strings.HasPrefix(p.ApiKey, "env:")) || p.ResolvedApiKey() != c.ApiKey {
+	_, isEnv := parseEnvVarKey(p.ApiKey)
+	if p.ApiKey == "" || !isEnv || p.ResolvedApiKey() != c.ApiKey {
 		p.ApiKey = c.ApiKey
 	}
 	p.Model = c.Model

@@ -18,6 +18,7 @@ type subagentExecutor = SubagentExecutor
 
 func (s *SubagentExecutor) Name() string          { return s.def.Function.Name }
 func (s *SubagentExecutor) Definition() tool.Tool { return s.def }
+
 func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	var raw string
 	var args struct {
@@ -57,10 +58,14 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	}:
 	}
 
-	timeout := 60 * time.Minute
+	const timeout = 60 * time.Minute
+	const maxResponseRunes = 10000
+
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
-	timeoutChan := time.After(timeout)
+
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
 
 	for {
 		select {
@@ -72,7 +77,7 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
 			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errSub)
 			return "", errSub
-		case <-timeoutChan:
+		case <-timeoutTimer.C:
 			s.subagent.CancelActiveTurn()
 			errTimeout := fmt.Errorf("subagent '%s' execution timed out after %v", s.subagent.Name, timeout)
 			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errTimeout)
@@ -82,13 +87,14 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			if err != nil {
 				return "", err
 			}
-			if task.Status == "completed" {
-				if runeCount := len([]rune(task.Response)); runeCount > 10000 {
-					return string([]rune(task.Response)[:10000]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at 10000 characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", runeCount), nil
+			switch task.Status {
+			case "completed":
+				runes := []rune(task.Response)
+				if len(runes) > maxResponseRunes {
+					return string(runes[:maxResponseRunes]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at %d characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", len(runes), maxResponseRunes), nil
 				}
 				return task.Response, nil
-			}
-			if task.Status == "failed" {
+			case "failed":
 				return "", fmt.Errorf("subagent execution failed: %s", task.Error)
 			}
 		}
@@ -114,10 +120,6 @@ func parseSubagentName(arguments string) (string, error) {
 	return name, nil
 }
 
-type RemoveSubagentTool struct {
-	mam *MultiAgentManager
-}
-
 func singleNameToolDefinition(name, description, paramDesc string) tool.Tool {
 	return tool.NewFunctionTool(
 		name,
@@ -127,6 +129,10 @@ func singleNameToolDefinition(name, description, paramDesc string) tool.Tool {
 		},
 		"name",
 	)
+}
+
+type RemoveSubagentTool struct {
+	mam *MultiAgentManager
 }
 
 func (s *RemoveSubagentTool) Name() string { return "remove_subagent" }
@@ -173,29 +179,26 @@ func (s *ListSubagentsTool) Execute(ctx tool.AgentContext, arguments string) (st
 	if len(agents) == 0 {
 		return "No subagents currently active.", nil
 	}
+
 	var sb strings.Builder
 	sb.WriteString("Active Subagents:\n")
 	for _, name := range agents {
-		parent := s.mam.GetParentName(name)
+		parentStr := tool.FirstNonEmpty(s.mam.GetParentName(name), "Base Agent")
 		skills, _ := s.mam.ListAgentSkills(name)
-		skillNames := make([]string, 0, len(skills))
-		for _, sk := range skills {
-			skillNames = append(skillNames, sk.Name)
-		}
 		skillStr := "None"
-		if len(skillNames) > 0 {
+		if len(skills) > 0 {
+			skillNames := make([]string, len(skills))
+			for i, sk := range skills {
+				skillNames[i] = sk.Name
+			}
 			skillStr = strings.Join(skillNames, ", ")
 		}
-		parentStr := "Base Agent"
-		if parent != "" {
-			parentStr = parent
-		}
+
 		sb.WriteString(fmt.Sprintf("- %s (Parent: %s) [Skills: %s]\n", name, parentStr, skillStr))
-		sysPrompt := s.mam.GetAgentSystemPrompt(name)
+		sysPrompt := strings.ReplaceAll(s.mam.GetAgentSystemPrompt(name), "\n", " ")
 		if len(sysPrompt) > 100 {
 			sysPrompt = sysPrompt[:97] + "..."
 		}
-		sysPrompt = strings.ReplaceAll(sysPrompt, "\n", " ")
 		sb.WriteString(fmt.Sprintf("  Goal: %s\n", sysPrompt))
 	}
 	return sb.String(), nil

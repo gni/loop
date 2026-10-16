@@ -28,6 +28,23 @@ func (ma *MultiAgent) streamBufferBytes() []byte {
 	return ma.StreamBuffer.Bytes()
 }
 
+func (ma *MultiAgent) resolveWriter(fallback io.Writer) io.Writer {
+	if ma != nil && ma.BaseAgent != nil {
+		if w := ma.BaseAgent.CurrentWriter(); w != nil {
+			return w
+		}
+	}
+	return fallback
+}
+
+func (ma *MultiAgent) setActiveTurn(ctx context.Context, cancel context.CancelFunc, started time.Time) {
+	ma.HistoryMu.Lock()
+	ma.ActiveContext = ctx
+	ma.ActiveCancel = cancel
+	ma.ActiveStarted = started
+	ma.HistoryMu.Unlock()
+}
+
 type streamBufferWriter struct{ ma *MultiAgent }
 
 func (s *streamBufferWriter) Write(p []byte) (int, error) {
@@ -66,10 +83,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					continue
 				}
 
-				writer := w
-				if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
-					writer = ma.BaseAgent.CurrentWriter()
-				}
+				writer := ma.resolveWriter(w)
 				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
 					style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
 					msg.Name,
@@ -77,20 +91,12 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				)
 
 				turnCtx, turnCancel := context.WithCancel(ma.Context)
-				ma.HistoryMu.Lock()
-				ma.ActiveContext = turnCtx
-				ma.ActiveCancel = turnCancel
-				ma.ActiveStarted = time.Now()
-				ma.HistoryMu.Unlock()
+				ma.setActiveTurn(turnCtx, turnCancel, time.Now())
 
 				response, err := ma.executeLoop(turnCtx, writer, theme)
 
 				turnCancel()
-				ma.HistoryMu.Lock()
-				ma.ActiveContext = nil
-				ma.ActiveCancel = nil
-				ma.ActiveStarted = time.Time{}
-				ma.HistoryMu.Unlock()
+				ma.setActiveTurn(nil, nil, time.Time{})
 
 				if err != nil {
 					if ma.Manager != nil {
@@ -140,10 +146,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 }
 
 func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (db.Message, error) {
-	writer := w
-	if ma.BaseAgent != nil && ma.BaseAgent.CurrentWriter() != nil {
-		writer = ma.BaseAgent.CurrentWriter()
-	}
+	writer := ma.resolveWriter(w)
 	rawW := agent.UnwrapWriter(writer)
 
 	maxSteps := 30
@@ -186,11 +189,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		ma.compressIfNeeded(ctx, writer, theme)
 
-		ma.HistoryMu.RLock()
-		historyCopy := make([]db.Message, len(ma.History))
-		copy(historyCopy, ma.History)
-		ma.HistoryMu.RUnlock()
-
+		historyCopy := sink.Messages()
 		allowlist := ma.GetToolAllowlist()
 		if ma.BaseAgent != nil {
 			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
@@ -349,15 +348,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			assistantMsg.ReasoningContent = agent.StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
 		}
 
-		ma.HistoryMu.Lock()
-		ma.History = append(ma.History, *assistantMsg)
-		ma.HistoryMu.Unlock()
+		sink.Append(*assistantMsg)
 
 		if ma.BaseAgent != nil {
 			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, ma.BaseAgent.LastGenerationDuration())
-		}
-		if ma.Manager != nil {
-			_ = ma.Manager.SaveAgentState(ma, "running")
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {

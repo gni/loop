@@ -16,10 +16,11 @@ func GetTerminalSize() (int, int) {
 }
 
 func UpdatePlanStatus(completed, total int) {
-	getUI().StateMu.Lock()
-	getUI().State.PlanCompleted = completed
-	getUI().State.PlanTotal = total
-	getUI().StateMu.Unlock()
+	ui := getUI()
+	ui.StateMu.Lock()
+	ui.State.PlanCompleted = completed
+	ui.State.PlanTotal = total
+	ui.StateMu.Unlock()
 }
 
 func UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool, tokenEstimate ...bool) {

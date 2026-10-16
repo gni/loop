@@ -167,6 +167,65 @@ func DefaultConfig() *Config {
 	}
 }
 
+func (cfg *Config) applyDefaults() {
+	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
+		cfg.SystemInstruction = DefaultSystemInstruction
+	}
+	if cfg.ApiKey == "" {
+		cfg.ApiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = resolveDefaultSkillsDir()
+	}
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = make(map[string]MCPServerConfig)
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
+	}
+	if cfg.MaxReasoningSteps == 0 {
+		cfg.MaxReasoningSteps = 30
+	}
+	if cfg.ContextWindowLimit == 0 {
+		cfg.ContextWindowLimit = 128000
+	}
+	if cfg.MinContextWindow <= 0 {
+		cfg.MinContextWindow = 32768
+	}
+	if cfg.CompressionThreshold == 0.0 {
+		cfg.CompressionThreshold = 0.95
+	}
+	if cfg.MaxPasteLines <= 0 {
+		cfg.MaxPasteLines = 80
+	}
+	if cfg.RecapInterval == 0 {
+		cfg.RecapInterval = 5
+	}
+	if cfg.MaxPasteChars <= 0 {
+		cfg.MaxPasteChars = 8000
+	}
+	if cfg.ReasoningEffort == "" {
+		cfg.ReasoningEffort = "low"
+	}
+	if cfg.SyntaxTheme == "" {
+		cfg.SyntaxTheme = "auto"
+	}
+	if cfg.MaxCompletionTokens == 0 {
+		cfg.MaxCompletionTokens = 16384
+	}
+	cfg.Limits = limits.Resolve(cfg.Limits)
+	limits.Set(cfg.Limits)
+}
+
+func populateProviderNames(providers map[string]ProviderConfig) {
+	for name, p := range providers {
+		if p.Name == "" {
+			p.Name = name
+			providers[name] = p
+		}
+	}
+}
+
 func LoadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		conf := DefaultConfig()
@@ -193,12 +252,8 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
-		if conf.Providers == nil {
-			conf.Providers = make(map[string]ProviderConfig)
-		}
+		conf.applyDefaults()
 		conf.SyncActiveProvider()
-		conf.Limits = limits.Resolve(conf.Limits)
-		limits.Set(conf.Limits)
 		_ = SaveConfig(path, conf)
 		return conf, nil
 	}
@@ -212,46 +267,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
-
-	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
-		cfg.SystemInstruction = DefaultSystemInstruction
-	}
-	if cfg.ApiKey == "" {
-		cfg.ApiKey = os.Getenv("OPENAI_API_KEY")
-	}
-	if cfg.SkillsDir == "" {
-		cfg.SkillsDir = resolveDefaultSkillsDir()
-	}
-	if cfg.MCPServers == nil {
-		cfg.MCPServers = make(map[string]MCPServerConfig)
-	}
-	if cfg.Providers == nil {
-		cfg.Providers = make(map[string]ProviderConfig)
-	}
-	if cfg.MaxReasoningSteps == 0 {
-		cfg.MaxReasoningSteps = 30
-	}
-	if cfg.ContextWindowLimit == 0 {
-		cfg.ContextWindowLimit = 128000
-	}
-	if cfg.MinContextWindow <= 0 {
-		cfg.MinContextWindow = 32768
-	}
-	cfg.Limits = limits.Resolve(cfg.Limits)
-	limits.Set(cfg.Limits)
-
-	if cfg.CompressionThreshold == 0.0 {
-		cfg.CompressionThreshold = 0.95
-	}
-	if cfg.MaxPasteLines <= 0 {
-		cfg.MaxPasteLines = 80
-	}
-	if cfg.RecapInterval == 0 {
-		cfg.RecapInterval = 5
-	}
-	if cfg.MaxPasteChars <= 0 {
-		cfg.MaxPasteChars = 8000
-	}
+	cfg.applyDefaults()
 
 	dir := filepath.Dir(path)
 	mcpPath := filepath.Join(dir, "mcp.json")
@@ -275,22 +291,12 @@ func LoadConfig(path string) (*Config, error) {
 			if active != "" {
 				cfg.ActiveProvider = active
 			}
-			for name, p := range provFile.Providers {
-				if p.Name == "" {
-					p.Name = name
-					provFile.Providers[name] = p
-				}
-			}
+			populateProviderNames(provFile.Providers)
 			cfg.Providers = provFile.Providers
 		} else {
 			var provMap map[string]ProviderConfig
 			if err := json.Unmarshal(provData, &provMap); err == nil && provMap != nil {
-				for name, p := range provMap {
-					if p.Name == "" {
-						p.Name = name
-						provMap[name] = p
-					}
-				}
+				populateProviderNames(provMap)
 				cfg.Providers = provMap
 			}
 		}
@@ -312,20 +318,11 @@ func LoadConfig(path string) (*Config, error) {
 		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
 	}
 
-	if cfg.ReasoningEffort == "" {
-		cfg.ReasoningEffort = "low"
-	}
 	cfg.SyncActiveProvider()
 	if envTimeout := os.Getenv("LOOP_TIMEOUT"); envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
 			cfg.Timeout = t
 		}
-	}
-	if cfg.SyntaxTheme == "" {
-		cfg.SyntaxTheme = "auto"
-	}
-	if cfg.MaxCompletionTokens == 0 {
-		cfg.MaxCompletionTokens = 16384
 	}
 
 	return cfg, nil
@@ -412,6 +409,29 @@ func GetTLSConfig(cfg *Config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func stringMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConfig {
 	if servers == nil {
 		return nil
@@ -422,18 +442,8 @@ func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConf
 		if cfg.Args != nil {
 			copied.Args = append([]string(nil), cfg.Args...)
 		}
-		if cfg.Env != nil {
-			copied.Env = make(map[string]string, len(cfg.Env))
-			for k, v := range cfg.Env {
-				copied.Env[k] = v
-			}
-		}
-		if cfg.Headers != nil {
-			copied.Headers = make(map[string]string, len(cfg.Headers))
-			for k, v := range cfg.Headers {
-				copied.Headers[k] = v
-			}
-		}
+		copied.Env = cloneStringMap(cfg.Env)
+		copied.Headers = cloneStringMap(cfg.Headers)
 		out[name] = copied
 	}
 	return out
@@ -451,21 +461,11 @@ func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
 		if cfgA.Type != cfgB.Type || cfgA.Command != cfgB.Command || cfgA.URL != cfgB.URL || cfgA.Disabled != cfgB.Disabled || cfgA.AlwaysLoad != cfgB.AlwaysLoad {
 			return false
 		}
-		if len(cfgA.Args) != len(cfgB.Args) || len(cfgA.Env) != len(cfgB.Env) || len(cfgA.Headers) != len(cfgB.Headers) {
+		if len(cfgA.Args) != len(cfgB.Args) || !stringMapsEqual(cfgA.Env, cfgB.Env) || !stringMapsEqual(cfgA.Headers, cfgB.Headers) {
 			return false
 		}
 		for i := range cfgA.Args {
 			if cfgA.Args[i] != cfgB.Args[i] {
-				return false
-			}
-		}
-		for k, v := range cfgA.Env {
-			if cfgB.Env[k] != v {
-				return false
-			}
-		}
-		for k, v := range cfgA.Headers {
-			if cfgB.Headers[k] != v {
 				return false
 			}
 		}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,11 +21,10 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(s.sessionPath(sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete session file: %w", err)
 	}
-	latestPath := filepath.Join(s.dir, ".latest_session")
+	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == sessionID {
 		_ = os.Remove(latestPath)
 	}
@@ -50,18 +48,16 @@ func (s *JSONLStore) ClearHistory() error {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			name := strings.TrimSuffix(entry.Name(), ".jsonl")
-			if session.ValidateID(name) != nil {
-				continue
-			}
-			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil {
-				return fmt.Errorf("failed to remove session file %s: %w", entry.Name(), err)
-			}
+		sessionID, ok := validSessionEntry(entry)
+		if !ok {
+			continue
+		}
+		if err := os.Remove(s.sessionPath(sessionID)); err != nil {
+			return fmt.Errorf("failed to remove session file %s: %w", entry.Name(), err)
 		}
 	}
 
-	_ = os.Remove(filepath.Join(s.dir, ".latest_session"))
+	_ = os.Remove(s.latestSessionPath())
 	return nil
 }
 
@@ -81,8 +77,8 @@ func (s *JSONLStore) setLatestSessionIDUnlocked(sessionID string) error {
 	}
 
 	now := time.Now()
-	_ = os.Chtimes(filepath.Join(s.dir, sessionID+".jsonl"), now, now)
-	return os.WriteFile(filepath.Join(s.dir, ".latest_session"), []byte(sessionID), 0644)
+	_ = os.Chtimes(s.sessionPath(sessionID), now, now)
+	return os.WriteFile(s.latestSessionPath(), []byte(sessionID), 0644)
 }
 
 func (s *JSONLStore) GetLatestSessionID() (string, error) {
@@ -93,11 +89,10 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	latestPath := filepath.Join(s.dir, ".latest_session")
-	if data, err := os.ReadFile(latestPath); err == nil {
+	if data, err := os.ReadFile(s.latestSessionPath()); err == nil {
 		id := strings.TrimSpace(string(data))
 		if id != "" && session.ValidateID(id) == nil {
-			if fi, err := os.Stat(filepath.Join(s.dir, id+".jsonl")); err == nil && !fi.IsDir() {
+			if fi, err := os.Stat(s.sessionPath(id)); err == nil && !fi.IsDir() {
 				return id, nil
 			}
 		}
@@ -115,15 +110,13 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 	var latestTime time.Time
 
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			name := strings.TrimSuffix(entry.Name(), ".jsonl")
-			if session.ValidateID(name) != nil {
-				continue
-			}
-			if info, err := entry.Info(); err == nil && info.ModTime().After(latestTime) {
-				latestTime = info.ModTime()
-				latestFile = name
-			}
+		name, ok := validSessionEntry(entry)
+		if !ok {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latestFile = name
 		}
 	}
 
@@ -153,16 +146,12 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 	var sessions []session.SessionInfo
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		sessionID, ok := validSessionEntry(entry)
+		if !ok {
 			continue
 		}
 
-		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
-		if session.ValidateID(sessionID) != nil {
-			continue
-		}
-
-		f, err := os.Open(filepath.Join(s.dir, entry.Name()))
+		f, err := os.Open(s.sessionPath(sessionID))
 		if err != nil {
 			continue
 		}
@@ -246,8 +235,8 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	oldPath := filepath.Join(s.dir, oldID+".jsonl")
-	newPath := filepath.Join(s.dir, newID+".jsonl")
+	oldPath := s.sessionPath(oldID)
+	newPath := s.sessionPath(newID)
 
 	if _, err := os.Stat(oldPath); err != nil {
 		return fmt.Errorf("source session does not exist: %w", err)
@@ -259,7 +248,7 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
 
-	latestPath := filepath.Join(s.dir, ".latest_session")
+	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == oldID {
 		_ = os.WriteFile(latestPath, []byte(newID), 0644)
 	}
@@ -296,7 +285,7 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	filePath := filepath.Join(s.dir, sessionID+".jsonl")
+	filePath := s.sessionPath(sessionID)
 	entries, err := readEntries(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read session file: %w", err)
@@ -317,7 +306,7 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 		ID:        session.NewUUID(),
 		ParentID:  path[len(path)-1].ID,
 		Type:      "branch",
-		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Timestamp: nowTimestamp(),
 	}
 	if marker.ParentID == "" {
 		for _, e := range entries {
@@ -326,11 +315,7 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 			}
 		}
 	}
-	jsonData, err := json.Marshal(marker)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(jsonData, '\n')); err != nil {
+	if err := writeJSONLine(f, marker); err != nil {
 		return fmt.Errorf("failed to write branch marker: %w", err)
 	}
 	return s.setLatestSessionIDUnlocked(sessionID)
@@ -344,7 +329,7 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := readEntries(filepath.Join(s.dir, parentSessionID+".jsonl"))
+	entries, err := readEntries(s.sessionPath(parentSessionID))
 	if err != nil {
 		return "", fmt.Errorf("failed to read parent session file: %w", err)
 	}
@@ -354,7 +339,7 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 	}
 
 	newID := session.NewUUID()
-	f, err := os.OpenFile(filepath.Join(s.dir, newID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(s.sessionPath(newID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return "", fmt.Errorf("failed to create forked session file: %w", err)
 	}
@@ -364,14 +349,10 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 		Type:          "session",
 		Version:       session.CurrentSessionVersion,
 		ID:            newID,
-		Timestamp:     time.Now().Format("2006-01-02 15:04:05"),
+		Timestamp:     nowTimestamp(),
 		ParentSession: parentSessionID,
 	}
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.Write(append(headerJSON, '\n')); err != nil {
+	if err := writeJSONLine(f, header); err != nil {
 		return "", fmt.Errorf("failed to write session header: %w", err)
 	}
 
@@ -380,11 +361,7 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 		e.ID = session.NewUUID()
 		e.ParentID = prev
 		e.Type = "message"
-		jsonData, err := json.Marshal(e)
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.Write(append(jsonData, '\n')); err != nil {
+		if err := writeJSONLine(f, e); err != nil {
 			return "", fmt.Errorf("failed to write forked entry: %w", err)
 		}
 		prev = e.ID
@@ -437,5 +414,5 @@ func entryModTimeOrNow(entry os.DirEntry) string {
 	if info, err := entry.Info(); err == nil {
 		return info.ModTime().Format("2006-01-02 15:04:05")
 	}
-	return time.Now().Format("2006-01-02 15:04:05")
+	return nowTimestamp()
 }

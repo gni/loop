@@ -12,23 +12,7 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
-	messages []db.Message,
-	tools []tool.Tool,
-) (ChatCompletionRequest, []db.Message, []byte, error) {
-	effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
-	enableThinking := effort != "off" && effort != "none" && effort != ""
-	budget := -1
-	if enableThinking {
-		budget = limits.ReasoningBudget(effort)
-	}
-
-	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
-	inputMsgs := messages
-	if autoAdapt {
-		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
-	}
-
+func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
 	totalChars := 0
 
@@ -36,9 +20,12 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		if strings.HasPrefix(msg.Content, "[user manually executed slash command:") {
 			continue
 		}
-		if msg.Role != "system" && msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
+		switch msg.Role {
+		case "system", "user", "assistant", "tool":
+		default:
 			continue
 		}
+
 		if msg.Role == "assistant" {
 			msg.Content = StripFallbackToolMarkup(msg.Content)
 			if len(msg.ToolCalls) > 0 {
@@ -69,30 +56,19 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 			if validMessages[lastIdx].Content == msg.Content {
 				continue
 			}
-			totalChars -= len(validMessages[lastIdx].Content)
 			validMessages[lastIdx].Content += "\n\n" + msg.Content
-			totalChars += len(validMessages[lastIdx].Content)
+			totalChars += 2 + len(msg.Content)
 			continue
 		}
+
 		validMessages = append(validMessages, msg)
 		totalChars += len(msg.Content)
 	}
 
-	pTokensEst := EstimateMessagesTokens(validMessages)
-	serverLimit := p.GetDetectedContextLimit()
-	cfgLimit := 128000
-	minWindow := 32768
-	if p.Config != nil {
-		if p.Config.ContextWindowLimit > 0 {
-			cfgLimit = p.Config.ContextWindowLimit
-		}
-		if p.Config.MinContextWindow > 0 {
-			minWindow = p.Config.MinContextWindow
-		}
-	}
-	effectiveLimit := GetAdaptiveContextLimit(pTokensEst, serverLimit, cfgLimit, minWindow, autoAdapt)
-	limitChars := effectiveLimit * 4
+	return validMessages, totalChars
+}
 
+func trimMessagesToCharBudget(validMessages []db.Message, totalChars, limitChars int) []db.Message {
 	startIndex := 0
 	for startIndex < len(validMessages) && validMessages[startIndex].Role == "system" {
 		startIndex++
@@ -112,15 +88,54 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		startIndex = dropEnd
 	}
 
-	var apiMessages []db.Message
-	if startIndex > prefixCount {
-		apiMessages = append(apiMessages, validMessages[:prefixCount]...)
-		if startIndex < len(validMessages) {
-			apiMessages = append(apiMessages, validMessages[startIndex:]...)
-		}
-	} else {
-		apiMessages = validMessages
+	if startIndex <= prefixCount {
+		return validMessages
 	}
+
+	apiMessages := make([]db.Message, 0, prefixCount+len(validMessages)-startIndex)
+	apiMessages = append(apiMessages, validMessages[:prefixCount]...)
+	if startIndex < len(validMessages) {
+		apiMessages = append(apiMessages, validMessages[startIndex:]...)
+	}
+	return apiMessages
+}
+
+func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
+	messages []db.Message,
+	tools []tool.Tool,
+) (ChatCompletionRequest, []db.Message, []byte, error) {
+	effort := ""
+	if p.Config != nil {
+		effort = strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
+	}
+	enableThinking := effort != "off" && effort != "none" && effort != ""
+	budget := -1
+	if enableThinking {
+		budget = limits.ReasoningBudget(effort)
+	}
+
+	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
+	inputMsgs := messages
+	if autoAdapt {
+		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
+	}
+
+	validMessages, totalChars := sanitizeRequestMessages(inputMsgs)
+
+	pTokensEst := EstimateMessagesTokens(validMessages)
+	serverLimit := p.GetDetectedContextLimit()
+	cfgLimit := 128000
+	minWindow := 32768
+	if p.Config != nil {
+		if p.Config.ContextWindowLimit > 0 {
+			cfgLimit = p.Config.ContextWindowLimit
+		}
+		if p.Config.MinContextWindow > 0 {
+			minWindow = p.Config.MinContextWindow
+		}
+	}
+	effectiveLimit := GetAdaptiveContextLimit(pTokensEst, serverLimit, cfgLimit, minWindow, autoAdapt)
+	apiMessages := trimMessagesToCharBudget(validMessages, totalChars, effectiveLimit*4)
 
 	cleanMessages := make([]db.Message, 0, len(apiMessages))
 	for _, m := range apiMessages {
@@ -129,7 +144,6 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		msgCopy.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, 30000, "\n... (output truncated to 30000 chars for context optimization)")
 		cleanMessages = append(cleanMessages, msgCopy)
 	}
-
 	cleanMessages = EnforceToolPairingInvariance(cleanMessages)
 
 	finalTools := prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
@@ -162,11 +176,18 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		budget = maxCompTokens
 	}
 
+	var model string
+	var temperature float64
+	if p.Config != nil {
+		model = p.Config.Model
+		temperature = p.Config.Temperature
+	}
+
 	reqBody := ChatCompletionRequest{
-		Model:               p.Config.Model,
+		Model:               model,
 		Messages:            cleanMessages,
 		Tools:               finalTools,
-		Temperature:         p.Config.Temperature,
+		Temperature:         temperature,
 		Stream:              true,
 		StreamOptions:       &StreamOptions{IncludeUsage: true},
 		ReasoningEffort:     reasoningEffort,

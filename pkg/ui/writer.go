@@ -15,7 +15,7 @@ import (
 // that all streamed output is confined to the terminal's scrolling region
 // (rows 1 through height-5). After every write, the cursor is repositioned
 // back to the prompt input line (height-2, column 3) so it blinks stably
-// at the "> " prompt — even while tokens are streaming above it.
+// at the "> " prompt, even while tokens are streaming above it.
 //
 // The bottom 5 lines of the terminal are reserved:
 //   - height-4: stats line content
@@ -62,9 +62,9 @@ func NewPromptPreservingWriter(w io.Writer, height int) *PromptPreservingWriter 
 		inner:                 w,
 		height:                height,
 		printCol:              1,
-		promptCol:             3, // default to 3 (after "> ")
+		promptCol:             3,
 		ansiState:             0,
-		cursorHidden:          false, // Default to false to keep cursor visible at prompt line
+		cursorHidden:          false,
 		cursorAtPrompt:        true,
 		needsReposition:       true,
 		restoreCursorToPrompt: true,
@@ -77,30 +77,30 @@ func (p *PromptPreservingWriter) getPromptRow() int {
 	return p.getOffsetRow(2)
 }
 
-func (p *PromptPreservingWriter) SetCursorHidden(hidden bool) {
-	TerminalMu.Lock()
-	p.cursorHidden = hidden
-	if hidden {
-		fmt.Fprintf(p.inner, "\x1b[?25l")
-	} else {
-		fmt.Fprintf(p.inner, "\x1b[%d;%dH\x1b[?25h", p.getPromptRow(), p.promptCol)
-		p.cursorAtPrompt = true
-		if p.autoWrapPending {
-			p.autoWrapDetached = true
-		}
-	}
-	TerminalMu.Unlock()
-}
-
-func (p *PromptPreservingWriter) SetRestoreCursorToPrompt(restore bool) {
-	TerminalMu.Lock()
-	p.restoreCursorToPrompt = restore
-	fmt.Fprintf(p.inner, "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
+func (p *PromptPreservingWriter) moveCursorToPromptLocked(suffix string) {
+	fmt.Fprintf(p.inner, "\x1b[%d;%dH%s", p.getPromptRow(), p.promptCol, suffix)
 	p.cursorAtPrompt = true
 	if p.autoWrapPending {
 		p.autoWrapDetached = true
 	}
-	TerminalMu.Unlock()
+}
+
+func (p *PromptPreservingWriter) SetCursorHidden(hidden bool) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.cursorHidden = hidden
+	if hidden {
+		fmt.Fprint(p.inner, "\x1b[?25l")
+	} else {
+		p.moveCursorToPromptLocked("\x1b[?25h")
+	}
+}
+
+func (p *PromptPreservingWriter) SetRestoreCursorToPrompt(restore bool) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.restoreCursorToPrompt = restore
+	p.moveCursorToPromptLocked("")
 }
 
 func (p *PromptPreservingWriter) SetPromptCol(col int) {
@@ -152,22 +152,12 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
-	// Update height dynamically to handle terminal resizes robustly
-	if h := getRealTerminalHeight(); h > 0 {
-		if h != p.height {
-			diff := h - p.height
-			p.height = h
-			p.printLine += diff
-			scrollBottom := p.getScrollBottom()
-			if p.printLine > scrollBottom {
-				p.printLine = scrollBottom
-			}
-			if p.printLine < 1 {
-				p.printLine = 1
-			}
-			if diff != 0 {
-				p.needsReposition = true
-			}
+	if h := getRealTerminalHeight(); h > 0 && h != p.height {
+		diff := h - p.height
+		p.height = h
+		p.AdjustPrintLineLocked(diff)
+		if diff != 0 {
+			p.needsReposition = true
 		}
 	}
 
@@ -193,10 +183,6 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 		}
 	}
 
-	// A VT terminal keeps the cursor on the last column with an internal
-	// auto-wrap-pending flag. Moving the cursor to the prompt cancels that
-	// terminal flag. Materialize the delayed wrap before the next printable
-	// chunk so it cannot overwrite column one of the completed row.
 	if p.autoWrapPending && p.autoWrapDetached && firstTerminalActionIsGraphic(data, p.ansiState) {
 		buf.WriteString("\r\n")
 		p.advancePrintLine()
@@ -205,14 +191,9 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 		p.autoWrapDetached = false
 	}
 
-	// Write the actual content. The terminal's scrolling region (set to 1..height-5)
-	// ensures that newlines here only scroll within that region.
 	buf.Write(data)
-
-	// Track the column position so we can restore it accurately next time.
 	p.trackPosition(data)
 
-	// Restore cursor to the prompt input line without resetting the terminal's blink cycle.
 	if p.restoreCursorToPrompt {
 		buf.WriteString("\x1b8")
 		p.cursorAtPrompt = true
@@ -229,75 +210,86 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 	return len(data), err
 }
 
+func stepANSIState(state int, r rune) int {
+	switch state {
+	case 1:
+		switch r {
+		case '[':
+			return 2
+		case ']':
+			return 3
+		default:
+			return 0
+		}
+	case 2:
+		if r >= 0x40 && r <= 0x7E {
+			return 0
+		}
+		return 2
+	case 3:
+		if r == '\x07' || r == '\\' {
+			return 0
+		}
+		return 3
+	default:
+		return 0
+	}
+}
+
 // trackPosition updates printCol by analyzing the written bytes.
 // On newline, printCol resets to 1 (the terminal scrolls within the region).
 // On carriage return, printCol resets to 1 without scrolling.
 func (p *PromptPreservingWriter) trackPosition(data []byte) {
-	s := string(data)
 	termW, _ := GetTerminalSize()
 
-	for _, r := range s {
-		switch p.ansiState {
-		case 0: // normal
-			if r == '\x1b' {
-				p.ansiState = 1
-			} else {
-				switch r {
-				case '\n':
-					p.printCol = 1
-					p.autoWrapPending = false
-					p.autoWrapDetached = false
+	for _, r := range string(data) {
+		if p.ansiState != 0 {
+			p.ansiState = stepANSIState(p.ansiState, r)
+			continue
+		}
+		if r == '\x1b' {
+			p.ansiState = 1
+			continue
+		}
+
+		switch r {
+		case '\n':
+			p.printCol = 1
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+			p.advancePrintLine()
+		case '\r':
+			p.printCol = 1
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+		case '\b':
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+			if p.printCol > 1 {
+				p.printCol--
+			}
+		case '\t':
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+			nextCol := ((p.printCol-1)/8*8 + 8) + 1
+			if termW > 0 && nextCol > termW {
+				nextCol = termW
+			}
+			p.printCol = nextCol
+		default:
+			if r >= 32 && r != '\uFFFD' {
+				if p.autoWrapPending {
 					p.advancePrintLine()
-				case '\r':
 					p.printCol = 1
 					p.autoWrapPending = false
 					p.autoWrapDetached = false
-				case '\b':
-					p.autoWrapPending = false
-					p.autoWrapDetached = false
-					if p.printCol > 1 {
-						p.printCol--
-					}
-				case '\t':
-					p.autoWrapPending = false
-					p.autoWrapDetached = false
-					nextCol := ((p.printCol-1)/8*8 + 8) + 1
-					if termW > 0 && nextCol > termW {
-						nextCol = termW
-					}
-					p.printCol = nextCol
-				default:
-					if r >= 32 && r != '\uFFFD' {
-						if p.autoWrapPending {
-							p.advancePrintLine()
-							p.printCol = 1
-							p.autoWrapPending = false
-							p.autoWrapDetached = false
-						}
-						p.printCol++
-						if termW > 0 && p.printCol > termW {
-							p.printCol = termW
-							p.autoWrapPending = true
-							p.autoWrapDetached = false
-						}
-					}
 				}
-			}
-		case 1: // saw ESC
-			if r == '[' {
-				p.ansiState = 2
-			} else if r == ']' {
-				p.ansiState = 3
-			} else {
-				p.ansiState = 0
-			}
-		case 2: // saw ESC [ (CSI)
-			if r >= 0x40 && r <= 0x7E {
-				p.ansiState = 0
-			}
-		case 3: // saw ESC ] (OSC)
-			if r == '\x07' || r == '\\' {
-				p.ansiState = 0
+				p.printCol++
+				if termW > 0 && p.printCol > termW {
+					p.printCol = termW
+					p.autoWrapPending = true
+					p.autoWrapDetached = false
+				}
 			}
 		}
 	}
@@ -361,37 +353,22 @@ func (p *PromptPreservingWriter) SetPrintCol(col int) {
 func firstTerminalActionIsGraphic(data []byte, initialANSIState int) bool {
 	state := initialANSIState
 	for _, r := range string(data) {
-		switch state {
-		case 0:
-			if r == '\x1b' {
-				state = 1
-				continue
-			}
-			switch r {
-			case '\n', '\r', '\b':
-				return false
-			case '\t':
+		if state != 0 {
+			state = stepANSIState(state, r)
+			continue
+		}
+		if r == '\x1b' {
+			state = 1
+			continue
+		}
+		switch r {
+		case '\n', '\r', '\b':
+			return false
+		case '\t':
+			return true
+		default:
+			if r >= 32 && r != '\uFFFD' {
 				return true
-			default:
-				if r >= 32 && r != '\uFFFD' {
-					return true
-				}
-			}
-		case 1:
-			if r == '[' {
-				state = 2
-			} else if r == ']' {
-				state = 3
-			} else {
-				state = 0
-			}
-		case 2:
-			if r >= 0x40 && r <= 0x7E {
-				state = 0
-			}
-		case 3:
-			if r == '\a' || r == '\\' {
-				state = 0
 			}
 		}
 	}

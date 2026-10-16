@@ -7,12 +7,27 @@ import (
 	"path/filepath"
 	"strings"
 
-	"loop/pkg/ui/style"
-
 	"loop/pkg/agent/tool"
+	"loop/pkg/ui/style"
 )
 
 type Skill = tool.Skill
+
+func resolveSkillDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if strings.HasPrefix(dir, "~/") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(homeDir, dir[2:])
+		}
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
 
 func ParseFrontmatter(content string) (map[string]string, string) {
 	trimmed := strings.TrimSpace(content)
@@ -40,8 +55,7 @@ func ParseFrontmatter(content string) (map[string]string, string) {
 	}
 
 	fmLines := lines[:endIdx]
-	bodyLines := lines[endIdx+1:]
-	body := strings.Join(bodyLines, "\n")
+	body := strings.Join(lines[endIdx+1:], "\n")
 
 	fm := make(map[string]string)
 	for _, line := range fmLines {
@@ -49,10 +63,8 @@ func ParseFrontmatter(content string) (map[string]string, string) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		kv := strings.SplitN(line, ":", 2)
-		if len(kv) == 2 {
-			val := strings.TrimSpace(kv[1])
-			val = strings.Trim(val, `"'`)
+		if kv := strings.SplitN(line, ":", 2); len(kv) == 2 {
+			val := strings.Trim(strings.TrimSpace(kv[1]), `"'`)
 			fm[strings.TrimSpace(kv[0])] = val
 		}
 	}
@@ -63,27 +75,17 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 	var skills []Skill
 	seen := make(map[string]bool)
 
-	for _, dir := range dirs {
-		if dir == "" {
+	for _, rawDir := range dirs {
+		absDir := resolveSkillDir(rawDir)
+		if absDir == "" {
 			continue
-		}
-		if strings.HasPrefix(dir, "~/") {
-			homeDir, _ := os.UserHomeDir()
-			dir = filepath.Join(homeDir, dir[2:])
-		}
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			absDir = dir
 		}
 		if _, err := os.Stat(absDir); os.IsNotExist(err) {
 			continue
 		}
 
 		_ = filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			if strings.ToLower(filepath.Ext(path)) != ".md" {
+			if err != nil || info.IsDir() || strings.ToLower(filepath.Ext(path)) != ".md" {
 				return nil
 			}
 
@@ -95,9 +97,6 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			baseName := info.Name()
 			baseNoExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 
-			// Top-level skill file: skills/my-skill.md (relParts length 1)
-			// Or skill package root: skills/my-skill/SKILL.md (relParts length 2)
-			// Ignore deeper sub-docs (e.g. skills/my-skill/references/notes.md)
 			if len(relParts) > 2 && !strings.EqualFold(baseNoExt, "SKILL") {
 				return nil
 			}
@@ -108,8 +107,7 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			}
 
 			fm, body := ParseFrontmatter(string(data))
-			name := ""
-			desc := ""
+			var name, desc string
 			if fm != nil {
 				name = fm["name"]
 				desc = fm["description"]
@@ -124,8 +122,7 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			}
 
 			if desc == "" {
-				lines := strings.Split(strings.TrimSpace(body), "\n")
-				for _, l := range lines {
+				for _, l := range strings.Split(strings.TrimSpace(body), "\n") {
 					l = strings.TrimSpace(l)
 					if l != "" && !strings.HasPrefix(l, "---") {
 						desc = strings.TrimPrefix(l, "# ")
@@ -157,27 +154,14 @@ func LoadSkills(skillsDir string) ([]Skill, error) {
 	return LoadSkillsFromDirs(SkillSearchDirs(skillsDir, cwd)...)
 }
 
-// SkillSearchDirs resolves every place skills can legitimately live: the
-// configured directory plus workspace- and cwd-scoped overrides. The same
-// resolution is used at startup and on reload so /skills never reports an empty
-// catalog for skills that live in the workspace.
 func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
 	var dirs []string
 	seen := make(map[string]bool)
 	add := func(dir string) {
-		if dir == "" {
-			return
-		}
-		if strings.HasPrefix(dir, "~/") {
-			homeDir, _ := os.UserHomeDir()
-			dir = filepath.Join(homeDir, dir[2:])
-		}
-		if abs, err := filepath.Abs(dir); err == nil {
-			dir = abs
-		}
-		if !seen[dir] {
-			seen[dir] = true
-			dirs = append(dirs, dir)
+		resolved := resolveSkillDir(dir)
+		if resolved != "" && !seen[resolved] {
+			seen[resolved] = true
+			dirs = append(dirs, resolved)
 		}
 	}
 
@@ -208,7 +192,7 @@ func RenderSkills(w io.Writer, skills []Skill, theme style.UITheme) {
 	fmt.Fprintln(w, headerStyle.Render("├──────────────────────────────────────────────────────────────────────────────────┤"))
 
 	for _, skill := range skills {
-		fmt.Fprintf(w, "  %s - %s\n", titleStyle.Render(skill.Name), descStyle.Render(skill.Description))
+		fmt.Fprintf(w, "  %s : %s\n", titleStyle.Render(skill.Name), descStyle.Render(skill.Description))
 		fmt.Fprintf(w, "  %s\n\n", pathStyle.Render(skill.Path))
 	}
 	fmt.Fprintln(w, headerStyle.Render("╰──────────────────────────────────────────────────────────────────────────────────╯"))

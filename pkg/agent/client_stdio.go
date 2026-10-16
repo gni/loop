@@ -28,11 +28,14 @@ func (c *mcpClient) startStdio() error {
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		cancel()
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
 		cancel()
 		return fmt.Errorf("failed to start MCP server '%s': %w", c.name, err)
 	}
@@ -41,8 +44,9 @@ func (c *mcpClient) startStdio() error {
 	c.stdin = stdin
 
 	go func() {
+		defer c.failPendingRequests()
 		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || !strings.HasPrefix(line, "{") {
@@ -90,10 +94,16 @@ func (c *mcpClient) requestStdio(method string, params interface{}, timeout time
 		return "", err
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
-	case res := <-ch:
+	case res, ok := <-ch:
+		if !ok {
+			return "", fmt.Errorf("stdio stream closed while waiting for '%s' response", method)
+		}
 		return res, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		c.clearPendingRequest(id)
 		return "", fmt.Errorf("request timeout waiting for '%s' response", method)
 	}

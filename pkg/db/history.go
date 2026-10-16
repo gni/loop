@@ -3,9 +3,7 @@ package db
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -19,8 +17,8 @@ type sessionWithStart struct {
 }
 
 func (s *JSONLStore) GetUserHistory() ([]string, error) {
-	if s == nil || s.dir == "" {
-		return nil, fmt.Errorf("sessions directory not initialized")
+	if err := s.checkReady(""); err != nil {
+		return nil, err
 	}
 
 	s.mu.RLock()
@@ -37,25 +35,19 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 	var files []sessionWithStart
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		sessionID, ok := validSessionEntry(entry)
+		if !ok {
 			continue
 		}
 
-		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
-		if err := session.ValidateID(sessionID); err != nil {
-			continue
-		}
-
-		filePath := filepath.Join(s.dir, entry.Name())
+		filePath := s.sessionPath(sessionID)
 		startTime := ""
 
-		f, err := os.Open(filePath)
-		if err == nil {
+		if f, err := os.Open(filePath); err == nil {
 			scanner := bufio.NewScanner(f)
 			if scanner.Scan() {
-				lineBytes := scanner.Bytes()
 				var record session.Record
-				if json.Unmarshal(lineBytes, &record) == nil {
+				if json.Unmarshal(scanner.Bytes(), &record) == nil {
 					startTime = record.Timestamp
 				}
 			}
@@ -87,9 +79,8 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
-			lineBytes := scanner.Bytes()
 			var record session.Record
-			if err := json.Unmarshal(lineBytes, &record); err == nil {
+			if err := json.Unmarshal(scanner.Bytes(), &record); err == nil {
 				msg := record.Message
 				if msg.Role == message.RoleUser && !strings.HasPrefix(strings.ToLower(msg.Content), "[user manually executed") {
 					content := strings.TrimSpace(msg.Content)

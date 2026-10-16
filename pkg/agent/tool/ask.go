@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	domaintool "loop/pkg/domain/tool"
 )
 
-type AskUserOption struct {
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-}
+type AskUserOption = domaintool.AskUserOption
+type UserInquirer = domaintool.UserInquirer
 
 type AskUserTool struct {
 	CustomHandler func(question string, options []AskUserOption, recommended string) (string, error)
@@ -74,12 +74,6 @@ func (t *AskUserTool) Definition() Tool {
 	}
 }
 
-// UserInquirer is an optional interface implemented by AgentContext
-// to interactively ask the user questions in the terminal/TUI.
-type UserInquirer interface {
-	AskUser(question string, options []AskUserOption, recommended string) (string, error)
-}
-
 func (t *AskUserTool) Execute(ctx AgentContext, arguments string) (string, error) {
 	var raw struct {
 		Question    string          `json:"question"`
@@ -99,14 +93,12 @@ func (t *AskUserTool) Execute(ctx AgentContext, arguments string) (string, error
 	if len(raw.Options) > 0 {
 		var strOptions []string
 		if err := json.Unmarshal(raw.Options, &strOptions); err == nil {
+			parsedOptions = make([]AskUserOption, 0, len(strOptions))
 			for _, s := range strOptions {
 				parsedOptions = append(parsedOptions, AskUserOption{Label: s})
 			}
 		} else {
-			var objOptions []AskUserOption
-			if err := json.Unmarshal(raw.Options, &objOptions); err == nil {
-				parsedOptions = objOptions
-			}
+			_ = json.Unmarshal(raw.Options, &parsedOptions)
 		}
 	}
 

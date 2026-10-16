@@ -20,6 +20,8 @@ var fallbackOpeningMarkers = [...]string{
 	"<ask_user",
 }
 
+var directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"}
+
 // ToolTextFilter removes fallback XML tool invocations before assistant text
 // reaches the terminal or conversation content.
 type ToolTextFilter struct {
@@ -72,10 +74,14 @@ func (f *ToolTextFilter) Flush() {
 }
 
 func extractFallbackToolName(opening string) string {
-	for _, tool := range []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"} {
-		if strings.HasPrefix(opening, "<"+tool) {
-			if len(opening) == len(tool)+1 || opening[len(tool)+1] == ' ' || opening[len(tool)+1] == '>' || opening[len(tool)+1] == '/' || opening[len(tool)+1] == '\n' || opening[len(tool)+1] == '\r' || opening[len(tool)+1] == '\t' {
-				return tool
+	for _, toolName := range directToolNames {
+		if strings.HasPrefix(opening, "<"+toolName) {
+			if len(opening) == len(toolName)+1 {
+				return toolName
+			}
+			next := opening[len(toolName)+1]
+			if next == ' ' || next == '>' || next == '/' || next == '\n' || next == '\r' || next == '\t' {
+				return toolName
 			}
 		}
 	}
@@ -88,21 +94,14 @@ func extractFallbackToolName(opening string) string {
 			}
 		}
 	}
-	if strings.HasPrefix(opening, "<tool:") {
-		name := opening[len("<tool:"):]
-		end := strings.IndexAny(name, " >\n\r\t")
-		if end >= 0 {
-			return name[:end]
+	for _, prefix := range []string{"<tool:", "<function="} {
+		if strings.HasPrefix(opening, prefix) {
+			name := opening[len(prefix):]
+			if end := strings.IndexAny(name, " >\n\r\t"); end >= 0 {
+				return name[:end]
+			}
+			return strings.TrimRight(name, ">\n\r ")
 		}
-		return strings.TrimRight(name, ">\n\r ")
-	}
-	if strings.HasPrefix(opening, "<function=") {
-		name := opening[len("<function="):]
-		end := strings.IndexAny(name, " >\n\r\t")
-		if end >= 0 {
-			return name[:end]
-		}
-		return strings.TrimRight(name, ">\n\r ")
 	}
 	return ""
 }
@@ -241,15 +240,15 @@ func (f *ToolTextFilter) process(final bool) {
 			attrs := ParseXMLAttrs(opening)
 			var target string
 			for _, key := range []string{"path", "file", "file_path", "filepath", "filename", "file_name", "target", "target_file", "targetfile", "name", "to"} {
-				if v, ok := attrs[key]; ok && strings.TrimSpace(v) != "" {
-					target = strings.TrimSpace(v)
+				if v := strings.TrimSpace(attrs[key]); v != "" {
+					target = v
 					break
 				}
 			}
 			if target == "" && toolName == "bash" {
 				for _, key := range []string{"command", "cmd", "commandline", "script"} {
-					if v, ok := attrs[key]; ok && strings.TrimSpace(v) != "" {
-						target = strings.TrimSpace(v)
+					if v := strings.TrimSpace(attrs[key]); v != "" {
+						target = v
 						break
 					}
 				}
@@ -275,15 +274,15 @@ func (f *ToolTextFilter) emitText(text string) {
 }
 
 func fallbackClosingTag(opening string) (string, bool) {
-	for _, tool := range []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"} {
-		if strings.HasPrefix(opening, "<"+tool) {
-			if !validFallbackOpeningBoundary(opening, len("<"+tool)) {
+	for _, toolName := range directToolNames {
+		if strings.HasPrefix(opening, "<"+toolName) {
+			if !validFallbackOpeningBoundary(opening, len("<"+toolName)) {
 				continue
 			}
 			if strings.HasSuffix(strings.TrimSpace(opening), "/>") {
-				return "", true // self-closing
+				return "", true
 			}
-			return "</" + tool + ">", true
+			return "</" + toolName + ">", true
 		}
 	}
 	switch {

@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
 	"loop/pkg/db"
-	"loop/pkg/domain/tool"
 	"loop/pkg/ui/render"
 )
 
@@ -28,13 +28,7 @@ func init() {
 }
 
 func ListExtensions(workspaceRoot string) []ExtensionInfo {
-	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, ".loop", "extensions"))
-	}
-	if workspaceRoot != "" {
-		dirs = append(dirs, filepath.Join(workspaceRoot, "extensions"))
-	}
+	dirs := tool.ExtensionSearchDirs(workspaceRoot)
 
 	var exts []ExtensionInfo
 	seen := make(map[string]bool)
@@ -49,11 +43,14 @@ func ListExtensions(workspaceRoot string) []ExtensionInfo {
 			loc = "global"
 		}
 		for _, entry := range entries {
-			if entry.IsDir() {
+			if entry.IsDir() || filepath.Ext(entry.Name()) == ".json" {
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
 			if info, err := os.Stat(path); err == nil && info.Mode()&0111 != 0 {
+				if _, isPlugin := tool.HasPluginDescriptor(path); isPlugin {
+					continue
+				}
 				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
 				cmdName := "/" + strings.ToLower(base)
 				if !seen[cmdName] {

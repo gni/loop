@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 )
 
@@ -16,7 +17,13 @@ func ensureWorkspaceTrust(cwd string, cfg *config.Config, isNonInteractive bool)
 		trusted = true
 	}
 
-	hasLocalCode := dirHasEntries(filepath.Join(cwd, "plugins")) || dirHasEntries(filepath.Join(cwd, "extensions"))
+	hasLocalCode := false
+	for _, dir := range tool.LocalAddonDirs(cwd) {
+		if dirHasEntries(dir) {
+			hasLocalCode = true
+			break
+		}
+	}
 
 	if hasLocalCode && !trusted && !isNonInteractive {
 		fmt.Printf("\n\x1b[33m⚠️  Security Warning\x1b[0m: Workspace '%s' contains local plugins or extensions.\n", cwd)
@@ -43,4 +50,3 @@ func dirHasEntries(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	return err == nil && len(entries) > 0
 }
-

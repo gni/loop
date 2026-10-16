@@ -14,10 +14,7 @@ type multiAgentContext struct {
 }
 
 func (mac *multiAgentContext) Context() context.Context {
-	mac.ma.HistoryMu.RLock()
-	ctx := mac.ma.ActiveContext
-	mac.ma.HistoryMu.RUnlock()
-	if ctx != nil {
+	if ctx, _, _, ok := mac.ma.activeTurn(); ok {
 		return ctx
 	}
 	return mac.ma.Context
@@ -110,14 +107,14 @@ func (mac *multiAgentContext) AskUser(question string, options []tool.AskUserOpt
 }
 
 func (mac *multiAgentContext) GetActiveSkills() []tool.Skill {
-	mac.ma.HistoryMu.RLock()
-	defer mac.ma.HistoryMu.RUnlock()
-	return mac.ma.Skills
+	return mac.ma.GetEffectiveSkills()
 }
 
 func (mac *multiAgentContext) ReloadSkills() []tool.Skill {
 	reloaded := mac.AgentContext.ReloadSkills()
 	mac.ma.HistoryMu.Lock()
+	defer mac.ma.HistoryMu.Unlock()
+
 	localNames := make(map[string]struct{}, len(mac.ma.LocalSkills))
 	for _, localSkill := range mac.ma.LocalSkills {
 		localNames[strings.ToLower(localSkill.Name)] = struct{}{}
@@ -126,19 +123,19 @@ func (mac *multiAgentContext) ReloadSkills() []tool.Skill {
 		mac.ma.Skills = make([]tool.Skill, 0, len(reloaded)+len(mac.ma.LocalSkills))
 		mac.ma.Skills = append(mac.ma.Skills, reloaded...)
 		mac.ma.Skills = append(mac.ma.Skills, mac.ma.LocalSkills...)
-	} else {
-		for i, existing := range mac.ma.Skills {
-			if _, isLocal := localNames[strings.ToLower(existing.Name)]; isLocal {
-				continue
-			}
-			for _, r := range reloaded {
-				if r.Name == existing.Name {
-					mac.ma.Skills[i] = r
-					break
-				}
+		return reloaded
+	}
+
+	for i, existing := range mac.ma.Skills {
+		if _, isLocal := localNames[strings.ToLower(existing.Name)]; isLocal {
+			continue
+		}
+		for _, r := range reloaded {
+			if r.Name == existing.Name {
+				mac.ma.Skills[i] = r
+				break
 			}
 		}
 	}
-	mac.ma.HistoryMu.Unlock()
 	return reloaded
 }

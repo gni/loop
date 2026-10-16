@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 )
@@ -18,6 +19,12 @@ var (
 	lsDirRe   = regexp.MustCompile(`(?:ls|dir)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
 	redirRe   = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
 	rmTouchRe = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
+
+	bashTargetRegexes = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}
+	bashModifyPrefixes = []string{
+		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add",
+		"mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo ", "gofmt ", "patch ",
+	}
 )
 
 var (
@@ -278,7 +285,7 @@ func (g *TurnExecutionGuard) ExtractTargetFile(toolName, arguments string) strin
 		return extractPathArg(arguments, ".")
 	case "bash":
 		cmd := extractBashCommand(arguments)
-		for _, re := range []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe} {
+		for _, re := range bashTargetRegexes {
 			if m := re.FindStringSubmatch(cmd); len(m) > 1 {
 				cand := strings.TrimSpace(m[1])
 				if cand != "" && !strings.HasPrefix(cand, "/dev/") && !strings.HasPrefix(cand, "-") {
@@ -298,24 +305,17 @@ func extractPathArg(arguments string, fallback string) string {
 }
 
 func extractBashCommand(arguments string) string {
-	trimmed := strings.TrimSpace(arguments)
-	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
-		var unquoted string
-		if err := json.Unmarshal([]byte(trimmed), &unquoted); err == nil {
-			return strings.TrimSpace(unquoted)
-		}
-	}
+	var raw string
 	var args struct {
 		Command   string `json:"command"`
 		Cmd       string `json:"cmd"`
 		Arguments string `json:"arguments"`
 	}
-	if err := json.Unmarshal([]byte(arguments), &args); err == nil {
-		if v := strings.TrimSpace(filetool.ExtractFilePath("", args.Command, args.Cmd, args.Arguments)); v != "" {
-			return v
-		}
+	_ = tool.ParseToolArguments(arguments, &args, func(s string) { raw = s })
+	if v := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Command, args.Cmd, args.Arguments)); v != "" {
+		return v
 	}
-	return trimmed
+	return strings.TrimSpace(arguments)
 }
 
 func isBashModifying(cmd string) bool {
@@ -323,7 +323,7 @@ func isBashModifying(cmd string) bool {
 	if trimmed == "" {
 		return false
 	}
-	for _, p := range []string{"git commit", "git checkout", "git restore", "git reset", "git apply", "git add", "mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo ", "gofmt ", "patch "} {
+	for _, p := range bashModifyPrefixes {
 		if strings.HasPrefix(trimmed, p) {
 			return true
 		}

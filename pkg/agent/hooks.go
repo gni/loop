@@ -7,54 +7,32 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 
 	"loop/pkg/db"
 )
 
-var (
-	hookRegistered   = map[*Agent]bool{}
-	hookRegisteredMu sync.Mutex
-)
-
-// PermissionHook is the typed permission-check hook.
-// It runs as a bus subscriber before tool execution; default is allow.
 var PermissionHook func(ToolCallEvent) *PermissionDecision
 
-// execHookSubscriber registers the shell exec hooks as one EventBus subscriber,
-// so typed subscribers and the legacy BeforeToolHook share a single dispatch path.
-func (a *Agent) execHookSubscriber() func(ToolCallEvent) *PermissionDecision {
-	hookRegisteredMu.Lock()
-	if !hookRegistered[a] {
-		hookRegistered[a] = true
-		EventBusInstance().On(func(e ToolCallEvent) *PermissionDecision {
-			if e.Type == "tool_call" {
-				allowed, reason := a.runExecBeforeHook(e.ToolCall)
-				return &PermissionDecision{Allowed: allowed, Reason: reason}
-			}
-			a.runExecAfterHook(e.ToolCall, e.Output, e.Err)
-			return nil
-		})
-	}
-	hookRegisteredMu.Unlock()
-	return PermissionHook
-}
-
 func (a *Agent) runBeforeToolHook(tc db.ToolCall) (bool, string) {
-	a.execHookSubscriber()
+	if PermissionHook != nil {
+		if d := PermissionHook(ToolCallEvent{Type: "tool_call", ToolCall: tc}); d != nil && !d.Allowed {
+			return false, d.Reason
+		}
+	}
 	decision := EventBusInstance().Emit(ToolCallEvent{Type: "tool_call", ToolCall: tc})
 	if decision != nil && !decision.Allowed {
 		return false, decision.Reason
 	}
-	return true, ""
+	return a.runExecBeforeHook(tc)
 }
 
 func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
-	if a.Config == nil || a.Config.BeforeToolHook == "" {
+	if a == nil || a.Config == nil || a.Config.BeforeToolHook == "" {
 		return true, ""
 	}
 
 	cmd := exec.Command("bash", "-c", a.Config.BeforeToolHook)
+	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = os.Environ()
 
 	payload := map[string]string{
@@ -69,8 +47,7 @@ func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		reason := strings.TrimSpace(stderr.String())
 		if reason == "" {
 			reason = strings.TrimSpace(stdout.String())
@@ -84,17 +61,17 @@ func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
 }
 
 func (a *Agent) runAfterToolHook(tc db.ToolCall, output string, toolErr error) (string, error) {
-	a.execHookSubscriber()
 	EventBusInstance().Emit(ToolCallEvent{Type: "tool_result", ToolCall: tc, Output: output, Err: toolErr})
 	return a.runExecAfterHook(tc, output, toolErr)
 }
 
 func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (string, error) {
-	if a.Config == nil || a.Config.AfterToolHook == "" {
+	if a == nil || a.Config == nil || a.Config.AfterToolHook == "" {
 		return output, toolErr
 	}
 
 	cmd := exec.Command("bash", "-c", a.Config.AfterToolHook)
+	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = os.Environ()
 
 	errStr := ""
@@ -116,8 +93,7 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		reason := strings.TrimSpace(stderr.String())
 		if reason == "" {
 			reason = err.Error()
@@ -125,8 +101,7 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 		return output, fmt.Errorf("after_tool_hook failed: %s", reason)
 	}
 
-	hookOutput := stdout.String()
-	if hookOutput != "" {
+	if hookOutput := stdout.String(); hookOutput != "" {
 		return hookOutput, nil
 	}
 	return output, toolErr

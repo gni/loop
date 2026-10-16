@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
 )
@@ -92,28 +93,34 @@ type ContextLimitDetector interface {
 	GetDetectedContextLimit() int
 }
 
-func (a *Agent) currentLLMProvider() LLMProvider {
-	a.LLMProviderMu.Lock()
-	defer a.LLMProviderMu.Unlock()
-
-	if a.LLMProvider == nil {
+func (a *Agent) syncOpenAIProviderLocked(cfg *config.Config, forceReset bool) {
+	switch provider := a.LLMProvider.(type) {
+	case nil:
 		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:            a.Config,
+			Config:            cfg,
 			HttpClient:        a.HttpClient,
 			ChunkDropObserver: a.recordDroppedChunk,
 		}
-	} else if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok && provider.Config != a.Config {
+	case *OpenAICompatibleProvider:
+		if !forceReset && provider.Config == cfg {
+			return
+		}
 		httpClient := provider.HttpClient
 		if httpClient == nil {
 			httpClient = a.HttpClient
 		}
 		a.LLMProvider = &OpenAICompatibleProvider{
-			Config:            a.Config,
+			Config:            cfg,
 			HttpClient:        httpClient,
 			ChunkDropObserver: a.recordDroppedChunk,
 		}
 	}
+}
 
+func (a *Agent) currentLLMProvider() LLMProvider {
+	a.LLMProviderMu.Lock()
+	defer a.LLMProviderMu.Unlock()
+	a.syncOpenAIProviderLocked(a.Config, false)
 	return a.LLMProvider
 }
 
