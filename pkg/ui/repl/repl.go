@@ -41,7 +41,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	activeTasks := a.CountActiveTasks()
 
 	ui.ClearTerminalForStartup(os.Stderr)
-	ui.SetScrollRegionOffset(3)
+	ui.SetScrollRegionOffset(4)
 	ui.InitStatusBar(os.Stderr)
 	defer ui.ShutdownStatusBar(os.Stderr)
 	defer ui.ForceExitAlternateScreen(os.Stderr)

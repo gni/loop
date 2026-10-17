@@ -203,7 +203,11 @@ func (sr *StreamRenderer) flushLocked() {
 		sr.pendingThoughtTextGap = false
 	}
 	sr.pendingThoughtTextGap = false
-	sr.finishLiveTextLocked()
+	// The terminal already reserves one blank row above the stats line.
+	// Finalizing streamed text must not emit another blank terminal row.
+	// StartToolCall still uses finishLiveTextLocked to separate text and tools.
+	sr.live.Flush()
+	sr.lastEndedWithNewline = sr.live.EndedWithNewline()
 	sr.flushActiveToolLocked()
 }
 

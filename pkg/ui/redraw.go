@@ -106,7 +106,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	}
 
 	_, height := GetTerminalSize()
-	scrollBottom := height - 5 - getUI().PasteLinesOffset
+	scrollBottom := height - 6 - getUI().PasteLinesOffset
 	if scrollBottom < 1 {
 		scrollBottom = 1
 	}

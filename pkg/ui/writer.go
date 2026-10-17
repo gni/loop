@@ -13,11 +13,12 @@ import (
 
 // PromptPreservingWriter wraps an io.Writer (typically os.Stderr) and ensures
 // that all streamed output is confined to the terminal's scrolling region
-// (rows 1 through height-5). After every write, the cursor is repositioned
+// (rows 1 through height-6). After every write, the cursor is repositioned
 // back to the prompt input line (height-2, column 3) so it blinks stably
 // at the "> " prompt, even while tokens are streaming above it.
 //
-// The bottom 5 lines of the terminal are reserved:
+// The bottom 6 lines of the terminal are reserved:
+//   - height-5: blank row separating live output from the stats line
 //   - height-4: stats line content
 //   - height-3: ─── prompt ──────────────────────────────
 //   - height-2: > (input line, cursor blinks here)
@@ -48,7 +49,7 @@ func (p *PromptPreservingWriter) getOffsetRow(offset int) int {
 }
 
 func (p *PromptPreservingWriter) getScrollBottom() int {
-	return p.getOffsetRow(5)
+	return p.getOffsetRow(6)
 }
 
 func (p *PromptPreservingWriter) GetScrollBottom() int {

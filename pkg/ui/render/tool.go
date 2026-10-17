@@ -113,9 +113,6 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		if IsWriteLikeTool(toolName) {
 			renderWriteSummary(w, theme, toolName, argsJSON, output)
 		}
-		if IsEditLikeTool(toolName) {
-			renderEditSummary(w, theme, toolName, argsJSON, output)
-		}
 		if toolName == "task_status" || toolName == "task_kill" {
 			renderTaskSummary(w, theme, toolName, argsJSON, output, collapse)
 			return
@@ -161,6 +158,9 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			}
 		}
 	}
+	if !isError && IsEditLikeTool(toolName) {
+		renderEditSummary(w, theme, toolName, argsJSON, output)
+	}
 	fmt.Fprintln(w)
 }
 
@@ -202,15 +202,14 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 	}
 
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
-	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 	if sizeBytes >= 0 {
 		sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
-		fmt.Fprintf(w, "%s%s %s %s\n", branchStyle, checkStyle.Render("✓"),
+		fmt.Fprintf(w, "%s%s %s\n", branchStyle,
 			pathStyle.Render(absPath), sizeStyle.Render(fmt.Sprintf("(%d bytes)", sizeBytes)))
 		return
 	}
-	fmt.Fprintf(w, "%s%s %s\n", branchStyle, checkStyle.Render("✓"), pathStyle.Render(absPath))
+	fmt.Fprintf(w, "%s%s\n", branchStyle, pathStyle.Render(absPath))
 }
 
 // CountDiffLines counts the number of added and deleted lines from diff output.
@@ -247,11 +246,10 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 	return added, deleted
 }
 
-// FormatDiffStats formats the line additions in green and deletions in red.
+// FormatDiffStats displays successful edit totals in normal-weight green.
 func FormatDiffStats(added, deleted int, theme style.UITheme) string {
-	greenStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
-	redStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-	return fmt.Sprintf("%s / %s lines", greenStyle.Render(fmt.Sprintf("+%d", added)), redStyle.Render(fmt.Sprintf("-%d", deleted)))
+	greenStyle := style.NewStyle().Foreground(theme.Success)
+	return greenStyle.Render(fmt.Sprintf("+%d / -%d lines", added, deleted))
 }
 
 func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
