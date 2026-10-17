@@ -129,7 +129,7 @@ func (a *Agent) StreamChatCompletions(
 	})
 
 	var tools []tool.Tool
-	if a.Registry != nil {
+	if a.Registry != nil && (allowlist == nil || len(allowlist) > 0) {
 		tools = a.Registry.GetAvailableTools(allowlist)
 	}
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)

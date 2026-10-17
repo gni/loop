@@ -87,9 +87,6 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	workspaceRoot := ctx.GetWorkspaceRoot()
 	gitIgnorePatterns := LoadGitIgnore(workspaceRoot)
 
-	lowerPattern := strings.ToLower(pattern)
-	hasSlash := strings.Contains(pattern, "/")
-
 	var matchedPaths []string
 	totalMatches := 0
 	limitReached := false
@@ -116,18 +113,8 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			}
 
 			rel := RelSlashPath(workspaceRoot, path)
-			var matched bool
-			if hasSlash {
-				lowerRel := strings.ToLower(rel)
-				matched, _ = filepath.Match(lowerPattern, lowerRel)
-				if !matched {
-					matched, _ = filepath.Match("*/"+lowerPattern, lowerRel)
-				}
-			} else {
-				matched, _ = filepath.Match(lowerPattern, strings.ToLower(d.Name()))
-			}
-
-			if matched {
+			relToSearch := RelSlashPath(safePath, path)
+			if MatchGlob(pattern, rel, d.Name()) || (relToSearch != rel && MatchGlob(pattern, relToSearch, d.Name())) {
 				recordMatch(rel)
 			}
 			return nil

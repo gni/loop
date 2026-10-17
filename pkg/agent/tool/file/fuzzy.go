@@ -141,10 +141,58 @@ func leadingWhitespace(s string) string {
 	return s
 }
 
+func adjustReplacementIndent(newText, fileIndent, oldIndent string) string {
+	if fileIndent == oldIndent || newText == "" {
+		return newText
+	}
+	newLines := strings.Split(newText, "\n")
+	if strings.HasPrefix(fileIndent, oldIndent) {
+		indentDiff := fileIndent[len(oldIndent):]
+		if indentDiff == "" {
+			return newText
+		}
+		allIndented := true
+		for _, nl := range newLines {
+			if nl != "" && !strings.HasPrefix(nl, fileIndent) {
+				allIndented = false
+				break
+			}
+		}
+		if !allIndented {
+			for k := range newLines {
+				if newLines[k] != "" {
+					newLines[k] = indentDiff + newLines[k]
+				}
+			}
+			return strings.Join(newLines, "\n")
+		}
+	} else if strings.HasPrefix(oldIndent, fileIndent) {
+		excessIndent := oldIndent[len(fileIndent):]
+		canTrim := true
+		for _, nl := range newLines {
+			if nl != "" && !strings.HasPrefix(nl, excessIndent) {
+				canTrim = false
+				break
+			}
+		}
+		if canTrim {
+			for k := range newLines {
+				if newLines[k] != "" {
+					newLines[k] = strings.TrimPrefix(newLines[k], excessIndent)
+				}
+			}
+			return strings.Join(newLines, "\n")
+		}
+	}
+	return newText
+}
+
 func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 	if oldText == "" {
 		return nil, nil
 	}
+	oldText = strings.ReplaceAll(oldText, "\r\n", "\n")
+	newText = strings.ReplaceAll(newText, "\r\n", "\n")
 
 	exactCount := strings.Count(content, oldText)
 	if exactCount == 1 {
@@ -250,30 +298,9 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			endByte := lineEnds[actualEnd-1]
 			matchedText := content[startByte:endByte]
 
-			adjustedNew := newText
-			fileIndent := leadingWhitespace(fileLines[actualStart])
-			oldIndent := leadingWhitespace(oldLines[0])
-			if fileIndent != oldIndent && strings.HasPrefix(fileIndent, oldIndent) {
-				indentDiff := fileIndent[len(oldIndent):]
-				if indentDiff != "" {
-					newLines := strings.Split(newText, "\n")
-					allIndented := true
-					for _, nl := range newLines {
-						if nl != "" && !strings.HasPrefix(nl, fileIndent) {
-							allIndented = false
-							break
-						}
-					}
-					if !allIndented {
-						for k := range newLines {
-							if newLines[k] != "" {
-								newLines[k] = indentDiff + newLines[k]
-							}
-						}
-						adjustedNew = strings.Join(newLines, "\n")
-					}
-				}
-			}
+			fileIndent := leadingWhitespace(fileLines[matchStart])
+			oldIndent := leadingWhitespace(oldLines[startIdx])
+			adjustedNew := adjustReplacementIndent(newText, fileIndent, oldIndent)
 
 			return &textMatch{
 				startByte:   startByte,

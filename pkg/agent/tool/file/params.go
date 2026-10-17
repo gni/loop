@@ -52,6 +52,37 @@ func (e ReplaceEdit) EffectiveNewText() string {
 	)
 }
 
+// ApplyEditsPreview simulates applying a sequence of ReplaceEdits using the same
+// non-overlapping batch and fuzzy line matching logic as the edit tool.
+func ApplyEditsPreview(oldContent string, edits []ReplaceEdit) (string, bool) {
+	if len(edits) == 0 {
+		return oldContent, false
+	}
+	normalized := make([]ReplaceEdit, len(edits))
+	for i, e := range edits {
+		normalized[i] = ReplaceEdit{
+			OldText: strings.ReplaceAll(e.EffectiveOldText(), "\r\n", "\n"),
+			NewText: strings.ReplaceAll(e.EffectiveNewText(), "\r\n", "\n"),
+		}
+	}
+	if batchContent, ok := tryApplyNonOverlappingBatch(oldContent, normalized); ok {
+		return batchContent, true
+	}
+
+	previewContent := oldContent
+	for _, e := range normalized {
+		if e.OldText == "" {
+			continue
+		}
+		if m, err := locateEditMatch(previewContent, e.OldText, e.NewText); err == nil && m != nil {
+			previewContent = previewContent[:m.startByte] + m.newText + previewContent[m.endByte:]
+		} else if strings.Contains(previewContent, e.OldText) {
+			previewContent = strings.Replace(previewContent, e.OldText, e.NewText, 1)
+		}
+	}
+	return previewContent, previewContent != oldContent
+}
+
 var (
 	pathKeyRegex = regexp.MustCompile(`"(?i)(?:path|filePath|file_path|targetFile|target_file|TargetFile|fileName|file_name|filename|file|target|AbsolutePath|absolute_path|write_path|writePath)"\s*:\s*"([^"]+)"`)
 	pathMapKeys  = []string{
@@ -76,12 +107,22 @@ func parseGenericJSON(trimmed string) (map[string]interface{}, []interface{}) {
 		if err := json.Unmarshal([]byte(trimmed), &slice); err == nil && len(slice) > 0 {
 			return nil, slice
 		}
+		if repaired := domaintool.RepairJSON(trimmed); repaired != trimmed {
+			if err := json.Unmarshal([]byte(repaired), &slice); err == nil && len(slice) > 0 {
+				return nil, slice
+			}
+		}
 		return nil, nil
 	}
 	if strings.HasPrefix(trimmed, "{") {
 		var m map[string]interface{}
 		if err := json.Unmarshal([]byte(trimmed), &m); err == nil && m != nil {
 			return m, nil
+		}
+		if repaired := domaintool.RepairJSON(trimmed); repaired != trimmed {
+			if err := json.Unmarshal([]byte(repaired), &m); err == nil && m != nil {
+				return m, nil
+			}
 		}
 	}
 	return nil, nil

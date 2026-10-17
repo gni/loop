@@ -197,16 +197,18 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		engine.BeginTurn()
 
-		if engine.ShouldRecap() {
-			promptTokens, totalCompletion := agent.CalculateHistoryTokens(sink.Messages())
+		ma.compressIfNeeded(ctx, writer, theme)
+
+		allowlist := ma.GetToolAllowlist()
+		if engine.ShouldRecap() && ma.BaseAgent != nil {
+			msgs := sink.Messages()
+			promptTokens, _ := ma.BaseAgent.GetGlobalTokens(msgs, allowlist)
+			totalCompletion := ma.BaseAgent.GetSessionTotalCompletionTokens(msgs)
 			effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
 			engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
 		}
 
-		ma.compressIfNeeded(ctx, writer, theme)
-
 		historyCopy := sink.Messages()
-		allowlist := ma.GetToolAllowlist()
 		if ma.BaseAgent != nil {
 			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
 			ma.BaseAgent.DebugLogLLMRequest("subagent:"+ma.Name, iter, ma.BaseAgent.Config.Model, ma.BaseAgent.Config.Endpoint, historyCopy, toolsForLog)
@@ -348,6 +350,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		if lastUserPrompt != "" && assistantMsg.ReasoningContent != "" {
 			assistantMsg.ReasoningContent = agent.StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
 		}
+		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 
 		sink.Append(*assistantMsg)
 

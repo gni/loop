@@ -285,8 +285,11 @@ func (e *TurnEngine) needsInteractiveApproval(toolName string) bool {
 }
 
 func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
-	if !e.needsInteractiveApproval(tc.Function.Name) || e.agent.UI == nil {
+	if !e.needsInteractiveApproval(tc.Function.Name) {
 		return true, false
+	}
+	if e.agent.UI == nil {
+		return false, false
 	}
 
 	sr.Flush()
@@ -333,6 +336,16 @@ func (e *TurnEngine) checkGuardPreExecution(tc db.ToolCall) error {
 	return nil
 }
 
+func (e *TurnEngine) recordRejectedState(output string) {
+	if e.agent == nil {
+		return
+	}
+	e.agent.stateMu.Lock()
+	e.agent.lastToolOutput = output
+	e.agent.lastToolIsError = true
+	e.agent.stateMu.Unlock()
+}
+
 func (e *TurnEngine) emitRejectedToolCall(
 	idx int,
 	tc db.ToolCall,
@@ -345,6 +358,7 @@ func (e *TurnEngine) emitRejectedToolCall(
 	theme style.UITheme,
 	render EngineRenderer,
 ) {
+	e.recordRejectedState(output)
 	if completeHeader {
 		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
 	}
@@ -515,10 +529,6 @@ func (e *TurnEngine) ExecuteToolCalls(
 		approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
 		if !approved {
 			output, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-			a.stateMu.Lock()
-			a.lastToolOutput = output
-			a.lastToolIsError = true
-			a.stateMu.Unlock()
 			e.emitRejectedToolCall(idx, tc, output, !approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 			if shouldAbort {
 				return false, true
@@ -557,12 +567,13 @@ func (e *TurnEngine) ExecuteToolCalls(
 }
 
 type callPlan struct {
-	tc          db.ToolCall
-	idx         int
-	output      string
-	toolErr     error
-	skipped     bool
-	guardHit    bool
+	tc               db.ToolCall
+	idx              int
+	output           string
+	toolErr          error
+	skipped          bool
+	guardHit         bool
+	approvalRendered bool
 }
 
 func (e *TurnEngine) executeToolCallsParallel(
@@ -602,24 +613,18 @@ func (e *TurnEngine) executeToolCallsParallel(
 			continue
 		}
 
-		if e.needsInteractiveApproval(tc.Function.Name) {
-			if a.UI == nil {
-				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
-				plan.toolErr = fmt.Errorf("rejected by user")
-				plan.skipped = true
-				continue
+		approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
+		plan.approvalRendered = approvalRendered
+		if !approved {
+			rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
+			if shouldAbort {
+				e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, false, sink, sr, w, theme, render)
+				return false, true
 			}
-			if approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc); !approved {
-				rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-				if shouldAbort {
-					e.emitRejectedToolCall(idx, tc, rejOutput, true, false, sink, sr, w, theme, render)
-					return false, true
-				}
-				plan.toolErr = fmt.Errorf("rejected by user")
-				plan.output = rejOutput
-				plan.skipped = true
-				continue
-			}
+			plan.toolErr = fmt.Errorf("rejected by user")
+			plan.output = rejOutput
+			plan.skipped = true
+			continue
 		}
 
 		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
@@ -690,10 +695,10 @@ func (e *TurnEngine) executeToolCallsParallel(
 	for i := range plans {
 		plan := &plans[i]
 		if plan.skipped {
-			e.emitRejectedToolCall(i, plan.tc, plan.output, true, false, sink, sr, w, theme, render)
+			e.emitRejectedToolCall(i, plan.tc, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
 			continue
 		}
-		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, false, false, sink, sr, w, theme, render, afterCall)
+		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall)
 
 		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
 			e.emitHaltNotice(sink, w, theme)

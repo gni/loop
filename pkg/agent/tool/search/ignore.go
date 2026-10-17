@@ -89,7 +89,101 @@ func LoadGitIgnore(workspaceRoot string) []string {
 	return patterns
 }
 
-// IsIgnoredByGit checks if path matches any gitignore patterns.
+// expandBracePatterns expands a single level of {a,b,c} alternatives in a glob pattern.
+func expandBracePatterns(pattern string) []string {
+	openIdx := strings.IndexByte(pattern, '{')
+	if openIdx < 0 {
+		return []string{pattern}
+	}
+	closeIdx := strings.IndexByte(pattern[openIdx:], '}')
+	if closeIdx < 0 {
+		return []string{pattern}
+	}
+	closeIdx += openIdx
+	prefix := pattern[:openIdx]
+	suffix := pattern[closeIdx+1:]
+	parts := strings.Split(pattern[openIdx+1:closeIdx], ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, prefix+strings.TrimSpace(part)+suffix)
+	}
+	return out
+}
+
+func matchPathSegments(patSegs, pathSegs []string) bool {
+	for len(patSegs) > 0 {
+		if patSegs[0] == "**" {
+			for len(patSegs) > 1 && patSegs[1] == "**" {
+				patSegs = patSegs[1:]
+			}
+			if len(patSegs) == 1 {
+				return true
+			}
+			for i := 0; i <= len(pathSegs); i++ {
+				if matchPathSegments(patSegs[1:], pathSegs[i:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(pathSegs) == 0 {
+			return false
+		}
+		matched, err := filepath.Match(patSegs[0], pathSegs[0])
+		if err != nil || !matched {
+			return false
+		}
+		patSegs = patSegs[1:]
+		pathSegs = pathSegs[1:]
+	}
+	return len(pathSegs) == 0
+}
+
+// MatchGlob matches a case-insensitive glob pattern (supporting **, path segments, and {a,b} braces)
+// against a workspace-relative slash path and file base name.
+func MatchGlob(pattern, relPath, baseName string) bool {
+	normPat := strings.ToLower(strings.TrimSpace(filepath.ToSlash(pattern)))
+	normPat = strings.TrimPrefix(normPat, "./")
+	if normPat == "" {
+		return false
+	}
+
+	lowerRel := strings.ToLower(strings.TrimPrefix(filepath.ToSlash(relPath), "./"))
+	lowerBase := strings.ToLower(baseName)
+	if lowerBase == "" && lowerRel != "" {
+		lowerBase = filepath.Base(lowerRel)
+	}
+	relSegs := strings.Split(lowerRel, "/")
+
+	for _, candidate := range expandBracePatterns(normPat) {
+		if candidate == "" {
+			continue
+		}
+		if !strings.Contains(candidate, "/") {
+			if matched, _ := filepath.Match(candidate, lowerBase); matched {
+				return true
+			}
+			if matched, _ := filepath.Match(candidate, lowerRel); matched {
+				return true
+			}
+			continue
+		}
+
+		patSegs := strings.Split(strings.TrimPrefix(candidate, "/"), "/")
+		if matchPathSegments(patSegs, relSegs) {
+			return true
+		}
+		if !strings.HasPrefix(candidate, "**/") && !strings.HasPrefix(candidate, "/") {
+			withAnyPrefix := append([]string{"**"}, patSegs...)
+			if matchPathSegments(withAnyPrefix, relSegs) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsIgnoredByGit checks if path matches any gitignore patterns, respecting negation rules.
 func IsIgnoredByGit(path string, workspaceRoot string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return false
@@ -99,27 +193,54 @@ func IsIgnoredByGit(path string, workspaceRoot string, patterns []string) bool {
 		return false
 	}
 	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == "" {
+		return false
+	}
 	base := filepath.Base(rel)
 
-	for _, pat := range patterns {
-		pat = strings.TrimPrefix(pat, "/")
-		isDirOnly := strings.HasSuffix(pat, "/")
-		cleanPat := strings.TrimSuffix(pat, "/")
-
-		if isDirOnly {
-			if strings.Contains(rel, cleanPat+"/") || rel == cleanPat {
-				return true
+	ignored := false
+	for _, rawPat := range patterns {
+		pat := strings.TrimSpace(rawPat)
+		if pat == "" || strings.HasPrefix(pat, "#") {
+			continue
+		}
+		negated := strings.HasPrefix(pat, "!")
+		if negated {
+			pat = strings.TrimSpace(pat[1:])
+			if pat == "" {
+				continue
 			}
 		}
 
-		if matched, _ := filepath.Match(cleanPat, base); matched {
-			return true
+		rooted := strings.HasPrefix(pat, "/")
+		pat = strings.TrimPrefix(pat, "/")
+		isDirOnly := strings.HasSuffix(pat, "/")
+		cleanPat := strings.TrimSuffix(pat, "/")
+		if cleanPat == "" {
+			continue
 		}
-		if matched, _ := filepath.Match(cleanPat, rel); matched {
-			return true
+
+		matched := false
+		if isDirOnly {
+			if rooted {
+				matched = rel == cleanPat || strings.HasPrefix(rel, cleanPat+"/")
+			} else {
+				matched = rel == cleanPat ||
+					strings.HasPrefix(rel, cleanPat+"/") ||
+					strings.Contains(rel, "/"+cleanPat+"/") ||
+					strings.HasSuffix(rel, "/"+cleanPat)
+			}
+		} else if rooted {
+			matched = matchPathSegments(strings.Split(strings.ToLower(cleanPat), "/"), strings.Split(strings.ToLower(rel), "/"))
+		} else {
+			matched = MatchGlob(cleanPat, rel, base)
+		}
+
+		if matched {
+			ignored = !negated
 		}
 	}
-	return false
+	return ignored
 }
 
 // IsBinary returns true if data contains null bytes.

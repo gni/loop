@@ -64,6 +64,9 @@ func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessi
 }
 
 func keepRecentMessageCount(messages []db.Message) int {
+	if len(messages) == 0 {
+		return 0
+	}
 	budget := limits.CompactionKeepRecentTokens()
 	kept := 0
 	used := 0
@@ -74,6 +77,9 @@ func keepRecentMessageCount(messages []db.Message) int {
 		}
 		used += cost
 		kept++
+	}
+	if kept < 2 && len(messages) >= 2 {
+		kept = 2
 	}
 	for kept < len(messages)-1 && messages[len(messages)-kept].Role == "tool" {
 		kept++
@@ -130,6 +136,29 @@ func sortedMapKeys(m map[string]bool) []string {
 	return keys
 }
 
+func collectPriorSummaryFiles(content string, readFilesMap, modifiedFilesMap map[string]bool) {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		var listStr string
+		var target map[string]bool
+		if strings.HasPrefix(trimmed, "- Files Read:") {
+			listStr = strings.TrimSpace(strings.TrimPrefix(trimmed, "- Files Read:"))
+			target = readFilesMap
+		} else if strings.HasPrefix(trimmed, "- Files Modified:") {
+			listStr = strings.TrimSpace(strings.TrimPrefix(trimmed, "- Files Modified:"))
+			target = modifiedFilesMap
+		}
+		if target == nil || listStr == "" {
+			continue
+		}
+		for _, item := range strings.Split(listStr, ",") {
+			if p := strings.TrimSpace(item); p != "" {
+				target[p] = true
+			}
+		}
+	}
+}
+
 func truncateTranscriptSegment(text string, maxBytes int) string {
 	if len(text) <= maxBytes {
 		return text
@@ -145,10 +174,6 @@ func (a *Agent) CompressHistory(
 	w io.Writer,
 ) {
 	keepMsgCount := keepRecentMessageCount(*messages)
-	if keepMsgCount < 2 {
-		keepMsgCount = 2
-	}
-
 	keepIdx := len(*messages) - keepMsgCount
 	if keepIdx <= 1 {
 		fmt.Fprintln(w, "conversation is already compact (too few messages to compress).")
@@ -163,6 +188,9 @@ func (a *Agent) CompressHistory(
 	modifiedFilesMap := make(map[string]bool)
 
 	for _, m := range toCompress {
+		if m.Role == "system" {
+			collectPriorSummaryFiles(m.Content, readFilesMap, modifiedFilesMap)
+		}
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
 				if path := filetool.ExtractFilePath(tc.Function.Arguments); path != "" {

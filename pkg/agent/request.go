@@ -13,9 +13,17 @@ import (
 )
 
 const (
-	nonFileToolMaxChars         = 30000
-	nonFileToolTruncateNotice   = "\n... (output truncated to 30000 chars for context optimization)"
+	nonFileToolMaxChars       = 30000
+	nonFileToolTruncateNotice = "\n... (output truncated to 30000 chars for context optimization)"
 )
+
+func requestMessageChars(m db.Message) int {
+	chars := len(m.Content)
+	for _, tc := range m.ToolCalls {
+		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	return chars
+}
 
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
@@ -72,7 +80,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		}
 
 		validMessages = append(validMessages, msg)
-		totalChars += len(msg.Content)
+		totalChars += requestMessageChars(msg)
 	}
 
 	return validMessages, totalChars
@@ -93,7 +101,7 @@ func trimMessagesToCharBudget(validMessages []db.Message, totalChars, limitChars
 			}
 		}
 		for k := startIndex; k < dropEnd; k++ {
-			totalChars -= len(validMessages[k].Content)
+			totalChars -= requestMessageChars(validMessages[k])
 		}
 		startIndex = dropEnd
 	}

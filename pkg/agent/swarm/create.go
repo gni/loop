@@ -29,9 +29,10 @@ func (s *CreateSubagentTool) activeSkillNames() []string {
 	if s == nil || s.mam == nil || s.mam.BaseAgent == nil {
 		return []string{}
 	}
-	seen := make(map[string]struct{}, len(s.mam.BaseAgent.ActiveSkills))
-	names := make([]string, 0, len(s.mam.BaseAgent.ActiveSkills))
-	for _, skill := range s.mam.BaseAgent.ActiveSkills {
+	activeSkills := s.mam.BaseAgent.GetActiveSkills()
+	seen := make(map[string]struct{}, len(activeSkills))
+	names := make([]string, 0, len(activeSkills))
+	for _, skill := range activeSkills {
 		name := strings.TrimSpace(skill.Name)
 		if name == "" {
 			continue
@@ -147,9 +148,9 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		parentName = mac.ma.Name
 	}
 
-	s.mam.BaseAgent.ReloadSkills()
-	availableSkills := make(map[string]string, len(s.mam.BaseAgent.ActiveSkills))
-	for _, skill := range s.mam.BaseAgent.ActiveSkills {
+	reloadedSkills := s.mam.BaseAgent.ReloadSkills()
+	availableSkills := make(map[string]string, len(reloadedSkills))
+	for _, skill := range reloadedSkills {
 		availableSkills[strings.ToLower(strings.TrimSpace(skill.Name))] = skill.Name
 	}
 
@@ -174,6 +175,9 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	var convertedSkillNames []string
 	for _, requestedName := range args.SkillNames {
 		requestedName = strings.TrimSpace(requestedName)
+		if requestedName == "" {
+			continue
+		}
 		key := strings.ToLower(requestedName)
 		if canonicalName, exists := availableSkills[key]; exists {
 			canonicalKey := strings.ToLower(canonicalName)

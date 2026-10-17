@@ -526,26 +526,34 @@ func (a *Agent) SetLastGenerationDuration(d time.Duration) {
 }
 
 func (a *Agent) GetActiveSkills() []tool.Skill {
-	return a.ActiveSkills
+	if a == nil {
+		return nil
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	out := make([]tool.Skill, len(a.ActiveSkills))
+	copy(out, a.ActiveSkills)
+	return out
 }
 
 func (a *Agent) ReloadSkills() []tool.Skill {
 	if a == nil || a.Config == nil {
-		if a != nil {
-			return a.ActiveSkills
-		}
-		return nil
+		return a.GetActiveSkills()
 	}
 	dirs := SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot)
 	if len(dirs) == 0 {
-		return a.ActiveSkills
+		return a.GetActiveSkills()
 	}
 	skills, err := LoadSkillsFromDirs(dirs...)
+	a.stateMu.Lock()
 	if err == nil && (len(skills) > 0 || len(a.ActiveSkills) == 0) {
 		a.ActiveSkills = skills
-		a.markSystemPromptDirty()
+		a.ForceSystemPromptUpdate = true
 	}
-	return a.ActiveSkills
+	out := make([]tool.Skill, len(a.ActiveSkills))
+	copy(out, a.ActiveSkills)
+	a.stateMu.Unlock()
+	return out
 }
 
 func (a *Agent) GetLiveWriter() io.Writer {
@@ -649,7 +657,7 @@ func getPluginDirs(workspaceRoot string) []string {
 }
 
 func (a *Agent) ReloadPlugins() error {
-	if a.Config.DisableLocalPlugins {
+	if a.Config != nil && a.Config.DisableLocalPlugins {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
@@ -658,6 +666,7 @@ func (a *Agent) ReloadPlugins() error {
 	for _, dir := range getPluginDirs(a.WorkspaceRoot) {
 		_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
 	}
+	a.markSystemPromptDirty()
 	return nil
 }
 

@@ -156,18 +156,21 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
+	trailingTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		if m.Role == "assistant" && (m.PromptTokens > 0 || m.CompletionTokens > 0) {
-			return m.PromptTokens, m.CompletionTokens, false
+			if trailingTokens == 0 {
+				return m.PromptTokens, m.CompletionTokens, false
+			}
+			return m.PromptTokens + m.CompletionTokens + trailingTokens, m.CompletionTokens, true
 		}
+		trailingTokens += TokensFromChars(messageChars(m))
 	}
 
-	sysChars := 0
+	msgChars := 0
 	for _, m := range messages {
-		if m.Role == "system" {
-			sysChars += len(m.Content)
-		}
+		msgChars += messageChars(m)
 	}
 
 	toolTokens := 0
@@ -179,7 +182,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 		toolTokens = EstimateToolSchemaTokens(tools)
 	}
 
-	if initialTokens := TokensFromChars(sysChars) + toolTokens; initialTokens > 0 {
+	if initialTokens := TokensFromChars(msgChars) + toolTokens; initialTokens > 0 {
 		return initialTokens, 0, true
 	}
 	return 0, 0, false

@@ -126,23 +126,7 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 		return "", fmt.Errorf("nil agent")
 	}
 
-	a.McpClientsMu.Lock()
-	if a.Config == nil {
-		a.McpClientsMu.Unlock()
-		return "", fmt.Errorf("no config")
-	}
-	cfg, exists := a.Config.MCPServers[name]
-	generation := a.mcpGeneration
-	a.McpClientsMu.Unlock()
-
-	if !exists {
-		return "", fmt.Errorf("MCP server '%s' is not configured", name)
-	}
-	if cfg.Disabled {
-		return "", fmt.Errorf("MCP server '%s' is disabled", name)
-	}
-
-	client, err := a.connectServer(name, cfg, generation)
+	client, err := a.connectMCPServer(name)
 	if err != nil {
 		return "", err
 	}
@@ -242,6 +226,9 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 			},
 		})
 	}
+	if len(tools) > 0 {
+		a.markSystemPromptDirty()
+	}
 
 	return client, nil
 }
@@ -272,7 +259,7 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	a.McpClientsMu.Unlock()
 
 	if !exists {
-		return nil, fmt.Errorf("MCP server '%s' is no longer configured", name)
+		return nil, fmt.Errorf("MCP server '%s' is not configured", name)
 	}
 	if cfg.Disabled {
 		return nil, fmt.Errorf("MCP server '%s' is disabled", name)
@@ -320,8 +307,6 @@ func (a *Agent) recordMCPError(name string, err error) {
 
 func (a *Agent) StopMCPServers() {
 	a.McpClientsMu.Lock()
-	defer a.McpClientsMu.Unlock()
-
 	a.mcpGeneration++
 
 	for name, client := range a.McpClients {
@@ -331,7 +316,10 @@ func (a *Agent) StopMCPServers() {
 		}
 	}
 	a.McpClients = make(map[string]*mcpClient)
+	a.McpClientsMu.Unlock()
+
 	a.Registry.UnregisterPrefix("mcp__")
+	a.markSystemPromptDirty()
 }
 
 func (a *Agent) GetMCPTools() []Tool {

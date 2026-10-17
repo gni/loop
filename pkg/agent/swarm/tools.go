@@ -3,6 +3,7 @@ package swarm
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"loop/pkg/agent/tool"
@@ -10,11 +11,10 @@ import (
 )
 
 type SubagentExecutor struct {
+	mu       sync.Mutex
 	subagent *MultiAgent
 	def      tool.Tool
 }
-
-type subagentExecutor = SubagentExecutor
 
 func (s *SubagentExecutor) Name() string          { return s.def.Function.Name }
 func (s *SubagentExecutor) Definition() tool.Tool { return s.def }
@@ -48,9 +48,12 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		return "", fmt.Errorf("missing required argument: prompt")
 	}
 
-	if s.subagent.Manager == nil {
-		return "", fmt.Errorf("subagent '%s' has no manager reference", s.subagent.Name)
+	if s.subagent == nil || s.subagent.Manager == nil {
+		return "", fmt.Errorf("subagent has no manager reference")
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	drainSubagentOutput(s.subagent.Output)
 

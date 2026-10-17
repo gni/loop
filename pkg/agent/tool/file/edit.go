@@ -142,6 +142,8 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if effNew := edit.EffectiveNewText(); effNew != "" {
 			edit.NewText = effNew
 		}
+		edit.OldText = strings.ReplaceAll(edit.OldText, "\r\n", "\n")
+		edit.NewText = strings.ReplaceAll(edit.NewText, "\r\n", "\n")
 		if placeholders := DetectOmissionPlaceholders(edit.NewText); len(placeholders) > 0 {
 			return "", fmt.Errorf("refusing to edit file: detected code omission placeholder(s) in replacement text: %q. Please provide the complete new code replacement block without shorthand placeholders or comments like '// ... rest of code'.", placeholders)
 		}

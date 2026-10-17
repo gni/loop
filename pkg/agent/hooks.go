@@ -13,6 +13,22 @@ import (
 
 var PermissionHook func(ToolCallEvent) *PermissionDecision
 
+func (a *Agent) executeHookScript(script string, payload any) (string, string, error) {
+	cmd := exec.CommandContext(a.Context(), "bash", "-c", script)
+	cmd.Dir = a.WorkspaceRoot
+	cmd.Env = os.Environ()
+
+	payloadBytes, _ := json.Marshal(payload)
+	cmd.Stdin = bytes.NewReader(payloadBytes)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
 func (a *Agent) runBeforeToolHook(tc db.ToolCall) (bool, string) {
 	if PermissionHook != nil {
 		if d := PermissionHook(ToolCallEvent{Type: "tool_call", ToolCall: tc}); d != nil && !d.Allowed {
@@ -31,26 +47,16 @@ func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
 		return true, ""
 	}
 
-	cmd := exec.Command("bash", "-c", a.Config.BeforeToolHook)
-	cmd.Dir = a.WorkspaceRoot
-	cmd.Env = os.Environ()
-
 	payload := map[string]string{
 		"tool_call_id": tc.ID,
 		"name":         tc.Function.Name,
 		"arguments":    tc.Function.Arguments,
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	cmd.Stdin = bytes.NewReader(payloadBytes)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		reason := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := a.executeHookScript(a.Config.BeforeToolHook, payload)
+	if err != nil {
+		reason := strings.TrimSpace(stderr)
 		if reason == "" {
-			reason = strings.TrimSpace(stdout.String())
+			reason = strings.TrimSpace(stdout)
 		}
 		if reason == "" {
 			reason = err.Error()
@@ -70,10 +76,6 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 		return output, toolErr
 	}
 
-	cmd := exec.Command("bash", "-c", a.Config.AfterToolHook)
-	cmd.Dir = a.WorkspaceRoot
-	cmd.Env = os.Environ()
-
 	errStr := ""
 	if toolErr != nil {
 		errStr = toolErr.Error()
@@ -86,23 +88,17 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 		"output":       output,
 		"error":        errStr,
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	cmd.Stdin = bytes.NewReader(payloadBytes)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		reason := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := a.executeHookScript(a.Config.AfterToolHook, payload)
+	if err != nil {
+		reason := strings.TrimSpace(stderr)
 		if reason == "" {
 			reason = err.Error()
 		}
 		return output, fmt.Errorf("after_tool_hook failed: %s", reason)
 	}
 
-	if hookOutput := stdout.String(); hookOutput != "" {
-		return hookOutput, nil
+	if stdout != "" {
+		return stdout, nil
 	}
 	return output, toolErr
 }

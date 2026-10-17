@@ -109,7 +109,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	pattern := domaintool.FirstNonEmpty(args.Pattern, args.Query, args.Q)
-	globPattern := strings.ToLower(strings.TrimSpace(args.Glob))
+	globPattern := strings.TrimSpace(args.Glob)
 	if pattern == "" && globPattern == "" {
 		return "", fmt.Errorf("pattern is required for grep (or provide a glob pattern to list matching files, e.g. glob='*.py')")
 	}
@@ -277,7 +277,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return skipErr
 			}
 			if globPattern != "" {
-				if matched, matchErr := filepath.Match(globPattern, strings.ToLower(d.Name())); matchErr == nil && !matched {
+				rel := RelSlashPath(workspaceRoot, path)
+				relToSearch := RelSlashPath(safePath, path)
+				if !MatchGlob(globPattern, rel, d.Name()) && (relToSearch == rel || !MatchGlob(globPattern, relToSearch, d.Name())) {
 					return nil
 				}
 			}

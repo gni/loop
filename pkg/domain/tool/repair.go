@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -18,10 +19,26 @@ func hasClosingDelimiterAhead(s string, idx int) bool {
 	return false
 }
 
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func hasFourHexDigits(s string, idx int) bool {
+	if idx+4 > len(s) {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		if !isHexByte(s[idx+i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // RepairJSON repairs malformed JSON parameters produced by language models,
-// stripping markdown code fences, escaping raw newlines/tabs inside strings,
-// removing trailing commas before closing delimiters, and balancing unmatched
-// brackets and braces.
+// stripping markdown code fences, escaping raw newlines/tabs and invalid
+// backslash escapes inside strings, removing trailing commas before closing
+// delimiters, and balancing unmatched brackets and braces in LIFO order.
 func RepairJSON(js string) string {
 	js = strings.TrimSpace(js)
 	if js == "" {
@@ -37,43 +54,71 @@ func RepairJSON(js string) string {
 			}
 		}
 		js = strings.TrimSpace(strings.Join(cleanLines, "\n"))
+		if js == "" {
+			return "{}"
+		}
 	}
 
 	var sb strings.Builder
-	sb.Grow(len(js) + 8)
+	sb.Grow(len(js) + 16)
 	inString := false
 	inEscape := false
-	openBraces, closeBraces := 0, 0
-	openBrackets, closeBrackets := 0, 0
+	var stack []byte
 
 	for i := 0; i < len(js); i++ {
 		c := js[i]
-		if inEscape {
-			sb.WriteByte(c)
-			inEscape = false
-			continue
-		}
-		if c == '\\' {
-			sb.WriteByte(c)
-			inEscape = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			sb.WriteByte(c)
-			continue
-		}
 		if inString {
-			switch c {
-			case '\n':
+			if inEscape {
+				inEscape = false
+				switch c {
+				case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+					sb.WriteByte('\\')
+					sb.WriteByte(c)
+				case 'u':
+					if hasFourHexDigits(js, i+1) {
+						sb.WriteString(`\u`)
+					} else {
+						sb.WriteString(`\\u`)
+					}
+				case '\n':
+					sb.WriteString(`\n`)
+				case '\r':
+					sb.WriteString(`\r`)
+				case '\t':
+					sb.WriteString(`\t`)
+				default:
+					sb.WriteString(`\\`)
+					sb.WriteByte(c)
+				}
+				continue
+			}
+			if c == '\\' {
+				inEscape = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+				sb.WriteByte(c)
+				continue
+			}
+			switch {
+			case c == '\n':
 				sb.WriteString(`\n`)
-			case '\t':
+			case c == '\t':
 				sb.WriteString(`\t`)
-			case '\r':
+			case c == '\r':
 				sb.WriteString(`\r`)
+			case c < 0x20:
+				fmt.Fprintf(&sb, `\u%04x`, c)
 			default:
 				sb.WriteByte(c)
 			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			sb.WriteByte(c)
 			continue
 		}
 
@@ -83,38 +128,38 @@ func RepairJSON(js string) string {
 
 		switch c {
 		case '{':
-			openBraces++
-		case '}':
-			closeBraces++
+			stack = append(stack, '}')
+			sb.WriteByte(c)
 		case '[':
-			openBrackets++
-		case ']':
-			closeBrackets++
+			stack = append(stack, ']')
+			sb.WriteByte(c)
+		case '}', ']':
+			if len(stack) == 0 {
+				continue
+			}
+			if stack[len(stack)-1] == c {
+				stack = stack[:len(stack)-1]
+				sb.WriteByte(c)
+			} else if len(stack) >= 2 && stack[len(stack)-2] == c {
+				sb.WriteByte(stack[len(stack)-1])
+				sb.WriteByte(c)
+				stack = stack[:len(stack)-2]
+			}
+		default:
+			sb.WriteByte(c)
 		}
-		sb.WriteByte(c)
 	}
 
 	if inString {
+		if inEscape {
+			sb.WriteString(`\\`)
+		}
 		sb.WriteByte('"')
 	}
-	js = sb.String()
 
-	trimExtraClose := func(s, suffix string, closeCount, openCount *int) string {
-		for len(s) > 0 && *closeCount > *openCount && strings.HasSuffix(s, suffix) {
-			s = strings.TrimSpace(strings.TrimSuffix(s, suffix))
-			*closeCount--
-		}
-		return s
-	}
-	js = trimExtraClose(js, "}", &closeBraces, &openBraces)
-	js = trimExtraClose(js, "]", &closeBrackets, &openBrackets)
-
-	if openBrackets > closeBrackets {
-		js += strings.Repeat("]", openBrackets-closeBrackets)
-	}
-	if openBraces > closeBraces {
-		js += strings.Repeat("}", openBraces-closeBraces)
+	for i := len(stack) - 1; i >= 0; i-- {
+		sb.WriteByte(stack[i])
 	}
 
-	return js
+	return sb.String()
 }

@@ -134,6 +134,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			return
 		}
 
+		if iter > 1 {
+			a.SyncSessionSystemPrompt(messages, sessionID)
+		}
+
 		engine.BeginTurn()
 
 		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
@@ -157,17 +161,17 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.DebugLogLLMRequest(sessionID, iter, a.Config.Model, a.Config.Endpoint, *messages, toolsForLog)
 
 		chunkChan := make(chan StreamChunk, 200)
-		streamErrChan := make(chan error, 1)
-		var assistantMsg *db.Message
+		type streamResult struct {
+			msg *db.Message
+			err error
+		}
+		resChan := make(chan streamResult, 1)
 
 		timer.Time("llm", "start")
 		go func() {
 			msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
-			if msg != nil {
-				assistantMsg = msg
-			}
 			close(chunkChan)
-			streamErrChan <- err
+			resChan <- streamResult{msg: msg, err: err}
 		}()
 
 		a.CurrentStreamMu.Lock()
@@ -249,14 +253,16 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.CurrentStreamBuffer = nil
 		a.CurrentStreamMu.Unlock()
 
-		if streamErr := <-streamErrChan; streamErr != nil {
+		res := <-resChan
+		if res.err != nil {
 			if loader != nil {
 				loader.Stop()
 			}
-			a.renderTurnError(writerToUse, ncw, sink, streamErr, ctx.Err(), isNonInteractive, theme)
+			a.renderTurnError(writerToUse, ncw, sink, res.err, ctx.Err(), isNonInteractive, theme)
 			return
 		}
 
+		assistantMsg := res.msg
 		if assistantMsg == nil {
 			return
 		}

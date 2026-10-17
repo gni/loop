@@ -10,6 +10,7 @@ import (
 	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
+	domaintool "loop/pkg/domain/tool"
 )
 
 var (
@@ -19,11 +20,12 @@ var (
 	lsDirRe   = regexp.MustCompile(`(?:ls|dir)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
 	redirRe   = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
 	rmTouchRe = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
+	cmdSplitRe = regexp.MustCompile(`(?:&&|\|\||;|\|)`)
 
 	bashTargetRegexes  = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}
 	bashModifyPrefixes = []string{
-		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add",
-		"mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "cargo ", "gofmt ", "patch ",
+		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add", "git stash",
+		"mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "go mod ", "cargo ", "gofmt ", "patch ", "tee ",
 	}
 )
 
@@ -121,7 +123,10 @@ func CanonicalizeArguments(arguments string) string {
 	}
 	var val interface{}
 	if err := json.Unmarshal([]byte(trimmed), &val); err != nil {
-		return trimmed
+		repaired := domaintool.RepairJSON(trimmed)
+		if errRep := json.Unmarshal([]byte(repaired), &val); errRep != nil {
+			return trimmed
+		}
 	}
 	if b, err := json.Marshal(val); err == nil {
 		return string(b)
@@ -229,11 +234,15 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 		g.lastTarget = ""
 		g.readWindows = make(map[string]map[string]bool)
 
-		if err == nil && g.invalidator != nil {
-			if target != "" {
-				g.invalidator.Forget(g.resolvePath(target))
-			} else if toolName == "bash" {
-				g.invalidator.ForgetAll()
+		if err == nil {
+			g.failedStreaks = make(map[string]int)
+			g.lastFailedCmd = ""
+			if g.invalidator != nil {
+				if target != "" {
+					g.invalidator.Forget(g.resolvePath(target))
+				} else if toolName == "bash" {
+					g.invalidator.ForgetAll()
+				}
 			}
 		}
 	}
@@ -320,10 +329,16 @@ func isBashModifying(cmd string) bool {
 	if trimmed == "" {
 		return false
 	}
-	for _, p := range bashModifyPrefixes {
-		if strings.HasPrefix(trimmed, p) {
-			return true
+	if strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, "> ") || redirRe.MatchString(trimmed) {
+		return true
+	}
+	for _, sub := range cmdSplitRe.Split(trimmed, -1) {
+		sub = strings.TrimSpace(sub)
+		for _, p := range bashModifyPrefixes {
+			if strings.HasPrefix(sub, p) {
+				return true
+			}
 		}
 	}
-	return strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, "> ") || redirRe.MatchString(trimmed)
+	return false
 }

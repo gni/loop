@@ -91,12 +91,12 @@ func (mam *MultiAgentManager) spawnAgent(
 		parent = p
 	}
 
-	mam.BaseAgent.ReloadSkills()
+	activeSkills := mam.BaseAgent.ReloadSkills()
 
 	referenceSkills := make([]tool.Skill, 0, len(skillNames))
 	assignedNames := make(map[string]struct{})
 	if inheritAllSkills {
-		referenceSkills = append(referenceSkills, mam.BaseAgent.ActiveSkills...)
+		referenceSkills = append(referenceSkills, activeSkills...)
 		for _, skill := range referenceSkills {
 			assignedNames[strings.ToLower(skill.Name)] = struct{}{}
 		}
@@ -107,7 +107,7 @@ func (mam *MultiAgentManager) spawnAgent(
 				return fmt.Errorf("reference skill name cannot be empty")
 			}
 			var matched *tool.Skill
-			for _, s := range mam.BaseAgent.ActiveSkills {
+			for _, s := range activeSkills {
 				if strings.EqualFold(s.Name, sn) {
 					skillCopy := s
 					matched = &skillCopy
@@ -115,8 +115,8 @@ func (mam *MultiAgentManager) spawnAgent(
 				}
 			}
 			if matched == nil {
-				available := make([]string, 0, len(mam.BaseAgent.ActiveSkills))
-				for _, skill := range mam.BaseAgent.ActiveSkills {
+				available := make([]string, 0, len(activeSkills))
+				for _, skill := range activeSkills {
 					available = append(available, skill.Name)
 				}
 				sort.Strings(available)
@@ -213,19 +213,23 @@ func (mam *MultiAgentManager) SendMessage(name string, content string) error {
 		return fmt.Errorf("agent '%s' not found", name)
 	}
 
-	ma.Input <- db.Message{
+	select {
+	case <-ma.Context.Done():
+		return fmt.Errorf("agent '%s' is no longer running", name)
+	case ma.Input <- db.Message{
 		Role:    "user",
 		Name:    "User",
 		Content: content,
+	}:
+		return nil
 	}
-	return nil
 }
 
 func (mam *MultiAgentManager) ListAgents() []string {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
 
-	var names []string
+	names := make([]string, 0, len(mam.Agents))
 	for k := range mam.Agents {
 		names = append(names, k)
 	}
@@ -242,7 +246,10 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 		return fmt.Errorf("agent '%s' not found", name)
 	}
 
-	ma.Cancel()
+	ma.CancelActiveTurn()
+	if ma.Cancel != nil {
+		ma.Cancel()
+	}
 	delete(mam.Agents, name)
 
 	if mam.BaseAgent != nil {
@@ -257,7 +264,23 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 		ma.Parent.SubagentsMu.Unlock()
 	}
 
-	mam.BaseAgent.Registry.UnregisterPrefix(fmt.Sprintf("subagent__%s", name))
+	ma.SubagentsMu.Lock()
+	for childName, child := range ma.Subagents {
+		if child != nil {
+			child.Parent = ma.Parent
+			if ma.Parent != nil {
+				ma.Parent.SubagentsMu.Lock()
+				ma.Parent.Subagents[childName] = child
+				ma.Parent.SubagentsMu.Unlock()
+			}
+		}
+	}
+	ma.Subagents = make(map[string]*MultiAgent)
+	ma.SubagentsMu.Unlock()
+
+	if mam.BaseAgent != nil && mam.BaseAgent.Registry != nil {
+		mam.BaseAgent.Registry.Unregister(fmt.Sprintf("subagent__%s", name))
+	}
 
 	if mam.ActiveAgent == ma {
 		mam.ActiveAgent = ma.Parent

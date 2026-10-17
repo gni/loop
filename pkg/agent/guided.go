@@ -351,15 +351,8 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 		return ""
 	}
 
-	previewContent := oldContent
-	for _, e := range edits {
-		oldBlock := strings.ReplaceAll(e.EffectiveOldText(), "\r\n", "\n")
-		newBlock := strings.ReplaceAll(e.EffectiveNewText(), "\r\n", "\n")
-		if oldBlock != "" && strings.Contains(previewContent, oldBlock) {
-			previewContent = strings.Replace(previewContent, oldBlock, newBlock, 1)
-		}
-	}
-	if previewContent == oldContent {
+	previewContent, changed := filetool.ApplyEditsPreview(oldContent, edits)
+	if !changed {
 		return ""
 	}
 	return filetool.GenerateDisplayDiff(oldContent, previewContent, 3)
