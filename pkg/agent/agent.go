@@ -77,6 +77,7 @@ type Agent struct {
 
 	mcpGeneration int
 	mcpPending    map[string]config.MCPServerConfig
+	mcpConnecting map[string]*mcpConnectAttempt
 
 	Registry      *tool.ToolRegistry
 	WorkspaceRoot string
@@ -590,13 +591,12 @@ func (a *Agent) DidStreamLiveBody() bool {
 }
 
 func defaultAskUserSelection(options []tool.AskUserOption, recommended string) string {
-	if recommended != "" {
-		return recommended
-	}
-	if len(options) > 0 {
-		return options[0].Label
-	}
-	return "Confirmed"
+	return tool.DefaultAskUserSelection(options, recommended)
+}
+
+func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (int, int) {
+	promptTokens, _ := a.GetGlobalTokens(messages, allowlist)
+	return promptTokens, a.GetEffectiveContextLimit(promptTokens)
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {

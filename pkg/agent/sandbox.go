@@ -75,27 +75,34 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		return "", fmt.Errorf("security violation: path '%s' escapes workspace root '%s'", inputPath, a.WorkspaceRoot)
 	}
 
-	// Canonical symlink containment verification (sandbox policy)
-	evalRoot := cleanRoot
-	if realRoot, err := filepath.EvalSymlinks(cleanRoot); err == nil {
-		evalRoot = filepath.Clean(realRoot)
+	// Resolve the closest existing ancestor, including when several parents do not
+	// exist yet. Checking only the immediate parent misses escaping symlinks.
+	evalRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve workspace root: %w", err)
 	}
-	evalPrefix := evalRoot
-	if !strings.HasSuffix(evalPrefix, string(filepath.Separator)) {
-		evalPrefix += string(filepath.Separator)
-	}
-
+	ancestor := cleanTarget
 	var evalTarget string
-	if realTarget, err := filepath.EvalSymlinks(cleanTarget); err == nil {
-		evalTarget = filepath.Clean(realTarget)
-	} else if os.IsNotExist(err) {
-		parent := filepath.Dir(cleanTarget)
-		if realParent, pErr := filepath.EvalSymlinks(parent); pErr == nil {
-			evalTarget = filepath.Clean(filepath.Join(realParent, filepath.Base(cleanTarget)))
+	for {
+		realAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
+		if resolveErr == nil {
+			rel, relErr := filepath.Rel(ancestor, cleanTarget)
+			if relErr != nil {
+				return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
+			}
+			evalTarget = filepath.Clean(filepath.Join(realAncestor, rel))
+			break
 		}
+		if !os.IsNotExist(resolveErr) {
+			return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, resolveErr)
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", fmt.Errorf("cannot resolve existing ancestor of '%s'", inputPath)
+		}
+		ancestor = parent
 	}
-
-	if evalTarget != "" && evalTarget != evalRoot && !strings.HasPrefix(evalTarget, evalPrefix) {
+	if !withinRoot(evalRoot, evalTarget) {
 		return "", fmt.Errorf("security violation: path '%s' resolves via symlink outside workspace root '%s'", inputPath, a.WorkspaceRoot)
 	}
 

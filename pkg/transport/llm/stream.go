@@ -97,6 +97,7 @@ type RawStreamChunk struct {
 type StreamReader struct {
 	reader     *bufio.Reader
 	OnActivity func()
+	eof        bool
 }
 
 // NewStreamReader wraps an io.Reader into an SSE stream parser.
@@ -113,13 +114,19 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 			return nil, false, ctx.Err()
 		default:
 		}
+		if sr.eof {
+			return nil, true, nil
+		}
 
 		line, err := sr.reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
+			if err != io.EOF {
+				return nil, false, fmt.Errorf("error reading stream: %w", err)
+			}
+			if line == "" {
 				return nil, true, nil
 			}
-			return nil, false, fmt.Errorf("error reading stream: %w", err)
+			sr.eof = true
 		}
 
 		if sr.OnActivity != nil {
@@ -135,10 +142,13 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 		if data == "[DONE]" {
 			return nil, true, nil
 		}
+		if data == "" {
+			continue
+		}
 
 		var chunk RawStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
+			return nil, false, fmt.Errorf("invalid stream data: %w", err)
 		}
 
 		return &chunk, false, nil

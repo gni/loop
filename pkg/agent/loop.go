@@ -121,6 +121,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	engine := NewTurnEngine(a, EnginePolicy{
 		SessionKey:    sessionID,
+		ToolAllowlist: func() []string { return allowlist },
 		AllowApproval: true,
 		RunHooks:      true,
 		GuidedMode:    a.IsGuidedMode(),
@@ -140,16 +141,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		engine.BeginTurn()
 
-		globalPromptTokensEst, _ := a.GetGlobalTokens(*messages, allowlist)
-		effectiveLimit := a.GetEffectiveContextLimit(globalPromptTokensEst)
+		globalPromptTokensEst, effectiveLimit := a.estimateTurnContext(*messages, allowlist)
 		timer.Time("compaction", "start")
 		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 		timer.Time("compaction", "end")
 
 		if engine.ShouldRecap() {
 			engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, writerToUse, theme)
-			globalPromptTokensEst, _ = a.GetGlobalTokens(*messages, allowlist)
-			effectiveLimit = a.GetEffectiveContextLimit(globalPromptTokensEst)
+			globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
 		}
 
 		if iter > 1 {
@@ -203,6 +202,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		updateStreamStatus(true)
 
+		// Defer read titles until execution so the terminal shows one read
+		// followed by its result, rather than listing every queued read first.
+		deferredReadCalls := make(map[int]bool)
 		for chunk := range chunkChan {
 			switch chunk.Type {
 			case "reasoning":
@@ -220,15 +222,23 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 				sr.Write(chunk.Content)
 			case "tool_name":
-				sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
+				if chunk.Content == "read" {
+					deferredReadCalls[chunk.ToolCallIndex] = true
+				} else {
+					sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
+				}
 				if loader != nil {
 					loader.ShowDots()
 					loader.Feed()
 				}
 			case "tool_target":
-				sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
+				if !deferredReadCalls[chunk.ToolCallIndex] {
+					sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
+				}
 			case "tool_call":
-				sr.WriteToolCall(chunk.Content)
+				if !deferredReadCalls[chunk.ToolCallIndex] {
+					sr.WriteToolCall(chunk.Content)
+				}
 				if loader != nil {
 					if sr.DidStreamToolBody(chunk.ToolCallIndex) {
 						loader.PauseDots()
@@ -275,9 +285,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
 		sink.Append(*assistantMsg)
 
-		globalPromptTokens, _ := a.GetGlobalTokens(*messages, allowlist)
+		globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
-		postEffectiveLimit := a.GetEffectiveContextLimit(globalPromptTokens)
 		timer.Time("compaction", "start")
 		globalPromptTokens, postEffectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokens, assistantMsg.CompletionTokens, postEffectiveLimit)
 		timer.Time("compaction", "end")

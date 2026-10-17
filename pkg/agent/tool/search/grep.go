@@ -190,7 +190,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				limitReached = true
 				return fs.SkipAll
 			}
-			out.WriteString(relPath + "\n")
+			if !appendOutputLine(relPath + "\n") {
+				return fs.SkipAll
+			}
 			shownMatches++
 			return nil
 		}
@@ -246,7 +248,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			prevLine := -1
 			for _, idx := range sortedIntKeys(linesToShow) {
 				if prevLine != -1 && idx > prevLine+1 {
-					out.WriteString("--\n")
+					if !appendOutputLine("--\n") {
+						return fs.SkipAll
+					}
 				}
 				lineContent := truncateGrepLine(fileLines[idx], maxLineLen)
 				sep := "-"
@@ -267,7 +271,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if !info.IsDir() {
-		_ = processFile(safePath)
+		if err := processFile(safePath); err != nil && err != fs.SkipAll {
+			return "", err
+		}
 	} else {
 		walkErr := filepath.WalkDir(safePath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -291,6 +297,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	result := out.String()
+	if strings.TrimSpace(result) == "" && outputSizeReached {
+		return file.GrepOutputNotice(maxOutBytes/1024, shownMatches, totalMatches, offset+shownMatches), nil
+	}
 	if strings.TrimSpace(result) == "" {
 		if pattern == "" && globPattern != "" {
 			return fmt.Sprintf("No files found matching glob: %s", globPattern), nil

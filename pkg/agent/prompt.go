@@ -269,16 +269,12 @@ func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 }
 
 func filterToolEntries(entries []ToolEntry, allowlist []string) []ToolEntry {
-	if len(allowlist) == 0 {
+	if allowlist == nil {
 		return entries
-	}
-	allowed := make(map[string]bool, len(allowlist))
-	for _, name := range allowlist {
-		allowed[name] = true
 	}
 	out := make([]ToolEntry, 0, len(entries))
 	for _, entry := range entries {
-		if allowed[entry.Name] || strings.HasPrefix(entry.Name, "mcp__") {
+		if tool.IsAllowedTool(entry.Name, allowlist) {
 			out = append(out, entry)
 		}
 	}

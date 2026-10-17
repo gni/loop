@@ -24,7 +24,7 @@ func (ma *MultiAgent) streamBufferBytes() []byte {
 	if ma.StreamBuffer == nil {
 		return nil
 	}
-	return ma.StreamBuffer.Bytes()
+	return append([]byte(nil), ma.StreamBuffer.Bytes()...)
 }
 
 func (ma *MultiAgent) resolveWriter(fallback io.Writer) io.Writer {
@@ -102,12 +102,11 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				ma.History = append(ma.History, msg)
 				ma.HistoryMu.Unlock()
 
-				taskID := msg.ToolCallID
-				ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
-
 				if msg.Role != "user" {
 					continue
 				}
+				taskID := msg.ToolCallID
+				ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
 
 				writer := ma.resolveWriter(w)
 				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
@@ -179,6 +178,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 	engine := agent.NewTurnEngine(ma.BaseAgent, agent.EnginePolicy{
 		AgentName:     ma.Name,
+		ToolAllowlist: ma.GetToolAllowlist,
 		AllowApproval: allowApproval,
 		RunHooks:      runHooks,
 		GuidedMode:    guidedMode,
@@ -269,6 +269,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 		}
 
+		// The first read is rendered by the executor after the LLM stream
+		// finishes, keeping the subagent display in execution order.
+		deferredFirstRead := false
 		for chunk := range chunkChan {
 			if subagentGenStart.IsZero() {
 				subagentGenStart = time.Now()
@@ -293,18 +296,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			case "tool_name":
 				startResponseHeader()
 				if chunk.ToolCallIndex == 0 {
-					sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
+					deferredFirstRead = chunk.Content == "read"
+					if !deferredFirstRead {
+						sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
+					}
 				}
 			case "tool_target":
 				startResponseHeader()
-				if chunk.ToolCallIndex == 0 {
+				if chunk.ToolCallIndex == 0 && !deferredFirstRead {
 					sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
 				}
 			case "tool_call":
 				subagentStreamChars += len(chunk.Content)
 				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
 				startResponseHeader()
-				if chunk.ToolCallIndex == 0 {
+				if chunk.ToolCallIndex == 0 && !deferredFirstRead {
 					sr.WriteToolCall(chunk.Content)
 				}
 			default:

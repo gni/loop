@@ -114,13 +114,6 @@ func (t *AskUserTool) Execute(ctx AgentContext, arguments string) (string, error
 		return fmt.Sprintf("User response to question %q: Selected %q", raw.Question, ans), nil
 	}
 
-	selected := raw.Recommended
-	if selected == "" && len(parsedOptions) > 0 {
-		selected = parsedOptions[0].Label
-	}
-	if selected == "" {
-		selected = "Confirmed"
-	}
-
+	selected := DefaultAskUserSelection(parsedOptions, raw.Recommended)
 	return fmt.Sprintf("User response to question %q: Selected %q", raw.Question, selected), nil
 }

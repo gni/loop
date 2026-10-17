@@ -102,7 +102,10 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if !info.IsDir() {
-		recordMatch(RelSlashPath(workspaceRoot, safePath))
+		rel := RelSlashPath(workspaceRoot, safePath)
+		if MatchGlob(pattern, rel, filepath.Base(safePath)) {
+			recordMatch(rel)
+		}
 	} else {
 		err = filepath.WalkDir(safePath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {

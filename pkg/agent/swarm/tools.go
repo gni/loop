@@ -25,7 +25,10 @@ func drainSubagentOutput(ch <-chan db.Message) {
 	}
 	for {
 		select {
-		case <-ch:
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
 		default:
 			return
 		}
@@ -57,8 +60,10 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 
 	drainSubagentOutput(s.subagent.Output)
 
-	taskID := fmt.Sprintf("subtask_%s", db.NewUUID()[:8])
-	s.subagent.Manager.RegisterTask(taskID, s.subagent.Name, prompt)
+	taskID := "subtask_" + db.NewUUID()
+	if err := s.subagent.Manager.RegisterTask(taskID, s.subagent.Name, prompt); err != nil {
+		return "", err
+	}
 
 	select {
 	case <-ctx.Context().Done():
@@ -123,7 +128,10 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errTimeout)
 			drainSubagentOutput(s.subagent.Output)
 			return "", errTimeout
-		case <-s.subagent.Output:
+		case _, ok := <-s.subagent.Output:
+			if !ok {
+				return "", fmt.Errorf("subagent '%s' output channel closed before task completion", s.subagent.Name)
+			}
 			if res, done, err := checkTask(); done {
 				return res, err
 			}

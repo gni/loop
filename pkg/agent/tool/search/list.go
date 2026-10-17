@@ -60,7 +60,9 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	targetPath := domaintool.FirstNonEmpty(args.Path, args.Dir, args.DirPath, ".")
 
 	depth := int(args.Depth)
-	if depth <= 0 || depth > limits.ListMaxDepth() {
+	if depth <= 0 {
+		depth = 1
+	} else if depth > limits.ListMaxDepth() {
 		depth = limits.ListMaxDepth()
 	}
 

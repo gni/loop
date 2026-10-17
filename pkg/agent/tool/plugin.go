@@ -5,12 +5,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
+
+const (
+	maxPluginOutputBytes = 1 << 20
+	maxPluginErrorBytes = 32 << 10
+	maxPluginDescriptorBytes = 64 << 10
+)
+
+type boundedPluginOutput struct {
+	bytes.Buffer
+	limit int
+	overflow bool
+}
+
+func (b *boundedPluginOutput) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := b.limit - b.Len()
+	if remaining < len(p) {
+		b.overflow = true
+	}
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.Buffer.Write(p)
+	}
+	return original, nil
+}
 
 type pluginTool struct {
 	path string
@@ -48,17 +77,33 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 
 	cmd := exec.CommandContext(ctxTimeout, absPath)
 	cmd.Stdin = strings.NewReader(arguments)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedPluginOutput{limit: maxPluginOutputBytes}
+	stderr := &boundedPluginOutput{limit: maxPluginErrorBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err = cmd.Run()
-	if ctxTimeout.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("plugin execution timed out after 10 seconds")
+	if ctxTimeout.Err() != nil {
+		return "", fmt.Errorf("plugin execution interrupted: %w", ctxTimeout.Err())
+	}
+	if stdout.overflow {
+		return "", fmt.Errorf("plugin output exceeded the %d byte limit", maxPluginOutputBytes)
 	}
 	if err != nil {
-		return "", fmt.Errorf("plugin error: %w (details: %s)", err, strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String())
+		if stderr.overflow {
+			detail += " [stderr truncated]"
+		}
+		return "", fmt.Errorf("plugin error: %w (details: %s)", err, detail)
 	}
 
 	return stdout.String(), nil
@@ -183,7 +228,10 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 	isDedicatedPluginDir := strings.EqualFold(filepath.Base(absDir), "plugins")
 
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) == ".json" {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("plugin registration interrupted: %w", err)
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) == ".json" {
 			continue
 		}
 
@@ -195,14 +243,31 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 
 		var jsonBytes []byte
 		if descPath, ok := HasPluginDescriptor(pluginPath); ok {
-			jsonBytes, _ = os.ReadFile(descPath)
+			file, openErr := os.Open(descPath)
+			if openErr != nil {
+				continue
+			}
+			jsonBytes, err = io.ReadAll(io.LimitReader(file, maxPluginDescriptorBytes+1))
+			_ = file.Close()
+			if err != nil || len(jsonBytes) > maxPluginDescriptorBytes {
+				continue
+			}
 		} else if isDedicatedPluginDir {
 			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 			cmd := exec.CommandContext(ctxTimeout, pluginPath, "--info")
-			out, err := cmd.Output()
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmd.Cancel = func() error {
+				if cmd.Process == nil { return os.ErrProcessDone }
+				return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+			cmd.WaitDelay = 2 * time.Second
+			cmd.Stderr = io.Discard
+			out := &boundedPluginOutput{limit: maxPluginDescriptorBytes}
+			cmd.Stdout = out
+			runErr := cmd.Run()
 			cancel()
-			if err == nil && len(out) > 0 {
-				jsonBytes = out
+			if runErr == nil && !out.overflow {
+				jsonBytes = out.Bytes()
 			}
 		}
 

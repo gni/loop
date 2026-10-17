@@ -23,6 +23,12 @@ func mcpLog(format string, args ...interface{}) {
 	}
 }
 
+type mcpConnectAttempt struct {
+	done   chan struct{}
+	client *mcpClient
+	err    error
+}
+
 type mcpToolExecutor struct {
 	mu       sync.Mutex
 	agent    *Agent
@@ -40,7 +46,7 @@ func (m *mcpToolExecutor) Execute(ctx tool.AgentContext, arguments string) (stri
 	if err != nil {
 		return "", err
 	}
-	return client.callTool(m.toolName, arguments)
+	return client.callTool(ctx.Context(), m.toolName, arguments)
 }
 
 func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
@@ -107,17 +113,26 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	var failuresMu sync.Mutex
+	var failures []string
 	for _, name := range eager {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			_, _ = a.connectServer(name, configs[name], generation)
+			if _, err := a.connectServer(name, configs[name], generation); err != nil {
+				failuresMu.Lock()
+				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+				failuresMu.Unlock()
+			}
 		}(name)
 	}
 	wg.Wait()
-
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return fmt.Errorf("MCP startup failed: %s", strings.Join(failures, "; "))
+	}
 	return nil
 }
 
@@ -167,24 +182,82 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	}
 
 	a.McpClientsMu.Lock()
-	if a.McpClients == nil {
-		a.McpClients = make(map[string]*mcpClient)
+	if a.mcpGeneration != generation {
+		a.McpClientsMu.Unlock()
+		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
-	if a.McpStartErrors == nil {
-		a.McpStartErrors = make(map[string]error)
-	}
-	delete(a.mcpPending, name)
-	if existing, ok := a.McpClients[name]; ok && existing != nil && existing.initialized {
+	if existing := a.McpClients[name]; existing != nil && existing.initialized {
 		a.McpClientsMu.Unlock()
 		return existing, nil
 	}
+	if attempt := a.mcpConnecting[name]; attempt != nil {
+		a.McpClientsMu.Unlock()
+		<-attempt.done
+		a.McpClientsMu.Lock()
+		stale := a.mcpGeneration != generation
+		a.McpClientsMu.Unlock()
+		if stale {
+			return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
+		}
+		return attempt.client, attempt.err
+	}
+	if a.mcpConnecting == nil {
+		a.mcpConnecting = make(map[string]*mcpConnectAttempt)
+	}
+	attempt := &mcpConnectAttempt{done: make(chan struct{})}
+	a.mcpConnecting[name] = attempt
 	a.McpClientsMu.Unlock()
 
-	client := a.newMCPClient(name, cfg)
+	client, err := a.startAndRegisterMCPServer(name, cfg, generation)
+	a.McpClientsMu.Lock()
+	attempt.client, attempt.err = client, err
+	if a.mcpConnecting[name] == attempt {
+		delete(a.mcpConnecting, name)
+	}
+	close(attempt.done)
+	a.McpClientsMu.Unlock()
+	return client, err
+}
 
+func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
+	client := a.newMCPClient(name, cfg)
 	if err := client.start(); err != nil {
-		a.recordMCPError(name, err)
+		a.recordMCPError(name, generation, err)
 		return nil, err
+	}
+
+	tools, err := client.listTools()
+	if err != nil {
+		client.close()
+		err = fmt.Errorf("MCP server '%s' failed to list tools: %w", name, err)
+		a.recordMCPError(name, generation, err)
+		return nil, err
+	}
+
+	executors := make([]tool.ToolExecutor, 0, len(tools))
+	for _, mcpTool := range tools {
+		prefixedName := fmt.Sprintf("mcp__%s__%s", name, mcpTool.Name)
+		if !tool.IsSafeIdentifier(prefixedName) {
+			mcpLog("Skipping MCP tool with invalid name %q from '%s'\n", mcpTool.Name, name)
+			continue
+		}
+		var jsonSchema JSONSchema
+		if schemaBytes, marshalErr := json.Marshal(mcpTool.InputSchema); marshalErr == nil {
+			if err := json.Unmarshal(schemaBytes, &jsonSchema); err != nil {
+				mcpLog("Skipping MCP tool %q with unsupported schema: %v\n", mcpTool.Name, err)
+				continue
+			}
+		} else {
+			mcpLog("Skipping MCP tool %q with invalid schema: %v\n", mcpTool.Name, marshalErr)
+			continue
+		}
+		executors = append(executors, &mcpToolExecutor{
+			agent: a, server: name, client: client, toolName: mcpTool.Name,
+			def: Tool{Type: "function", Function: FunctionDefinition{
+				Name: prefixedName, Description: fmt.Sprintf("[%s] %s", name, mcpTool.Description),
+				Parameters: jsonSchema,
+			}},
+		})
 	}
 
 	a.McpClientsMu.Lock()
@@ -193,43 +266,20 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 		client.close()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
+	if a.McpClients == nil {
+		a.McpClients = make(map[string]*mcpClient)
+	}
 	a.McpClients[name] = client
+	delete(a.mcpPending, name)
+	delete(a.McpStartErrors, name)
+	for _, executor := range executors {
+		a.Registry.Register(executor)
+	}
 	a.McpClientsMu.Unlock()
-	mcpLog("Started MCP server '%s'", name)
-
-	tools, err := client.listTools()
-	if err != nil {
-		mcpLog("Failed to list tools for MCP server '%s': %v", name, err)
-		return client, nil
-	}
-
-	for _, mcpTool := range tools {
-		prefixedName := fmt.Sprintf("mcp__%s__%s", name, mcpTool.Name)
-
-		var jsonSchema JSONSchema
-		if schemaBytes, err := json.Marshal(mcpTool.InputSchema); err == nil {
-			_ = json.Unmarshal(schemaBytes, &jsonSchema)
-		}
-
-		a.Registry.Register(&mcpToolExecutor{
-			agent:    a,
-			server:   name,
-			client:   client,
-			toolName: mcpTool.Name,
-			def: Tool{
-				Type: "function",
-				Function: FunctionDefinition{
-					Name:        prefixedName,
-					Description: fmt.Sprintf("[%s] %s", name, mcpTool.Description),
-					Parameters:  jsonSchema,
-				},
-			},
-		})
-	}
-	if len(tools) > 0 {
+	if len(executors) > 0 {
 		a.markSystemPromptDirty()
 	}
-
+	mcpLog("Started MCP server '%s' with %d tools\n", name, len(executors))
 	return client, nil
 }
 
@@ -280,6 +330,12 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 	mcpHTTPClient := &http.Client{
 		Timeout:   limits.MCPRequestTimeout(),
 		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
 	}
 	if jar, err := cookiejar.New(nil); err == nil {
 		mcpHTTPClient.Jar = jar
@@ -289,20 +345,22 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 		name:           name,
 		config:         cfg,
 		requests:       make(map[int64]chan string),
-		earlyResponses: make(map[int64]string),
 		nextID:         1,
 		client:         mcpHTTPClient,
 		connectTimeout: connectTimeout,
 	}
 }
 
-func (a *Agent) recordMCPError(name string, err error) {
+func (a *Agent) recordMCPError(name string, generation int, err error) {
 	a.McpClientsMu.Lock()
+	defer a.McpClientsMu.Unlock()
+	if a.mcpGeneration != generation {
+		return
+	}
 	if a.McpStartErrors == nil {
 		a.McpStartErrors = make(map[string]error)
 	}
 	a.McpStartErrors[name] = err
-	a.McpClientsMu.Unlock()
 }
 
 func (a *Agent) StopMCPServers() {
@@ -316,9 +374,12 @@ func (a *Agent) StopMCPServers() {
 		}
 	}
 	a.McpClients = make(map[string]*mcpClient)
+	a.mcpConnecting = make(map[string]*mcpConnectAttempt)
+	a.mcpPending = make(map[string]config.MCPServerConfig)
+	a.McpStartErrors = make(map[string]error)
+	a.Registry.UnregisterPrefix("mcp__")
 	a.McpClientsMu.Unlock()
 
-	a.Registry.UnregisterPrefix("mcp__")
 	a.markSystemPromptDirty()
 }
 

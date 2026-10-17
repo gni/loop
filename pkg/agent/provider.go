@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -138,13 +137,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
-	if p.Config != nil {
-		if err := p.activeProviderAuthStatus(); err != nil {
-			return nil, err
-		}
-		if resolved := p.Config.ResolveModelAlias(p.Config.Model); resolved != "" && resolved != p.Config.Model {
-			p.Config.Model = resolved
-		}
+	if err := p.activeProviderAuthStatus(); err != nil {
+		return nil, err
+	}
+	if resolved := p.Config.ResolveModelAlias(p.Config.Model); resolved != "" && resolved != p.Config.Model {
+		p.Config.Model = resolved
 	}
 
 	if p.PromptCacheSupported {
@@ -230,6 +227,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	var promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int
 	var generationStart time.Time
+	var finishReason string
 
 	thinkingFilter := transportllm.NewThinkingStreamFilter(emitText, emitReasoning)
 
@@ -238,7 +236,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
-		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String(), p.Config != nil && p.Config.ParallelToolCalls)
+		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
 
 		return &db.Message{
 			Role:             "assistant",
@@ -290,6 +288,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
 		if (choice.Delta.ReasoningContent != "" || choice.Delta.Content != "") && generationStart.IsZero() {
 			generationStart = time.Now()
 		}
@@ -309,10 +310,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				if tc.Index != nil {
 					idx = *tc.Index
 				}
-				if p.Config != nil && !p.Config.ParallelToolCalls && idx > 0 {
-					continue
+				if idx < 0 {
+					return nil, fmt.Errorf("invalid tool call index %d", idx)
 				}
-
 				existing, ok := toolCallsMap[idx]
 				if !ok {
 					newTC := tc
@@ -342,6 +342,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
+	if finishReason == "length" || finishReason == "content_filter" {
+		return nil, fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
+	}
+
 	assistantMsg := buildMessage()
 	if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 && assistantMsg.ReasoningContent == "" {
 		return nil, fmt.Errorf("server closed stream without returning any content or tool calls")
@@ -359,7 +363,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 }
 
 func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.Context, timedOut *atomic.Bool, prefix string) error {
-	if (timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded)) && p.Config != nil && p.Config.Timeout > 0 {
+	if timedOut.Load() && p.Config != nil && p.Config.Timeout > 0 {
 		return fmt.Errorf("%s%d seconds: %w", prefix, p.Config.Timeout, context.DeadlineExceeded)
 	}
 	if ctx.Err() != nil {

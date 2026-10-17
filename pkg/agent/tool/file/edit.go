@@ -153,6 +153,7 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		if err := fo.CheckMutationAllowed(safePath, true); err != nil {
+			discardIfUncommitted()
 			return "", err
 		}
 	}

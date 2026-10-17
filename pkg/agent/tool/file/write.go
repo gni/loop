@@ -78,6 +78,7 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		if err := fo.CheckMutationAllowed(safePath, false); err != nil {
+			discardIfUncommitted()
 			return "", err
 		}
 	}

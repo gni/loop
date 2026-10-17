@@ -1,12 +1,46 @@
 package bash
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
+
+// ShellQuote protects paths with spaces, quotes, or shell metacharacters.
+func ShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+type cappedOutput struct {
+	buf bytes.Buffer
+	limit int
+	overflow bool
+}
+
+func newCappedOutput(limit int) *cappedOutput {
+	return &cappedOutput{limit: limit}
+}
+
+func (c *cappedOutput) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := c.limit - c.buf.Len()
+	if remaining <= 0 {
+		if original > 0 { c.overflow = true }
+		return original, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		c.overflow = true
+	}
+	_, _ = c.buf.Write(p)
+	return original, nil
+}
+
+func (c *cappedOutput) String() string { return c.buf.String() }
 
 // CleanBackgroundCommand strips nohup, background ampersand, and trailing echo syntax.
 func CleanBackgroundCommand(cmd string) string {
@@ -78,7 +112,15 @@ func TruncateOutput(combined string) string {
 	}
 
 	if len(combined) > 50000 {
-		combined = combined[:25000] + "\n... [ output too large, truncated middle ] ...\n" + combined[len(combined)-25000:]
+		left := 25000
+		for left < len(combined) && !utf8.RuneStart(combined[left]) {
+			left++
+		}
+		right := len(combined) - 25000
+		for right < len(combined) && !utf8.RuneStart(combined[right]) {
+			right++
+		}
+		combined = combined[:left] + "\n... [ output too large, truncated middle ] ...\n" + combined[right:]
 	}
 	return combined
 }

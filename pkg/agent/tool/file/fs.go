@@ -36,7 +36,7 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 
 	tmpFile, err := os.CreateTemp(dir, fmt.Sprintf(".tmp-%s-*", filepath.Base(filename)))
 	if err != nil {
-		return os.WriteFile(filename, data, perm)
+		return fmt.Errorf("create temporary file for %s: %w", filename, err)
 	}
 	tmpName := tmpFile.Name()
 	defer func() {
@@ -49,23 +49,33 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		_ = tmpFile.Close()
 		return err
 	}
+	if err := tmpFile.Chmod(perm); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("set temporary file permissions: %w", err)
+	}
 	if err := tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return fmt.Errorf("sync temporary file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return err
+		return fmt.Errorf("close temporary file: %w", err)
 	}
-	_ = os.Chmod(tmpName, perm)
-
 	if err := os.Rename(tmpName, filename); err != nil {
-		return os.WriteFile(filename, data, perm)
+		return fmt.Errorf("atomically replace %s: %w", filename, err)
 	}
 	tmpName = ""
 	return nil
 }
 
 func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
+	if info, err := os.Stat(safePath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to overwrite non-regular file %s", safePath)
+		}
+		perm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect target %s: %w", safePath, err)
+	}
 	useAtomic := true
 	if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
 		useAtomic = cp.IsAtomicWritesEnabled()

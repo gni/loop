@@ -82,6 +82,8 @@ func (c *mcpClient) startStdio() error {
 }
 
 func (c *mcpClient) sendStdio(data string) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if c.stdin == nil {
 		return fmt.Errorf("stdio transport not started")
 	}
@@ -96,5 +98,5 @@ func (c *mcpClient) sendStdio(data string) error {
 
 func (c *mcpClient) requestStdio(method string, params interface{}, timeout time.Duration) (string, error) {
 	c.isStdio = true
-	return c.requestWithTimeout(method, params, timeout)
+	return c.requestWithTimeout(context.Background(), method, params, timeout)
 }

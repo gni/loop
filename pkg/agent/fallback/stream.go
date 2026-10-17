@@ -311,16 +311,8 @@ func fallbackClosingTag(opening string) (string, bool) {
 		if idx := strings.IndexAny(name, " \t\r\n"); idx >= 0 {
 			name = name[:idx]
 		}
-		if name == "" {
+		if !isValidXMLTagIdent(name) {
 			return "", false
-		}
-		for _, current := range name {
-			if (current < 'a' || current > 'z') &&
-				(current < 'A' || current > 'Z') &&
-				(current < '0' || current > '9') &&
-				current != '_' && current != '-' {
-				return "", false
-			}
 		}
 		return "</tool:" + name + ">", true
 	case strings.HasPrefix(opening, "<function"):
@@ -408,6 +400,21 @@ func longestSuffixMatchingPrefix(text, marker string) int {
 		}
 	}
 	return 0
+}
+
+func isValidXMLTagIdent(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, current := range name {
+		if (current < 'a' || current > 'z') &&
+			(current < 'A' || current > 'Z') &&
+			(current < '0' || current > '9') &&
+			current != '_' && current != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func isFallbackWhitespace(current byte) bool {

@@ -39,6 +39,7 @@ var NumberProp = domaintool.NumberProp
 var BoolProp = domaintool.BoolProp
 var RuntimeMessage = domaintool.RuntimeMessage
 var RuntimeMessagef = domaintool.RuntimeMessagef
+var DefaultAskUserSelection = domaintool.DefaultAskUserSelection
 
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {
@@ -169,6 +170,21 @@ func (r *ToolRegistry) GetDisabledTools() []string {
 	return list
 }
 
+// IsAllowedTool checks a tool against an explicit allowlist. Nil means unrestricted;
+// an empty, non-nil list permits no tools.
+func IsAllowedTool(name string, allowlist []string) bool {
+	if allowlist == nil {
+		return true
+	}
+	normalized := NormalizeName(name)
+	for _, allowed := range allowlist {
+		if allowed == name || NormalizeName(allowed) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
 // Lookup finds an executor by name, falling back to the normalized form.
 func (r *ToolRegistry) Lookup(name string) (ToolExecutor, bool) {
 	r.mu.RLock()
@@ -218,19 +234,8 @@ func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
 		if r.disabled != nil && (r.disabled[name] || r.disabled[norm]) {
 			continue
 		}
-		if len(allowlist) == 0 {
+		if IsAllowedTool(name, allowlist) {
 			allTools = append(allTools, t.Definition())
-		} else {
-			allowed := false
-			for _, allowedName := range allowlist {
-				if name == allowedName || norm == NormalizeName(allowedName) || strings.HasPrefix(name, "mcp__") {
-					allowed = true
-					break
-				}
-			}
-			if allowed {
-				allTools = append(allTools, t.Definition())
-			}
 		}
 	}
 

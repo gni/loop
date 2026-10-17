@@ -66,7 +66,7 @@ func ApplyEditsPreview(oldContent string, edits []ReplaceEdit) (string, bool) {
 		}
 	}
 	if batchContent, ok := tryApplyNonOverlappingBatch(oldContent, normalized); ok {
-		return batchContent, true
+		return batchContent, batchContent != oldContent
 	}
 
 	previewContent := oldContent

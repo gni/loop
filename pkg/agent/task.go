@@ -135,6 +135,12 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}
 	a.Tasks[id] = task
 	a.pruneFinishedTasksLocked()
+	if len(a.Tasks) > limits.MaxTrackedTasks() {
+		delete(a.Tasks, id)
+		a.TasksMu.Unlock()
+		return "", fmt.Errorf("maximum number of tracked tasks (%d) reached; remove or finish a task before spawning another", limits.MaxTrackedTasks())
+	}
+	task.mu.Lock()
 	a.TasksMu.Unlock()
 
 	cmd := exec.Command("bash", "-c", command)
@@ -147,15 +153,12 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	cmd.Stderr = &taskWriter{task: task, agent: a, w: w, isStderr: true}
 
 	if err := cmd.Start(); err != nil {
-		task.mu.Lock()
 		task.Status = "failed"
 		task.EndTime = time.Now()
 		task.Err = err
 		task.mu.Unlock()
-		return id, err
+		return id, fmt.Errorf("start background task %s: %w", id, err)
 	}
-
-	task.mu.Lock()
 	if cmd.Process != nil {
 		task.Pgid = cmd.Process.Pid
 	}
@@ -322,12 +325,19 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 		return
 	}
 
-	a.StreamingTask = resolvedID
-	fmt.Fprintf(dest, "\n[streaming output of %s...]\n", resolvedID)
+	task.mu.Lock()
+	isRunning := task.Status == "running"
+	task.mu.Unlock()
+	if isRunning {
+		a.StreamingTask = resolvedID
+		fmt.Fprintf(dest, "\n[streaming output of %s...]\n", resolvedID)
+	} else {
+		fmt.Fprintf(dest, "\n[recorded output of %s]\n", resolvedID)
+	}
 
 	task.mu.Lock()
-	outBytes := task.Stdout.Bytes()
-	errBytes := task.Stderr.Bytes()
+	outBytes := append([]byte(nil), task.Stdout.Bytes()...)
+	errBytes := append([]byte(nil), task.Stderr.Bytes()...)
 	task.mu.Unlock()
 
 	if len(outBytes) > 0 {

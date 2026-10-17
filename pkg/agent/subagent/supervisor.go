@@ -38,9 +38,19 @@ func NewTaskSupervisor() *TaskSupervisor {
 // RegisterTask adds a newly spawned task with "pending" status. Terminal entries
 // (completed/failed) are evicted oldest-first once the registry exceeds
 // MaxSupervisedTasks, so a long-lived process cannot grow the map without bound.
-func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) {
+func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if id == "" {
+		return fmt.Errorf("subagent task ID cannot be empty")
+	}
+	if _, exists := s.tasks[id]; exists {
+		return fmt.Errorf("subagent task %q already exists", id)
+	}
+	s.evictLocked(limits.MaxSupervisedTasks() - 1)
+	if len(s.tasks) >= limits.MaxSupervisedTasks() {
+		return fmt.Errorf("supervisor task limit (%d) reached; recently finished tasks are still retained", limits.MaxSupervisedTasks())
+	}
 	s.tasks[id] = &SubagentTask{
 		ID:        id,
 		AgentName: agentName,
@@ -48,11 +58,11 @@ func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) {
 		Status:    "pending",
 		UpdatedAt: time.Now(),
 	}
-	s.evictLocked()
+	return nil
 }
 
-func (s *TaskSupervisor) evictLocked() {
-	if len(s.tasks) <= limits.MaxSupervisedTasks() {
+func (s *TaskSupervisor) evictLocked(target int) {
+	if len(s.tasks) <= target {
 		return
 	}
 
@@ -63,10 +73,11 @@ func (s *TaskSupervisor) evictLocked() {
 			terminal = append(terminal, t)
 		}
 	}
-	sort.Slice(terminal, func(i, j int) bool { return terminal[i].UpdatedAt.Before(terminal[j].UpdatedAt) })
-
+	sort.Slice(terminal, func(i, j int) bool {
+		return terminal[i].UpdatedAt.Before(terminal[j].UpdatedAt)
+	})
 	for _, t := range terminal {
-		if len(s.tasks) <= limits.MaxSupervisedTasks() {
+		if len(s.tasks) <= target {
 			return
 		}
 		delete(s.tasks, t.ID)
@@ -93,10 +104,15 @@ func (s *TaskSupervisor) UpdateTaskStatus(id, status, response string, err error
 	if !exists {
 		return
 	}
+	if task.Status == "completed" || task.Status == "failed" {
+		return
+	}
 	task.Status = status
 	task.Response = response
 	if err != nil {
 		task.Error = err.Error()
+	} else {
+		task.Error = ""
 	}
 	task.UpdatedAt = time.Now()
 }

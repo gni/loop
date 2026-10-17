@@ -318,6 +318,17 @@ type UserInquirer interface {
 	AskUser(question string, options []AskUserOption, recommended string) (string, error)
 }
 
+// DefaultAskUserSelection resolves the fallback option when interactive prompting is bypassed.
+func DefaultAskUserSelection(options []AskUserOption, recommended string) string {
+	if recommended != "" {
+		return recommended
+	}
+	if len(options) > 0 {
+		return options[0].Label
+	}
+	return "Confirmed"
+}
+
 // ParseToolArguments unmarshals arguments into dest; if arguments is a plain string
 // or quoted JSON string, onString is invoked with that string content.
 func ParseToolArguments(arguments string, dest interface{}, onString func(string)) error {

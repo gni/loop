@@ -15,8 +15,8 @@ func (mam *MultiAgentManager) getSupervisor() *subagent.TaskSupervisor {
 	return mam.Supervisor
 }
 
-func (mam *MultiAgentManager) RegisterTask(id string, agentName string, prompt string) {
-	mam.getSupervisor().RegisterTask(id, agentName, prompt)
+func (mam *MultiAgentManager) RegisterTask(id string, agentName string, prompt string) error {
+	return mam.getSupervisor().RegisterTask(id, agentName, prompt)
 }
 
 func (mam *MultiAgentManager) GetTask(id string) (*SubagentTask, error) {

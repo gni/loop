@@ -1,8 +1,9 @@
 package bash
 
 import (
-	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -41,7 +42,7 @@ func (t *bashTool) PromptGuidelines() []string {
 func (t *bashTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"bash",
-		domaintool.FormatToolDescription("bash", "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands. Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count."),
+		domaintool.FormatToolDescription("bash", "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands. Captured stdout and stderr are bounded to 8 MiB each. Returned output is pruned to 25 head and 25 tail lines or 8192 bytes, with retained output spilled to .loop/spill/."),
 		map[string]domaintool.SchemaProp{
 			"command":    domaintool.StringProp(domaintool.FormatParamDescription("bash", "command", "The command to run in the terminal")),
 			"dir":        domaintool.StringProp(domaintool.FormatParamDescription("bash", "dir", "Optional working directory in which to execute the command. Persists across commands for this session.")),
@@ -64,8 +65,11 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 	args.Command = domaintool.FirstNonEmpty(args.Command, args.Cmd, args.Arguments)
-	if args.Command == "" {
+	if strings.TrimSpace(args.Command) == "" {
 		return "", fmt.Errorf("command parameter is empty")
+	}
+	if err := ctx.Context().Err(); err != nil {
+		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
 
 	args.Dir = domaintool.FirstNonEmpty(args.Dir, args.Cwd)
@@ -119,7 +123,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if isBgCmd {
 		bgCmd := args.Command
 		if workDir != workspaceRoot {
-			bgCmd = fmt.Sprintf("cd %q && %s", workDir, bgCmd)
+			bgCmd = "cd " + ShellQuote(workDir) + " && " + bgCmd
 		}
 		id, err := ctx.SpawnTask(bgCmd, os.Stderr)
 		if err != nil {
@@ -131,7 +135,12 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), 120*time.Second)
 	defer cancel()
 
-	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\necho \"__LOOP_PWD:$(pwd -P)\"\nexit $__LOOP_RET", args.Command)
+	var markerBytes [16]byte
+	if _, err := rand.Read(markerBytes[:]); err != nil {
+		return "", fmt.Errorf("cannot generate command boundary: %w", err)
+	}
+	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
+	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\nprintf '\n%s%%s\n' \"$(pwd -P)\"\nexit $__LOOP_RET", args.Command, pwdMarker)
 	cmd := exec.Command("bash", "-c", wrappedCmd)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
@@ -162,15 +171,16 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	pgid := cmd.Process.Pid
 
-	var stdout, stderr bytes.Buffer
+	stdout := newCappedOutput(8 << 20)
+	stderr := newCappedOutput(8 << 20)
 	outDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(&stdout, stdoutReader)
+		_, _ = io.Copy(stdout, stdoutReader)
 		close(outDone)
 	}()
 	errDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(&stderr, stderrReader)
+		_, _ = io.Copy(stderr, stderrReader)
 		close(errDone)
 	}()
 
@@ -232,17 +242,23 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	output := strings.ToValidUTF8(stdout.String(), "\uFFFD")
 	errOutput := strings.ToValidUTF8(stderr.String(), "\uFFFD")
+	if stdout.overflow {
+		output += "\n[stdout capture limit reached at 8 MiB; later bytes discarded]\n"
+	}
+	if stderr.overflow {
+		errOutput += "\n[stderr capture limit reached at 8 MiB; later bytes discarded]\n"
+	}
 
-	const pwdMarker = "__LOOP_PWD:"
-	if idx := strings.LastIndex(output, pwdMarker); idx != -1 {
-		lineEnd := strings.Index(output[idx:], "\n")
+	if idx := strings.LastIndex(output, "\n"+pwdMarker); idx != -1 {
+		markerStart := idx + 1
+		lineEnd := strings.IndexByte(output[markerStart:], '\n')
 		var extractedDir string
 		if lineEnd == -1 {
-			extractedDir = strings.TrimSpace(output[idx+len(pwdMarker):])
+			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker):])
 			output = output[:idx]
 		} else {
-			extractedDir = strings.TrimSpace(output[idx+len(pwdMarker) : idx+lineEnd])
-			output = output[:idx] + output[idx+lineEnd+1:]
+			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker) : markerStart+lineEnd])
+			output = output[:idx] + output[markerStart+lineEnd+1:]
 		}
 		if err == nil && extractedDir != "" && persistentBash {
 			if safe, sErr := ctx.SafePath(extractedDir); sErr == nil {
@@ -260,8 +276,6 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 		combined += errOutput
 	}
-
-	combined = TruncateOutput(combined)
 
 	if err != nil {
 		exitDesc := FormatExitError(err, timeoutCtx)

@@ -36,6 +36,7 @@ func (t *readTool) PromptSnippet() string {
 func (t *readTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
+		"Request one 'read' call at a time. Inspect its result before requesting another file, rather than batching multiple reads in one response.",
 	})
 }
 
@@ -128,9 +129,6 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("cannot read: path '%s' is inside a dependency or ignored folder (venv, node_modules, etc.)", targetPath)
 	}
 
-	unlock := LockPath(safePath)
-	defer unlock()
-
 	workspaceRoot := ctx.GetWorkspaceRoot()
 	var entryHeader string
 	info, err := os.Stat(safePath)
@@ -160,6 +158,19 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		info = resolvedInfo
 		entryHeader = header
 	}
+
+	// The fallback extension or directory entrypoint can be a symlink even when
+	// the originally requested path was safe. Validate the final target again.
+	validatedPath, err := ctx.SafePath(safePath)
+	if err != nil {
+		return "", err
+	}
+	safePath = validatedPath
+	if HasIgnoredComponent(safePath) {
+		return "", fmt.Errorf("cannot read ignored path %s", targetPath)
+	}
+	unlock := LockPath(safePath)
+	defer unlock()
 
 	maxReadBytes := limits.MaxReadFileBytes()
 	if info.Size() > int64(maxReadBytes) {
@@ -205,17 +216,18 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if end > len(lines) {
 		end = len(lines)
 	}
-	window := lines[offset-1 : end]
+	// Apply the documented per-line cap before the byte budget. Otherwise a
+	// single long line blocks the entire page even though its display fits.
+	lineCap := limits.ReadMaxLineLength()
+	window := make([]string, 0, end-offset+1)
+	for _, line := range lines[offset-1 : end] {
+		window = append(window, TruncateLine(line, lineCap))
+	}
 	cut := TruncateHead(window, limit, limits.MaxOutputBytes())
 	if cut.ShownLines == 0 {
 		return entryHeader + ReadFirstLineOverBudgetNotice(limits.MaxOutputBytes(), offset, targetPath), nil
 	}
-
-	lineCap := limits.ReadMaxLineLength()
-	resultLines := make([]string, 0, cut.ShownLines)
-	for _, line := range window[:cut.ShownLines] {
-		resultLines = append(resultLines, TruncateLine(line, lineCap))
-	}
+	resultLines := window[:cut.ShownLines]
 
 	result := strings.Join(resultLines, "\n")
 	shownEnd := offset + cut.ShownLines - 1

@@ -1,9 +1,11 @@
 package swarm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"loop/pkg/agent/subagent"
@@ -171,14 +173,23 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 		return nil
 	}
 
+	names := make([]string, 0, len(defs))
 	for name := range defs {
-		_ = spawn(name)
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var failures []error
+	for _, name := range names {
+		if err := spawn(name); err != nil {
+			failures = append(failures, fmt.Errorf("restore agent %q: %w", name, err))
+		}
 	}
 
 	mam.mu.Lock()
 	mam.ActiveAgent = nil
 	mam.mu.Unlock()
-	return nil
+	return errors.Join(failures...)
 }
 
 func (mam *MultiAgentManager) ClearAllAgents() {

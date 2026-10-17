@@ -334,7 +334,7 @@ func (sr *StreamRenderer) GetToolTitleLineNumber(index int) int {
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return -1
 	}
-	if sr.parser.TitlePrinted && sr.parser.ToolTitleLineNumbers[index] < 0 {
+	if sr.parser.TitlePrinted && sr.parser.ActiveToolIndex == index && sr.parser.ToolTitleLineNumbers[index] < 0 {
 		return 0
 	}
 	return sr.parser.ToolTitleLineNumbers[index]

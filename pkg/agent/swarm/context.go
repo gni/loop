@@ -97,13 +97,7 @@ func (mac *multiAgentContext) AskUser(question string, options []tool.AskUserOpt
 	if uq, ok := mac.AgentContext.(tool.UserInquirer); ok {
 		return uq.AskUser(question, options, recommended)
 	}
-	if recommended != "" {
-		return recommended, nil
-	}
-	if len(options) > 0 {
-		return options[0].Label, nil
-	}
-	return "Confirmed", nil
+	return tool.DefaultAskUserSelection(options, recommended), nil
 }
 
 func (mac *multiAgentContext) GetActiveSkills() []tool.Skill {

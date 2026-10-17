@@ -123,6 +123,16 @@ func SanitizeFileID(id string) string {
 	return res
 }
 
+// pruneWithoutSpill keeps the tool response bounded if spill storage is unavailable.
+// The caller must not claim that the unpruned output was preserved on disk.
+func pruneWithoutSpill(output string, maxBytes int) string {
+	notice := "\n[Full output unavailable: could not save spill file.]"
+	if maxBytes <= len(notice) {
+		return file.UTF8SafePrefix(notice, maxBytes)
+	}
+	return file.UTF8SafePrefix(output, maxBytes-len(notice)) + notice
+}
+
 // SpillAndPruneOutput inspects tool output and, if it exceeds maxBytes, writes the full
 // unpruned content to a local spill file under .loop/spill/<sessionID>/ and returns a compact
 // representation with leading and trailing context plus retrieval guidance.
@@ -150,43 +160,40 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 	var absoluteSpillPath string
 	var spillErr error
 
-	if workspaceRoot != "" {
-		spillRelDir := filepath.Join(".loop", "spill", safeSessionID)
-		spillAbsDir := filepath.Join(workspaceRoot, spillRelDir)
-
-		spillFileMu.Lock()
-		spillErr = os.MkdirAll(spillAbsDir, 0755)
-		// Apply retention before writing so a long session cannot grow the spill
-		// directory without bound. A prune failure must not be reported as a write
-		// failure, so it is not folded into spillErr.
-		if spillErr == nil {
-			PruneSpillDir(spillAbsDir, MaxSpillFilesPerSession, SpillFileMaxAge)
-		}
-		spillFileMu.Unlock()
-
-		fileName := fmt.Sprintf("%s_%s.log", SanitizeFileID(toolName), safeCallID)
-		relativeSpillPath = filepath.Join(spillRelDir, fileName)
-		absoluteSpillPath = filepath.Join(spillAbsDir, fileName)
-
-		// Write full unpruned output to spill file. A failed write must be surfaced:
-		// the pruned output would otherwise point at a file that does not exist.
-		spillFileMu.Lock()
-		if spillErr == nil {
-			spillErr = os.WriteFile(absoluteSpillPath, []byte(output), 0644)
-		}
-		spillFileMu.Unlock()
+	if workspaceRoot == "" {
+		return pruneWithoutSpill(output, maxBytes), "", true
 	}
+	spillRelDir := filepath.Join(".loop", "spill", safeSessionID)
+	spillAbsDir := filepath.Join(workspaceRoot, spillRelDir)
 
-	// The fallback must include the call id: without it the hint points at a path that
-	// was never written (the real filename is <tool>_<call>.log).
-	locatorHint := relativeSpillPath
-	if locatorHint == "" {
-		locatorHint = ".loop/spill/" + safeSessionID + "/" + SanitizeFileID(toolName) + "_" + safeCallID + ".log"
+	spillFileMu.Lock()
+	spillErr = os.MkdirAll(spillAbsDir, 0700)
+	if spillErr == nil {
+		var spillFile *os.File
+		spillFile, spillErr = os.CreateTemp(spillAbsDir, fmt.Sprintf("%s_%s_*.log", SanitizeFileID(toolName), safeCallID))
+		if spillErr == nil {
+			absoluteSpillPath = spillFile.Name()
+			relativeSpillPath = filepath.Join(spillRelDir, filepath.Base(absoluteSpillPath))
+			if _, spillErr = spillFile.WriteString(output); spillErr == nil {
+				spillErr = spillFile.Sync()
+			}
+			closeErr := spillFile.Close()
+			if spillErr == nil {
+				spillErr = closeErr
+			}
+			if spillErr != nil {
+				_ = os.Remove(absoluteSpillPath)
+			} else {
+				_ = PruneSpillDir(spillAbsDir, MaxSpillFilesPerSession, SpillFileMaxAge)
+			}
+		}
 	}
+	spillFileMu.Unlock()
+
 	if spillErr != nil {
-		locatorHint = fmt.Sprintf("%s (spill write failed: %v)", locatorHint, spillErr)
-		return output, locatorHint, false
+		return pruneWithoutSpill(output, maxBytes), "", true
 	}
+	locatorHint := relativeSpillPath
 
 	lines := strings.Split(output, "\n")
 	headCount := DefaultHeadLines
@@ -211,15 +218,28 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 			tail[i] = file.TruncateLine(line, limits.GrepMaxLineLength())
 		}
 
-		omittedLines := len(lines) - headCount - tailCount
-		omittedChars := file.RuneCount(output) - file.RuneCount(strings.Join(head, "\n")) - file.RuneCount(strings.Join(tail, "\n"))
-
-		pruned := strings.Join(head, "\n") +
-			file.SpillPruneNotice(omittedLines, omittedChars, headCount+1, len(lines)) +
-			file.SpillFullOutputNotice(locatorHint) +
-			file.SpillRetrievalHint() +
-			"\n\n" + strings.Join(tail, "\n")
-		return pruned, locatorHint, true
+		// Include the notices in the byte budget. Drop complete preview lines
+		// rather than cutting a retained line in the middle.
+		for {
+			omittedLines := len(lines) - len(head) - len(tail)
+			omittedChars := file.RuneCount(output) - file.RuneCount(strings.Join(head, "\n")) - file.RuneCount(strings.Join(tail, "\n"))
+			pruned := strings.Join(head, "\n") +
+				file.SpillPruneNotice(omittedLines, omittedChars, len(head)+1, len(lines)) +
+				file.SpillFullOutputNotice(locatorHint) +
+				file.SpillRetrievalHint() +
+				"\n\n" + strings.Join(tail, "\n")
+			if len(pruned) <= maxBytes {
+				return pruned, locatorHint, true
+			}
+			if len(head) == 0 && len(tail) == 0 {
+				return file.UTF8SafePrefix(pruned, maxBytes), locatorHint, true
+			}
+			if len(head) >= len(tail) && len(head) > 0 {
+				head = head[:len(head)-1]
+			} else {
+				tail = tail[1:]
+			}
+		}
 	}
 
 	// Single very long line or few long lines: UTF-8-boundary-safe byte cut.

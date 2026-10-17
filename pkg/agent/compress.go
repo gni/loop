@@ -57,8 +57,8 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
 	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
 		a.CompressHistory(ctx, messages, sessionID, theme, w)
-		recomputed, _ := a.GetGlobalTokens(*messages, allowlist)
-		return recomputed, a.GetEffectiveContextLimit(recomputed), true
+		recomputed, limit := a.estimateTurnContext(*messages, allowlist)
+		return recomputed, limit, true
 	}
 	return promptTokens, effectiveLimit, false
 }
