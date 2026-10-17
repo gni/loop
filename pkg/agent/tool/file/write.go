@@ -23,7 +23,7 @@ func (t *writeTool) PromptSnippet() string {
 
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'write' only for new files or complete rewrites.",
+		"Use write to create new files or completely replace files. Read unfamiliar files first to avoid losing existing behavior. No preparation call is needed.",
 		"Request one 'write' at a time and inspect its result before requesting the next file. Do not batch writes in one response.",
 	})
 }
@@ -31,7 +31,7 @@ func (t *writeTool) PromptGuidelines() []string {
 func (t *writeTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"write",
-		domaintool.FormatToolDescription("write", "Create a new file or completely overwrite an existing file. In arguments JSON, ALWAYS specify 'path' first before 'content' (e.g. {\"path\": \"...\", \"content\": \"...\"}). Automatically creates parent directories."),
+		domaintool.FormatToolDescription("write", "Create or replace a file. Automatically creates parent directories. File observation requirements depend on configuration."),
 		map[string]domaintool.SchemaProp{
 			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. ALWAYS specify 'path' first before 'content'.")),
 			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. ALWAYS specify 'content' after 'path'.")),
@@ -77,11 +77,14 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 
 	discardIfUncommitted := prepareSnapshotRollback(ctx, safePath)
 
-	if fo, ok := ctx.(domaintool.FileObserver); ok {
-		if err := fo.CheckMutationAllowed(safePath, false); err != nil {
-			discardIfUncommitted()
-			return "", err
-		}
+	observer, ok := ctx.(domaintool.FileObserver)
+	if !ok {
+		discardIfUncommitted()
+		return "", fmt.Errorf("file observation guard is unavailable")
+	}
+	if err := observer.CheckMutationAllowed(safePath, false); err != nil {
+		discardIfUncommitted()
+		return "", err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {

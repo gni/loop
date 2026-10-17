@@ -19,6 +19,7 @@ type SystemPromptConfig struct {
 	SkillsDir       string
 	CompactPrompt   bool
 	GuidedMode      bool
+	SkipObservation bool
 	ActiveAgents    []string
 	Skills          []tool.Skill
 	AllSkills       []tool.Skill
@@ -126,6 +127,12 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	if cfg.GuidedMode {
 		addRule("Guided Workflow Protocol: You are operating in Guided Mode. Never call mutating tools ('write', 'edit', 'bash', 'create_subagent') before completing three steps: (1) inspect relevant files using 'read', 'grep', 'find', or 'list', (2) clarify any ambiguous requirements using 'ask_user', and (3) register a concrete step-by-step execution plan using 'todo'.")
 		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
+	}
+
+	if cfg.SkipObservation {
+		addRule("File observation guard is disabled: write and edit do not require a previous read or revision match. Use edit for targeted changes, write for complete replacements, and never write outside the workspace.")
+	} else {
+		addRule("Read an existing file with the read tool before editing or overwriting it. New files can be written directly. Use edit for small changes and write for full replacements; no preparation tool is required. The harness validates paths and file revisions at execution.")
 	}
 
 	for _, rule := range FormatCoreRules(workspaceRoot) {
@@ -240,6 +247,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		SkillsDir:       skillsDir,
 		CompactPrompt:   compact,
 		GuidedMode:      a.IsGuidedMode(),
+		SkipObservation: a.Config != nil && a.Config.DisableObservationGuard,
 		Skills:          a.GetActiveSkills(),
 		MemoryContext:   a.LoadMemoryContext(),
 		Allowlist:       allowlist,

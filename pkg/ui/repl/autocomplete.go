@@ -33,7 +33,7 @@ var baseAutocompleteCandidates = []string{
 }
 
 var configAutocompleteKeys = []string{
-	"endpoint", "model", "temperature", "guided_mode", "auto_approve", "show_thinking",
+	"endpoint", "model", "temperature", "guided_mode", "disable_file_observation_guard", "auto_approve", "show_thinking",
 	"collapse_results", "show_tokens", "theme", "syntax_theme", "context_limit", "steps",
 	"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
 	"before_tool_hook", "after_tool_hook", "debug", "debug_file",

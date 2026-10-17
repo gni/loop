@@ -65,7 +65,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	ui.StateMu.Lock()
 	defer ui.StateMu.Unlock()
 
-	if !ui.Enabled {
+	if !ui.Enabled || ui.InApprovalPrompt {
 		return
 	}
 

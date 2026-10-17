@@ -22,6 +22,9 @@ func init() {
 		if ui != nil {
 			ui.StateMu.Lock()
 			ui.InApprovalPrompt = in
+			if !in {
+				ui.LastStatusBarText = ""
+			}
 			ui.StateMu.Unlock()
 		}
 	})

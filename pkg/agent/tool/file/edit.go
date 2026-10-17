@@ -25,6 +25,7 @@ func (t *editTool) PromptSnippet() string {
 func (t *editTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'edit' for precise changes: <edit path=\"path/to/file\">\n<old>\nexact old code\n</old>\n<new>\nexact new code\n</new>\n</edit>",
+		"Match against the file's current contents. Read the file when the exact old text is not known.",
 		"Keep old text minimal (typically 2-5 lines).",
 		"If edit reports a mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.",
 	})
@@ -151,11 +152,14 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	discardIfUncommitted := prepareSnapshotRollback(ctx, safePath)
 
-	if fo, ok := ctx.(domaintool.FileObserver); ok {
-		if err := fo.CheckMutationAllowed(safePath, true); err != nil {
-			discardIfUncommitted()
-			return "", err
-		}
+	observer, ok := ctx.(domaintool.FileObserver)
+	if !ok {
+		discardIfUncommitted()
+		return "", fmt.Errorf("file observation guard is unavailable")
+	}
+	if err := observer.CheckMutationAllowed(safePath, true); err != nil {
+		discardIfUncommitted()
+		return "", err
 	}
 
 	data, err := os.ReadFile(safePath)

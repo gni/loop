@@ -161,6 +161,8 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		ChunkDropObserver: a.recordDroppedChunk,
 	}
 
+	a.FileObservations.SetDisabled(cfg != nil && cfg.DisableObservationGuard)
+
 	a.Registry.UnknownToolHook = a.ResolveUnknownTool
 	a.Registry.Register(tool.NewLoadMCPTool())
 	a.Registry.Register(tool.NewBashTool())
@@ -308,6 +310,20 @@ func (a *Agent) RecordRead(absPath string, data []byte) {
 	}
 }
 
+func (a *Agent) PrepareMutation(absPath string, isEdit bool) error {
+	if a == nil || a.FileObservations == nil {
+		return fmt.Errorf("file observation tracker is unavailable")
+	}
+	return a.FileObservations.PrepareMutation(absPath, isEdit)
+}
+
+func (a *Agent) CheckPreparedMutation(absPath string, isEdit bool) error {
+	if a == nil || a.FileObservations == nil {
+		return fmt.Errorf("file observation tracker is unavailable")
+	}
+	return a.FileObservations.CheckPreparedMutation(absPath, isEdit)
+}
+
 func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
 	if a == nil {
 		return nil
@@ -374,6 +390,9 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 
 	a.Config = cfg
 	a.ensureGuided().SetEnabled(cfg.GuidedMode)
+	if a.FileObservations != nil {
+		a.FileObservations.SetDisabled(cfg.DisableObservationGuard)
+	}
 	a.syncOpenAIProviderLocked(cfg, true)
 
 	if a.DebugLogger != nil {

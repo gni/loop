@@ -49,7 +49,11 @@ func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 
 	getUI().StateMu.Lock()
 	activeOp := getUI().ActiveCancelFunc != nil || getUI().State.IsGenerating
+	inModal := getUI().InApprovalPrompt
 	getUI().StateMu.Unlock()
+	if inModal {
+		return
+	}
 
 	cw := crnlWriter{W: w}
 	DrawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)

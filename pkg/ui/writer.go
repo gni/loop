@@ -325,6 +325,15 @@ func (p *PromptPreservingWriter) GetPrintCol() int {
 	return p.printCol
 }
 
+func (p *PromptPreservingWriter) EnsureNewline() {
+	TerminalMu.Lock()
+	needsNewline := p.printCol != 1 || p.autoWrapPending
+	TerminalMu.Unlock()
+	if needsNewline {
+		_, _ = io.WriteString(p, "\n")
+	}
+}
+
 func (p *PromptPreservingWriter) GetScrollCount() int {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -389,6 +398,11 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
+	if height := getRealTerminalHeight(); height > 0 && height != p.height {
+		delta := height - p.height
+		p.height = height
+		p.AdjustPrintLineLocked(delta)
+	}
 	if linesBack < 0 || len(lines) == 0 {
 		return false
 	}

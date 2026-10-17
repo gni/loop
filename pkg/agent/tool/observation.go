@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -20,15 +21,22 @@ type FileObservation struct {
 	ReadAt  time.Time
 }
 
+type preparedMutation struct {
+	isEdit bool
+	exists bool
+}
+
 type FileObservationTracker struct {
 	mu           sync.RWMutex
 	observations map[string]FileObservation
+	prepared     map[string]preparedMutation
 	disabled     bool
 }
 
 func NewFileObservationTracker() *FileObservationTracker {
 	return &FileObservationTracker{
 		observations: make(map[string]FileObservation),
+		prepared:     make(map[string]preparedMutation),
 	}
 }
 
@@ -38,7 +46,12 @@ func (fot *FileObservationTracker) SetDisabled(disabled bool) {
 	}
 	fot.mu.Lock()
 	defer fot.mu.Unlock()
+	if fot.disabled == disabled {
+		return
+	}
 	fot.disabled = disabled
+	fot.observations = make(map[string]FileObservation)
+	fot.prepared = make(map[string]preparedMutation)
 }
 
 func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
@@ -61,6 +74,7 @@ func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
 		size = fi.Size()
 	}
 
+	delete(fot.prepared, cleanPath)
 	fot.observations[cleanPath] = FileObservation{
 		Path:    cleanPath,
 		SHA256:  hex.EncodeToString(hash[:]),
@@ -98,6 +112,10 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 		return fmt.Errorf("cannot inspect '%s' before mutation: %w", base, err)
 	}
 
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("cannot modify '%s': target is not a regular file", base)
+	}
+
 	obs, exists := fot.observations[cleanPath]
 	if !exists {
 		return fmt.Errorf("cannot modify '%s': file has not been read in this session. You must call 'read' with path '%s' first to inspect its contents before editing or overwriting", base, cleanPath)
@@ -124,6 +142,70 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 	return nil
 }
 
+// PrepareMutation checks the existing read observation and records the exact target
+// and operation. Preparing a new file is allowed only while it does not exist.
+func (fot *FileObservationTracker) PrepareMutation(absPath string, isEdit bool) error {
+	if fot == nil {
+		return fmt.Errorf("file observation tracker is unavailable")
+	}
+	if err := fot.CheckMutationAllowed(absPath, isEdit); err != nil {
+		return err
+	}
+	_, err := os.Stat(absPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cannot inspect mutation target: %w", err)
+	}
+	fot.mu.Lock()
+	defer fot.mu.Unlock()
+	fot.prepared[filepath.Clean(absPath)] = preparedMutation{isEdit: isEdit, exists: err == nil}
+	return nil
+}
+
+func (fot *FileObservationTracker) PreparedPaths(isEdit bool) []string {
+	if fot == nil {
+		return nil
+	}
+	fot.mu.RLock()
+	defer fot.mu.RUnlock()
+	var paths []string
+	seen := make(map[string]bool, len(fot.observations)+len(fot.prepared))
+	for path := range fot.observations {
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	for path, prepared := range fot.prepared {
+		if prepared.isEdit == isEdit && !seen[path] {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func (fot *FileObservationTracker) CheckPreparedMutation(absPath string, isEdit bool) error {
+	if fot == nil {
+		return fmt.Errorf("file observation tracker is unavailable")
+	}
+	if err := fot.CheckMutationAllowed(absPath, isEdit); err != nil {
+		return err
+	}
+	fi, err := os.Stat(absPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cannot inspect mutation target: %w", err)
+	}
+	if fi != nil {
+		return nil
+	}
+
+	fot.mu.RLock()
+	prepared, ok := fot.prepared[filepath.Clean(absPath)]
+	fot.mu.RUnlock()
+	if !ok || prepared.isEdit != isEdit || prepared.exists {
+		return fmt.Errorf("new file '%s' is not prepared: call 'prepare_mutation' with its exact path and write operation", filepath.Base(absPath))
+	}
+	return nil
+}
+
 func (fot *FileObservationTracker) RecordMutation(absPath string, data []byte) {
 	fot.recordFile(absPath, data)
 }
@@ -140,6 +222,7 @@ func (fot *FileObservationTracker) Forget(absPath string) {
 	defer fot.mu.Unlock()
 	if !fot.disabled {
 		delete(fot.observations, cleanPath)
+		delete(fot.prepared, cleanPath)
 	}
 }
 
@@ -151,6 +234,7 @@ func (fot *FileObservationTracker) ForgetAll() {
 	defer fot.mu.Unlock()
 	if !fot.disabled {
 		fot.observations = make(map[string]FileObservation)
+		fot.prepared = make(map[string]preparedMutation)
 	}
 }
 

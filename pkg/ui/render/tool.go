@@ -160,8 +160,8 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	}
 	if !isError && IsEditLikeTool(toolName) {
 		renderEditSummary(w, theme, toolName, argsJSON, output)
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w)
 }
 
 func resolveAbsTargetPath(target string) string {
@@ -246,10 +246,14 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 	return added, deleted
 }
 
-// FormatDiffStats displays successful edit totals in normal-weight green.
+// FormatDiffStats colors added and deleted line counts independently.
 func FormatDiffStats(added, deleted int, theme style.UITheme) string {
-	greenStyle := style.NewStyle().Foreground(theme.Success)
-	return greenStyle.Render(fmt.Sprintf("+%d / -%d lines", added, deleted))
+	addedStyle := style.NewStyle().Foreground(theme.Success)
+	deletedStyle := style.NewStyle().Foreground(theme.Error)
+	return fmt.Sprintf("%s / %s lines",
+		addedStyle.Render(fmt.Sprintf("+%d", added)),
+		deletedStyle.Render(fmt.Sprintf("-%d", deleted)),
+	)
 }
 
 func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
@@ -287,7 +291,7 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 	if toolName == "task_kill" {
 		statusStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-		fmt.Fprintf(w, "%s%s: %s\n\n", branchStyle, idStyle.Render(taskID), statusStyle.Render("terminated"))
+		fmt.Fprintf(w, "%s%s: %s\n", branchStyle, idStyle.Render(taskID), statusStyle.Render("terminated"))
 		return
 	}
 
@@ -351,5 +355,4 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 			}
 		}
 	}
-	fmt.Fprintln(w)
 }

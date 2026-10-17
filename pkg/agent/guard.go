@@ -237,12 +237,8 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 		if err == nil {
 			g.failedStreaks = make(map[string]int)
 			g.lastFailedCmd = ""
-			if g.invalidator != nil {
-				if target != "" {
-					g.invalidator.Forget(g.resolvePath(target))
-				} else if toolName == "bash" {
-					g.invalidator.ForgetAll()
-				}
+			if g.invalidator != nil && toolName == "bash" {
+				g.invalidator.ForgetAll()
 			}
 		}
 	}

@@ -249,12 +249,10 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		fmt.Fprint(sr.w, "\n")
 		sr.pendingThoughtTextGap = false
 	}
-	hadText := sr.hasWrittenText
+	// finishLiveTextLocked already ends the prior text on a fresh line.
+	// Do not add a second newline before the streamed tool title.
 	sr.finishLiveTextLocked()
-	if hadText {
-		fmt.Fprint(sr.w, "\n")
-		sr.hasWrittenText = false
-	}
+	sr.hasWrittenText = false
 
 	if sr.parser != nil {
 		if sr.parser.ActiveToolName != "" && sr.parser.ActiveToolIndex == toolCallIndex {

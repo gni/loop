@@ -189,7 +189,12 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 						ui.RedrawScreen(os.Stderr, a, kiReader, rl)
 					} else {
 						ui.HandleResize(os.Stderr, a, kiReader, rl)
-						kiReader.RedrawTypeAhead()
+						ui.GetUI().StateMu.Lock()
+						inModal := ui.GetUI().InApprovalPrompt
+						ui.GetUI().StateMu.Unlock()
+						if !inModal {
+							kiReader.RedrawTypeAhead()
+						}
 					}
 				}
 			})
@@ -380,6 +385,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 
 	runAgentTurn:
+		ppWriter.EnsureNewline()
 		ppWriter.ForceReposition()
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader)

@@ -10,10 +10,11 @@ import (
 
 type NewlineCounterWriter struct {
 	io.Writer
-	count int
-	col   int
-	inEsc bool
-	inCSI bool
+	count            int
+	col              int
+	inEsc            bool
+	inCSI            bool
+	trailingNewlines int
 }
 
 func NewNewlineCounterWriter(w io.Writer) *NewlineCounterWriter {
@@ -48,9 +49,13 @@ func (n *NewlineCounterWriter) Write(p []byte) (int, error) {
 		if b == '\n' {
 			n.count++
 			n.col = 0
+			if n.trailingNewlines < 2 {
+				n.trailingNewlines++
+			}
 		} else if b == '\r' {
 			n.col = 0
 		} else if (b >= 32 && b < 127) || b >= 0xC0 {
+			n.trailingNewlines = 0
 			n.col++
 			if n.col >= termW {
 				n.count++
@@ -59,6 +64,14 @@ func (n *NewlineCounterWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return n.Writer.Write(p)
+}
+
+// EnsureNewline moves to the next line only if the previous output has not
+// already done so. Tool calls should be adjacent, without a blank row.
+func (n *NewlineCounterWriter) EnsureNewline() {
+	if n.trailingNewlines == 0 {
+		_, _ = io.WriteString(n, "\n")
+	}
 }
 
 func (n *NewlineCounterWriter) GetCount() int     { return n.count }

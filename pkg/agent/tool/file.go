@@ -11,6 +11,11 @@ func init() {
 // ReplaceEdit models candidate search and replacement structures.
 type ReplaceEdit = filetool.ReplaceEdit
 
+// NewPrepareMutationTool checks file revision before any mutation content is generated.
+func NewPrepareMutationTool() ToolExecutor {
+	return filetool.NewPrepareMutationTool()
+}
+
 // NewReadTool initializes the file reading tool.
 func NewReadTool() ToolExecutor {
 	return filetool.NewReadTool()

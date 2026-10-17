@@ -158,17 +158,23 @@ func FormatStatusBarRight(state StatusBarState, theme style.UITheme, width int) 
 
 // FormatStatusBarLine combines left and right status segments with appropriate terminal padding.
 func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) string {
+	if width <= 1 {
+		return ""
+	}
+	available := width - 1
 	leftPart := FormatStatusBarLeft(state, theme, width)
 	rightPart := FormatStatusBarRight(state, theme, width)
+	leftLen := utf8.RuneCountInString(style.StripAnsi(leftPart))
+	rightLen := utf8.RuneCountInString(style.StripAnsi(rightPart))
 
-	leftLen := len(style.StripAnsi(leftPart))
-	rightLen := len(style.StripAnsi(rightPart))
-
-	padding := (width - 1) - leftLen - rightLen
-	if padding < 1 {
-		padding = 1
+	if leftLen+rightLen+1 > available {
+		rightPart = ""
+		rightLen = 0
 	}
-
+	if leftLen > available {
+		return style.TruncateRunes(style.StripAnsi(leftPart), available)
+	}
+	padding := available - leftLen - rightLen
 	return fmt.Sprintf("%s%s%s", leftPart, strings.Repeat(" ", padding), rightPart)
 }
 

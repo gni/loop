@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -59,7 +60,15 @@ func (r *mainRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, ar
 func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
 	if r.a != nil && r.a.UI != nil {
 		collapse := r.a.Config != nil && r.a.Config.CollapseResults
-		r.a.UI.RenderToolOutput(w, output, isError, collapse, theme, toolName, args, bodyStreamed)
+		var rendered bytes.Buffer
+		r.a.UI.RenderToolOutput(&rendered, output, isError, collapse, theme, toolName, args, bodyStreamed)
+		if rendered.Len() == 0 {
+			return
+		}
+		if counter, ok := w.(*NewlineCounterWriter); ok {
+			counter.EnsureNewline()
+		}
+		_, _ = rendered.WriteTo(w)
 	} else if !bodyStreamed {
 		fmt.Fprintln(w, output)
 	}
@@ -482,7 +491,13 @@ func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistant
 	}
 	if sr.GetToolTitleLineNumber(idx) == -1 {
 		if e.policy.AgentName == "" && idx == 0 && strings.TrimSpace(assistantContent) != "" {
-			fmt.Fprintln(w)
+			// A deferred first tool (especially read) must not add a blank row
+			// after any assistant text that was just streamed.
+			if counter, ok := w.(*NewlineCounterWriter); ok {
+				counter.EnsureNewline()
+			} else {
+				fmt.Fprint(w, "\n")
+			}
 		} else {
 			e.renderSubagentToolPrefix(w, theme)
 		}
@@ -518,6 +533,15 @@ func (e *TurnEngine) prepareToolCallPlan(
 	if ctx.Err() != nil {
 		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
 		return plan, true, false
+	}
+	if !isParallel && idx > 0 {
+		// A new tool title needs a line break, not an empty line. This
+		// handles read, write, edit, bash, todo, and other sequential tools.
+		if counter, ok := w.(*NewlineCounterWriter); ok {
+			counter.EnsureNewline()
+		} else {
+			fmt.Fprint(w, "\n")
+		}
 	}
 	if !isParallel && e.agent != nil {
 		e.agent.SetLiveBodyStreamed(false)

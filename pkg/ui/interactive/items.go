@@ -35,6 +35,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			},
 		},
 		boolConfigItem("guided_mode", "guided mode", "Require workspace exploration, todo plan approval, and diff previews before mutating files", &cloned.GuidedMode, formatBool),
+		boolConfigItem("disable_file_observation_guard", "disable file observation guard", "Allow overwrite or edit without a prior read or revision match. Workspace boundaries remain enforced", &cloned.DisableObservationGuard, formatBool),
 		boolConfigItem("auto_approve", "auto approve", "Execute tool operations directly without interactive approval", &cloned.AutoApprove, formatBool),
 		boolConfigItem("approval_always_answer", "approval always answer", "Skip the approval modal and pre-answer 'always' for unattended loop runs", &cloned.ApprovalAlwaysAnswer, formatBool),
 		stringListConfigItem("disabled_tools", "disabled tools", "Comma-separated list of disabled tools (e.g. bash,edit)", &cloned.DisabledTools),

@@ -16,6 +16,7 @@ type FunctionDefinition = domaintool.FunctionDefinition
 type Tool = domaintool.Tool
 type Skill = domaintool.Skill
 type AgentContext = domaintool.AgentContext
+type MutationPreparer = domaintool.MutationPreparer
 type LiveOutputWriter = domaintool.LiveOutputWriter
 type ToolExecutor = domaintool.ToolExecutor
 type PromptContributor = domaintool.PromptContributor
@@ -178,6 +179,9 @@ func IsAllowedTool(name string, allowlist []string) bool {
 	}
 	normalized := NormalizeName(name)
 	for _, allowed := range allowlist {
+		if normalized == "prepare_mutation" && (NormalizeName(allowed) == "write" || NormalizeName(allowed) == "edit") {
+			return true
+		}
 		if allowed == name || NormalizeName(allowed) == normalized {
 			return true
 		}

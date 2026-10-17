@@ -91,7 +91,13 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	defer func() {
 		if !timePrinted {
 			fmt.Fprintln(writerToUse)
-			fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme))
+			if isNonInteractive {
+				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme))
+			} else {
+				// Keep the elapsed-time text on the last occupied scroll row.
+				// The reserved row beneath it is already the status-bar gap.
+				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme))
+			}
 		}
 	}()
 
@@ -129,6 +135,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	})
 	sink := NewAgentSink(a, messages, sessionID)
 	timer := GetTimingRecorder()
+	lastToolEndedWithNewline := false
 
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
@@ -152,7 +159,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		if iter > 1 {
-			divider := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("╌", 40))
+			divider := style.ActivityDivider(theme)
+			// The previous tool may have already ended with a newline. Do not
+			// insert a second one just before the next iteration's divider.
+			if !lastToolEndedWithNewline {
+				fmt.Fprint(writerToUse, "\n")
+			}
 			fmt.Fprintln(writerToUse, divider)
 		}
 
@@ -342,6 +354,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if halted || aborted {
 			return
 		}
+		lastToolEndedWithNewline = ncw.trailingNewlines > 0
 	}
 
 	if loader != nil {

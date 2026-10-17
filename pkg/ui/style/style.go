@@ -47,6 +47,10 @@ func NewStyle() Style {
 	return Style{}
 }
 
+func ActivityDivider(theme UITheme) string {
+	return NewStyle().Foreground(theme.Border).Render(strings.Repeat("· ", 19) + "·")
+}
+
 func (s Style) MaxWidth(v int) Style {
 	s.maxWidth = v
 	return s

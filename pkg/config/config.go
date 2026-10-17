@@ -72,6 +72,7 @@ type Config struct {
 	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
+	DisableObservationGuard  bool                       `json:"disable_file_observation_guard,omitempty"`
 	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
 	ApprovalAlwaysAnswer     bool                       `json:"approval_always_answer,omitempty"`
 	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`

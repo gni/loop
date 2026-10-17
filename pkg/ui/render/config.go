@@ -80,6 +80,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		{"active provider:", valStyle.Render(cfg.ActiveProvider)},
 		{"temperature:", valStyle.Render(fmt.Sprintf("%.2f", cfg.Temperature))},
 		{"guided mode:", guidedVal},
+		{"file guard disabled:", valStyle.Render(fmt.Sprintf("%v", cfg.DisableObservationGuard))},
 		{"auto-approve:", approveVal},
 		{"show thinking:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowThinking))},
 		{"collapse results:", valStyle.Render(fmt.Sprintf("%v", cfg.CollapseResults))},

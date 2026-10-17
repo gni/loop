@@ -123,14 +123,11 @@ func PrintSessionHistory(
 				continue
 			}
 
-			if lastRole != "" {
-				fmt.Fprintln(w)
-			}
 			printPromptDivider(w, borderStyle)
 			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
 
 		case "assistant":
-			fmt.Fprintln(w, borderStyle.Render(strings.Repeat("╌", 40)))
+			fmt.Fprintln(w, style.ActivityDivider(theme))
 
 			hasPrintedAnything := false
 			if msg.ReasoningContent != "" {
@@ -157,11 +154,8 @@ func PrintSessionHistory(
 				if hasPrintedAnything {
 					fmt.Fprintln(w)
 				}
-				hooks.RenderMarkdown(w, assistantContent, theme)
+				hooks.RenderMarkdown(w, strings.TrimRight(assistantContent, "\r\n"), theme)
 				fmt.Fprintln(w)
-				if len(msg.ToolCalls) > 0 {
-					fmt.Fprintln(w)
-				}
 				hasPrintedAnything = true
 			} else if hasPrintedAnything && len(msg.ToolCalls) > 0 {
 				fmt.Fprintln(w)

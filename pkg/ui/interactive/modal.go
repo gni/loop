@@ -104,14 +104,23 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 	defer fmt.Fprint(output, "\x1b[?25h")
 
 	renderOption := func(index int) string {
-		if index == selected {
-			return fmt.Sprintf("  > %s", activeStyle.Render(options[index].Label))
+		width, _ := style.GetTerminalSize()
+		label := options[index].Label
+		if width > 5 {
+			label = style.TruncateRunes(label, width-5)
 		}
-		return fmt.Sprintf("    %s", options[index].Label)
+		if index == selected {
+			return fmt.Sprintf("  > %s", activeStyle.Render(label))
+		}
+		return fmt.Sprintf("    %s", label)
 	}
 
 	renderMenu := func() {
 		if firstRender {
+			width, _ := style.GetTerminalSize()
+			if width > 2 {
+				prompt = style.TruncateRunes(prompt, width-2)
+			}
 			fmt.Fprintf(output, "\r\x1b[K%s\r\n", promptStyle.Render(prompt))
 			for i := range options {
 				fmt.Fprint(output, "\r\x1b[K")
@@ -126,9 +135,8 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			for i := range options {
 				lines[i] = renderOption(i)
 			}
-			if promptWriter.ReplaceScrollBlockBack(len(options), lines) {
-				return
-			}
+			promptWriter.ReplaceScrollBlockBack(len(options), lines)
+			return
 		}
 
 		fmt.Fprintf(output, "\x1b[%dA", len(options))
@@ -377,12 +385,7 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 	var menuOptions []ChoiceMenuOption
 	defaultIdx := 0
 
-	if len(options) == 0 {
-		menuOptions = []ChoiceMenuOption{
-			{Label: "yes, proceed (Recommended)", Keys: "yY1"},
-			{Label: "no, cancel", Keys: "nN2"},
-		}
-	} else {
+	if len(options) > 0 {
 		for i, opt := range options {
 			key := fmt.Sprintf("%d", i+1)
 			if strings.EqualFold(opt, recommended) || (recommended == "" && i == 0) {

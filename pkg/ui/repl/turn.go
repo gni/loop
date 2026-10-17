@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
@@ -44,7 +43,7 @@ func renderTurnPromptHeader(
 		fmt.Fprintf(w, "%s%s\n", promptStyle.Render(promptPrefix), line)
 	}
 
-	divider := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("╌", 40))
+	divider := style.ActivityDivider(theme)
 	fmt.Fprintln(w, divider)
 }
 
@@ -73,7 +72,7 @@ func executeREPLTurn(
 				fmt.Fprintln(os.Stderr, "agent context cancelled.")
 			case <-mam.ActiveAgent.Output:
 			}
-			fmt.Fprint(ppWriter, "\n\n")
+			ppWriter.EnsureNewline()
 		}
 
 		ui.GetUI().StateMu.Lock()

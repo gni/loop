@@ -20,17 +20,20 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 	}
 
 	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
-	prefixCombined := borderStyle.Render("─── prompt ")
-
-	statusLen := utf8.RuneCountInString(style.StripAnsi(statusPart))
-	prefixLen := 11
-
-	dashesCount := width - prefixLen - statusLen - 2
-	if dashesCount < 3 {
-		dashesCount = 3
+	prefix := "─── prompt "
+	available := width - 1
+	if available <= 0 {
+		return "\n"
 	}
-	dashes := strings.Repeat("─", dashesCount)
-	return fmt.Sprintf("%s%s\n", prefixCombined+borderStyle.Render(dashes), statusStyle.Render(statusPart))
+	if available <= utf8.RuneCountInString(prefix) {
+		return borderStyle.Render(style.TruncateRunes(prefix, available)) + "\n"
+	}
+	statusLen := utf8.RuneCountInString(statusPart)
+	if available < utf8.RuneCountInString(prefix)+statusLen+3 {
+		return borderStyle.Render(prefix+strings.Repeat("─", available-utf8.RuneCountInString(prefix))) + "\n"
+	}
+	dashes := strings.Repeat("─", available-utf8.RuneCountInString(prefix)-statusLen)
+	return borderStyle.Render(prefix+dashes) + statusStyle.Render(statusPart) + "\n"
 }
 
 // FormatStaticStatsContent combines spinner and stats text with styling.

@@ -207,6 +207,8 @@ func handleConfigCommand(
 		a.Config.PersistentBash = config.ParseBool(val)
 	case "atomic_writes", "atomic_write":
 		a.Config.AtomicWrites = config.ParseBool(val)
+	case "disable_file_observation_guard", "file_guard_off":
+		a.Config.DisableObservationGuard = config.ParseBool(val)
 	case "recap_interval", "recap":
 		n, err := strconv.Atoi(val)
 		if err != nil {
