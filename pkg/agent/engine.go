@@ -455,10 +455,10 @@ func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
 	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || !e.agent.Config.ParallelToolCalls {
 		return false
 	}
-	// Reads must complete in the order the model requested them, even when
-	// other kinds of tool calls may run concurrently.
+	// File writes and reads must execute in model order. In particular, a
+	// later write must not finish before an earlier write to the same tree.
 	for _, tc := range calls {
-		if tc.Function.Name == "read" {
+		if tc.Function.Name == "read" || tc.Function.Name == "write" {
 			return false
 		}
 	}
@@ -523,6 +523,15 @@ func (e *TurnEngine) prepareToolCallPlan(
 		e.agent.SetLiveBodyStreamed(false)
 	}
 
+	// Tool arguments have now been fully assembled. Reuse the JSON stream
+	// renderer to show a queued write's code immediately before executing it,
+	// then show its completion before moving on to the next queued call.
+	// The first write may already have streamed live: never replay that body.
+	if !isParallel && tc.Function.Name == "write" && sr.GetToolTitleLineNumber(idx) == -1 {
+		sr.StartToolCall(tc.Function.Name, idx)
+		sr.WriteToolCall(tc.Function.Arguments)
+		sr.Flush()
+	}
 	e.ensureToolHeaderRendered(idx, tc, assistantContent, isParallel, sr, w, theme, render)
 
 	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)

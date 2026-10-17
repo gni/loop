@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/chroma/v2/quick"
@@ -99,6 +100,13 @@ func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
 	if !isError {
+		// Never suppress the write completion line just because its code was
+		// streamed. Emit only the saved-file summary, not the raw tool output.
+		if toolName == "write" {
+			renderWriteSummary(w, theme, toolName, argsJSON, output)
+			fmt.Fprintln(w)
+			return
+		}
 		if (IsWriteLikeTool(toolName) || IsCommandLikeTool(toolName)) && bodyWasStreamed {
 			return
 		}
@@ -168,9 +176,16 @@ func resolveAbsTargetPath(target string) string {
 
 func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
 	target := ExtractToolTarget(toolName, argsJSON)
-	if target == "" {
-		if idx := strings.Index(output, " to "); idx != -1 {
-			target = strings.TrimSpace(output[idx+4:])
+	sizeBytes := int64(-1)
+	firstLine, _, _ := strings.Cut(output, "\n")
+	if message, ok := strings.CutPrefix(firstLine, "Successfully wrote "); ok {
+		if count, savedPath, ok := strings.Cut(message, " bytes to "); ok {
+			if n, err := strconv.ParseInt(count, 10, 64); err == nil && n >= 0 {
+				sizeBytes = n
+				if strings.TrimSpace(savedPath) != "" {
+					target = strings.TrimSpace(savedPath)
+				}
+			}
 		}
 	}
 	if target == "" {
@@ -178,60 +193,24 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 	}
 
 	absPath := resolveAbsTargetPath(target)
-
-	var sizeBytes int64 = -1
-	var lineCount = -1
-	if fi, err := os.Stat(absPath); err == nil && !fi.IsDir() {
-		sizeBytes = fi.Size()
-		if data, err := os.ReadFile(absPath); err == nil {
-			lineCount = bytes.Count(data, []byte{'\n'})
-			if len(data) > 0 && !bytes.HasSuffix(data, []byte{'\n'}) {
-				lineCount++
-			}
+	if sizeBytes < 0 {
+		if fi, err := os.Stat(absPath); err == nil && fi.Mode().IsRegular() {
+			sizeBytes = fi.Size()
+		} else if contents, ok := filetool.ExtractFileContent(argsJSON); ok {
+			sizeBytes = int64(len(contents))
 		}
-	}
-
-	sizeDesc := ""
-	if sizeBytes >= 0 {
-		formattedSize := formatByteSize(sizeBytes)
-		if lineCount >= 0 {
-			sizeDesc = fmt.Sprintf("%s, %d lines", formattedSize, lineCount)
-		} else {
-			sizeDesc = formattedSize
-		}
-	} else if len(output) > 0 {
-		sizeDesc = output
 	}
 
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
 	checkStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
-
-	if sizeDesc != "" {
+	if sizeBytes >= 0 {
 		sizeStyle := style.NewStyle().Foreground(theme.TextMuted)
-		fmt.Fprintf(w, "%s%s %s %s\n",
-			branchStyle,
-			checkStyle.Render("✓"),
-			pathStyle.Render(absPath),
-			sizeStyle.Render(fmt.Sprintf("(%s)", sizeDesc)),
-		)
-	} else {
-		fmt.Fprintf(w, "%s%s %s\n",
-			branchStyle,
-			checkStyle.Render("✓"),
-			pathStyle.Render(absPath),
-		)
+		fmt.Fprintf(w, "%s%s %s %s\n", branchStyle, checkStyle.Render("✓"),
+			pathStyle.Render(absPath), sizeStyle.Render(fmt.Sprintf("(%d bytes)", sizeBytes)))
+		return
 	}
-}
-
-func formatByteSize(bytes int64) string {
-	if bytes < 1024 {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	if bytes < 1024*1024 {
-		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
-	}
-	return fmt.Sprintf("%.2f MB", float64(bytes)/(1024*1024))
+	fmt.Fprintf(w, "%s%s %s\n", branchStyle, checkStyle.Render("✓"), pathStyle.Render(absPath))
 }
 
 // CountDiffLines counts the number of added and deleted lines from diff output.

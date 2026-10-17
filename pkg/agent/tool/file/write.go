@@ -24,6 +24,7 @@ func (t *writeTool) PromptSnippet() string {
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'write' only for new files or complete rewrites.",
+		"Request one 'write' at a time and inspect its result before requesting the next file. Do not batch writes in one response.",
 	})
 }
 
@@ -93,5 +94,5 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), targetPath), nil
+	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), safePath), nil
 }

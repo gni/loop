@@ -263,6 +263,7 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.ActiveToolIndex = toolCallIndex
 		sr.parser.EnsureTrackingIndex()
 		sr.parser.ToolTitleLineNumbers[toolCallIndex] = -1
+		sr.parser.ToolTitlePrinted[toolCallIndex] = false
 		sr.parser.ToolBodyStreamed[toolCallIndex] = false
 		sr.parser.ActiveToolName = toolName
 		sr.parser.TitlePrinted = false
@@ -281,7 +282,9 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.GuessedLang = ""
 		sr.parser.NeedsLeadingNewline = false
 
-		if sr.parser.StreamWrites && !sr.parser.NeedsPath() {
+		// A write must be visible as soon as the call starts. The model is not
+		// required to put the path before the (potentially long) content.
+		if toolName == "write" || (sr.parser.StreamWrites && !sr.parser.NeedsPath()) {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
 	}
@@ -296,7 +299,10 @@ func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
 		if sr.parser.GuessedLang == "" && target != "" {
 			sr.parser.GuessedLang = stream.DetectLangFromPath(target)
 		}
-		if sr.parser.StreamWrites && !sr.parser.TitlePrinted {
+		if sr.parser.TitlePrinted {
+			sr.parser.PathPrinted = true
+			sr.parser.UpdateStreamTitleWithPath(sr.w, sr.theme)
+		} else if sr.parser.StreamWrites {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 			sr.parser.PathPrinted = true
 		}
@@ -333,6 +339,11 @@ func (sr *StreamRenderer) GetToolTitleLineNumber(index int) int {
 
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return -1
+	}
+	// Line counts can be unavailable for direct terminal writers. Remember
+	// that a title was printed even after Flush() switches the active index.
+	if sr.parser.ToolTitlePrinted[index] && sr.parser.ToolTitleLineNumbers[index] < 0 {
+		return 0
 	}
 	if sr.parser.TitlePrinted && sr.parser.ActiveToolIndex == index && sr.parser.ToolTitleLineNumbers[index] < 0 {
 		return 0

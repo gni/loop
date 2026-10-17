@@ -202,9 +202,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		updateStreamStatus(true)
 
-		// Defer read titles until execution so the terminal shows one read
-		// followed by its result, rather than listing every queued read first.
-		deferredReadCalls := make(map[int]bool)
+		// Only the first tool can stream live. Later tools are queued until
+		// execution so each result stays beside its own title and body.
+		// Reads are always deferred because their body comes from execution.
+		streamFirstTool := false
 		for chunk := range chunkChan {
 			switch chunk.Type {
 			case "reasoning":
@@ -222,21 +223,22 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 				sr.Write(chunk.Content)
 			case "tool_name":
-				if chunk.Content == "read" {
-					deferredReadCalls[chunk.ToolCallIndex] = true
-				} else {
-					sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
+				if chunk.ToolCallIndex == 0 {
+					streamFirstTool = chunk.Content != "read"
+					if streamFirstTool {
+						sr.StartToolCall(chunk.Content, 0)
+					}
 				}
 				if loader != nil {
 					loader.ShowDots()
 					loader.Feed()
 				}
 			case "tool_target":
-				if !deferredReadCalls[chunk.ToolCallIndex] {
-					sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
+				if chunk.ToolCallIndex == 0 && streamFirstTool {
+					sr.SetToolTarget(chunk.Content, 0)
 				}
 			case "tool_call":
-				if !deferredReadCalls[chunk.ToolCallIndex] {
+				if chunk.ToolCallIndex == 0 && streamFirstTool {
 					sr.WriteToolCall(chunk.Content)
 				}
 				if loader != nil {

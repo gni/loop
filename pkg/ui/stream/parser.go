@@ -34,6 +34,7 @@ type JSONStreamParser struct {
 	OutputBuf            strings.Builder
 	NeedsLeadingNewline  bool
 	ToolTitleLineNumbers []int
+	ToolTitlePrinted     []bool
 	ToolBodyStreamed     []bool
 	ActiveToolIndex      int
 	StreamWrites         bool
@@ -436,11 +437,14 @@ func (p *JSONStreamParser) formatCurrentTitle(theme style.UITheme) string {
 }
 
 func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
-	if p.TitlePrinted || (p.NeedsPath() && strings.TrimSpace(p.Path) == "") {
+	// Write calls can start with content. Print the action while the path is
+	// still unknown, then update its title when the path arrives.
+	if p.TitlePrinted || (p.NeedsPath() && strings.TrimSpace(p.Path) == "" && p.ActiveToolName != "write") {
 		return
 	}
 	p.TitlePrinted = true
 	p.EnsureTrackingIndex()
+	p.ToolTitlePrinted[p.ActiveToolIndex] = true
 	p.ToolTitleLineNumbers[p.ActiveToolIndex] = GetNewlineCount(w)
 	fmt.Fprintln(w, p.formatCurrentTitle(theme))
 }
@@ -462,6 +466,9 @@ func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UI
 func (p *JSONStreamParser) EnsureTrackingIndex() {
 	for len(p.ToolTitleLineNumbers) <= p.ActiveToolIndex {
 		p.ToolTitleLineNumbers = append(p.ToolTitleLineNumbers, -1)
+	}
+	for len(p.ToolTitlePrinted) <= p.ActiveToolIndex {
+		p.ToolTitlePrinted = append(p.ToolTitlePrinted, false)
 	}
 	for len(p.ToolBodyStreamed) <= p.ActiveToolIndex {
 		p.ToolBodyStreamed = append(p.ToolBodyStreamed, false)
