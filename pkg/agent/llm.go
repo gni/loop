@@ -8,6 +8,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	transportllm "loop/pkg/transport/llm"
 )
 
 type contextKey string
@@ -19,6 +20,7 @@ type FunctionDefinition = tool.FunctionDefinition
 type JSONSchema = tool.JSONSchema
 type SchemaProp = tool.SchemaProp
 type ReplaceEdit = tool.ReplaceEdit
+type ChatCompletionResponseChunk = transportllm.RawStreamChunk
 
 type StreamChunk struct {
 	Type          string
@@ -52,31 +54,6 @@ type ChatCompletionRequest struct {
 	ChatTemplateKwargs   *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 	MaxCompletionTokens  int                 `json:"max_completion_tokens,omitempty"`
 	MaxTokens            int                 `json:"max_tokens,omitempty"`
-}
-
-type ChatCompletionResponseChunk struct {
-	ID      string `json:"id"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Content          string        `json:"content"`
-			ReasoningContent string        `json:"reasoning_content"`
-			ToolCalls        []db.ToolCall `json:"tool_calls"`
-			Role             string        `json:"role"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-		CacheReadTokens  int `json:"cache_read_input_tokens,omitempty"`
-		CacheWriteTokens int `json:"cache_creation_input_tokens,omitempty"`
-	} `json:"usage,omitempty"`
-	Timings *struct {
-		PromptN    int `json:"prompt_n"`
-		PredictedN int `json:"predicted_n"`
-	} `json:"timings,omitempty"`
 }
 
 type LLMProvider interface {

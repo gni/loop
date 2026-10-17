@@ -44,7 +44,13 @@ func handleConfigCommand(
 		newConfig, errInteractive := interactive.RunInteractiveConfig(a.Config, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		if errInteractive == nil && newConfig != nil {
+			if newConfig.GuidedMode && !a.Config.GuidedMode {
+				newConfig.AutoApprove = false
+				newConfig.ApprovalAlwaysAnswer = false
+				newConfig.ParallelToolCalls = false
+			}
 			a.ApplyConfig(newConfig)
+			ui.SetCollapseStatus(a.Config.CollapseResults)
 			*theme = style.ResolveConfiguredTheme(a.Config.Theme, a.Config.SyntaxTheme)
 			_ = config.SaveConfig(a.ConfigPath, a.Config)
 		}
@@ -94,35 +100,32 @@ func handleConfigCommand(
 		}
 		a.Config.Temperature = t
 	case "auto_approve", "yes", "yolo":
-		a.Config.AutoApprove = parseConfigBool(val)
+		a.Config.AutoApprove = config.ParseBool(val)
 		if a.Config.AutoApprove {
 			a.SetGuidedMode(false)
 		}
 	case "guided_mode", "guided":
-		a.SetGuidedMode(parseConfigBool(val))
+		a.SetGuidedMode(config.ParseBool(val))
 	case "approval_always_answer", "always_answer":
-		a.Config.ApprovalAlwaysAnswer = parseConfigBool(val)
+		a.Config.ApprovalAlwaysAnswer = config.ParseBool(val)
 	case "show_thinking", "thinking":
-		a.Config.ShowThinking = parseConfigBool(val)
+		a.Config.ShowThinking = config.ParseBool(val)
 	case "reasoning_effort", "reasoning":
-		valLower := strings.ToLower(strings.TrimSpace(val))
-		switch valLower {
-		case "off", "none", "false", "0":
-			a.Config.ReasoningEffort = "off"
-		case "low", "medium", "high", "max":
-			a.Config.ReasoningEffort = valLower
-		default:
+		effort, err := config.ParseReasoningEffort(val)
+		if err != nil {
 			fmt.Fprintf(w, "Invalid reasoning effort '%s'. Allowed values: off, low, medium, high, max\n", val)
 			return
 		}
+		a.Config.ReasoningEffort = effort
 	case "before_tool_hook", "before_hook":
 		a.Config.BeforeToolHook = val
 	case "after_tool_hook", "after_hook":
 		a.Config.AfterToolHook = val
 	case "collapse_results", "collapse":
-		a.Config.CollapseResults = parseConfigBool(val)
+		a.Config.CollapseResults = config.ParseBool(val)
+		ui.SetCollapseStatus(a.Config.CollapseResults)
 	case "show_tokens", "tokens":
-		a.Config.ShowTokens = parseConfigBool(val)
+		a.Config.ShowTokens = config.ParseBool(val)
 	case "theme":
 		a.Config.Theme = val
 		*theme = ui.GetConfiguredTheme(a.Config)
@@ -140,23 +143,16 @@ func handleConfigCommand(
 			return
 		}
 	case "auto_adapt_context", "auto_adapt":
-		a.Config.AutoAdaptContext = parseConfigBool(val)
+		a.Config.AutoAdaptContext = config.ParseBool(val)
 	case "min_context_window", "min_context":
 		if !parseConfigPositiveInt(w, "min context window", val, &a.Config.MinContextWindow) {
 			return
 		}
 	case "compression_threshold", "compress_threshold", "compression_ratio":
-		v := strings.TrimSpace(strings.TrimSuffix(val, "%"))
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil || f <= 0 {
-			fmt.Fprintf(w, "Invalid compression threshold: %v (must be positive number, e.g. 0.90 or 90%%)\n", err)
+		f, err := config.ParseCompressionThreshold(val)
+		if err != nil {
+			fmt.Fprintf(w, "Invalid compression threshold: %v\n", err)
 			return
-		}
-		if f > 1.0 {
-			f /= 100.0
-		}
-		if f > 0.98 {
-			f = 0.98
 		}
 		a.Config.CompressionThreshold = f
 	case "compaction_reserve_tokens", "compaction_reserve", "reserve_tokens":
@@ -176,7 +172,7 @@ func handleConfigCommand(
 			return
 		}
 	case "direct_commands", "direct":
-		a.Config.DirectCommands = parseConfigBool(val)
+		a.Config.DirectCommands = config.ParseBool(val)
 	case "cert_file", "cert":
 		a.Config.CertFile = val
 	case "key_file", "client_key":
@@ -184,15 +180,11 @@ func handleConfigCommand(
 	case "ca_file", "ca":
 		a.Config.CAFile = val
 	case "skip_verify", "skip":
-		a.Config.SkipVerify = parseConfigBool(val)
+		a.Config.SkipVerify = config.ParseBool(val)
 	case "stream_writes", "stream_write", "stream":
-		a.Config.StreamWrites = parseConfigBool(val)
+		a.Config.StreamWrites = config.ParseBool(val)
 	case "debug_log_file", "debug":
 		a.Config.DebugLogFile = val
-		if a.DebugLogger != nil {
-			a.DebugLogger.Close()
-		}
-		a.DebugLogger = agent.NewDebugLogger(a.WorkspaceRoot, val)
 	case "max_paste_lines", "paste_lines", "paste_threshold":
 		if !parseConfigPositiveInt(w, "max paste lines", val, &a.Config.MaxPasteLines) {
 			return
@@ -217,9 +209,9 @@ func handleConfigCommand(
 			return
 		}
 	case "persistent_bash", "persistent_shell":
-		a.Config.PersistentBash = parseConfigBool(val)
+		a.Config.PersistentBash = config.ParseBool(val)
 	case "atomic_writes", "atomic_write":
-		a.Config.AtomicWrites = parseConfigBool(val)
+		a.Config.AtomicWrites = config.ParseBool(val)
 	case "recap_interval", "recap":
 		n, err := strconv.Atoi(val)
 		if err != nil {
@@ -235,36 +227,26 @@ func handleConfigCommand(
 			fmt.Fprintf(w, "prompt catalog reloaded from %s\n", val)
 		}
 	case "disable_recap":
-		a.Config.DisableRecap = parseConfigBool(val)
+		a.Config.DisableRecap = config.ParseBool(val)
 	case "ask_user_mode", "ask_user":
-		mode := strings.ToLower(strings.TrimSpace(val))
-		switch mode {
-		case "interactive", "always_ask", "auto_recommended", "disabled":
-			a.Config.AskUserMode = mode
-			a.Config.UpdateActiveProvider()
-		default:
+		mode, err := config.ParseAskUserMode(val)
+		if err != nil {
 			fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled\n", val)
 			return
 		}
+		a.Config.AskUserMode = mode
+		a.Config.UpdateActiveProvider()
 	case "disabled_tools", "disable_tools", "disable_tool":
-		valTrimmed := strings.TrimSpace(val)
 		a.EnableAllTools()
-		if valTrimmed != "" && valTrimmed != "none" && valTrimmed != "clear" && valTrimmed != "reset" && valTrimmed != "empty" {
-			var cleaned []string
-			for _, p := range strings.Split(valTrimmed, ",") {
-				if t := strings.TrimSpace(p); t != "" {
-					cleaned = append(cleaned, t)
-				}
-			}
-			if len(cleaned) > 0 {
-				a.DisableTools(cleaned...)
-			}
+		if cleaned := config.ParseToolList(val); len(cleaned) > 0 {
+			a.DisableTools(cleaned...)
 		}
 	default:
 		fmt.Fprintf(w, "unknown config key: %s\n", key)
 		return
 	}
 
+	a.ApplyConfig(a.Config)
 	_ = config.SaveConfig(a.ConfigPath, a.Config)
 	fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
 	pTok, cTok, estimated := calcHistoryTokens()
@@ -290,13 +272,4 @@ func parseConfigPositiveInt(w io.Writer, name, val string, target *int) bool {
 	}
 	*target = n
 	return true
-}
-
-func parseConfigBool(val string) bool {
-	switch strings.ToLower(strings.TrimSpace(val)) {
-	case "true", "1", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }

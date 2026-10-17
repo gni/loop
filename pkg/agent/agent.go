@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
+	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
 
@@ -193,6 +195,50 @@ func (a *Agent) markSystemPromptDirty() {
 	a.stateMu.Lock()
 	a.ForceSystemPromptUpdate = true
 	a.stateMu.Unlock()
+}
+
+func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string) {
+	if a == nil || messages == nil {
+		return
+	}
+	currentSysPrompt := a.GetSystemPrompt()
+	a.stateMu.Lock()
+	forceUpdate := a.ForceSystemPromptUpdate
+	a.ForceSystemPromptUpdate = false
+	a.stateMu.Unlock()
+
+	if len(*messages) == 0 {
+		*messages = []db.Message{{Role: "system", Content: currentSysPrompt}}
+		return
+	}
+	if (*messages)[0].Role == "system" && ((*messages)[0].Content != currentSysPrompt || forceUpdate) {
+		(*messages)[0].Content = currentSysPrompt
+		if sessionID != "" {
+			if err := db.RewriteSession(sessionID, *messages); err != nil {
+				a.DebugLogError(sessionID, "db.RewriteSession (system prompt)", err)
+			}
+		}
+	}
+}
+
+func (a *Agent) ShouldShowThinking() bool {
+	if a == nil || a.Config == nil || !a.Config.ShowThinking {
+		return false
+	}
+	effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
+	return effort != "off" && effort != "none"
+}
+
+func (a *Agent) NewTurnStreamRenderer(w io.Writer, theme style.UITheme, agentName, prompt string) StreamRenderer {
+	var sr StreamRenderer
+	if a != nil && a.UI != nil {
+		streamWrites := a.Config == nil || a.Config.StreamWrites
+		sr = a.UI.NewStreamRenderer(w, theme, a.ShouldShowThinking(), streamWrites, agentName)
+	} else {
+		sr = &FallbackStreamRenderer{w: w}
+	}
+	sr.SetPrompt(prompt)
+	return sr
 }
 
 func (a *Agent) ensureGuided() *GuidedController {

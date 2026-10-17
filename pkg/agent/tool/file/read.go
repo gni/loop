@@ -52,14 +52,18 @@ func (t *readTool) Definition() domaintool.Tool {
 	)
 }
 
+func relPathOrFallback(workspaceRoot, candidate, fallback string) string {
+	if rel, err := filepath.Rel(workspaceRoot, candidate); err == nil && rel != "" {
+		return rel
+	}
+	return fallback
+}
+
 func resolveMissingReadTarget(safePath, targetPath, workspaceRoot string) (string, os.FileInfo, string, bool) {
 	for _, ext := range fallbackFileExts {
 		candidate := safePath + ext
 		if cInfo, cErr := os.Stat(candidate); cErr == nil && !cInfo.IsDir() {
-			relPath, _ := filepath.Rel(workspaceRoot, candidate)
-			if relPath == "" {
-				relPath = targetPath + ext
-			}
+			relPath := relPathOrFallback(workspaceRoot, candidate, targetPath+ext)
 			header := fmt.Sprintf("[Notice: Resolved '%s' to '%s']\n\n", targetPath, relPath)
 			return candidate, cInfo, header, true
 		}
@@ -79,10 +83,7 @@ func resolveDirEntrypoint(safePath, targetPath, workspaceRoot string) (string, o
 	for _, entryName := range packageEntries {
 		entryPath := filepath.Join(safePath, entryName)
 		if entryInfo, err := os.Stat(entryPath); err == nil && !entryInfo.IsDir() && entryInfo.Size() > 0 {
-			relEntry, _ := filepath.Rel(workspaceRoot, entryPath)
-			if relEntry == "" {
-				relEntry = filepath.Join(targetPath, entryName)
-			}
+			relEntry := relPathOrFallback(workspaceRoot, entryPath, filepath.Join(targetPath, entryName))
 			header := fmt.Sprintf("[Notice: '%s' is a directory. Automatically reading package entrypoint '%s':]\n\n", targetPath, relEntry)
 			return entryPath, entryInfo, header, true
 		}
@@ -109,22 +110,12 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if args.Offset == 0 || args.Limit == 0 {
-		var generic map[string]interface{}
-		if err := json.Unmarshal([]byte(arguments), &generic); err == nil && generic != nil {
-			for _, w := range wrapperKeys {
-				if sub, ok := generic[w].(map[string]interface{}); ok {
-					if args.Offset == 0 {
-						if off, ok := sub["offset"].(float64); ok {
-							args.Offset = off
-						}
-					}
-					if args.Limit == 0 {
-						if lim, ok := sub["limit"].(float64); ok {
-							args.Limit = lim
-						}
-					}
-				}
-			}
+		wrapped := ExtractWrappedFloats(arguments, "offset", "limit")
+		if args.Offset == 0 {
+			args.Offset = wrapped["offset"]
+		}
+		if args.Limit == 0 {
+			args.Limit = wrapped["limit"]
 		}
 	}
 

@@ -58,22 +58,12 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	pattern := strings.TrimSpace(args.Pattern)
-	if pattern == "" {
-		pattern = strings.TrimSpace(args.Glob)
-	}
+	pattern := domaintool.FirstNonEmpty(strings.TrimSpace(args.Pattern), strings.TrimSpace(args.Glob))
 	if pattern == "" {
 		return "", fmt.Errorf("pattern is required for find (e.g. '*.py' or '**/*.json')")
 	}
 
-	searchPath := args.Path
-	if searchPath == "" {
-		searchPath = args.Dir
-	}
-	if searchPath == "" {
-		searchPath = "."
-	}
-
+	searchPath := domaintool.FirstNonEmpty(args.Path, args.Dir, ".")
 	safePath, err := ctx.SafePath(searchPath)
 	if err != nil {
 		return "", err
@@ -85,9 +75,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	limit := int(args.Limit)
-	if limit <= 0 {
-		limit = limits.FindMaxResults()
-	} else if limit > limits.FindMaxResults() {
+	if limit <= 0 || limit > limits.FindMaxResults() {
 		limit = limits.FindMaxResults()
 	}
 
@@ -102,18 +90,11 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	lowerPattern := strings.ToLower(pattern)
 	hasSlash := strings.Contains(pattern, "/")
 
-	// Matches are counted even past the cap so the notice can state the exact
-	// total and the exact next offset; only collection stops.
 	var matchedPaths []string
 	totalMatches := 0
 	limitReached := false
 
-	if !info.IsDir() {
-		rel, err := filepath.Rel(workspaceRoot, safePath)
-		if err != nil {
-			rel = safePath
-		}
-		rel = filepath.ToSlash(rel)
+	recordMatch := func(rel string) {
 		totalMatches++
 		if totalMatches >= offset && len(matchedPaths) < limit {
 			matchedPaths = append(matchedPaths, rel)
@@ -121,50 +102,34 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if totalMatches >= offset+limit {
 			limitReached = true
 		}
+	}
+
+	if !info.IsDir() {
+		recordMatch(RelSlashPath(workspaceRoot, safePath))
 	} else {
 		err = filepath.WalkDir(safePath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
-
-			name := d.Name()
-			if d.IsDir() {
-				if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
-					return filepath.SkipDir
-				}
-				return nil
+			if skip, skipErr := ShouldSkipWalkEntry(path, d, workspaceRoot, gitIgnorePatterns); skip {
+				return skipErr
 			}
 
-			if IsIgnoredFileName(name) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
-				return nil
-			}
-
-			rel, err := filepath.Rel(workspaceRoot, path)
-			if err != nil {
-				rel = path
-			}
-			rel = filepath.ToSlash(rel)
-
+			rel := RelSlashPath(workspaceRoot, path)
 			var matched bool
 			if hasSlash {
-				matched, _ = filepath.Match(lowerPattern, strings.ToLower(rel))
+				lowerRel := strings.ToLower(rel)
+				matched, _ = filepath.Match(lowerPattern, lowerRel)
 				if !matched {
-					matched, _ = filepath.Match("*/"+lowerPattern, strings.ToLower(rel))
+					matched, _ = filepath.Match("*/"+lowerPattern, lowerRel)
 				}
 			} else {
-				matched, _ = filepath.Match(lowerPattern, strings.ToLower(name))
+				matched, _ = filepath.Match(lowerPattern, strings.ToLower(d.Name()))
 			}
 
 			if matched {
-				totalMatches++
-				if totalMatches >= offset && len(matchedPaths) < limit {
-					matchedPaths = append(matchedPaths, rel)
-				}
-				if totalMatches >= offset+limit {
-					limitReached = true
-				}
+				recordMatch(rel)
 			}
-
 			return nil
 		})
 		if err != nil && err != fs.SkipAll {
@@ -178,7 +143,6 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	sort.Strings(matchedPaths)
 
-	// The byte budget applies to complete result lines, first hit wins.
 	cut := file.TruncateHead(matchedPaths, len(matchedPaths), limits.MaxOutputBytes())
 	result := cut.Content
 	if limitReached || cut.Truncated {

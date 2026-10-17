@@ -13,6 +13,47 @@ import (
 	"loop/pkg/ui/style"
 )
 
+func formatTurnElapsed(startTime time.Time, theme style.UITheme) string {
+	elapsed := time.Since(startTime)
+	timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
+	return style.NewStyle().Foreground(theme.Border).Render(timeStr)
+}
+
+func formatCompletionTokensBadge(tokens int, theme style.UITheme) string {
+	currentCStr := fmt.Sprintf("%d out", tokens)
+	if tokens >= 1000 {
+		currentCStr = fmt.Sprintf("%.1fk out", float64(tokens)/1000.0)
+	}
+	cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
+	dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
+	return cStyled + dotStyled
+}
+
+func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, err error, ctxErr error, isNonInteractive bool, theme style.UITheme) {
+	if ctxErr != nil {
+		if !isNonInteractive {
+			fmt.Fprintln(w)
+			cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
+			fmt.Fprintln(w, cancelStyle.Render("[operation cancelled]"))
+		}
+		return
+	}
+
+	errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+	if isNonInteractive {
+		fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), err)
+		return
+	}
+
+	fmt.Fprintln(w)
+	if a.UI != nil {
+		a.UI.RenderGenerationError(w, err.Error(), theme)
+	} else {
+		fmt.Fprintf(w, "\n%s %v\n", errStyle.Render("Error during generation:"), err)
+	}
+	sink.Append(db.Message{Role: "error", Content: err.Error()})
+}
+
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
@@ -49,29 +90,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	timePrinted := false
 	defer func() {
 		if !timePrinted {
-			elapsed := time.Since(startTime)
-			timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
-			timeStyled := style.NewStyle().Foreground(theme.Border).Render(timeStr)
 			fmt.Fprintln(writerToUse)
-			fmt.Fprintln(writerToUse, timeStyled)
+			fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme))
 		}
 	}()
 
-	if len(*messages) > 0 && (*messages)[0].Role == "system" {
-		currentSysPrompt := a.GetSystemPrompt()
-		a.stateMu.Lock()
-		forceUpdate := a.ForceSystemPromptUpdate
-		a.ForceSystemPromptUpdate = false
-		a.stateMu.Unlock()
-		if (*messages)[0].Content != currentSysPrompt || forceUpdate {
-			(*messages)[0].Content = currentSysPrompt
-			if sessionID != "" {
-				if err := db.RewriteSession(sessionID, *messages); err != nil {
-					a.DebugLogError(sessionID, "db.RewriteSession (system prompt)", err)
-				}
-			}
-		}
-	}
+	a.SyncSessionSystemPrompt(messages, sessionID)
 
 	*messages = append(*messages, db.Message{Role: "user", Content: prompt})
 	if sessionID != "" {
@@ -153,15 +177,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: a.CurrentStreamBuffer}
 		ncw := &NewlineCounterWriter{Writer: teeWriter}
 		a.SetCurrentWriter(ncw)
-		effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
-		enableThinking := a.Config.ShowThinking && effort != "off" && effort != "none"
-		var sr StreamRenderer
-		if a.UI != nil {
-			sr = a.UI.NewStreamRenderer(ncw, theme, enableThinking, a.Config.StreamWrites, "loop")
-		} else {
-			sr = &FallbackStreamRenderer{w: ncw}
-		}
-		sr.SetPrompt(prompt)
+		sr := a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
 
 		echoFilter := NewPromptEchoFilter(prompt)
 		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
@@ -237,25 +253,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			if loader != nil {
 				loader.Stop()
 			}
-			if ctx.Err() != nil {
-				if !isNonInteractive {
-					fmt.Fprintln(writerToUse)
-					cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
-					fmt.Fprintln(writerToUse, cancelStyle.Render("[operation cancelled]"))
-				}
-			} else if !isNonInteractive {
-				fmt.Fprintln(writerToUse)
-				if a.UI != nil {
-					a.UI.RenderGenerationError(writerToUse, streamErr.Error(), theme)
-				} else {
-					errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-					fmt.Fprintf(writerToUse, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
-				}
-				sink.Append(db.Message{Role: "error", Content: streamErr.Error()})
-			} else {
-				errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-				fmt.Fprintf(ncw, "\n%s %v\n", errStyle.Render("Error during generation:"), streamErr)
-			}
+			a.renderTurnError(writerToUse, ncw, sink, streamErr, ctx.Err(), isNonInteractive, theme)
 			return
 		}
 
@@ -295,19 +293,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				loader.Stop()
 			}
 			timePrinted = true
-			elapsed := time.Since(startTime)
-			timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
-			timeStyled := style.NewStyle().Foreground(theme.Border).Render(timeStr)
+			timeStyled := formatTurnElapsed(startTime, theme)
 
 			statsText := timeStyled
 			if a.Config.ShowTokens && assistantMsg.CompletionTokens > 0 {
-				currentCStr := fmt.Sprintf("%d out", assistantMsg.CompletionTokens)
-				if assistantMsg.CompletionTokens >= 1000 {
-					currentCStr = fmt.Sprintf("%.1fk out", float64(assistantMsg.CompletionTokens)/1000.0)
-				}
-				cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
-				dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
-				statsText = cStyled + dotStyled + timeStyled
+				statsText = formatCompletionTokensBadge(assistantMsg.CompletionTokens, theme) + timeStyled
 			}
 
 			_, height := style.GetTerminalSize()

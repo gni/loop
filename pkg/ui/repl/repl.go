@@ -35,15 +35,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	var messages []db.Message
 	if dbHistory, err := db.LoadMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
 		messages = dbHistory
-		if messages[0].Role == "system" {
-			if currentSysPrompt := a.GetSystemPrompt(); messages[0].Content != currentSysPrompt {
-				messages[0].Content = currentSysPrompt
-				_ = db.RewriteSession(currentSessionID, messages)
-			}
-		}
-	} else {
-		messages = []db.Message{{Role: "system", Content: a.GetSystemPrompt()}}
 	}
+	a.SyncSessionSystemPrompt(&messages, currentSessionID)
 
 	activeTasks := a.CountActiveTasks()
 
@@ -368,8 +361,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			continue
 		}
 
-		isHelpCmd := trimmedLine == "help" || trimmedLine == "h" || trimmedLine == "?" || trimmedLine == "/help" || trimmedLine == "/commands" || trimmedLine == "/h" || trimmedLine == "/?"
-		if strings.HasPrefix(trimmedLine, "/") || isHelpCmd {
+		if strings.HasPrefix(trimmedLine, "/") || commands.IsHelpCommand(trimmedLine) {
 			parts := strings.Fields(trimmedLine)
 			if len(parts) > 0 {
 				if expanded, isTpl := commands.ExpandPromptTemplate(parts[0], strings.TrimSpace(strings.TrimPrefix(trimmedLine, parts[0]))); isTpl {
@@ -398,5 +390,5 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	ui.ShutdownStatusBar(os.Stderr)
 	ui.ForceExitAlternateScreen(os.Stderr)
 	_ = db.SetLatestSessionID(currentSessionID)
-	fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: ./loop --session %s (or ./loop --resume)\n", currentSessionID)
+	fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\n", currentSessionID)
 }

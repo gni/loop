@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"loop/pkg/agent"
@@ -56,8 +55,40 @@ func (s *streamBufferWriter) Write(p []byte) (int, error) {
 	return s.ma.StreamBuffer.Write(p)
 }
 
+func calcStreamTPS(tokens int, start time.Time, now time.Time) float64 {
+	if start.IsZero() || tokens <= 0 {
+		return 0
+	}
+	if elapsed := now.Sub(start).Seconds(); elapsed > 0 {
+		return float64(tokens) / elapsed
+	}
+	return 0
+}
+
+func latestUserPrompt(history []db.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Content
+		}
+	}
+	return ""
+}
+
+func (ma *MultiAgent) recordTaskAndAgentState(taskID, taskStatus, agentStatus, response string, err error) {
+	if ma.Manager == nil {
+		return
+	}
+	if taskID != "" {
+		ma.Manager.UpdateTaskStatus(taskID, taskStatus, response, err)
+	}
+	_ = ma.Manager.SaveAgentState(ma, agentStatus)
+}
+
 func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 	go func() {
+		nameStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+		errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+
 		for {
 			select {
 			case <-ma.Context.Done():
@@ -72,12 +103,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				ma.HistoryMu.Unlock()
 
 				taskID := msg.ToolCallID
-				if ma.Manager != nil {
-					if taskID != "" {
-						ma.Manager.UpdateTaskStatus(taskID, "running", "", nil)
-					}
-					_ = ma.Manager.SaveAgentState(ma, "running")
-				}
+				ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
 
 				if msg.Role != "user" {
 					continue
@@ -85,7 +111,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 
 				writer := ma.resolveWriter(w)
 				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
-					style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+					nameStyle.Render(ma.Name),
 					msg.Name,
 					msg.Content,
 				)
@@ -99,22 +125,16 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				ma.setActiveTurn(nil, nil, time.Time{})
 
 				if err != nil {
-					if ma.Manager != nil {
-						if taskID != "" {
-							ma.Manager.UpdateTaskStatus(taskID, "failed", "", err)
-						}
-						_ = ma.Manager.SaveAgentState(ma, "failed")
-					}
+					ma.recordTaskAndAgentState(taskID, "failed", "failed", "", err)
 
 					if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled) {
 						label := "error"
 						if errors.Is(err, context.DeadlineExceeded) {
 							label = "timed out"
 						}
-						errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 						fmt.Fprintf(writer, "\n%s [%s] %s: %v\n",
 							errStyle.Render("!"),
-							style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
+							nameStyle.Render(ma.Name),
 							label,
 							err,
 						)
@@ -128,12 +148,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					continue
 				}
 
-				if ma.Manager != nil {
-					if taskID != "" {
-						ma.Manager.UpdateTaskStatus(taskID, "completed", response.Content, nil)
-					}
-					_ = ma.Manager.SaveAgentState(ma, "idle")
-				}
+				ma.recordTaskAndAgentState(taskID, "completed", "idle", response.Content, nil)
 
 				select {
 				case ma.Output <- response:
@@ -174,6 +189,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		},
 	})
 	sink := newSwarmSink(ma)
+	renderedAgentName := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name)
 
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
@@ -215,27 +231,16 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		ma.StreamBufferMu.Unlock()
 		teeW := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
 
-		var lastUserPrompt string
-		for i := len(historyCopy) - 1; i >= 0; i-- {
-			if historyCopy[i].Role == "user" {
-				lastUserPrompt = historyCopy[i].Content
-				break
-			}
-		}
-
+		lastUserPrompt := latestUserPrompt(historyCopy)
 		ncw := agent.NewNewlineCounterWriter(teeW)
-		enableThinking := false
-		if ma.BaseAgent != nil && ma.BaseAgent.Config != nil {
-			effort := strings.ToLower(strings.TrimSpace(ma.BaseAgent.Config.ReasoningEffort))
-			enableThinking = ma.BaseAgent.Config.ShowThinking && effort != "off" && effort != "none"
-		}
+		enableThinking := ma.BaseAgent != nil && ma.BaseAgent.ShouldShowThinking()
 		var sr agent.StreamRenderer
-		if ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-			sr = ma.BaseAgent.UI.NewStreamRenderer(ncw, theme, enableThinking, ma.BaseAgent.Config.StreamWrites, ma.Name)
+		if ma.BaseAgent != nil {
+			sr = ma.BaseAgent.NewTurnStreamRenderer(ncw, theme, ma.Name, lastUserPrompt)
 		} else {
 			sr = agent.NewFallbackStreamRenderer(ncw)
+			sr.SetPrompt(lastUserPrompt)
 		}
-		sr.SetPrompt(lastUserPrompt)
 
 		echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
 
@@ -250,7 +255,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		startResponseHeader := func() {
 			if !responseHeaderStarted {
-				fmt.Fprintf(ncw, "\n[%s] response: ", style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name))
+				fmt.Fprintf(ncw, "\n[%s] response: ", renderedAgentName)
 				responseHeaderStarted = true
 			}
 		}
@@ -268,44 +273,44 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				lastDraw = subagentGenStart
 			}
 
-			if chunk.Type == "reasoning" || chunk.Type == "text" || chunk.Type == "tool_call" {
+			switch chunk.Type {
+			case "reasoning":
 				subagentStreamChars += len(chunk.Content)
 				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
-			}
-
-			if chunk.Type == "reasoning" {
 				if enableThinking {
 					if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
 						startResponseHeader()
 						sr.WriteReasoning(cleaned)
 					}
 				}
-			} else {
+			case "text":
+				subagentStreamChars += len(chunk.Content)
+				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
 				startResponseHeader()
-				switch chunk.Type {
-				case "text":
-					sr.Write(chunk.Content)
-				case "tool_name":
-					if chunk.ToolCallIndex == 0 {
-						sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
-					}
-				case "tool_target":
-					if chunk.ToolCallIndex == 0 {
-						sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
-					}
-				case "tool_call":
-					if chunk.ToolCallIndex == 0 {
-						sr.WriteToolCall(chunk.Content)
-					}
+				sr.Write(chunk.Content)
+			case "tool_name":
+				startResponseHeader()
+				if chunk.ToolCallIndex == 0 {
+					sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
 				}
+			case "tool_target":
+				startResponseHeader()
+				if chunk.ToolCallIndex == 0 {
+					sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
+				}
+			case "tool_call":
+				subagentStreamChars += len(chunk.Content)
+				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+				startResponseHeader()
+				if chunk.ToolCallIndex == 0 {
+					sr.WriteToolCall(chunk.Content)
+				}
+			default:
+				startResponseHeader()
 			}
 
 			if now := time.Now(); now.Sub(lastDraw) >= 100*time.Millisecond {
-				var tps float64
-				if elapsed := now.Sub(subagentGenStart).Seconds(); elapsed > 0 {
-					tps = float64(subagentCompletionTokens) / elapsed
-				}
-				updateSubagentStatus(true, tps, subagentCompletionTokens)
+				updateSubagentStatus(true, calcStreamTPS(subagentCompletionTokens, subagentGenStart, now), subagentCompletionTokens)
 				lastDraw = now
 			}
 		}
@@ -326,11 +331,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 
 		if !subagentGenStart.IsZero() {
-			var finalTps float64
-			if elapsed := time.Since(subagentGenStart).Seconds(); elapsed > 0 {
-				finalTps = float64(subagentCompletionTokens) / elapsed
-			}
-			updateSubagentStatus(false, finalTps, subagentCompletionTokens)
+			updateSubagentStatus(false, calcStreamTPS(subagentCompletionTokens, subagentGenStart, time.Now()), subagentCompletionTokens)
 		}
 
 		ma.StreamBufferMu.Lock()
@@ -356,10 +357,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		if len(assistantMsg.ToolCalls) == 0 {
 			if !responseHeaderStarted {
-				fmt.Fprintf(ncw, "\n[%s] response: %s\n",
-					style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name),
-					assistantMsg.Content,
-				)
+				fmt.Fprintf(ncw, "\n[%s] response: %s\n", renderedAgentName, assistantMsg.Content)
 			} else {
 				fmt.Fprintln(ncw)
 			}

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
 )
+
+const maxJSONLLineBytes = 8 * 1024 * 1024
 
 type ToolFunction = message.ToolFunction
 type ToolCall = message.ToolCall
@@ -36,6 +39,19 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
 	return &JSONLStore{dir: clean}, nil
+}
+
+func newJSONLScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxJSONLLineBytes)
+	return scanner
+}
+
+func isSkippedSlashRecord(msg message.Message) bool {
+	if msg.Role != message.RoleUser {
+		return false
+	}
+	return msg.Content == "" || strings.HasPrefix(msg.Content, "[user manually executed slash command:")
 }
 
 func (s *JSONLStore) sessionPath(sessionID string) string {
@@ -147,13 +163,7 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 
 	var messages []message.Message
 	for _, record := range activeRecords {
-		if record.Type == "branch" || record.Type == "session" || record.Message.Role == "" {
-			continue
-		}
-		if record.Message.Role == message.RoleUser && record.Message.Content == "" {
-			continue
-		}
-		if strings.HasPrefix(record.Message.Content, "[user manually executed slash command:") {
+		if record.Type == "branch" || record.Type == "session" || record.Message.Role == "" || isSkippedSlashRecord(record.Message) {
 			continue
 		}
 		messages = append(messages, record.Message)
@@ -259,16 +269,21 @@ func withStore(fn func(*JSONLStore) error) error {
 	return fn(store)
 }
 
+func withStoreVal[T any](fn func(*JSONLStore) (T, error)) (T, error) {
+	var zero T
+	store, err := getStore()
+	if err != nil {
+		return zero, err
+	}
+	return fn(store)
+}
+
 func SaveMessage(sessionID string, msg Message) error {
 	return withStore(func(s *JSONLStore) error { return s.SaveMessage(sessionID, msg) })
 }
 
 func LoadMessages(sessionID string) ([]Message, error) {
-	store, err := getStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.LoadMessages(sessionID)
+	return withStoreVal(func(s *JSONLStore) ([]Message, error) { return s.LoadMessages(sessionID) })
 }
 
 func HasMessages(sessionID string) bool {

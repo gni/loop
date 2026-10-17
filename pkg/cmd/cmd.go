@@ -108,17 +108,7 @@ var rootCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "Warning: failed to load session %s: %v\n", sessionID, err)
 				}
 			}
-			currentSysPrompt := a.GetSystemPrompt()
-			if len(messages) == 0 {
-				messages = []db.Message{
-					{Role: "system", Content: currentSysPrompt},
-				}
-			} else if messages[0].Role == "system" && messages[0].Content != currentSysPrompt {
-				messages[0].Content = currentSysPrompt
-				if sessionID != "" {
-					_ = db.RewriteSession(sessionID, messages)
-				}
-			}
+			a.SyncSessionSystemPrompt(&messages, sessionID)
 
 			runCtx := cmd.Context()
 			if runCtx == nil {

@@ -292,6 +292,19 @@ func (c *mcpClient) clearPendingRequest(id int64) {
 	c.requestMu.Unlock()
 }
 
+func (c *mcpClient) awaitRPCResponse(ctx context.Context, id int64, ch <-chan string, closedFmt, timeoutMsg string, method string) (string, error) {
+	select {
+	case res, ok := <-ch:
+		if !ok {
+			return "", fmt.Errorf(closedFmt, method)
+		}
+		return res, nil
+	case <-ctx.Done():
+		c.clearPendingRequest(id)
+		return "", fmt.Errorf("%s", timeoutMsg)
+	}
+}
+
 func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	if c.isStdio {
 		return c.requestStdio(method, params, limits.MCPRequestTimeout())
@@ -318,16 +331,7 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 		return "", fmt.Errorf("HTTP error %d", resp.StatusCode)
 	}
 
-	select {
-	case res, ok := <-ch:
-		if !ok {
-			return "", fmt.Errorf("MCP connection closed while waiting for '%s'", method)
-		}
-		return res, nil
-	case <-ctx.Done():
-		c.clearPendingRequest(id)
-		return "", fmt.Errorf("request timeout or cancellation")
-	}
+	return c.awaitRPCResponse(ctx, id, ch, "MCP connection closed while waiting for '%s'", "request timeout or cancellation", method)
 }
 
 func (c *mcpClient) handshake() error {

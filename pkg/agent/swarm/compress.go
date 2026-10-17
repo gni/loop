@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 
-	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -33,7 +32,7 @@ func (ma *MultiAgent) compressIfNeeded(ctx context.Context, w io.Writer, theme s
 	ma.BaseAgent.CompressHistory(ctx, &history, "", theme, w)
 
 	ma.HistoryMu.Lock()
-	if snapshotLen <= len(ma.History) && len(ma.History) > snapshotLen {
+	if len(ma.History) > snapshotLen {
 		delta := ma.History[snapshotLen:]
 		merged := make([]db.Message, 0, len(history)+len(delta))
 		merged = append(merged, history...)
@@ -43,18 +42,4 @@ func (ma *MultiAgent) compressIfNeeded(ctx context.Context, w io.Writer, theme s
 		ma.History = history
 	}
 	ma.HistoryMu.Unlock()
-}
-
-func (ma *MultiAgent) pruneToolOutput(toolCallID, toolName, output string) string {
-	if ma == nil || ma.BaseAgent == nil {
-		return output
-	}
-	maxOutputBytes := tool.DefaultMaxToolOutputBytes
-	if ma.BaseAgent.Config != nil && ma.BaseAgent.Config.MaxToolOutputBytes > 0 {
-		maxOutputBytes = ma.BaseAgent.Config.MaxToolOutputBytes
-	}
-	if pruned, _, prunedFlag := tool.SpillAndPruneOutput(ma.BaseAgent.GetWorkspaceRoot(), "subagent:"+ma.Name, toolCallID, toolName, output, maxOutputBytes); prunedFlag && pruned != "" {
-		return pruned
-	}
-	return output
 }

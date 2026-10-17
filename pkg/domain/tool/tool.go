@@ -26,7 +26,12 @@ type JSONSchema struct {
 	Required   []string              `json:"required,omitempty"`
 }
 
-var schemaPriorityKeys = []string{"path", "target_file", "targetFile", "file_path", "filePath", "file", "target", "command"}
+var (
+	schemaPriorityKeys = []string{"path", "target_file", "targetFile", "file_path", "filePath", "file", "target", "command"}
+	todoIDKeys         = []string{"id", "task_id", "taskId", "number", "index", "key"}
+	todoDescKeys       = []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"}
+	todoStatusKeys     = []string{"status", "state"}
+)
 
 func isPrioritySchemaKey(key string) bool {
 	for _, pk := range schemaPriorityKeys {
@@ -183,6 +188,42 @@ type TodoItem struct {
 	Status string `json:"status"` // "pending", "in_progress", "completed"
 }
 
+// ExtractMapString returns the first non-empty string representation among keys in raw.
+func ExtractMapString(raw map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := raw[k]; ok && v != nil {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// ExtractTodoFields extracts normalized id, description, and status fields from a loosely-typed map.
+func ExtractTodoFields(raw map[string]interface{}) (id, task, status string) {
+	id = ExtractMapString(raw, todoIDKeys...)
+	for _, k := range todoDescKeys {
+		if s, ok := raw[k].(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				task = trimmed
+				break
+			}
+		}
+	}
+	status = ExtractMapString(raw, todoStatusKeys...)
+	if status == "" {
+		if done, ok := raw["done"].(bool); ok {
+			status = boolTodoStatus(done, "completed")
+		} else if completed, ok := raw["completed"].(bool); ok {
+			status = boolTodoStatus(completed, "completed")
+		} else if inProgress, ok := raw["in_progress"].(bool); ok {
+			status = boolTodoStatus(inProgress, "in_progress")
+		}
+	}
+	return id, task, status
+}
+
 // UnmarshalJSON provides resilient deserialization for TodoItem, accepting
 // any common key for task description ("task", "content", "description", "title", etc.)
 // or string scalar.
@@ -199,41 +240,7 @@ func (ti *TodoItem) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	for _, idKey := range []string{"id", "task_id", "taskId", "number", "index", "key"} {
-		if v, ok := raw[idKey]; ok {
-			ti.ID = fmt.Sprintf("%v", v)
-			break
-		}
-	}
-
-	for _, taskKey := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"} {
-		if str, ok := raw[taskKey].(string); ok {
-			if trimmed := strings.TrimSpace(str); trimmed != "" {
-				ti.Task = trimmed
-				break
-			}
-		}
-	}
-
-	for _, statusKey := range []string{"status", "state"} {
-		if str, ok := raw[statusKey].(string); ok {
-			if trimmed := strings.TrimSpace(str); trimmed != "" {
-				ti.Status = trimmed
-				break
-			}
-		}
-	}
-
-	if ti.Status == "" {
-		if done, ok := raw["done"].(bool); ok {
-			ti.Status = boolTodoStatus(done, "completed")
-		} else if completed, ok := raw["completed"].(bool); ok {
-			ti.Status = boolTodoStatus(completed, "completed")
-		} else if inProgress, ok := raw["in_progress"].(bool); ok {
-			ti.Status = boolTodoStatus(inProgress, "in_progress")
-		}
-	}
-
+	ti.ID, ti.Task, ti.Status = ExtractTodoFields(raw)
 	return nil
 }
 
@@ -242,6 +249,55 @@ func boolTodoStatus(flag bool, trueStatus string) string {
 		return trueStatus
 	}
 	return "pending"
+}
+
+func stripAnyTodoPrefix(s string, prefixes ...string) (string, bool) {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return strings.TrimSpace(s[len(p):]), true
+		}
+	}
+	return s, false
+}
+
+// ParseMarkdownTodoLines parses plain or markdown checklist lines into TodoItems.
+func ParseMarkdownTodoLines(raw string, idPrefix string) []TodoItem {
+	if idPrefix == "" {
+		idPrefix = "task-"
+	}
+	var parsed []TodoItem
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		status := "pending"
+		if rest, ok := stripAnyTodoPrefix(line, "- [x]", "[x]", "- [X]", "[X]"); ok {
+			status = "completed"
+			line = rest
+		} else if rest, ok := stripAnyTodoPrefix(line, "- [>]", "[>]", "- [~]", "[~]", "- [in_progress]", "[in_progress]"); ok {
+			status = "in_progress"
+			line = rest
+		} else if rest, ok := stripAnyTodoPrefix(line, "- [ ]", "[ ]", "• ", "- ", "* "); ok {
+			line = rest
+		}
+
+		idx := 0
+		for idx < len(line) && line[idx] >= '0' && line[idx] <= '9' {
+			idx++
+		}
+		if idx > 0 && idx < len(line) && (line[idx] == '.' || line[idx] == ')') {
+			line = strings.TrimSpace(line[idx+1:])
+		}
+		if line != "" {
+			parsed = append(parsed, TodoItem{
+				ID:     fmt.Sprintf("%s%d", idPrefix, len(parsed)+1),
+				Task:   line,
+				Status: status,
+			})
+		}
+	}
+	return parsed
 }
 
 // TodoState is an interface implemented by agent contexts that maintain a task board.

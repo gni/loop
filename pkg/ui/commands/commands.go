@@ -18,6 +18,17 @@ import (
 	"loop/pkg/ui/style"
 )
 
+// IsHelpCommand reports whether a trimmed user input line invokes the help reference.
+func IsHelpCommand(trimmed string) bool {
+	lower := strings.ToLower(strings.TrimSpace(trimmed))
+	switch lower {
+	case "help", "h", "?", "/help", "/commands", "/h", "/?":
+		return true
+	default:
+		return strings.HasPrefix(lower, "help ") || strings.HasPrefix(lower, "/help ")
+	}
+}
+
 func HandleSlashCommand(
 	a *agent.Agent,
 	line string,
@@ -31,8 +42,7 @@ func HandleSlashCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 ) (bool, bool) {
 	trimmed := strings.TrimSpace(line)
-	lower := strings.ToLower(trimmed)
-	isHelp := lower == "help" || lower == "h" || lower == "?" || lower == "/help" || lower == "/commands" || lower == "/h" || lower == "/?" || strings.HasPrefix(lower, "help ") || strings.HasPrefix(lower, "/help ")
+	isHelp := IsHelpCommand(trimmed)
 	if !strings.HasPrefix(trimmed, "/") && !isHelp {
 		return false, false
 	}

@@ -22,6 +22,10 @@ func (a *Agent) CompressionThreshold() float64 {
 	return 0.95
 }
 
+func CompressionThresholdRatio() float64 {
+	return 0.80
+}
+
 func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio ...float64) bool {
 	if effectiveLimit <= 0 || promptTokens <= 0 {
 		return false
@@ -39,10 +43,7 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 		}
 	}
 
-	if decision >= effectiveLimit-reserve {
-		return true
-	}
-	return decision >= int(r*float64(effectiveLimit))
+	return decision >= effectiveLimit-reserve || decision >= int(r*float64(effectiveLimit))
 }
 
 func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
@@ -51,10 +52,6 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 		thresh = a.CompressionThreshold()
 	}
 	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, thresh)
-}
-
-func CompressionThresholdRatio() float64 {
-	return 0.80
 }
 
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
@@ -133,6 +130,13 @@ func sortedMapKeys(m map[string]bool) []string {
 	return keys
 }
 
+func truncateTranscriptSegment(text string, maxBytes int) string {
+	if len(text) <= maxBytes {
+		return text
+	}
+	return filetool.UTF8SafePrefix(text, maxBytes) + "... (truncated)"
+}
+
 func (a *Agent) CompressHistory(
 	ctx context.Context,
 	messages *[]db.Message,
@@ -159,8 +163,7 @@ func (a *Agent) CompressHistory(
 	modifiedFilesMap := make(map[string]bool)
 
 	for _, m := range toCompress {
-		switch m.Role {
-		case "assistant":
+		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
 				if path := filetool.ExtractFilePath(tc.Function.Arguments); path != "" {
 					switch tc.Function.Name {
@@ -178,33 +181,21 @@ func (a *Agent) CompressHistory(
 		}
 
 		switch m.Role {
-		case "user":
-			userContent := m.Content
-			if len(userContent) > 1200 {
-				userContent = filetool.UTF8SafePrefix(userContent, 1200) + "... (truncated)"
+		case "system":
+			if strings.TrimSpace(m.Content) != "" {
+				fmt.Fprintf(&transcriptBuilder, "Prior Context Summary: %s\n\n", truncateTranscriptSegment(m.Content, 2400))
 			}
-			transcriptBuilder.WriteString(fmt.Sprintf("User: %s\n\n", userContent))
+		case "user":
+			fmt.Fprintf(&transcriptBuilder, "User: %s\n\n", truncateTranscriptSegment(m.Content, 1200))
 		case "assistant":
 			if m.Content != "" {
-				asstContent := m.Content
-				if len(asstContent) > 1200 {
-					asstContent = filetool.UTF8SafePrefix(asstContent, 1200) + "... (truncated)"
-				}
-				transcriptBuilder.WriteString(fmt.Sprintf("Agent: %s\n\n", asstContent))
+				fmt.Fprintf(&transcriptBuilder, "Agent: %s\n\n", truncateTranscriptSegment(m.Content, 1200))
 			}
 			for _, tc := range m.ToolCalls {
-				argsPreview := tc.Function.Arguments
-				if len(argsPreview) > 300 {
-					argsPreview = filetool.UTF8SafePrefix(argsPreview, 300) + "... (truncated)"
-				}
-				transcriptBuilder.WriteString(fmt.Sprintf("Agent requested tool call: %s(%s)\n\n", tc.Function.Name, argsPreview))
+				fmt.Fprintf(&transcriptBuilder, "Agent requested tool call: %s(%s)\n\n", tc.Function.Name, truncateTranscriptSegment(tc.Function.Arguments, 300))
 			}
 		case "tool":
-			out := m.Content
-			if len(out) > 400 {
-				out = filetool.UTF8SafePrefix(out, 400) + "... (truncated)"
-			}
-			transcriptBuilder.WriteString(fmt.Sprintf("Tool Output (%s): %s\n\n", m.Name, out))
+			fmt.Fprintf(&transcriptBuilder, "Tool Output (%s): %s\n\n", m.Name, truncateTranscriptSegment(m.Content, 400))
 		}
 
 		if transcriptBuilder.Len() >= maxTranscriptChars {
@@ -263,7 +254,7 @@ func (a *Agent) CompressHistory(
 
 	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))
 	for _, m := range (*messages)[keepIdx:] {
-		m.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, 30000, "... (truncated for context optimization)")
+		m.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, nonFileToolMaxChars, "... (truncated for context optimization)")
 		keptMessages = append(keptMessages, m)
 	}
 

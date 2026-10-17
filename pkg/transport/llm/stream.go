@@ -14,11 +14,17 @@ import (
 // Usage reports token consumption metadata from the LLM provider, including
 // prompt-cache read/write counts when the provider reports them.
 type Usage struct {
-	PromptTokens            int `json:"prompt_tokens"`
-	CompletionTokens        int `json:"completion_tokens"`
-	TotalTokens             int `json:"total_tokens"`
-	CacheReadTokens         int `json:"cache_read_input_tokens,omitempty"`
-	CacheWriteTokens        int `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	CacheReadTokens  int `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// Timings reports llama.cpp token generation counts when usage is omitted.
+type Timings struct {
+	PromptN    int `json:"prompt_n"`
+	PredictedN int `json:"predicted_n"`
 }
 
 // PromptCacheKeyMaxLength is the maximum length of a provider-scoped prompt
@@ -59,12 +65,7 @@ func ParseUsage(data string) (*Usage, error) {
 }
 
 // ToolCallDelta represents incremental tool call fragments streamed by the model.
-type ToolCallDelta struct {
-	Index    *int                 `json:"index,omitempty"`
-	ID       string               `json:"id,omitempty"`
-	Type     string               `json:"type,omitempty"`
-	Function message.ToolFunction `json:"function"`
-}
+type ToolCallDelta = message.ToolCall
 
 // Delta holds content or reasoning deltas in a streaming chunk.
 type Delta struct {
@@ -89,11 +90,13 @@ type RawStreamChunk struct {
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   *Usage   `json:"usage,omitempty"`
+	Timings *Timings `json:"timings,omitempty"`
 }
 
 // StreamReader consumes and parses SSE data streams.
 type StreamReader struct {
-	reader *bufio.Reader
+	reader     *bufio.Reader
+	OnActivity func()
 }
 
 // NewStreamReader wraps an io.Reader into an SSE stream parser.
@@ -116,7 +119,11 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 			if err == io.EOF {
 				return nil, true, nil
 			}
-			return nil, false, fmt.Errorf("error reading stream line: %w", err)
+			return nil, false, fmt.Errorf("error reading stream: %w", err)
+		}
+
+		if sr.OnActivity != nil {
+			sr.OnActivity()
 		}
 
 		line = strings.TrimSpace(line)
@@ -131,7 +138,6 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 
 		var chunk RawStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			// Skip unparseable chunks or non-JSON comments gracefully
 			continue
 		}
 

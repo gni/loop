@@ -35,9 +35,8 @@ func handleClearCommand(
 		a.ClearTasks()
 		resetSessionSnapshots(a)
 	}
-	*messages = []db.Message{
-		{Role: "system", Content: a.GetSystemPrompt()},
-	}
+	*messages = nil
+	a.SyncSessionSystemPrompt(messages, "")
 	_ = db.ClearSession(*currentSessionID)
 	_ = db.SaveMessage(*currentSessionID, (*messages)[0])
 	if ch, ok := rlHistory.(interface{ Clear() }); ok {
@@ -86,9 +85,8 @@ func handleSessionCommand(
 		resetSessionSnapshots(a)
 		*currentSessionID = db.NewUUID()
 		_ = db.SetLatestSessionID(*currentSessionID)
-		*messages = []db.Message{
-			{Role: "system", Content: a.GetSystemPrompt()},
-		}
+		*messages = nil
+		a.SyncSessionSystemPrompt(messages, "")
 	}
 
 	refreshSessionUI := func() {
@@ -215,11 +213,5 @@ func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionI
 	*currentSessionID = selected
 	_ = db.SetLatestSessionID(*currentSessionID)
 	*messages = dbHistory
-	if len(*messages) > 0 && (*messages)[0].Role == "system" {
-		currentSysPrompt := a.GetSystemPrompt()
-		if (*messages)[0].Content != currentSysPrompt {
-			(*messages)[0].Content = currentSysPrompt
-			_ = db.RewriteSession(selected, *messages)
-		}
-	}
+	a.SyncSessionSystemPrompt(messages, selected)
 }

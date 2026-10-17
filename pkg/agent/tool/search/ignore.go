@@ -3,6 +3,7 @@ package search
 import (
 	"bufio"
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,30 @@ import (
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/ignore"
 )
+
+// RelSlashPath resolves targetPath relative to workspaceRoot and normalizes separators to forward slashes.
+func RelSlashPath(workspaceRoot, targetPath string) string {
+	rel, err := filepath.Rel(workspaceRoot, targetPath)
+	if err != nil {
+		rel = targetPath
+	}
+	return filepath.ToSlash(rel)
+}
+
+// ShouldSkipWalkEntry evaluates directory and file ignore policies during filepath.WalkDir.
+func ShouldSkipWalkEntry(path string, d fs.DirEntry, workspaceRoot string, gitIgnorePatterns []string) (bool, error) {
+	name := d.Name()
+	if d.IsDir() {
+		if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
+			return true, filepath.SkipDir
+		}
+		return true, nil
+	}
+	if IsIgnoredFileName(name) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
+		return true, nil
+	}
+	return false, nil
+}
 
 // IsIgnoredDirName checks if directory name belongs to common build, cache, or VCS
 // directories. The name set lives in pkg/domain/ignore; the search policy also treats

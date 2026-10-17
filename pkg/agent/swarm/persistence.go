@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
+	"loop/pkg/db"
 )
 
 type AgentDef = subagent.AgentDef
@@ -38,12 +39,13 @@ func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) erro
 		return err
 	}
 	ma.HistoryMu.RLock()
-	state := AgentState{
-		Status:  status,
-		History: ma.History,
-	}
+	history := make([]db.Message, len(ma.History))
+	copy(history, ma.History)
 	ma.HistoryMu.RUnlock()
-	return store.SaveState(ma.Name, state)
+	return store.SaveState(ma.Name, AgentState{
+		Status:  status,
+		History: history,
+	})
 }
 
 func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
@@ -55,11 +57,11 @@ func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
 	if err != nil || state == nil {
 		return err
 	}
-	ma.HistoryMu.Lock()
 	if len(state.History) > 0 {
+		ma.HistoryMu.Lock()
 		ma.History = state.History
+		ma.HistoryMu.Unlock()
 	}
-	ma.HistoryMu.Unlock()
 	return nil
 }
 
@@ -71,26 +73,24 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 
 	var skillNames []string
 	ma.HistoryMu.RLock()
-	localNames := make(map[string]struct{}, len(ma.LocalSkills))
-	for _, localSkill := range ma.LocalSkills {
-		localNames[strings.ToLower(localSkill.Name)] = struct{}{}
-	}
-	for _, s := range ma.Skills {
-		if _, isLocal := localNames[strings.ToLower(s.Name)]; isLocal {
-			continue
-		}
-		skillNames = append(skillNames, s.Name)
-	}
-	localSkills := append([]tool.Skill(nil), ma.LocalSkills...)
 	inheritAllSkills := ma.HasAllSkills
+	localSkills := append([]tool.Skill(nil), ma.LocalSkills...)
+	if !inheritAllSkills {
+		localNames := make(map[string]struct{}, len(ma.LocalSkills))
+		for _, localSkill := range ma.LocalSkills {
+			localNames[strings.ToLower(localSkill.Name)] = struct{}{}
+		}
+		for _, s := range ma.Skills {
+			if _, isLocal := localNames[strings.ToLower(s.Name)]; !isLocal {
+				skillNames = append(skillNames, s.Name)
+			}
+		}
+	}
 	ma.HistoryMu.RUnlock()
 
 	parentName := ""
 	if ma.Parent != nil {
 		parentName = ma.Parent.Name
-	}
-	if inheritAllSkills {
-		skillNames = nil
 	}
 
 	return store.SaveDefinition(AgentDef{
@@ -128,10 +128,10 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 		}
 	}
 
-	var spawn func(name string) error
 	spawned := make(map[string]bool, len(defs))
 	spawning := make(map[string]bool, len(defs))
 
+	var spawn func(name string) error
 	spawn = func(name string) error {
 		if spawned[name] {
 			return nil
@@ -185,8 +185,12 @@ func (mam *MultiAgentManager) ClearAllAgents() {
 	mam.mu.Lock()
 	for _, ma := range mam.Agents {
 		ma.CancelActiveTurn()
+		if ma.Cancel != nil {
+			ma.Cancel()
+		}
 	}
 	mam.Agents = make(map[string]*MultiAgent)
+	mam.ActiveAgent = nil
 	mam.mu.Unlock()
 
 	if dir, err := mam.getAgentsDir(); err == nil && dir != "" {

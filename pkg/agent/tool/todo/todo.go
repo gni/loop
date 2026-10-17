@@ -102,44 +102,6 @@ func firstNonEmptyList(lists ...[]domaintool.TodoItem) []domaintool.TodoItem {
 	return nil
 }
 
-func extractMapString(raw map[string]interface{}, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := raw[k]; ok {
-			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	return ""
-}
-
-func extractTaskDescription(raw map[string]interface{}) string {
-	for _, k := range []string{"task", "content", "description", "title", "name", "text", "desc", "summary", "item", "body", "label", "value"} {
-		if s, ok := raw[k].(string); ok {
-			if trimmed := strings.TrimSpace(s); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-	return ""
-}
-
-func extractRawStatus(raw map[string]interface{}) string {
-	if s := strings.ToLower(extractMapString(raw, "status", "state")); s != "" {
-		return s
-	}
-	if done, ok := raw["done"].(bool); ok && done {
-		return "completed"
-	}
-	if comp, ok := raw["completed"].(bool); ok && comp {
-		return "completed"
-	}
-	if ip, ok := raw["in_progress"].(bool); ok && ip {
-		return "in_progress"
-	}
-	return ""
-}
-
 func demoteOtherInProgress(tasks []domaintool.TodoItem, activeIdx int) {
 	for i := range tasks {
 		if i != activeIdx && strings.EqualFold(tasks[i].Status, "in_progress") {
@@ -185,56 +147,10 @@ func resolveTodoAction(action, status, taskID, taskDesc string) (string, string)
 	return action, status
 }
 
-func stripAnyPrefix(s string, prefixes ...string) (string, bool) {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return strings.TrimSpace(s[len(p):]), true
-		}
-	}
-	return s, false
-}
-
-func parseMarkdownTodoLines(raw string) []domaintool.TodoItem {
-	var parsed []domaintool.TodoItem
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		status := "pending"
-		if rest, ok := stripAnyPrefix(line, "- [x]", "[x]", "- [X]", "[X]"); ok {
-			status = "completed"
-			line = rest
-		} else if rest, ok := stripAnyPrefix(line, "- [>]", "[>]", "- [~]", "[~]", "- [in_progress]", "[in_progress]"); ok {
-			status = "in_progress"
-			line = rest
-		} else if rest, ok := stripAnyPrefix(line, "- [ ]", "[ ]", "• ", "- ", "* "); ok {
-			line = rest
-		}
-
-		idx := 0
-		for idx < len(line) && line[idx] >= '0' && line[idx] <= '9' {
-			idx++
-		}
-		if idx > 0 && idx < len(line) && (line[idx] == '.' || line[idx] == ')') {
-			line = strings.TrimSpace(line[idx+1:])
-		}
-		if line != "" {
-			parsed = append(parsed, domaintool.TodoItem{
-				ID:     fmt.Sprintf("task-%d", len(parsed)+1),
-				Task:   line,
-				Status: status,
-			})
-		}
-	}
-	return parsed
-}
-
 func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []domaintool.TodoItem) (items []domaintool.TodoItem, listOutput string, isList bool, err error) {
-	rawAction := strings.ToLower(extractMapString(raw, "action", "op", "operation", "command", "type"))
-	taskID := extractMapString(raw, "task_id", "taskId", "id", "number", "index", "key")
-	rawStatus := extractRawStatus(raw)
-	taskDesc := extractTaskDescription(raw)
+	rawAction := strings.ToLower(domaintool.ExtractMapString(raw, "action", "op", "operation", "command", "type"))
+	taskID, taskDesc, rawStatus := domaintool.ExtractTodoFields(raw)
+	rawStatus = strings.ToLower(rawStatus)
 
 	action, status := resolveTodoAction(rawAction, rawStatus, taskID, taskDesc)
 
@@ -414,7 +330,7 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if isJSON {
 			return "", errors.New(domaintool.RuntimeMessage("todo_invalid_args", "invalid arguments for todo: expected JSON with 'tasks' array or valid action parameters"))
 		}
-		items = parseMarkdownTodoLines(trimmed)
+		items = domaintool.ParseMarkdownTodoLines(trimmed, "task-")
 	}
 
 	if len(items) == 0 {

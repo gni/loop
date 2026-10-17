@@ -4,23 +4,34 @@ import "strings"
 
 const maxFallbackOpeningBytes = 4096
 
-var fallbackOpeningMarkers = [...]string{
-	"<tool_call",
-	"<execute",
-	"<tool:",
-	"<function",
-	"<write",
-	"<edit",
-	"<bash",
-	"<read",
-	"<grep",
-	"<find",
-	"<list",
-	"<todo",
-	"<ask_user",
-}
+var (
+	directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"}
 
-var directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"}
+	fallbackOpeningMarkers = [...]string{
+		"<tool_call",
+		"<execute",
+		"<tool:",
+		"<function",
+		"<write",
+		"<edit",
+		"<bash",
+		"<read",
+		"<grep",
+		"<find",
+		"<list",
+		"<todo",
+		"<ask_user",
+	}
+
+	fallbackTargetAttrKeys = [...]string{
+		"path", "file", "file_path", "filepath", "filename", "file_name",
+		"target", "target_file", "targetfile", "name", "to",
+	}
+
+	fallbackBashAttrKeys = [...]string{
+		"command", "cmd", "commandline", "script",
+	}
+)
 
 // ToolTextFilter removes fallback XML tool invocations before assistant text
 // reaches the terminal or conversation content.
@@ -80,7 +91,7 @@ func extractFallbackToolName(opening string) string {
 				return toolName
 			}
 			next := opening[len(toolName)+1]
-			if next == ' ' || next == '>' || next == '/' || next == '\n' || next == '\r' || next == '\t' {
+			if next == ' ' || next == '>' || next == '/' || isFallbackWhitespace(next) {
 				return toolName
 			}
 		}
@@ -117,6 +128,23 @@ func extractHermesFunctionName(text string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+func extractOpeningTarget(toolName, opening string) string {
+	attrs := ParseXMLAttrs(opening)
+	for _, key := range fallbackTargetAttrKeys {
+		if v := strings.TrimSpace(attrs[key]); v != "" {
+			return v
+		}
+	}
+	if toolName == "bash" {
+		for _, key := range fallbackBashAttrKeys {
+			if v := strings.TrimSpace(attrs[key]); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func (f *ToolTextFilter) process(final bool) {
@@ -231,29 +259,12 @@ func (f *ToolTextFilter) process(final bool) {
 
 		f.pending = f.pending[openEnd+1:]
 		f.closingTag = closingTag
-		toolName := extractFallbackToolName(opening)
-		if toolName != "" {
+		if toolName := extractFallbackToolName(opening); toolName != "" {
 			f.activeToolName = toolName
 			if f.emitToolName != nil {
 				f.emitToolName(toolName, f.toolCallIndex)
 			}
-			attrs := ParseXMLAttrs(opening)
-			var target string
-			for _, key := range []string{"path", "file", "file_path", "filepath", "filename", "file_name", "target", "target_file", "targetfile", "name", "to"} {
-				if v := strings.TrimSpace(attrs[key]); v != "" {
-					target = v
-					break
-				}
-			}
-			if target == "" && toolName == "bash" {
-				for _, key := range []string{"command", "cmd", "commandline", "script"} {
-					if v := strings.TrimSpace(attrs[key]); v != "" {
-						target = v
-						break
-					}
-				}
-			}
-			if target != "" && f.emitToolTarget != nil {
+			if target := extractOpeningTarget(toolName, opening); target != "" && f.emitToolTarget != nil {
 				f.emitToolTarget(target, f.toolCallIndex)
 			}
 		}
@@ -262,7 +273,6 @@ func (f *ToolTextFilter) process(final bool) {
 			f.activeToolName = ""
 			f.toolCallIndex++
 			f.discardLeadingWhitespace = true
-			continue
 		}
 	}
 }

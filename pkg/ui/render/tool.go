@@ -12,6 +12,7 @@ import (
 
 	"github.com/alecthomas/chroma/v2/quick"
 
+	filetool "loop/pkg/agent/tool/file"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
@@ -65,26 +66,11 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 		}
 
 		if IsWriteLikeTool(toolName) && !bodyWasStreamed && argsJSON != "" {
-			var args struct {
-				Content            string `json:"content"`
-				WriteContent       string `json:"write_content"`
-				CodeContent        string `json:"CodeContent"`
-				ReplacementContent string `json:"ReplacementContent"`
-				Text               string `json:"text"`
-				Body               string `json:"body"`
-			}
-			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			if extracted, ok := filetool.ExtractFileContent(argsJSON); ok {
+				body = extracted
+			} else {
 				body = argsJSON
 				lang = "json"
-			} else {
-				body = domaintool.FirstNonEmpty(
-					args.CodeContent,
-					args.ReplacementContent,
-					args.Content,
-					args.WriteContent,
-					args.Text,
-					args.Body,
-				)
 			}
 		}
 	}
@@ -251,8 +237,7 @@ func formatByteSize(bytes int64) string {
 // CountDiffLines counts the number of added and deleted lines from diff output.
 func CountDiffLines(diffText string) (added int, deleted int) {
 	for _, rawLine := range strings.Split(diffText, "\n") {
-		stripped := style.StripAnsi(rawLine)
-		trimmed := strings.TrimSpace(stripped)
+		trimmed := strings.TrimSpace(style.StripAnsi(rawLine))
 		if trimmed == "" || trimmed == "..." {
 			continue
 		}
@@ -265,11 +250,11 @@ func CountDiffLines(diffText string) (added int, deleted int) {
 			continue
 		}
 		if fields := strings.Fields(trimmed); len(fields) >= 2 {
-			if fields[1] == "+" {
+			switch fields[1] {
+			case "+":
 				added++
 				continue
-			}
-			if fields[1] == "-" {
+			case "-":
 				deleted++
 				continue
 			}

@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bufio"
 	"encoding/json"
 	"os"
 	"sort"
@@ -44,7 +43,7 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 		startTime := ""
 
 		if f, err := os.Open(filePath); err == nil {
-			scanner := bufio.NewScanner(f)
+			scanner := newJSONLScanner(f)
 			if scanner.Scan() {
 				var record session.Record
 				if json.Unmarshal(scanner.Bytes(), &record) == nil {
@@ -77,7 +76,7 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 			continue
 		}
 
-		scanner := bufio.NewScanner(f)
+		scanner := newJSONLScanner(f)
 		for scanner.Scan() {
 			var record session.Record
 			if err := json.Unmarshal(scanner.Bytes(), &record); err == nil {
@@ -98,9 +97,5 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 }
 
 func GetUserHistory() ([]string, error) {
-	store, err := getStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.GetUserHistory()
+	return withStoreVal(func(s *JSONLStore) ([]string, error) { return s.GetUserHistory() })
 }

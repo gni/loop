@@ -129,12 +129,15 @@ func CanonicalizeArguments(arguments string) string {
 	return trimmed
 }
 
+func buildCallKey(toolName, arguments string) string {
+	return toolName + ":" + CanonicalizeArguments(arguments)
+}
+
 func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) string {
 	if g == nil {
 		return ""
 	}
-	callKey := toolName + ":" + CanonicalizeArguments(arguments)
-	streak := g.callStreaks[callKey]
+	streak := g.callStreaks[buildCallKey(toolName, arguments)]
 
 	thresholds := g.reminderThresholds
 	if len(thresholds) == 0 {
@@ -147,7 +150,7 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 	if len(thresholds) > 1 && streak == thresholds[1] {
 		preview := arguments
 		if len(preview) > 300 {
-			preview = preview[:300] + "..."
+			preview = filetool.UTF8SafePrefix(preview, 300) + "..."
 		}
 		return RuntimeMessagef("warning_second", "Advisory Loop Warning: Repeated tool call detected:\n- tool: %s\n- consecutive_calls: %d\n- arguments: %s\nThe repeated calls are not making progress. Do not repeat this exact call again. Inspect the latest result and choose a different action, adjust your arguments, or proceed to completion.", toolName, streak, preview)
 	}
@@ -159,8 +162,6 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 		return nil
 	}
 
-	callKey := toolName + ":" + CanonicalizeArguments(arguments)
-
 	if toolName == "bash" {
 		if cmd := extractBashCommand(arguments); cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
 			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'"), cmd, g.failedStreaks[cmd])
@@ -171,6 +172,7 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 		return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code"), target, g.targetStreaks[target])
 	}
 
+	callKey := buildCallKey(toolName, arguments)
 	if g.callStreaks[callKey] >= g.maxConsecutiveCalls {
 		return fmt.Errorf(RuntimeMessage("loop_identical_call", "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action"), g.callStreaks[callKey])
 	}
@@ -183,7 +185,7 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 		return
 	}
 
-	callKey := toolName + ":" + CanonicalizeArguments(arguments)
+	callKey := buildCallKey(toolName, arguments)
 	target := g.ExtractTargetFile(toolName, arguments)
 	var cmd string
 	if toolName == "bash" {
@@ -197,7 +199,7 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 		g.lastCallKey = callKey
 	}
 
-	newWindow := isReadWindowNew(toolName, arguments, g.readWindows)
+	newWindow := isReadWindowNew(toolName, target, arguments, g.readWindows)
 	if target != "" && target == g.lastTarget && !newWindow {
 		g.targetStreaks[target]++
 	} else {
@@ -237,13 +239,8 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 	}
 }
 
-func isReadWindowNew(toolName, arguments string, windows map[string]map[string]bool) bool {
-	if toolName != "read" || windows == nil {
-		return false
-	}
-
-	target := extractPathArg(arguments, "")
-	if target == "" {
+func isReadWindowNew(toolName, target, arguments string, windows map[string]map[string]bool) bool {
+	if toolName != "read" || windows == nil || target == "" {
 		return false
 	}
 
@@ -328,5 +325,5 @@ func isBashModifying(cmd string) bool {
 			return true
 		}
 	}
-	return strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, " > ") || strings.Contains(trimmed, " >> ") || strings.Contains(trimmed, "> ")
+	return strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, "> ") || redirRe.MatchString(trimmed)
 }

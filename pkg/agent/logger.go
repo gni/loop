@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"loop/pkg/agent/tool"
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 )
 
@@ -23,32 +24,32 @@ type DebugLogger struct {
 	fileReadCounts map[string]int
 }
 
+func isDisabledDebugTarget(target string) bool {
+	switch strings.ToLower(target) {
+	case "off", "none", "false", "disabled", "/dev/null", "null":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewDebugLogger creates a new DebugLogger targeting customPath, LOOP_DEBUG_FILE,
 // or defaulting to loop_debug.log in workspaceRoot.
-// If customPath or LOOP_DEBUG_FILE is "off", "none", "false", "disabled", or "/dev/null",
-// debug logging is disabled and nil is returned.
 func NewDebugLogger(workspaceRoot string, customPath string) *DebugLogger {
-	target := strings.TrimSpace(customPath)
-	if target == "" {
-		target = strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE"))
-	}
-	if strings.EqualFold(target, "off") || strings.EqualFold(target, "none") || strings.EqualFold(target, "false") || strings.EqualFold(target, "disabled") || target == "/dev/null" || target == "null" {
+	target := tool.FirstNonEmpty(strings.TrimSpace(customPath), strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE")))
+	if isDisabledDebugTarget(target) {
 		return nil
 	}
 	if target == "" {
-		if workspaceRoot == "" {
-			workspaceRoot = "."
-		}
+		workspaceRoot = tool.FirstNonEmpty(workspaceRoot, ".")
 		target = filepath.Join(workspaceRoot, "loop_debug.log")
 	}
 
-	absTarget, err := filepath.Abs(target)
-	if err == nil {
+	if absTarget, err := filepath.Abs(target); err == nil {
 		target = absTarget
 	}
 
-	dir := filepath.Dir(target)
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(filepath.Dir(target), 0755)
 
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -66,12 +67,16 @@ func NewDebugLogger(workspaceRoot string, customPath string) *DebugLogger {
 
 	dl.writeRaw(fmt.Sprintf("\n%s\n[SESSION START: %s]\nDebug Log File: %s\n%s\n",
 		strings.Repeat("=", 80),
-		time.Now().Format("2006-01-02 15:04:05.000"),
+		nowDebugTimestamp(),
 		target,
 		strings.Repeat("=", 80),
 	))
 
 	return dl
+}
+
+func nowDebugTimestamp() string {
+	return time.Now().Format("2006-01-02 15:04:05.000")
 }
 
 // FilePath returns the absolute path to the debug log file.
@@ -112,11 +117,10 @@ func (dl *DebugLogger) LogUserCommand(sessionID string, prompt string) {
 
 	dl.fileReadCounts = make(map[string]int)
 
+	sep := strings.Repeat("=", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("=", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] USER COMMAND (Session: %s)\n", time.Now().Format("2006-01-02 15:04:05.000"), sessionID))
-	sb.WriteString(fmt.Sprintf("Prompt: %s\n", strings.TrimSpace(prompt)))
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("=", 80)))
+	fmt.Fprintf(&sb, "\n%s\n[%s] USER COMMAND (Session: %s)\nPrompt: %s\n%s\n",
+		sep, nowDebugTimestamp(), sessionID, strings.TrimSpace(prompt), sep)
 
 	dl.writeRaw(sb.String())
 }
@@ -129,41 +133,38 @@ func (dl *DebugLogger) LogLLMRequest(sessionID string, iter int, model, endpoint
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
+	sep := strings.Repeat("-", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("-", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] LLM REQUEST (Turn Iteration %d) (Session: %s)\n", time.Now().Format("2006-01-02 15:04:05.000"), iter, sessionID))
-	sb.WriteString(fmt.Sprintf("Model: %s | Endpoint: %s\n", model, endpoint))
-	sb.WriteString(fmt.Sprintf("Messages Count: %d\n", len(messages)))
+	fmt.Fprintf(&sb, "\n%s\n[%s] LLM REQUEST (Turn Iteration %d) (Session: %s)\nModel: %s | Endpoint: %s\nMessages Count: %d\n",
+		sep, nowDebugTimestamp(), iter, sessionID, model, endpoint, len(messages))
 
-	// Print message summary
 	for i, m := range messages {
 		contentPreview := strings.TrimSpace(m.Content)
 		if len(contentPreview) > 300 {
 			contentPreview = contentPreview[:300] + "... (truncated)"
 		}
-		sb.WriteString(fmt.Sprintf("  [%d] Role: %-9s", i+1, m.Role))
+		fmt.Fprintf(&sb, "  [%d] Role: %-9s", i+1, m.Role)
 		if m.ToolCallID != "" {
-			sb.WriteString(fmt.Sprintf(" | ToolCallID: %s | Name: %s", m.ToolCallID, m.Name))
+			fmt.Fprintf(&sb, " | ToolCallID: %s | Name: %s", m.ToolCallID, m.Name)
 		}
 		if len(m.ToolCalls) > 0 {
-			var tcNames []string
+			tcNames := make([]string, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
 				tcNames = append(tcNames, fmt.Sprintf("%s(%s)", tc.Function.Name, tc.Function.Arguments))
 			}
-			sb.WriteString(fmt.Sprintf(" | Emitted ToolCalls: %s", strings.Join(tcNames, ", ")))
+			fmt.Fprintf(&sb, " | Emitted ToolCalls: %s", strings.Join(tcNames, ", "))
 		}
-		sb.WriteString(fmt.Sprintf("\n      Content: %q\n", contentPreview))
+		fmt.Fprintf(&sb, "\n      Content: %q\n", contentPreview)
 	}
 
-	// Print tools list
 	if len(tools) > 0 {
-		var toolNames []string
+		toolNames := make([]string, 0, len(tools))
 		for _, t := range tools {
 			toolNames = append(toolNames, t.Function.Name)
 		}
-		sb.WriteString(fmt.Sprintf("Tools Offered (%d): %s\n", len(tools), strings.Join(toolNames, ", ")))
+		fmt.Fprintf(&sb, "Tools Offered (%d): %s\n", len(tools), strings.Join(toolNames, ", "))
 	}
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("-", 80)))
+	fmt.Fprintf(&sb, "%s\n", sep)
 
 	dl.writeRaw(sb.String())
 }
@@ -176,31 +177,30 @@ func (dl *DebugLogger) LogLLMResponse(sessionID string, iter int, msg *db.Messag
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
+	sep := strings.Repeat("-", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("-", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] LLM RESPONSE (Turn Iteration %d) (Duration: %v) (Session: %s)\n",
-		time.Now().Format("2006-01-02 15:04:05.000"), iter, duration.Round(time.Millisecond), sessionID))
+	fmt.Fprintf(&sb, "\n%s\n[%s] LLM RESPONSE (Turn Iteration %d) (Duration: %v) (Session: %s)\n",
+		sep, nowDebugTimestamp(), iter, duration.Round(time.Millisecond), sessionID)
 
 	if msg.ReasoningContent != "" {
-		sb.WriteString("Reasoning / Thoughts:\n")
-		sb.WriteString("  " + strings.ReplaceAll(strings.TrimSpace(msg.ReasoningContent), "\n", "\n  ") + "\n")
+		fmt.Fprintf(&sb, "Reasoning / Thoughts:\n  %s\n", strings.ReplaceAll(strings.TrimSpace(msg.ReasoningContent), "\n", "\n  "))
 	}
 
-	if strings.TrimSpace(msg.Content) != "" {
-		sb.WriteString(fmt.Sprintf("Assistant Content: %s\n", strings.TrimSpace(msg.Content)))
+	if trimmed := strings.TrimSpace(msg.Content); trimmed != "" {
+		fmt.Fprintf(&sb, "Assistant Content: %s\n", trimmed)
 	}
 
 	if len(msg.ToolCalls) > 0 {
-		sb.WriteString(fmt.Sprintf("Tool Calls Proposed (%d):\n", len(msg.ToolCalls)))
+		fmt.Fprintf(&sb, "Tool Calls Proposed (%d):\n", len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
 			formattedArgs := formatJSONOrRaw(tc.Function.Arguments)
-			sb.WriteString(fmt.Sprintf("  #%d [%s] Function: %s\n", i+1, tc.ID, tc.Function.Name))
-			sb.WriteString(fmt.Sprintf("      Arguments: %s\n", strings.ReplaceAll(formattedArgs, "\n", "\n      ")))
+			fmt.Fprintf(&sb, "  #%d [%s] Function: %s\n      Arguments: %s\n",
+				i+1, tc.ID, tc.Function.Name, strings.ReplaceAll(formattedArgs, "\n", "\n      "))
 		}
 	} else {
 		sb.WriteString("No Tool Calls Proposed (Final Turn Output)\n")
 	}
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("-", 80)))
+	fmt.Fprintf(&sb, "%s\n", sep)
 
 	dl.writeRaw(sb.String())
 }
@@ -219,55 +219,45 @@ func (dl *DebugLogger) LogToolExecution(sessionID string, iter int, toolName str
 		status = fmt.Sprintf("ERROR (%v)", err)
 	}
 
+	sep := strings.Repeat("-", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("-", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] TOOL EXECUTION: %s | Status: %s | Duration: %v\n",
-		time.Now().Format("2006-01-02 15:04:05.000"), toolName, status, duration.Round(time.Millisecond)))
+	fmt.Fprintf(&sb, "\n%s\n[%s] TOOL EXECUTION: %s | Status: %s | Duration: %v\n",
+		sep, nowDebugTimestamp(), toolName, status, duration.Round(time.Millisecond))
 
 	formattedArgs := formatJSONOrRaw(arguments)
-	sb.WriteString(fmt.Sprintf("Arguments:\n  %s\n", strings.ReplaceAll(formattedArgs, "\n", "\n  ")))
+	fmt.Fprintf(&sb, "Arguments:\n  %s\n", strings.ReplaceAll(formattedArgs, "\n", "\n  "))
 
-	// Special repetition diagnostics for file operations
 	if toolName == "read" {
 		var readArgs struct {
-			Path     string `json:"path"`
-			File     string `json:"file"`
-			FilePath string `json:"file_path"`
-			Offset   int    `json:"offset"`
-			Limit    int    `json:"limit"`
+			Path   string `json:"path"`
+			Offset int    `json:"offset"`
+			Limit  int    `json:"limit"`
 		}
 		_ = json.Unmarshal([]byte(arguments), &readArgs)
-		targetFile := readArgs.Path
-		if targetFile == "" {
-			targetFile = readArgs.FilePath
-		}
-		if targetFile == "" {
-			targetFile = readArgs.File
-		}
-		if targetFile != "" {
+		if targetFile := filetool.ExtractFilePath(arguments, readArgs.Path); targetFile != "" {
 			dl.fileReadCounts[targetFile]++
-			count := dl.fileReadCounts[targetFile]
-			if count > 1 {
-				sb.WriteString(fmt.Sprintf("⚠️  [RE-READ DETECTED #%d] Target file '%s' has been read %d times this turn! (offset=%d, limit=%d)\n",
-					count, targetFile, count, readArgs.Offset, readArgs.Limit))
+			if count := dl.fileReadCounts[targetFile]; count > 1 {
+				fmt.Fprintf(&sb, "⚠️  [RE-READ DETECTED #%d] Target file '%s' has been read %d times this turn! (offset=%d, limit=%d)\n",
+					count, targetFile, count, readArgs.Offset, readArgs.Limit)
 			}
 		}
 	}
 
 	lines := strings.Split(output, "\n")
-	sb.WriteString(fmt.Sprintf("Output (%d bytes, %d lines):\n", len(output), len(lines)))
+	fmt.Fprintf(&sb, "Output (%d bytes, %d lines):\n", len(output), len(lines))
 
-	// Cap output preview in debug log if extremely long, but keep enough for diagnosis
 	const maxOutputDebugLen = 4096
 	if len(output) <= maxOutputDebugLen {
-		sb.WriteString("  " + strings.ReplaceAll(strings.TrimRight(output, "\r\n"), "\n", "\n  ") + "\n")
+		fmt.Fprintf(&sb, "  %s\n", strings.ReplaceAll(strings.TrimRight(output, "\r\n"), "\n", "\n  "))
 	} else {
-		sb.WriteString("  " + strings.ReplaceAll(output[:2500], "\n", "\n  ") + "\n")
-		sb.WriteString(fmt.Sprintf("  ... [%d bytes omitted from debug display] ...\n", len(output)-3500))
-		sb.WriteString("  " + strings.ReplaceAll(output[len(output)-1000:], "\n", "\n  ") + "\n")
+		fmt.Fprintf(&sb, "  %s\n  ... [%d bytes omitted from debug display] ...\n  %s\n",
+			strings.ReplaceAll(output[:2500], "\n", "\n  "),
+			len(output)-3500,
+			strings.ReplaceAll(output[len(output)-1000:], "\n", "\n  "),
+		)
 	}
 
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("-", 80)))
+	fmt.Fprintf(&sb, "%s\n", sep)
 
 	dl.writeRaw(sb.String())
 }
@@ -280,15 +270,14 @@ func (dl *DebugLogger) LogRepetition(sessionID string, toolName string, argument
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
+	sep := strings.Repeat("!", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("!", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] REPETITION WARNING | Function: %s | Repeated: %d times\n",
-		time.Now().Format("2006-01-02 15:04:05.000"), toolName, count))
-	sb.WriteString(fmt.Sprintf("Arguments: %s\n", strings.TrimSpace(arguments)))
+	fmt.Fprintf(&sb, "\n%s\n[%s] REPETITION WARNING | Function: %s | Repeated: %d times\nArguments: %s\n",
+		sep, nowDebugTimestamp(), toolName, count, strings.TrimSpace(arguments))
 	if detail != "" {
-		sb.WriteString(fmt.Sprintf("Detail: %s\n", detail))
+		fmt.Fprintf(&sb, "Detail: %s\n", detail)
 	}
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("!", 80)))
+	fmt.Fprintf(&sb, "%s\n", sep)
 
 	dl.writeRaw(sb.String())
 }
@@ -302,12 +291,10 @@ func (dl *DebugLogger) LogError(sessionID string, op string, err error) {
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
+	sep := strings.Repeat("~", 80)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n%s\n", strings.Repeat("~", 80)))
-	sb.WriteString(fmt.Sprintf("[%s] ERROR | Operation: %s | Session: %s\n",
-		time.Now().Format("2006-01-02 15:04:05.000"), op, sessionID))
-	sb.WriteString(fmt.Sprintf("Error: %v\n", err))
-	sb.WriteString(fmt.Sprintf("%s\n", strings.Repeat("~", 80)))
+	fmt.Fprintf(&sb, "\n%s\n[%s] ERROR | Operation: %s | Session: %s\nError: %v\n%s\n",
+		sep, nowDebugTimestamp(), op, sessionID, err, sep)
 
 	dl.writeRaw(sb.String())
 }

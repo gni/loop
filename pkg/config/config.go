@@ -167,6 +167,16 @@ func DefaultConfig() *Config {
 	}
 }
 
+func (cfg *Config) defaultProviderProfile(name string) ProviderConfig {
+	return ProviderConfig{
+		Name:     name,
+		Endpoint: cfg.Endpoint,
+		ApiKey:   cfg.ApiKey,
+		Model:    cfg.Model,
+		Timeout:  cfg.Timeout,
+	}
+}
+
 func (cfg *Config) applyDefaults() {
 	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
 		cfg.SystemInstruction = DefaultSystemInstruction
@@ -308,13 +318,7 @@ func LoadConfig(path string) (*Config, error) {
 			providerName = "default"
 			cfg.ActiveProvider = "default"
 		}
-		cfg.Providers[providerName] = ProviderConfig{
-			Name:     providerName,
-			Endpoint: cfg.Endpoint,
-			ApiKey:   cfg.ApiKey,
-			Model:    cfg.Model,
-			Timeout:  cfg.Timeout,
-		}
+		cfg.Providers[providerName] = cfg.defaultProviderProfile(providerName)
 		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
 	}
 
@@ -364,13 +368,7 @@ func SaveConfig(path string, cfg *Config) error {
 	if cfg.ActiveProvider == "" || cfg.ActiveProvider == "default" {
 		if _, ok := cfg.Providers["default"]; !ok {
 			cfg.ActiveProvider = "default"
-			cfg.Providers["default"] = ProviderConfig{
-				Name:     "default",
-				Endpoint: cfg.Endpoint,
-				ApiKey:   cfg.ApiKey,
-				Model:    cfg.Model,
-				Timeout:  cfg.Timeout,
-			}
+			cfg.Providers["default"] = cfg.defaultProviderProfile("default")
 		}
 	}
 	saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
@@ -383,14 +381,14 @@ func GetTLSConfig(cfg *Config) (*tls.Config, error) {
 	}
 
 	if cfg.CertFile != "" && cfg.KeyFile != "" {
-		if _, err := os.Stat(cfg.CertFile); err == nil {
-			if _, err := os.Stat(cfg.KeyFile); err == nil {
-				cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-				if err != nil {
-					return nil, fmt.Errorf("failed to load client keypair: %w", err)
-				}
-				tlsConfig.Certificates = []tls.Certificate{cert}
+		_, errCert := os.Stat(cfg.CertFile)
+		_, errKey := os.Stat(cfg.KeyFile)
+		if errCert == nil && errKey == nil {
+			cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load client keypair: %w", err)
 			}
+			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
 	}
 
@@ -485,4 +483,63 @@ func ParseHeaderArgs(args []string) map[string]string {
 		}
 	}
 	return headers
+}
+
+func ParseBool(val string) bool {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func ParseReasoningEffort(val string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(val)); v {
+	case "off", "none", "false", "0":
+		return "off", nil
+	case "low", "medium", "high", "max":
+		return v, nil
+	default:
+		return "", fmt.Errorf("invalid reasoning effort '%s'. Allowed: off, low, medium, high, max", val)
+	}
+}
+
+func ParseAskUserMode(val string) (string, error) {
+	switch mode := strings.ToLower(strings.TrimSpace(val)); mode {
+	case "interactive", "always_ask", "auto_recommended", "disabled":
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled", val)
+	}
+}
+
+func ParseCompressionThreshold(val string) (float64, error) {
+	v := strings.TrimSpace(strings.TrimSuffix(val, "%"))
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("must be a positive number (e.g. 0.90 or 90%%)")
+	}
+	if f > 1.0 {
+		f /= 100.0
+	}
+	if f > 0.98 {
+		f = 0.98
+	}
+	return f, nil
+}
+
+func ParseToolList(val string) []string {
+	trimmed := strings.TrimSpace(val)
+	switch strings.ToLower(trimmed) {
+	case "", "none", "clear", "reset", "empty":
+		return nil
+	}
+	var result []string
+	for _, p := range strings.Split(trimmed, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }

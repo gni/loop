@@ -45,11 +45,12 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			description: "How ask_user prompts are handled (interactive, always_ask, auto_recommended, disabled)",
 			options:     askUserOptions,
 			onEdit: func(newVal string) error {
-				if matched, ok := matchOption(askUserOptions, strings.TrimSpace(newVal)); ok {
-					cloned.AskUserMode = matched
-					return nil
+				mode, err := config.ParseAskUserMode(newVal)
+				if err != nil {
+					return err
 				}
-				return fmt.Errorf("invalid ask_user_mode '%s'. Allowed: %s", newVal, strings.Join(askUserOptions, ", "))
+				cloned.AskUserMode = mode
+				return nil
 			},
 			onToggle: func() {
 				cloned.AskUserMode = cycleOption(askUserOptions, cloned.AskUserMode)
@@ -63,17 +64,12 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			description: "Thinking/reasoning budget constraint (off, low, medium, high, max)",
 			options:     reasoningOptions,
 			onEdit: func(newVal string) error {
-				v := strings.ToLower(strings.TrimSpace(newVal))
-				switch v {
-				case "off", "none", "false", "0":
-					cloned.ReasoningEffort = "off"
-					return nil
-				case "low", "medium", "high", "max":
-					cloned.ReasoningEffort = v
-					return nil
-				default:
-					return fmt.Errorf("invalid reasoning effort '%s'. Allowed: %s", newVal, strings.Join(reasoningOptions, ", "))
+				effort, err := config.ParseReasoningEffort(newVal)
+				if err != nil {
+					return err
 				}
+				cloned.ReasoningEffort = effort
+				return nil
 			},
 			onToggle: func() {
 				cloned.ReasoningEffort = cycleOption(reasoningOptions, cloned.ReasoningEffort)
@@ -91,16 +87,9 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				if newVal == "" {
 					return nil
 				}
-				v := strings.TrimSpace(strings.TrimSuffix(newVal, "%"))
-				f, err := strconv.ParseFloat(v, 64)
-				if err != nil || f <= 0 {
-					return fmt.Errorf("must be a positive number (e.g. 0.90 or 90%%)")
-				}
-				if f > 1.0 {
-					f /= 100.0
-				}
-				if f > 0.98 {
-					f = 0.98
+				f, err := config.ParseCompressionThreshold(newVal)
+				if err != nil {
+					return err
 				}
 				cloned.CompressionThreshold = f
 				return nil
@@ -311,18 +300,7 @@ func stringListConfigItem(id, name, desc string, target *[]string) *settingItem 
 		},
 		description: desc,
 		onEdit: func(newVal string) error {
-			trimmed := strings.TrimSpace(newVal)
-			if trimmed == "" || trimmed == "none" || trimmed == "clear" || trimmed == "empty" {
-				*target = nil
-				return nil
-			}
-			var result []string
-			for _, p := range strings.Split(trimmed, ",") {
-				if t := strings.TrimSpace(p); t != "" {
-					result = append(result, t)
-				}
-			}
-			*target = result
+			*target = config.ParseToolList(newVal)
 			return nil
 		},
 	}

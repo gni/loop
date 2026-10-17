@@ -63,12 +63,51 @@ var (
 		"write_path", "writePath", "WritePath",
 		"dest", "destination", "dest_file", "location", "uri", "URI",
 	}
-	wrapperKeys = []string{"input", "parameters", "arguments", "edit", "write", "read", "params", "tool_input"}
+	wrapperKeys  = []string{"input", "parameters", "arguments", "edit", "write", "read", "params", "tool_input"}
 	editListKeys = []string{"updates", "edits", "replacements"}
 	oldTextKeys  = []string{"oldText", "old_text", "oldTextSnake", "old_string", "oldString", "targetContent", "target_content", "TargetContent", "search", "old", "old_str", "oldStr"}
 	newTextKeys  = []string{"newText", "new_text", "newTextSnake", "new_string", "newString", "replacementContent", "replacement_content", "ReplacementContent", "replace", "new", "new_str", "newStr"}
 	contentKeys  = []string{"content", "Content", "code_content", "codeContent", "CodeContent", "write_content", "writeContent", "file_content", "fileContent", "text", "Text", "body", "Body", "data", "Data", "contents", "Contents"}
 )
+
+func parseGenericJSON(trimmed string) (map[string]interface{}, []interface{}) {
+	if strings.HasPrefix(trimmed, "[") {
+		var slice []interface{}
+		if err := json.Unmarshal([]byte(trimmed), &slice); err == nil && len(slice) > 0 {
+			return nil, slice
+		}
+		return nil, nil
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &m); err == nil && m != nil {
+			return m, nil
+		}
+	}
+	return nil, nil
+}
+
+func ExtractWrappedFloats(rawJSON string, keys ...string) map[string]float64 {
+	generic, _ := parseGenericJSON(strings.TrimSpace(rawJSON))
+	if generic == nil {
+		return nil
+	}
+	out := make(map[string]float64, len(keys))
+	for _, w := range wrapperKeys {
+		sub, ok := generic[w].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, k := range keys {
+			if _, exists := out[k]; !exists {
+				if val, ok := sub[k].(float64); ok && val != 0 {
+					out[k] = val
+				}
+			}
+		}
+	}
+	return out
+}
 
 func ExtractFilePath(rawJSON string, candidatePaths ...string) string {
 	for _, p := range candidatePaths {
@@ -82,18 +121,16 @@ func ExtractFilePath(rawJSON string, candidatePaths ...string) string {
 		return ""
 	}
 
-	var genericSlice []interface{}
-	if err := json.Unmarshal([]byte(trimmedJSON), &genericSlice); err == nil && len(genericSlice) > 0 {
+	genericMap, genericSlice := parseGenericJSON(trimmedJSON)
+	if len(genericSlice) > 0 {
 		if firstItem, ok := genericSlice[0].(map[string]interface{}); ok {
 			if p := findPathInGenericMap(firstItem); p != "" {
 				return p
 			}
 		}
 	}
-
-	var generic map[string]interface{}
-	if err := json.Unmarshal([]byte(trimmedJSON), &generic); err == nil && generic != nil {
-		if p := findPathInGenericMap(generic); p != "" {
+	if genericMap != nil {
+		if p := findPathInGenericMap(genericMap); p != "" {
 			return p
 		}
 	}
@@ -202,25 +239,16 @@ func ExtractEdits(rawJSON string, candidateEdits ...[]ReplaceEdit) []ReplaceEdit
 		return merged
 	}
 
-	trimmedJSON := strings.TrimSpace(rawJSON)
-	if trimmedJSON == "" {
-		return nil
-	}
-
-	var genericSlice []interface{}
-	if err := json.Unmarshal([]byte(trimmedJSON), &genericSlice); err == nil && len(genericSlice) > 0 {
+	genericMap, genericSlice := parseGenericJSON(strings.TrimSpace(rawJSON))
+	if len(genericSlice) > 0 {
 		for _, item := range genericSlice {
 			if itemMap, ok := item.(map[string]interface{}); ok {
 				merged = append(merged, extractEditsFromGenericMap(itemMap)...)
 			}
 		}
-		if len(merged) > 0 {
-			return merged
-		}
+		return merged
 	}
-
-	var genericMap map[string]interface{}
-	if err := json.Unmarshal([]byte(trimmedJSON), &genericMap); err == nil && genericMap != nil {
+	if genericMap != nil {
 		return extractEditsFromGenericMap(genericMap)
 	}
 	return nil
@@ -232,9 +260,8 @@ func ExtractFileContent(rawJSON string, candidateContents ...string) (string, bo
 			return c, true
 		}
 	}
-	var generic map[string]interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &generic); err == nil && generic != nil {
-		return findContentInGenericMap(generic)
+	if genericMap, _ := parseGenericJSON(strings.TrimSpace(rawJSON)); genericMap != nil {
+		return findContentInGenericMap(genericMap)
 	}
 	return "", false
 }

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	domaintool "loop/pkg/domain/tool"
 )
 
 var (
@@ -42,9 +44,7 @@ var (
 	todoListKeys = []string{
 		"tasks", "todos", "items", "plan", "content", "data", "list", "todo_list",
 	}
-	todoDescKeys = []string{
-		"task", "content", "description", "title", "name", "text", "desc", "summary",
-	}
+	argWrapperKeys = []string{"parameters", "params", "input", "arguments", "edit"}
 )
 
 func parseToolArgsMap(trimmed string) map[string]interface{} {
@@ -85,6 +85,23 @@ func findMapStringByKeys(m map[string]interface{}, keys []string) string {
 	return ""
 }
 
+func findWrappedMapString(m map[string]interface{}, keys []string) string {
+	if m == nil {
+		return ""
+	}
+	if s := findMapStringByKeys(m, keys); s != "" {
+		return s
+	}
+	for _, wrapper := range argWrapperKeys {
+		if subMap, ok := m[wrapper].(map[string]interface{}); ok {
+			if s := findMapStringByKeys(subMap, keys); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 func extractTodoTargetFromMap(argsMap map[string]interface{}) string {
 	if argsMap == nil {
 		return ""
@@ -98,8 +115,7 @@ func extractTodoTargetFromMap(argsMap map[string]interface{}) string {
 		for _, item := range taskList {
 			switch m := item.(type) {
 			case map[string]interface{}:
-				taskDesc := findMapStringByKeys(m, todoDescKeys)
-				status, _ := m["status"].(string)
+				_, taskDesc, status := domaintool.ExtractTodoFields(m)
 				if strings.EqualFold(status, "in_progress") && taskDesc != "" {
 					inProgressTask = taskDesc
 					break
@@ -142,22 +158,13 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 	var regexPairs map[string]string
 
 	getString := func(keys ...string) string {
+		if s := findWrappedMapString(argsMap, keys); s != "" {
+			return s
+		}
+		if regexPairs == nil {
+			regexPairs = extractRawJSONStrings(trimmed)
+		}
 		for _, key := range keys {
-			if argsMap != nil {
-				if s, ok := argsMap[key].(string); ok && strings.TrimSpace(s) != "" {
-					return strings.TrimSpace(s)
-				}
-				for _, wrapper := range []string{"parameters", "params", "input", "arguments"} {
-					if subMap, ok := argsMap[wrapper].(map[string]interface{}); ok {
-						if s, ok := subMap[key].(string); ok && strings.TrimSpace(s) != "" {
-							return strings.TrimSpace(s)
-						}
-					}
-				}
-			}
-			if regexPairs == nil {
-				regexPairs = extractRawJSONStrings(trimmed)
-			}
 			if v := regexPairs[strings.ToLower(key)]; v != "" {
 				return v
 			}
@@ -192,12 +199,7 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 			}
 			return fmt.Sprintf("%s (in %s)", q, p)
 		}
-		if q != "" {
-			return q
-		}
-		if p != "" {
-			return p
-		}
+		return domaintool.FirstNonEmpty(q, p)
 	}
 
 	if strings.Contains(toolName, "file") || strings.Contains(toolName, "dir") || strings.Contains(toolName, "read") || strings.Contains(toolName, "write") || strings.Contains(toolName, "edit") || strings.Contains(toolName, "replace") || toolName == "ls" || toolName == "view" {
@@ -226,15 +228,8 @@ func ExtractToolInstructions(argsJSON string) string {
 	}
 
 	if argsMap := parseToolArgsMap(trimmed); argsMap != nil {
-		if s := findMapStringByKeys(argsMap, instructionKeys); s != "" {
+		if s := findWrappedMapString(argsMap, instructionKeys); s != "" {
 			return s
-		}
-		for _, wrapper := range []string{"parameters", "params", "input", "arguments", "edit"} {
-			if subMap, ok := argsMap[wrapper].(map[string]interface{}); ok {
-				if s := findMapStringByKeys(subMap, instructionKeys); s != "" {
-					return s
-				}
-			}
 		}
 		for _, listKey := range []string{"updates", "edits", "replacements"} {
 			if slice, ok := argsMap[listKey].([]interface{}); ok {

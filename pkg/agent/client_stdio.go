@@ -53,6 +53,7 @@ func (c *mcpClient) startStdio() error {
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
 		for scanner.Scan() {
 			mcpLog("[MCP Stderr %s] %s\n", c.name, scanner.Text())
 		}
@@ -109,17 +110,15 @@ func (c *mcpClient) requestStdio(method string, params interface{}, timeout time
 		return "", err
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	select {
-	case res, ok := <-ch:
-		if !ok {
-			return "", fmt.Errorf("stdio stream closed while waiting for '%s' response", method)
-		}
-		return res, nil
-	case <-timer.C:
-		c.clearPendingRequest(id)
-		return "", fmt.Errorf("request timeout waiting for '%s' response", method)
-	}
+	return c.awaitRPCResponse(
+		ctx,
+		id,
+		ch,
+		"stdio stream closed while waiting for '%s' response",
+		fmt.Sprintf("request timeout waiting for '%s' response", method),
+		method,
+	)
 }

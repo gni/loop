@@ -420,6 +420,58 @@ func (e *TurnEngine) emitHaltNotice(sink HistorySink, w io.Writer, theme style.U
 	}
 }
 
+func (e *TurnEngine) checkBeforeHook(tc db.ToolCall) (string, error) {
+	if e.policy.RunHooks {
+		if allowed, reason := e.agent.runBeforeToolHook(tc); !allowed {
+			return RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason), fmt.Errorf("blocked by hook")
+		}
+	}
+	return "", nil
+}
+
+func (e *TurnEngine) applyAfterHook(tc db.ToolCall, output string, err error) (string, error) {
+	if e.policy.RunHooks {
+		return e.agent.runAfterToolHook(tc, output, err)
+	}
+	return output, err
+}
+
+func (e *TurnEngine) clampParallelToolCalls(assistantMsg *db.Message) {
+	if len(assistantMsg.ToolCalls) <= 1 {
+		return
+	}
+	if e.agent.Config != nil && !e.agent.Config.ParallelToolCalls {
+		assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+		return
+	}
+	if e.guided.IsEnabled() {
+		for _, tc := range assistantMsg.ToolCalls {
+			if IsActionTool(tc.Function.Name) {
+				assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
+				return
+			}
+		}
+	}
+}
+
+func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistantContent string, isParallel bool, sr StreamRenderer, w io.Writer, theme style.UITheme, render EngineRenderer) {
+	if isParallel {
+		if sr.GetToolTitleLineNumber(idx) == -1 {
+			e.renderSubagentToolPrefix(w, theme)
+		}
+		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
+		return
+	}
+	if sr.GetToolTitleLineNumber(idx) == -1 {
+		if e.policy.AgentName == "" && idx == 0 && strings.TrimSpace(assistantContent) != "" {
+			fmt.Fprintln(w)
+		} else {
+			e.renderSubagentToolPrefix(w, theme)
+		}
+		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
+	}
+}
+
 func (e *TurnEngine) ExecuteToolCalls(
 	ctx context.Context,
 	assistantMsg *db.Message,
@@ -436,16 +488,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 		return false, false
 	}
 
-	if a.Config != nil && !a.Config.ParallelToolCalls && len(assistantMsg.ToolCalls) > 1 {
-		assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
-	} else if e.guided.IsEnabled() && len(assistantMsg.ToolCalls) > 1 {
-		for _, tc := range assistantMsg.ToolCalls {
-			if IsActionTool(tc.Function.Name) {
-				assistantMsg.ToolCalls = assistantMsg.ToolCalls[:1]
-				break
-			}
-		}
-	}
+	e.clampParallelToolCalls(assistantMsg)
 
 	if len(assistantMsg.ToolCalls) > 1 {
 		return e.executeToolCallsParallel(ctx, assistantMsg, sink, sr, loader, w, theme, render, afterCall)
@@ -458,14 +501,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 		a.SetLiveBodyStreamed(false)
 
-		if sr.GetToolTitleLineNumber(idx) == -1 {
-			if e.policy.AgentName == "" && idx == 0 && strings.TrimSpace(assistantMsg.Content) != "" {
-				fmt.Fprintln(w)
-			} else {
-				e.renderSubagentToolPrefix(w, theme)
-			}
-			render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
-		}
+		e.ensureToolHeaderRendered(idx, tc, assistantMsg.Content, false, sr, w, theme, render)
 
 		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
 			output := gateErr.Error()
@@ -496,26 +532,18 @@ func (e *TurnEngine) ExecuteToolCalls(
 		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
 			toolErr = guardErr
 			toolOutput = guardErr.Error()
+		} else if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
+			toolOutput, toolErr = hookOut, hookErr
 		} else {
-			if e.policy.RunHooks {
-				if allowed, reason := a.runBeforeToolHook(tc); !allowed {
-					toolErr = fmt.Errorf("blocked by hook")
-					toolOutput = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
-				}
+			if loader != nil {
+				loader.ShowDots()
 			}
-			if toolErr == nil {
-				if loader != nil {
-					loader.ShowDots()
-				}
-				toolOutput, toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
-				if ctx.Err() != nil {
-					e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
-					return true, false
-				}
-				if e.policy.RunHooks {
-					toolOutput, toolErr = a.runAfterToolHook(tc, toolOutput, toolErr)
-				}
+			toolOutput, toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
+			if ctx.Err() != nil {
+				e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
+				return true, false
 			}
+			toolOutput, toolErr = e.applyAfterHook(tc, toolOutput, toolErr)
 		}
 
 		e.finalizeToolCall(idx, tc, toolOutput, toolErr, approvalRendered, true, sink, sr, w, theme, render, afterCall)
@@ -529,11 +557,12 @@ func (e *TurnEngine) ExecuteToolCalls(
 }
 
 type callPlan struct {
-	tc       db.ToolCall
-	idx      int
-	output   string
-	toolErr  error
-	guardHit bool
+	tc          db.ToolCall
+	idx         int
+	output      string
+	toolErr     error
+	skipped     bool
+	guardHit    bool
 }
 
 func (e *TurnEngine) executeToolCallsParallel(
@@ -560,15 +589,12 @@ func (e *TurnEngine) executeToolCallsParallel(
 			return true, false
 		}
 
-		if sr.GetToolTitleLineNumber(idx) == -1 {
-			e.renderSubagentToolPrefix(w, theme)
-		}
-		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
+		e.ensureToolHeaderRendered(idx, tc, assistantMsg.Content, true, sr, w, theme, render)
 
 		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
 			plan.toolErr = gateErr
 			plan.output = gateErr.Error()
-			plan.guardHit = true
+			plan.skipped = true
 			if strings.Contains(plan.output, "aborted by user") {
 				e.emitRejectedToolCall(idx, tc, plan.output, true, false, sink, sr, w, theme, render)
 				return false, true
@@ -579,7 +605,11 @@ func (e *TurnEngine) executeToolCallsParallel(
 		if e.needsInteractiveApproval(tc.Function.Name) {
 			if a.UI == nil {
 				plan.output = RuntimeMessage("tool_rejected_by_user", "error: tool execution rejected by user.")
-			} else if approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc); !approved {
+				plan.toolErr = fmt.Errorf("rejected by user")
+				plan.skipped = true
+				continue
+			}
+			if approved, _ := e.requestApproval(sr, loader, w, theme, idx, tc); !approved {
 				rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
 				if shouldAbort {
 					e.emitRejectedToolCall(idx, tc, rejOutput, true, false, sink, sr, w, theme, render)
@@ -587,7 +617,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 				}
 				plan.toolErr = fmt.Errorf("rejected by user")
 				plan.output = rejOutput
-				plan.guardHit = true
+				plan.skipped = true
 				continue
 			}
 		}
@@ -608,7 +638,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 
 	for i := range plans {
 		plan := &plans[i]
-		if plan.guardHit {
+		if plan.skipped || plan.guardHit {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -616,21 +646,14 @@ func (e *TurnEngine) executeToolCallsParallel(
 			return true, false
 		}
 
-		if e.policy.RunHooks {
-			if allowed, reason := a.runBeforeToolHook(plan.tc); !allowed {
-				plan.toolErr = fmt.Errorf("blocked by hook")
-				plan.output = RuntimeMessagef("hook_blocked", "Error: Tool execution blocked by before-hook: %s", reason)
-				continue
-			}
+		if hookOut, hookErr := e.checkBeforeHook(plan.tc); hookErr != nil {
+			plan.output, plan.toolErr = hookOut, hookErr
+			continue
 		}
 
 		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
 			output, err := a.Registry.Execute(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
-			if e.policy.RunHooks {
-				output, err = a.runAfterToolHook(plan.tc, output, err)
-			}
-			plan.output = output
-			plan.toolErr = err
+			plan.output, plan.toolErr = e.applyAfterHook(plan.tc, output, err)
 			continue
 		}
 
@@ -653,11 +676,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
 				return
 			}
-			if e.policy.RunHooks {
-				output, err = a.runAfterToolHook(p.tc, output, err)
-			}
-			p.output = output
-			p.toolErr = err
+			p.output, p.toolErr = e.applyAfterHook(p.tc, output, err)
 		}(&plans[i])
 	}
 
@@ -670,6 +689,10 @@ func (e *TurnEngine) executeToolCallsParallel(
 
 	for i := range plans {
 		plan := &plans[i]
+		if plan.skipped {
+			e.emitRejectedToolCall(i, plan.tc, plan.output, true, false, sink, sr, w, theme, render)
+			continue
+		}
 		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, false, false, sink, sr, w, theme, render, afterCall)
 
 		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {

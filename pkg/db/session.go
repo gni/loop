@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -160,7 +159,7 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 		var msgCount, totalTokens int
 		var previewParts []string
 
-		scanner := bufio.NewScanner(f)
+		scanner := newJSONLScanner(f)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 {
@@ -172,7 +171,7 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 				continue
 			}
 
-			if record.Message.Role == message.RoleUser && (record.Message.Content == "" || strings.HasPrefix(record.Message.Content, "[user manually executed slash command:")) {
+			if isSkippedSlashRecord(record.Message) {
 				continue
 			}
 
@@ -263,7 +262,7 @@ func readEntries(filePath string) ([]session.Record, error) {
 	defer f.Close()
 
 	var entries []session.Record
-	scanner := bufio.NewScanner(f)
+	scanner := newJSONLScanner(f)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -375,11 +374,7 @@ func Branch(sessionID, entryID string) error {
 }
 
 func ForkSession(parentSessionID, entryID string) (string, error) {
-	store, err := getStore()
-	if err != nil {
-		return "", err
-	}
-	return store.ForkSession(parentSessionID, entryID)
+	return withStoreVal(func(s *JSONLStore) (string, error) { return s.ForkSession(parentSessionID, entryID) })
 }
 
 func ClearHistory() error {
@@ -395,19 +390,11 @@ func SetLatestSessionID(sessionID string) error {
 }
 
 func GetLatestSessionID() (string, error) {
-	store, err := getStore()
-	if err != nil {
-		return "", err
-	}
-	return store.GetLatestSessionID()
+	return withStoreVal(func(s *JSONLStore) (string, error) { return s.GetLatestSessionID() })
 }
 
 func GetSessions() ([]SessionInfo, error) {
-	store, err := getStore()
-	if err != nil {
-		return nil, err
-	}
-	return store.GetSessions()
+	return withStoreVal(func(s *JSONLStore) ([]SessionInfo, error) { return s.GetSessions() })
 }
 
 func entryModTimeOrNow(entry os.DirEntry) string {

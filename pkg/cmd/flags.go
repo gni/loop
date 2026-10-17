@@ -3,7 +3,6 @@ package cmd
 import (
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -94,23 +93,12 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 }
 
 func parseAllowedTools(toolsStr string) []string {
-	if toolsStr == "" {
-		return nil
-	}
-	parts := strings.Split(toolsStr, ",")
-	var result []string
-	for _, t := range parts {
-		if trimmed := strings.TrimSpace(t); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
+	return config.ParseToolList(toolsStr)
 }
 
 func initRootFlags(cmd *cobra.Command) {
 	defaultConfig := "config/config.json"
-	home, err := os.UserHomeDir()
-	if err == nil {
+	if home, err := os.UserHomeDir(); err == nil {
 		defaultConfig = filepath.Join(home, ".loop", "config.json")
 	}
 	cmd.SetHelpCommand(&cobra.Command{Use: "no-help-command", Hidden: true})

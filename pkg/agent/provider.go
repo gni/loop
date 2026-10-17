@@ -1,13 +1,10 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -209,7 +206,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	kickTimer()
 	defer resp.Body.Close()
 
-	reader := bufio.NewReader(resp.Body)
+	streamReader := transportllm.NewStreamReader(resp.Body)
+	streamReader.OnActivity = kickTimer
+
 	var textBuilder, rawTextBuilder, reasoningBuilder, cleanReasoningBuilder strings.Builder
 	toolCallsMap := make(map[int]*db.ToolCall)
 
@@ -254,43 +253,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			return buildMessage(), ctx.Err()
-		case <-streamCtx.Done():
-			if err := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after "); err != nil {
-				return buildMessage(), err
-			}
-			return buildMessage(), streamCtx.Err()
-		default:
-		}
-
-		line, err := reader.ReadString('\n')
+		chunk, done, err := streamReader.ReadNextChunk(streamCtx)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			if streamErr := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after "); streamErr != nil {
 				return buildMessage(), streamErr
 			}
-			return nil, fmt.Errorf("error reading stream: %w", err)
+			return nil, err
 		}
-
-		kickTimer()
-
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
+		if done {
 			break
-		}
-
-		var chunk ChatCompletionResponseChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
 		}
 
 		if chunk.Usage != nil {

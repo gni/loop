@@ -61,15 +61,8 @@ func splitInstruction(instruction string) (identity, guidelines string) {
 }
 
 func BuildSystemPrompt(cfg SystemPromptConfig) string {
-	workspaceRoot := cfg.WorkspaceRoot
-	if workspaceRoot == "" {
-		workspaceRoot = "."
-	}
-
-	skillsDir := cfg.SkillsDir
-	if skillsDir == "" {
-		skillsDir = "skills"
-	}
+	workspaceRoot := tool.FirstNonEmpty(cfg.WorkspaceRoot, ".")
+	skillsDir := tool.FirstNonEmpty(cfg.SkillsDir, "skills")
 
 	skillsForGuidance := cfg.Skills
 	if len(cfg.AllSkills) > 0 {
@@ -77,12 +70,8 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
-	if userGuidelines == "" {
-		userGuidelines = cfg.UserGuidelines
-	}
-	if baseInstruction == "" {
-		baseInstruction = MasterSystemPrompts.DefaultIdentity
-	}
+	userGuidelines = tool.FirstNonEmpty(userGuidelines, cfg.UserGuidelines)
+	baseInstruction = tool.FirstNonEmpty(baseInstruction, MasterSystemPrompts.DefaultIdentity)
 
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
@@ -91,7 +80,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		if entry.Name == "bash" {
 			hasBash = true
 		}
-		if entry.Name == "create_subagent" || entry.Name == "spawn_subagent" {
+		if tool.IsSpawnTool(entry.Name) {
 			canSpawnSubagents = true
 		}
 	}
@@ -166,9 +155,8 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		}
 	}
 	if userGuidelines != "" {
-		lines := strings.Split(userGuidelines, "\n")
 		var customLines []string
-		for _, line := range lines {
+		for _, line := range strings.Split(userGuidelines, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
 				continue
@@ -308,10 +296,6 @@ func PromptToolEntries(registry *tool.ToolRegistry, includeSubagentTools bool) [
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries
-}
-
-func promptToolEntries(registry *tool.ToolRegistry) []ToolEntry {
-	return PromptToolEntries(registry, true)
 }
 
 func sanitizeNoBashInstruction(s string) string {
