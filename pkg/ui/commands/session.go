@@ -58,11 +58,7 @@ func handleClearCommand(
 	a.CurrentStreamBuffer = nil
 	a.CurrentStreamMu.Unlock()
 
-	var rl *term.Terminal
-	if kiReader != nil {
-		rl = kiReader.RL
-	}
-	ui.RedrawScreenWithNotice(w, a, kiReader, rl, "conversation cleared and started a new one.")
+	ui.RedrawScreenWithNotice(w, a, kiReader, terminalFromReader(kiReader), "conversation cleared and started a new one.")
 }
 
 func handleSessionCommand(
@@ -75,10 +71,7 @@ func handleSessionCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-	var rl *term.Terminal
-	if kiReader != nil {
-		rl = kiReader.RL
-	}
+	rl := terminalFromReader(kiReader)
 
 	resetToFreshSession := func() {
 		ui.GetUI().LastStatsText = ""
@@ -90,14 +83,7 @@ func handleSessionCommand(
 	}
 
 	refreshSessionUI := func() {
-		pTok, cTok, estimated := calcHistoryTokens()
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().LastStatusBarText = ""
-		ui.GetUI().StateMu.Unlock()
-		ui.UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
-		ui.DrawStatusBar(os.Stderr, *theme)
+		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
 	}
 
 	if len(parts) <= 1 {

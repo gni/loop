@@ -81,6 +81,14 @@ func decodeRPCResponse(raw string, resultDest interface{}) error {
 	return nil
 }
 
+func (c *mcpClient) completeHandshake() error {
+	if err := c.handshake(); err != nil {
+		c.close()
+		return fmt.Errorf("handshake failed: %w", err)
+	}
+	return nil
+}
+
 func (c *mcpClient) start() error {
 	if strings.EqualFold(c.config.Type, "stdio") || (c.config.URL == "" && c.config.Command != "") {
 		c.isStdio = true
@@ -169,11 +177,7 @@ func (c *mcpClient) startSSE() error {
 		return fmt.Errorf("timeout waiting for SSE endpoint initialization (%s)", c.connectTimeout)
 	}
 
-	if err := c.handshake(); err != nil {
-		c.close()
-		return fmt.Errorf("handshake failed: %w", err)
-	}
-	return nil
+	return c.completeHandshake()
 }
 
 func (c *mcpClient) resolveEndpointURL(endpoint string) string {
@@ -305,19 +309,30 @@ func (c *mcpClient) awaitRPCResponse(ctx context.Context, id int64, ch <-chan st
 	}
 }
 
-func (c *mcpClient) request(method string, params interface{}) (string, error) {
-	if c.isStdio {
-		return c.requestStdio(method, params, limits.MCPRequestTimeout())
-	}
-
+func (c *mcpClient) requestWithTimeout(method string, params interface{}, timeout time.Duration) (string, error) {
 	id, ch, data, early, err := c.prepareRPCRequest(method, params)
 	if err != nil || early != "" {
 		return early, err
 	}
 	mcpLog("[MCP Tx] %s\n", string(data))
 
-	ctx, cancel := context.WithTimeout(context.Background(), limits.MCPRequestTimeout())
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	if c.isStdio {
+		if err := c.sendStdio(string(data)); err != nil {
+			c.clearPendingRequest(id)
+			return "", err
+		}
+		return c.awaitRPCResponse(
+			ctx,
+			id,
+			ch,
+			"stdio stream closed while waiting for '%s' response",
+			fmt.Sprintf("request timeout waiting for '%s' response", method),
+			method,
+		)
+	}
 
 	resp, err := c.postJSON(ctx, data)
 	if err != nil {
@@ -332,6 +347,10 @@ func (c *mcpClient) request(method string, params interface{}) (string, error) {
 	}
 
 	return c.awaitRPCResponse(ctx, id, ch, "MCP connection closed while waiting for '%s'", "request timeout or cancellation", method)
+}
+
+func (c *mcpClient) request(method string, params interface{}) (string, error) {
+	return c.requestWithTimeout(method, params, limits.MCPRequestTimeout())
 }
 
 func (c *mcpClient) handshake() error {

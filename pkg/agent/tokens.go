@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 )
 
@@ -139,6 +140,22 @@ func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit
 	return maxCeiling
 }
 
+func ResolveAdaptiveContextLimit(cfg *config.Config, serverLimit, currentTokens int) int {
+	autoAdapt := true
+	minWindow := 32768
+	configuredLimit := 128000
+	if cfg != nil {
+		autoAdapt = cfg.AutoAdaptContext
+		if cfg.MinContextWindow > 0 {
+			minWindow = cfg.MinContextWindow
+		}
+		if cfg.ContextWindowLimit > 0 {
+			configuredLimit = cfg.ContextWindowLimit
+		}
+	}
+	return GetAdaptiveContextLimit(currentTokens, serverLimit, configuredLimit, minWindow, autoAdapt)
+}
+
 func CalculateHistoryTokens(history []db.Message) (int, int) {
 	var totalPrompt, totalCompletion int
 	for _, m := range history {
@@ -214,17 +231,5 @@ func (a *Agent) GetEffectiveContextLimit(currentPromptTokens int) int {
 	}
 	a.LLMProviderMu.RUnlock()
 
-	autoAdapt := true
-	minWindow := 32768
-	configuredLimit := 128000
-	if a.Config != nil {
-		autoAdapt = a.Config.AutoAdaptContext
-		if a.Config.MinContextWindow > 0 {
-			minWindow = a.Config.MinContextWindow
-		}
-		if a.Config.ContextWindowLimit > 0 {
-			configuredLimit = a.Config.ContextWindowLimit
-		}
-	}
-	return GetAdaptiveContextLimit(currentPromptTokens, serverLimit, configuredLimit, minWindow, autoAdapt)
+	return ResolveAdaptiveContextLimit(a.Config, serverLimit, currentPromptTokens)
 }

@@ -8,12 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
-	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
 )
@@ -27,11 +24,7 @@ func handleContextCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-	pTok, cTok, estimated := calcHistoryTokens()
-	latestTurnTokens := 0
-	if messages != nil {
-		latestTurnTokens = a.GetLatestAssistantCompletionTokens(*messages)
-	}
+	pTok, _, _ := calcHistoryTokens()
 	effLimit := a.GetEffectiveContextLimit(pTok)
 	serverLimit := 0
 	if d, ok := a.LLMProvider.(agent.ContextLimitDetector); ok {
@@ -75,19 +68,9 @@ func handleContextCommand(
 		return
 	}
 
-	var rl *term.Terminal
-	if kiReader != nil {
-		rl = kiReader.RL
-	}
-
-	syncContextBar := func(activeLimit int) {
+	syncContextBar := func() {
 		_ = config.SaveConfig(a.ConfigPath, a.Config)
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().LastStatusBarText = ""
-		ui.GetUI().StateMu.Unlock()
-		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, activeLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
-		ui.DrawStatusBar(os.Stderr, *theme)
+		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
 	}
 
 	switch strings.ToLower(parts[1]) {
@@ -101,7 +84,7 @@ func handleContextCommand(
 		} else {
 			fmt.Fprintf(w, "context auto-adaptation disabled (ceiling: %d tokens).\n", newLimit)
 		}
-		syncContextBar(newLimit)
+		syncContextBar()
 
 	default:
 		newLimit, err := strconv.Atoi(parts[1])
@@ -112,6 +95,6 @@ func handleContextCommand(
 		a.Config.ContextWindowLimit = newLimit
 		activeLimit := a.GetEffectiveContextLimit(pTok)
 		fmt.Fprintf(w, "context window limit set to %d tokens (active limit: %d tokens).\n", newLimit, activeLimit)
-		syncContextBar(activeLimit)
+		syncContextBar()
 	}
 }

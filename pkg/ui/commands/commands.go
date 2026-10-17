@@ -29,6 +29,44 @@ func IsHelpCommand(trimmed string) bool {
 	}
 }
 
+func terminalFromReader(kiReader *interceptor.KeyInterceptorReader) *term.Terminal {
+	if kiReader != nil {
+		return kiReader.RL
+	}
+	return nil
+}
+
+func syncCommandStatus(
+	a *agent.Agent,
+	messages *[]db.Message,
+	theme style.UITheme,
+	statusWriter io.Writer,
+	kiReader *interceptor.KeyInterceptorReader,
+	calcHistoryTokens func() (int, int, bool),
+	refreshConsole bool,
+) {
+	if a == nil || a.Config == nil || calcHistoryTokens == nil {
+		return
+	}
+	pTok, cTok, estimated := calcHistoryTokens()
+	var msgs []db.Message
+	if messages != nil {
+		msgs = *messages
+	}
+	latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
+	effLimit := a.GetEffectiveContextLimit(pTok)
+
+	ui.GetUI().StateMu.Lock()
+	ui.GetUI().LastStatusBarText = ""
+	ui.GetUI().StateMu.Unlock()
+
+	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+	if refreshConsole {
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, terminalFromReader(kiReader))
+	}
+	ui.DrawStatusBar(statusWriter, theme)
+}
+
 func HandleSlashCommand(
 	a *agent.Agent,
 	line string,
@@ -84,11 +122,7 @@ func HandleSlashCommand(
 		}
 		_ = config.SaveConfig(a.ConfigPath, a.Config)
 		ui.SetCollapseStatus(a.Config.CollapseResults)
-		var rl *term.Terminal
-		if kiReader != nil {
-			rl = kiReader.RL
-		}
-		ui.RedrawScreen(w, a, kiReader, rl)
+		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
 		return true, false
 	case "/queue", "/queues":
 		if kiReader == nil {

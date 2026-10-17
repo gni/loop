@@ -17,14 +17,6 @@ const (
 	nonFileToolTruncateNotice = "\n... (output truncated to 30000 chars for context optimization)"
 )
 
-func requestMessageChars(m db.Message) int {
-	chars := len(m.Content)
-	for _, tc := range m.ToolCalls {
-		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
-	}
-	return chars
-}
-
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
 	totalChars := 0
@@ -80,7 +72,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		}
 
 		validMessages = append(validMessages, msg)
-		totalChars += requestMessageChars(msg)
+		totalChars += messageChars(msg)
 	}
 
 	return validMessages, totalChars
@@ -101,7 +93,7 @@ func trimMessagesToCharBudget(validMessages []db.Message, totalChars, limitChars
 			}
 		}
 		for k := startIndex; k < dropEnd; k++ {
-			totalChars -= requestMessageChars(validMessages[k])
+			totalChars -= messageChars(validMessages[k])
 		}
 		startIndex = dropEnd
 	}
@@ -141,18 +133,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	validMessages, totalChars := sanitizeRequestMessages(inputMsgs)
 
 	pTokensEst := EstimateMessagesTokens(validMessages)
-	serverLimit := p.GetDetectedContextLimit()
-	cfgLimit := 128000
-	minWindow := 32768
-	if p.Config != nil {
-		if p.Config.ContextWindowLimit > 0 {
-			cfgLimit = p.Config.ContextWindowLimit
-		}
-		if p.Config.MinContextWindow > 0 {
-			minWindow = p.Config.MinContextWindow
-		}
-	}
-	effectiveLimit := GetAdaptiveContextLimit(pTokensEst, serverLimit, cfgLimit, minWindow, autoAdapt)
+	effectiveLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), pTokensEst)
 	apiMessages := trimMessagesToCharBudget(validMessages, totalChars, effectiveLimit*4)
 	cleanMessages := EnforceToolPairingInvariance(apiMessages)
 

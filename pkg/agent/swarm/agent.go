@@ -51,23 +51,6 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 		sort.Strings(activeAgents)
 	}
 
-	workspaceRoot := "."
-	skillsDir := "skills"
-	compact := false
-	guidedMode := false
-	memoryContext := ""
-	var allSkills []tool.Skill
-	if ma.BaseAgent != nil {
-		workspaceRoot = ma.BaseAgent.WorkspaceRoot
-		guidedMode = ma.BaseAgent.IsGuidedMode()
-		memoryContext = ma.BaseAgent.LoadMemoryContext()
-		if ma.BaseAgent.Config != nil {
-			skillsDir = ma.BaseAgent.Config.SkillsDir
-			compact = ma.BaseAgent.Config.CompactPrompt
-		}
-		allSkills = ma.BaseAgent.GetActiveSkills()
-	}
-
 	allowlist := ma.GetToolAllowlist()
 	canSpawn := false
 	for _, toolName := range allowlist {
@@ -77,24 +60,13 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 		}
 	}
 
-	var tools []agent.ToolEntry
-	if ma.BaseAgent != nil {
-		tools = agent.PromptToolEntries(ma.BaseAgent.Registry, canSpawn)
-	}
+	cfg := ma.BaseAgent.BaseSystemPromptConfig(allowlist, canSpawn)
+	cfg.BaseInstruction = ma.SystemPrompt
+	cfg.ActiveAgents = activeAgents
+	cfg.AllSkills = cfg.Skills
+	cfg.Skills = ma.GetEffectiveSkills()
 
-	return agent.BuildSystemPrompt(agent.SystemPromptConfig{
-		BaseInstruction: ma.SystemPrompt,
-		WorkspaceRoot:   workspaceRoot,
-		SkillsDir:       skillsDir,
-		CompactPrompt:   compact,
-		GuidedMode:      guidedMode,
-		ActiveAgents:    activeAgents,
-		Skills:          ma.GetEffectiveSkills(),
-		AllSkills:       allSkills,
-		MemoryContext:   memoryContext,
-		Allowlist:       allowlist,
-		Tools:           tools,
-	})
+	return agent.BuildSystemPrompt(cfg)
 }
 
 func newMultiAgentWithSkills(

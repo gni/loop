@@ -216,46 +216,56 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	return sb.String()
 }
 
-func (a *Agent) GetSystemPrompt() string { return a.GetSystemPromptFor(nil) }
-
-func (a *Agent) GetSystemPromptFor(allowlist []string) string {
-	var activeAgents []string
-	a.SpawnedAgentsMu.RLock()
-	for name := range a.SpawnedAgents {
-		activeAgents = append(activeAgents, name)
+func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools bool) SystemPromptConfig {
+	if a == nil {
+		return SystemPromptConfig{
+			WorkspaceRoot: ".",
+			SkillsDir:     "skills",
+			Allowlist:     allowlist,
+		}
 	}
-	a.SpawnedAgentsMu.RUnlock()
-	sort.Strings(activeAgents)
 
 	skillsDir := "skills"
 	compact := false
 	instruction := ""
 	if a.Config != nil {
-		skillsDir = a.Config.SkillsDir
+		skillsDir = tool.FirstNonEmpty(a.Config.SkillsDir, "skills")
 		compact = a.Config.CompactPrompt
 		instruction = a.Config.SystemInstruction
 	}
 
-	var activeTasks []TaskInfo
-	for _, t := range a.ListTasks() {
-		if t.Status == "running" {
-			activeTasks = append(activeTasks, t)
-		}
-	}
-
-	return BuildSystemPrompt(SystemPromptConfig{
+	return SystemPromptConfig{
 		BaseInstruction: instruction,
-		WorkspaceRoot:   a.WorkspaceRoot,
+		WorkspaceRoot:   tool.FirstNonEmpty(a.WorkspaceRoot, "."),
 		SkillsDir:       skillsDir,
 		CompactPrompt:   compact,
 		GuidedMode:      a.IsGuidedMode(),
-		ActiveAgents:    activeAgents,
-		Skills:          a.ActiveSkills,
+		Skills:          a.GetActiveSkills(),
 		MemoryContext:   a.LoadMemoryContext(),
-		ActiveTasks:     activeTasks,
 		Allowlist:       allowlist,
-		Tools:           PromptToolEntries(a.Registry, true),
-	})
+		Tools:           PromptToolEntries(a.Registry, includeSubagentTools),
+	}
+}
+
+func (a *Agent) GetSystemPrompt() string { return a.GetSystemPromptFor(nil) }
+
+func (a *Agent) GetSystemPromptFor(allowlist []string) string {
+	cfg := a.BaseSystemPromptConfig(allowlist, true)
+	if a != nil {
+		a.SpawnedAgentsMu.RLock()
+		for name := range a.SpawnedAgents {
+			cfg.ActiveAgents = append(cfg.ActiveAgents, name)
+		}
+		a.SpawnedAgentsMu.RUnlock()
+		sort.Strings(cfg.ActiveAgents)
+
+		for _, t := range a.ListTasks() {
+			if t.Status == "running" {
+				cfg.ActiveTasks = append(cfg.ActiveTasks, t)
+			}
+		}
+	}
+	return BuildSystemPrompt(cfg)
 }
 
 func filterToolEntries(entries []ToolEntry, allowlist []string) []ToolEntry {

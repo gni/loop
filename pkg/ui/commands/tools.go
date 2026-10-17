@@ -39,21 +39,7 @@ func handleToolsCommand(
 	}
 
 	syncStatus := func() {
-		if calcHistoryTokens == nil {
-			return
-		}
-		pTok, cTok, estimated := calcHistoryTokens()
-		var msgs []db.Message
-		if messages != nil {
-			msgs = *messages
-		}
-		latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
-		effLimit := a.GetEffectiveContextLimit(pTok)
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().LastStatusBarText = ""
-		ui.GetUI().StateMu.Unlock()
-		ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-		ui.DrawStatusBar(os.Stderr, *theme)
+		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, false)
 	}
 
 	openInteractiveMenu := func() {
@@ -64,11 +50,7 @@ func handleToolsCommand(
 		_ = interactive.RunInteractiveToolsConfig(a, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 
-		var rl *term.Terminal
-		if kiReader != nil {
-			rl = kiReader.RL
-		}
-		ui.RestoreAfterModal(w, a, kiReader, rl)
+		ui.RestoreAfterModal(w, a, kiReader, terminalFromReader(kiReader))
 		syncStatus()
 	}
 

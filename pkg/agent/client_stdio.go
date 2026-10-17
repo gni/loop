@@ -78,11 +78,7 @@ func (c *mcpClient) startStdio() error {
 		}
 	}()
 
-	if err := c.handshake(); err != nil {
-		c.close()
-		return fmt.Errorf("handshake failed: %w", err)
-	}
-	return nil
+	return c.completeHandshake()
 }
 
 func (c *mcpClient) sendStdio(data string) error {
@@ -99,26 +95,6 @@ func (c *mcpClient) sendStdio(data string) error {
 }
 
 func (c *mcpClient) requestStdio(method string, params interface{}, timeout time.Duration) (string, error) {
-	id, ch, data, early, err := c.prepareRPCRequest(method, params)
-	if err != nil || early != "" {
-		return early, err
-	}
-
-	mcpLog("[MCP Tx] %s\n", string(data))
-	if err := c.sendStdio(string(data)); err != nil {
-		c.clearPendingRequest(id)
-		return "", err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	return c.awaitRPCResponse(
-		ctx,
-		id,
-		ch,
-		"stdio stream closed while waiting for '%s' response",
-		fmt.Sprintf("request timeout waiting for '%s' response", method),
-		method,
-	)
+	c.isStdio = true
+	return c.requestWithTimeout(method, params, timeout)
 }

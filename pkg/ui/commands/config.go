@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
@@ -31,10 +29,7 @@ func handleConfigCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-	var rl *term.Terminal
-	if kiReader != nil {
-		rl = kiReader.RL
-	}
+	rl := terminalFromReader(kiReader)
 
 	if len(parts) <= 1 {
 		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
@@ -249,19 +244,7 @@ func handleConfigCommand(
 	a.ApplyConfig(a.Config)
 	_ = config.SaveConfig(a.ConfigPath, a.Config)
 	fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
-	pTok, cTok, estimated := calcHistoryTokens()
-	var msgs []db.Message
-	if messages != nil {
-		msgs = *messages
-	}
-	latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
-	effLimit := a.GetEffectiveContextLimit(pTok)
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().LastStatusBarText = ""
-	ui.GetUI().StateMu.Unlock()
-	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
-	ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
-	ui.DrawStatusBar(w, *theme)
+	syncCommandStatus(a, messages, *theme, w, kiReader, calcHistoryTokens, true)
 }
 
 func parseConfigPositiveInt(w io.Writer, name, val string, target *int) bool {

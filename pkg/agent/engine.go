@@ -486,6 +486,77 @@ func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistant
 	}
 }
 
+type callPlan struct {
+	tc               db.ToolCall
+	idx              int
+	output           string
+	toolErr          error
+	skipped          bool
+	guardHit         bool
+	approvalRendered bool
+}
+
+func (e *TurnEngine) prepareToolCallPlan(
+	ctx context.Context,
+	idx int,
+	tc db.ToolCall,
+	remainingCalls []db.ToolCall,
+	assistantContent string,
+	isParallel bool,
+	sink HistorySink,
+	sr StreamRenderer,
+	loader EngineLoader,
+	w io.Writer,
+	theme style.UITheme,
+	render EngineRenderer,
+) (plan callPlan, halted bool, aborted bool) {
+	plan = callPlan{tc: tc, idx: idx}
+	if ctx.Err() != nil {
+		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
+		return plan, true, false
+	}
+	if !isParallel && e.agent != nil {
+		e.agent.SetLiveBodyStreamed(false)
+	}
+
+	e.ensureToolHeaderRendered(idx, tc, assistantContent, isParallel, sr, w, theme, render)
+
+	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)
+
+	if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
+		plan.toolErr = gateErr
+		plan.output = gateErr.Error()
+		plan.skipped = true
+		if strings.Contains(plan.output, "aborted by user") {
+			e.emitRejectedToolCall(idx, tc, plan.output, true, bodyStreamed, sink, sr, w, theme, render)
+			return plan, false, true
+		}
+		return plan, false, false
+	}
+
+	approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
+	plan.approvalRendered = approvalRendered
+	if !approved {
+		rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
+		if shouldAbort {
+			e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, bodyStreamed, sink, sr, w, theme, render)
+			return plan, false, true
+		}
+		plan.toolErr = fmt.Errorf("rejected by user")
+		plan.output = rejOutput
+		plan.skipped = true
+		return plan, false, false
+	}
+
+	if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
+		plan.toolErr = guardErr
+		plan.output = guardErr.Error()
+		plan.guardHit = true
+	}
+
+	return plan, false, false
+}
+
 func (e *TurnEngine) ExecuteToolCalls(
 	ctx context.Context,
 	assistantMsg *db.Message,
@@ -509,54 +580,32 @@ func (e *TurnEngine) ExecuteToolCalls(
 	}
 
 	for idx, tc := range assistantMsg.ToolCalls {
-		if ctx.Err() != nil {
-			e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled before execution")
-			return true, false
+		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, false, sink, sr, loader, w, theme, render)
+		if halted || aborted {
+			return halted, aborted
 		}
-		a.SetLiveBodyStreamed(false)
-
-		e.ensureToolHeaderRendered(idx, tc, assistantMsg.Content, false, sr, w, theme, render)
-
-		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
-			output := gateErr.Error()
-			e.emitRejectedToolCall(idx, tc, output, true, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
-			if strings.Contains(output, "aborted by user") {
-				return false, true
-			}
+		if plan.skipped {
+			e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 			continue
 		}
 
-		approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
-		if !approved {
-			output, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-			e.emitRejectedToolCall(idx, tc, output, !approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
-			if shouldAbort {
-				return false, true
+		if !plan.guardHit {
+			if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
+				plan.output, plan.toolErr = hookOut, hookErr
+			} else {
+				if loader != nil {
+					loader.ShowDots()
+				}
+				plan.output, plan.toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
+				if ctx.Err() != nil {
+					e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
+					return true, false
+				}
+				plan.output, plan.toolErr = e.applyAfterHook(tc, plan.output, plan.toolErr)
 			}
-			continue
 		}
 
-		var toolOutput string
-		var toolErr error
-
-		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
-			toolErr = guardErr
-			toolOutput = guardErr.Error()
-		} else if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
-			toolOutput, toolErr = hookOut, hookErr
-		} else {
-			if loader != nil {
-				loader.ShowDots()
-			}
-			toolOutput, toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
-			if ctx.Err() != nil {
-				e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
-				return true, false
-			}
-			toolOutput, toolErr = e.applyAfterHook(tc, toolOutput, toolErr)
-		}
-
-		e.finalizeToolCall(idx, tc, toolOutput, toolErr, approvalRendered, true, sink, sr, w, theme, render, afterCall)
+		e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall)
 
 		if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
 			e.emitHaltNotice(sink, w, theme)
@@ -564,16 +613,6 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 	}
 	return false, false
-}
-
-type callPlan struct {
-	tc               db.ToolCall
-	idx              int
-	output           string
-	toolErr          error
-	skipped          bool
-	guardHit         bool
-	approvalRendered bool
 }
 
 func (e *TurnEngine) executeToolCallsParallel(
@@ -591,47 +630,11 @@ func (e *TurnEngine) executeToolCallsParallel(
 	plans := make([]callPlan, len(assistantMsg.ToolCalls))
 
 	for idx, tc := range assistantMsg.ToolCalls {
-		plan := &plans[idx]
-		plan.tc = tc
-		plan.idx = idx
-
-		if ctx.Err() != nil {
-			e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled before execution")
-			return true, false
+		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, true, sink, sr, loader, w, theme, render)
+		if halted || aborted {
+			return halted, aborted
 		}
-
-		e.ensureToolHeaderRendered(idx, tc, assistantMsg.Content, true, sr, w, theme, render)
-
-		if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
-			plan.toolErr = gateErr
-			plan.output = gateErr.Error()
-			plan.skipped = true
-			if strings.Contains(plan.output, "aborted by user") {
-				e.emitRejectedToolCall(idx, tc, plan.output, true, false, sink, sr, w, theme, render)
-				return false, true
-			}
-			continue
-		}
-
-		approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
-		plan.approvalRendered = approvalRendered
-		if !approved {
-			rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
-			if shouldAbort {
-				e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, false, sink, sr, w, theme, render)
-				return false, true
-			}
-			plan.toolErr = fmt.Errorf("rejected by user")
-			plan.output = rejOutput
-			plan.skipped = true
-			continue
-		}
-
-		if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
-			plan.toolErr = guardErr
-			plan.output = guardErr.Error()
-			plan.guardHit = true
-		}
+		plans[idx] = plan
 	}
 
 	workers := limits.ParallelToolWorkers()

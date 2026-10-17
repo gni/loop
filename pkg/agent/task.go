@@ -95,6 +95,16 @@ func (a *Agent) findTaskLocked(id string) (string, *Task) {
 	return id, nil
 }
 
+func (a *Agent) lookupTask(id string) (string, *Task, error) {
+	a.TasksMu.Lock()
+	resolvedID, task := a.findTaskLocked(id)
+	a.TasksMu.Unlock()
+	if task == nil {
+		return resolvedID, nil, errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
+	}
+	return resolvedID, task, nil
+}
+
 func killTaskProcessLocked(task *Task) {
 	task.Status = "killed"
 	task.EndTime = time.Now()
@@ -184,12 +194,9 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 }
 
 func (a *Agent) KillTask(id string) error {
-	a.TasksMu.Lock()
-	resolvedID, task := a.findTaskLocked(id)
-	a.TasksMu.Unlock()
-
-	if task == nil {
-		return errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
+	resolvedID, task, err := a.lookupTask(id)
+	if err != nil {
+		return err
 	}
 
 	task.mu.Lock()
@@ -229,12 +236,9 @@ func (a *Agent) ResolveTaskID(id string) string {
 }
 
 func (a *Agent) GetTaskStatus(id string) (string, string, error) {
-	a.TasksMu.Lock()
-	resolvedID, task := a.findTaskLocked(id)
-	a.TasksMu.Unlock()
-
-	if task == nil {
-		return "", "", errors.New(RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
+	_, task, err := a.lookupTask(id)
+	if err != nil {
+		return "", "", err
 	}
 
 	task.mu.Lock()
@@ -265,11 +269,8 @@ func (a *Agent) GetTaskStatus(id string) (string, string, error) {
 }
 
 func (a *Agent) GetTaskCommand(id string) string {
-	a.TasksMu.Lock()
-	_, task := a.findTaskLocked(id)
-	a.TasksMu.Unlock()
-
-	if task == nil {
+	_, task, err := a.lookupTask(id)
+	if err != nil {
 		return ""
 	}
 	task.mu.Lock()
@@ -379,21 +380,16 @@ func (a *Agent) KillAllTasks() int {
 		return 0
 	}
 	a.TasksMu.Lock()
-	var runningIds []string
-	for id, t := range a.Tasks {
-		t.mu.Lock()
-		if t.Status == "running" {
-			runningIds = append(runningIds, id)
-		}
-		t.mu.Unlock()
-	}
-	a.TasksMu.Unlock()
+	defer a.TasksMu.Unlock()
 
 	killed := 0
-	for _, id := range runningIds {
-		if err := a.KillTask(id); err == nil {
+	for _, t := range a.Tasks {
+		t.mu.Lock()
+		if t.Status == "running" {
+			killTaskProcessLocked(t)
 			killed++
 		}
+		t.mu.Unlock()
 	}
 	return killed
 }

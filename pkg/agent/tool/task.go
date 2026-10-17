@@ -48,6 +48,17 @@ func parseTaskID(arguments string) (string, error) {
 	return id, nil
 }
 
+func resolveTaskIDArg(ctx AgentContext, arguments, missingKey, missingFallback string) (string, error) {
+	taskID, err := parseTaskID(arguments)
+	if err != nil {
+		return "", errors.New(RuntimeMessage(missingKey, missingFallback))
+	}
+	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
+		taskID = r.ResolveTaskID(taskID)
+	}
+	return taskID, nil
+}
+
 type taskStatusTool struct{}
 
 func NewTaskStatusTool() ToolExecutor {
@@ -72,13 +83,9 @@ func (t *taskStatusTool) Definition() Tool {
 }
 
 func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, error) {
-	taskID, err := parseTaskID(arguments)
+	taskID, err := resolveTaskIDArg(ctx, arguments, "task_missing_arg_status", "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1').")
 	if err != nil {
-		return "", errors.New(RuntimeMessage("task_missing_arg_status", "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1')."))
-	}
-
-	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
-		taskID = r.ResolveTaskID(taskID)
+		return "", err
 	}
 
 	status, output, err := ctx.GetTaskStatus(taskID)
@@ -128,13 +135,9 @@ func (t *taskKillTool) Definition() Tool {
 }
 
 func (t *taskKillTool) Execute(ctx AgentContext, arguments string) (string, error) {
-	taskID, err := parseTaskID(arguments)
+	taskID, err := resolveTaskIDArg(ctx, arguments, "task_missing_arg_kill", "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1').")
 	if err != nil {
-		return "", errors.New(RuntimeMessage("task_missing_arg_kill", "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1')."))
-	}
-
-	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
-		taskID = r.ResolveTaskID(taskID)
+		return "", err
 	}
 
 	if err := ctx.KillTask(taskID); err != nil {
