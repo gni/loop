@@ -2,7 +2,6 @@ package swarm
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 
@@ -45,22 +44,6 @@ func (mac *multiAgentContext) RecordRead(absPath string, data []byte) {
 	if fo, ok := mac.AgentContext.(tool.FileObserver); ok {
 		fo.RecordRead(absPath, data)
 	}
-}
-
-func (mac *multiAgentContext) PrepareMutation(absPath string, isEdit bool) error {
-	preparer, ok := mac.AgentContext.(tool.MutationPreparer)
-	if !ok {
-		return fmt.Errorf("mutation preparation is unavailable")
-	}
-	return preparer.PrepareMutation(absPath, isEdit)
-}
-
-func (mac *multiAgentContext) CheckPreparedMutation(absPath string, isEdit bool) error {
-	preparer, ok := mac.AgentContext.(tool.MutationPreparer)
-	if !ok {
-		return fmt.Errorf("mutation preparation is unavailable")
-	}
-	return preparer.CheckPreparedMutation(absPath, isEdit)
 }
 
 func (mac *multiAgentContext) CheckMutationAllowed(absPath string, isEdit bool) error {

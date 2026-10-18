@@ -28,7 +28,6 @@ type OpenAICompatibleProvider struct {
 
 	thinkingMu           sync.Mutex
 	ChunkDropObserver    ChunkDropObserver
-	PromptCacheSupported bool
 }
 
 func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
@@ -144,7 +143,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		p.Config.Model = resolved
 	}
 
-	if p.PromptCacheSupported {
+	if p.Config != nil && p.Config.PromptCacheBreakpoints {
+		messages = append([]db.Message(nil), messages...)
 		transportllm.ApplyPromptCacheBreakpoints(messages)
 	}
 

@@ -310,20 +310,6 @@ func (a *Agent) RecordRead(absPath string, data []byte) {
 	}
 }
 
-func (a *Agent) PrepareMutation(absPath string, isEdit bool) error {
-	if a == nil || a.FileObservations == nil {
-		return fmt.Errorf("file observation tracker is unavailable")
-	}
-	return a.FileObservations.PrepareMutation(absPath, isEdit)
-}
-
-func (a *Agent) CheckPreparedMutation(absPath string, isEdit bool) error {
-	if a == nil || a.FileObservations == nil {
-		return fmt.Errorf("file observation tracker is unavailable")
-	}
-	return a.FileObservations.CheckPreparedMutation(absPath, isEdit)
-}
-
 func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
 	if a == nil {
 		return nil

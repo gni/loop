@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,28 +28,15 @@ type Timings struct {
 	PredictedN int `json:"predicted_n"`
 }
 
-// PromptCacheKeyMaxLength is the maximum length of a provider-scoped prompt
-// cache key: cache keys are clamped, never expanded.
-const PromptCacheKeyMaxLength = 64
-
-// ClampPromptCacheKey truncates a cache key to PromptCacheKeyMaxLength runes.
-func ClampPromptCacheKey(key string) string {
-	r := []rune(key)
-	if len(r) <= PromptCacheKeyMaxLength {
-		return key
-	}
-	return string(r[:PromptCacheKeyMaxLength])
-}
-
 // ApplyPromptCacheBreakpoints marks the system prompt and the tool-catalog prefix
 // (the message block that carries the catalog, i.e. the first system turn) with an
-// ephemeral cache breakpoint. Non-supporting providers are unaffected: callers only
-// invoke this when the active provider declares prompt-cache support, and the part
-// field is omitempty on the wire.
+// ephemeral cache breakpoint. Call this only for endpoints that explicitly
+// support cache_control in OpenAI-compatible chat messages.
 func ApplyPromptCacheBreakpoints(messages []message.Message) {
 	for i, m := range messages {
 		if m.IsSystem() {
-			messages[i].CacheControl = []message.CacheBlock{{Type: message.CacheControlEphemeral, Key: ClampPromptCacheKey(m.Content)}}
+			hash := sha256.Sum256([]byte(m.Content))
+			messages[i].CacheControl = []message.CacheBlock{{Type: message.CacheControlEphemeral, Key: fmt.Sprintf("%x", hash[:])}}
 			break
 		}
 	}

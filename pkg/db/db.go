@@ -35,7 +35,7 @@ var _ session.Store = (*JSONLStore)(nil)
 
 func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	clean := filepath.Clean(dirPath)
-	if err := os.MkdirAll(clean, 0755); err != nil {
+	if err := os.MkdirAll(clean, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
 	return &JSONLStore{dir: clean}, nil
@@ -125,11 +125,14 @@ func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
 		Message:   msg,
 	}
 
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open session file: %w", err)
 	}
 	defer f.Close()
+	if err := f.Chmod(0600); err != nil {
+		return fmt.Errorf("secure session file: %w", err)
+	}
 
 	if err := writeJSONLine(f, record); err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
@@ -222,6 +225,9 @@ func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message
 		}
 	}
 
+	if err := tmpFile.Chmod(0600); err != nil {
+		return fmt.Errorf("failed to secure temp session file: %w", err)
+	}
 	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}

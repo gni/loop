@@ -150,13 +150,6 @@ type FileObserver interface {
 	RecordMutation(absPath string, data []byte)
 }
 
-// MutationPreparer authorizes a path and operation before a large tool payload is generated.
-// The mutation tools recheck the authorization against the current filesystem state.
-type MutationPreparer interface {
-	PrepareMutation(absPath string, isEdit bool) error
-	CheckPreparedMutation(absPath string, isEdit bool) error
-}
-
 // ToolExecutor defines the operational contract for executing a tool.
 type ToolExecutor interface {
 	Name() string

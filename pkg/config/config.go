@@ -73,6 +73,7 @@ type Config struct {
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
 	DisableObservationGuard  bool                       `json:"disable_file_observation_guard,omitempty"`
+	PromptCacheBreakpoints   bool                       `json:"prompt_cache_breakpoints,omitempty"`
 	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
 	ApprovalAlwaysAnswer     bool                       `json:"approval_always_answer,omitempty"`
 	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
@@ -93,16 +94,18 @@ func resolveDefaultSkillsDir() string {
 	return filepath.Join(homeDir, ".loop", "skills")
 }
 
-func saveMCPFile(dir string, servers map[string]MCPServerConfig) {
+func saveMCPFile(dir string, servers map[string]MCPServerConfig) error {
 	if servers == nil {
 		servers = make(map[string]MCPServerConfig)
 	}
-	if data, err := json.MarshalIndent(servers, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, "mcp.json"), data, 0644)
+	data, err := json.MarshalIndent(servers, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode MCP configuration: %w", err)
 	}
+	return writePrivateConfigFile(filepath.Join(dir, "mcp.json"), data)
 }
 
-func saveProvidersFile(dir string, active string, providers map[string]ProviderConfig) {
+func saveProvidersFile(dir string, active string, providers map[string]ProviderConfig) error {
 	clean := make(map[string]ProviderConfig, len(providers))
 	for name, p := range providers {
 		cp := p
@@ -114,9 +117,42 @@ func saveProvidersFile(dir string, active string, providers map[string]ProviderC
 		ActiveProvider: active,
 		Providers:      clean,
 	}
-	if data, err := json.MarshalIndent(provFile, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, "providers.json"), data, 0644)
+	data, err := json.MarshalIndent(provFile, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode provider configuration: %w", err)
 	}
+	return writePrivateConfigFile(filepath.Join(dir, "providers.json"), data)
+}
+
+func writePrivateConfigFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, ".loop-config-*")
+	if err != nil {
+		return fmt.Errorf("create temporary config file: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return fmt.Errorf("set private config permissions: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	return nil
 }
 
 func DefaultConfig() *Config {
@@ -265,7 +301,9 @@ func LoadConfig(path string) (*Config, error) {
 
 		conf.applyDefaults()
 		conf.SyncActiveProvider()
-		_ = SaveConfig(path, conf)
+		if err := SaveConfig(path, conf); err != nil {
+			return nil, err
+		}
 		return conf, nil
 	}
 
@@ -288,7 +326,9 @@ func LoadConfig(path string) (*Config, error) {
 			cfg.MCPServers = mcpMap
 		}
 	} else if len(cfg.MCPServers) > 0 {
-		saveMCPFile(dir, cfg.MCPServers)
+		if err := saveMCPFile(dir, cfg.MCPServers); err != nil {
+			return nil, err
+		}
 	}
 
 	providersPath := filepath.Join(dir, "providers.json")
@@ -312,7 +352,9 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 	} else if len(cfg.Providers) > 0 {
-		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
+		if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
+			return nil, err
+		}
 	} else if cfg.Endpoint != "" {
 		providerName := cfg.ActiveProvider
 		if providerName == "" {
@@ -320,7 +362,9 @@ func LoadConfig(path string) (*Config, error) {
 			cfg.ActiveProvider = "default"
 		}
 		cfg.Providers[providerName] = cfg.defaultProviderProfile(providerName)
-		saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
+		if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
+			return nil, err
+		}
 	}
 
 	cfg.SyncActiveProvider()
@@ -335,7 +379,7 @@ func LoadConfig(path string) (*Config, error) {
 
 func SaveConfig(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -354,14 +398,16 @@ func SaveConfig(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := writePrivateConfigFile(path, data); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
 	if cfg.MCPServers == nil {
 		cfg.MCPServers = make(map[string]MCPServerConfig)
 	}
-	saveMCPFile(dir, cfg.MCPServers)
+	if err := saveMCPFile(dir, cfg.MCPServers); err != nil {
+		return err
+	}
 
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]ProviderConfig)
@@ -372,7 +418,9 @@ func SaveConfig(path string, cfg *Config) error {
 			cfg.Providers["default"] = cfg.defaultProviderProfile("default")
 		}
 	}
-	saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers)
+	if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
+		return err
+	}
 	return nil
 }
 

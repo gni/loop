@@ -77,7 +77,34 @@ func (s *JSONLStore) setLatestSessionIDUnlocked(sessionID string) error {
 
 	now := time.Now()
 	_ = os.Chtimes(s.sessionPath(sessionID), now, now)
-	return os.WriteFile(s.latestSessionPath(), []byte(sessionID), 0644)
+	return s.writeLatestID(sessionID)
+}
+
+func (s *JSONLStore) writeLatestID(sessionID string) error {
+	f, err := os.CreateTemp(s.dir, ".latest-session-*")
+	if err != nil {
+		return fmt.Errorf("create latest-session pointer: %w", err)
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return fmt.Errorf("secure latest-session pointer: %w", err)
+	}
+	if _, err := f.WriteString(sessionID); err != nil {
+		f.Close()
+		return fmt.Errorf("write latest-session pointer: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync latest-session pointer: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close latest-session pointer: %w", err)
+	}
+	if err := os.Rename(f.Name(), s.latestSessionPath()); err != nil {
+		return fmt.Errorf("replace latest-session pointer: %w", err)
+	}
+	return nil
 }
 
 func (s *JSONLStore) GetLatestSessionID() (string, error) {
@@ -249,7 +276,9 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 
 	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == oldID {
-		_ = os.WriteFile(latestPath, []byte(newID), 0644)
+		if err := s.writeLatestID(newID); err != nil {
+			return fmt.Errorf("session renamed, but latest pointer update failed: %w", err)
+		}
 	}
 	return nil
 }
@@ -295,7 +324,7 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 		return fmt.Errorf("entry %s not found in session %s", entryID, sessionID)
 	}
 
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open session file: %w", err)
 	}
@@ -338,7 +367,7 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 	}
 
 	newID := session.NewUUID()
-	f, err := os.OpenFile(s.sessionPath(newID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(s.sessionPath(newID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return "", fmt.Errorf("failed to create forked session file: %w", err)
 	}

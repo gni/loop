@@ -33,32 +33,35 @@ func isDisabledDebugTarget(target string) bool {
 	}
 }
 
-// NewDebugLogger creates a new DebugLogger targeting customPath, LOOP_DEBUG_FILE,
-// or defaulting to loop_debug.log in workspaceRoot.
-func NewDebugLogger(workspaceRoot string, customPath string) *DebugLogger {
+// NewDebugLogger enables sensitive execution tracing only for an explicit target.
+// Set debug_log_file or LOOP_DEBUG_FILE to a path to opt in.
+func NewDebugLogger(_ string, customPath string) *DebugLogger {
 	target := tool.FirstNonEmpty(strings.TrimSpace(customPath), strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE")))
 	if isDisabledDebugTarget(target) {
 		return nil
 	}
 	if target == "" {
-		workspaceRoot = tool.FirstNonEmpty(workspaceRoot, ".")
-		target = filepath.Join(workspaceRoot, "loop_debug.log")
+		return nil
 	}
 
 	if absTarget, err := filepath.Abs(target); err == nil {
 		target = absTarget
 	}
 
-	_ = os.MkdirAll(filepath.Dir(target), 0755)
-
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return &DebugLogger{
-			filePath:       target,
-			fileReadCounts: make(map[string]int),
-		}
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		return nil
 	}
 
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "debug logging disabled: %v\n", err)
+		return nil
+	}
+
+	if err := f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return nil
+	}
 	dl := &DebugLogger{
 		filePath:       target,
 		file:           f,

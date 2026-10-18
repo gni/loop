@@ -135,8 +135,9 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			for i := range options {
 				lines[i] = renderOption(i)
 			}
-			promptWriter.ReplaceScrollBlockBack(len(options), lines)
-			return
+			if promptWriter.ReplaceScrollBlockBack(len(options), lines) {
+				return
+			}
 		}
 
 		fmt.Fprintf(output, "\x1b[%dA", len(options))

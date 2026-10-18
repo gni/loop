@@ -3,9 +3,7 @@ package agent
 import (
 	"context"
 	"time"
-	"strings"
-	"fmt"
-	
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
@@ -15,57 +13,7 @@ import (
 
 type contextKey string
 
-const (
-	contextKeyGenerationDuration = contextKey("generation_duration_callback")
-	contextKeyMutationPreflight  = contextKey("mutation_preflight_callback")
-)
-
-type MutationPreflightError struct {
-	ToolName string
-	Path     string
-	Cause    error
-}
-
-func (e *MutationPreflightError) Error() string {
-	if e.Path == "" {
-		return fmt.Sprintf("%s blocked before content generation: %v", e.ToolName, e.Cause)
-	}
-	return fmt.Sprintf("%s blocked for %q before content generation: %v", e.ToolName, e.Path, e.Cause)
-}
-
-func (e *MutationPreflightError) Guidance() string {
-	reason := ""
-	if e.Cause != nil {
-		reason = e.Cause.Error()
-	}
-	if strings.Contains(reason, "escapes workspace root") || strings.Contains(reason, "resolves via symlink outside") {
-		return e.Error() + ". Choose a target inside the workspace. Do not retry the rejected path."
-	}
-	if strings.Contains(reason, "has not been read") || strings.Contains(reason, "changed since") || strings.Contains(reason, "SHA256 mismatch") {
-		return e.Error() + ". Call 'read' on the exact target file before attempting another mutation."
-	}
-	return e.Error() + ". Correct the tool path and arguments before trying again."
-}
-
-// RecordMutationPreflightFailure preserves tool-call pairing without impersonating a user.
-func RecordMutationPreflightFailure(sink HistorySink, failure *MutationPreflightError) {
-	if sink == nil || failure == nil {
-		return
-	}
-	callID := "call_preflight_" + db.NewUUID()
-	sink.Append(db.Message{
-		Role: "assistant",
-		ToolCalls: []db.ToolCall{{
-			ID:       callID,
-			Type:     "function",
-			Function: db.ToolFunction{Name: failure.ToolName, Arguments: "{}"},
-		}},
-	})
-	sink.Append(db.Message{
-		Role: "tool", ToolCallID: callID,
-		Name: failure.ToolName, Content: failure.Guidance(),
-	})
-}
+const contextKeyGenerationDuration = contextKey("generation_duration_callback")
 
 type Tool = tool.Tool
 type FunctionDefinition = tool.FunctionDefinition

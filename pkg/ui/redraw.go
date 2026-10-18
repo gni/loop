@@ -21,6 +21,12 @@ func RedrawScreen(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 func RefreshConsoleAfterTurn(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
+	getUI().StateMu.Lock()
+	inModal := getUI().InApprovalPrompt
+	getUI().StateMu.Unlock()
+	if inModal {
+		return
+	}
 	DrawConsoleStaticControlsLocked(w, a, kiReader, rl, true)
 }
 

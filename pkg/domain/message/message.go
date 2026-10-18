@@ -28,8 +28,7 @@ type ToolCall struct {
 // byte-identical for non-supporting providers).
 type CacheBlock struct {
 	Type string `json:"type"`
-	// Key is an optional provider-scoped cache key; callers must clamp it to
-	// llm.PromptCacheKeyMaxLength before use.
+	// Key is an optional provider-scoped cache identifier, never raw prompt text.
 	Key string `json:"key,omitempty"`
 }
 

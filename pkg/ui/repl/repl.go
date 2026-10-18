@@ -172,35 +172,53 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	ui.DrawStatusBar(os.Stderr, theme)
 
 	sigChan := make(chan os.Signal, 1)
+	resizeDone := make(chan struct{})
 	signal.Notify(sigChan, syscall.SIGWINCH)
 	go func() {
 		var debounceTimer *time.Timer
-		for range sigChan {
+		defer func() {
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
-			debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
-				if w, h, err := term.GetSize(fd); err == nil {
-					rl.SetSize(w, h)
+		}()
+		for {
+			select {
+			case <-resizeDone:
+				return
+			case <-sigChan:
+				if debounceTimer != nil {
+					debounceTimer.Stop()
+				}
+				debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
+					select {
+					case <-resizeDone:
+						return
+					default:
+					}
 					ui.GetUI().StateMu.Lock()
+					inModal := ui.GetUI().InApprovalPrompt
 					idle := ui.GetUI().ActiveCancelFunc == nil
 					ui.GetUI().StateMu.Unlock()
-					if idle {
-						ui.RedrawScreen(os.Stderr, a, kiReader, rl)
-					} else {
-						ui.HandleResize(os.Stderr, a, kiReader, rl)
-						ui.GetUI().StateMu.Lock()
-						inModal := ui.GetUI().InApprovalPrompt
-						ui.GetUI().StateMu.Unlock()
-						if !inModal {
+					if inModal {
+						return
+					}
+					if w, h, err := term.GetSize(fd); err == nil {
+						rl.SetSize(w, h)
+						if idle {
+							ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+						} else {
+							ui.HandleResize(os.Stderr, a, kiReader, rl)
 							kiReader.RedrawTypeAhead()
 						}
 					}
-				}
-			})
+				})
+			}
 		}
 	}()
-	defer signal.Stop(sigChan)
+	defer func() {
+		signal.Stop(sigChan)
+		close(resizeDone)
+	}()
 
 	for {
 		promptPrefix := ui.GetPromptSymbol(a.Config)

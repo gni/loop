@@ -45,7 +45,7 @@ require (
 
 ### INSTALLATION
 
-requires go 1.21+.
+requires Go 1.26.1 or newer (the version declared in `go.mod`).
 
 ```bash
 go mod tidy
@@ -66,7 +66,11 @@ start a session with a direct objective:
 ./loop "audit the network layer and patch vulnerabilities"
 ```
 
-bypass all execution safety prompts (use with caution):
+Shell execution is not sandboxed. Workspace file-tool checks do not restrict shell commands, plugins, or child processes. Run untrusted work in an isolated environment.
+
+Debug execution traces are disabled by default because they may include prompts and tool arguments. Set `LOOP_DEBUG_FILE=/private/path/loop.log` or `debug_log_file` to opt in. Newly written trace, config, and session files are private. Review older files when upgrading.
+
+bypass interactive tool approval prompts (use with caution):
 ```bash
 ./loop --yes
 ```
@@ -86,7 +90,7 @@ sessions are persistent. state is automatically written to disk.
 #### configuration
 
 by default, configuration is stored in `~/.loop/config.json`.
-the harness is heavily optimized for `llama.cpp`.
+the harness is heavily optimized for `llama.cpp`. Each model request still includes conversation history. For endpoints that explicitly support message `cache_control` metadata, set `"prompt_cache_breakpoints": true` in the config to opt in. Leave it off for servers that do not support that field. This cannot guarantee faster prompt processing, which depends on the provider.
 
 ```bash
 ./llama-server -m models/your-model.gguf -c 4096 --port 8080
