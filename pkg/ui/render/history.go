@@ -228,6 +228,11 @@ func PrintSessionHistory(
 				status = ToolStatusError
 			}
 
+			if lastRole == "tool" {
+				for line := 0; line < style.ActivityGapLines; line++ {
+					fmt.Fprintln(w)
+				}
+			}
 			renderToolTitleLine(w, toolName, argsJSON, status, theme)
 			RenderToolOutput(w, msg.Content, isError, cfg != nil && cfg.CollapseResults, theme, toolName, argsJSON, false)
 

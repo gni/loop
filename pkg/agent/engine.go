@@ -534,13 +534,11 @@ func (e *TurnEngine) prepareToolCallPlan(
 		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
 		return plan, true, false
 	}
-	if !isParallel && idx > 0 {
-		// A new tool title needs a line break, not an empty line. This
-		// handles read, write, edit, bash, todo, and other sequential tools.
+	if idx > 0 && sr.GetToolTitleLineNumber(idx) == -1 {
 		if counter, ok := w.(*NewlineCounterWriter); ok {
-			counter.EnsureNewline()
+			counter.EnsureActivityGap()
 		} else {
-			fmt.Fprint(w, "\n")
+			fmt.Fprint(w, strings.Repeat("\n", style.ActivityGapLines+1))
 		}
 	}
 	if !isParallel && e.agent != nil {

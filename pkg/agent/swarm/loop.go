@@ -276,9 +276,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 		}
 
-		// The first read is rendered by the executor after the LLM stream
-		// finishes, keeping the subagent display in execution order.
-		deferredFirstRead := false
+		// Render subagent tool calls from their completed arguments at
+		// execution time, using the same single-header path as the main agent.
 		for chunk := range chunkChan {
 			if subagentGenStart.IsZero() {
 				subagentGenStart = time.Now()
@@ -300,26 +299,11 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
 				startResponseHeader()
 				sr.Write(chunk.Content)
-			case "tool_name":
-				startResponseHeader()
-				if chunk.ToolCallIndex == 0 {
-					deferredFirstRead = chunk.Content == "read"
-					if !deferredFirstRead {
-						sr.StartToolCall(chunk.Content, chunk.ToolCallIndex)
-					}
-				}
-			case "tool_target":
-				startResponseHeader()
-				if chunk.ToolCallIndex == 0 && !deferredFirstRead {
-					sr.SetToolTarget(chunk.Content, chunk.ToolCallIndex)
-				}
+			case "tool_name", "tool_target":
+				// The engine prints tool titles after the model call completes.
 			case "tool_call":
 				subagentStreamChars += len(chunk.Content)
 				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
-				startResponseHeader()
-				if chunk.ToolCallIndex == 0 && !deferredFirstRead {
-					sr.WriteToolCall(chunk.Content)
-				}
 			default:
 				startResponseHeader()
 			}
@@ -380,6 +364,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return *assistantMsg, nil
 		}
 
+		ncw.EnsureNewline()
 		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma, theme), func(tc db.ToolCall, output string, toolErr error) {
 			if ma.BaseAgent != nil {
 				ma.BaseAgent.DebugLogToolExecution("subagent:"+ma.Name, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)

@@ -211,10 +211,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		updateStreamStatus(true)
 
-		// Only the first tool can stream live. Later tools are queued until
-		// execution so each result stays beside its own title and body.
-		// Reads are always deferred because their body comes from execution.
-		streamFirstTool := false
+		// Tool arguments are collected by the provider. Render headers and
+		// file previews once, from the completed tool calls during execution.
 		for chunk := range chunkChan {
 			switch chunk.Type {
 			case "reasoning":
@@ -232,28 +230,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 				sr.Write(chunk.Content)
 			case "tool_name":
-				if chunk.ToolCallIndex == 0 {
-					streamFirstTool = chunk.Content != "read"
-					if streamFirstTool {
-						sr.StartToolCall(chunk.Content, 0)
-					}
-				}
 				if loader != nil {
 					loader.ShowDots()
 					loader.Feed()
 				}
-			case "tool_target":
-				if chunk.ToolCallIndex == 0 && streamFirstTool {
-					sr.SetToolTarget(chunk.Content, 0)
-				}
 			case "tool_call":
-				if chunk.ToolCallIndex == 0 && streamFirstTool {
-					sr.WriteToolCall(chunk.Content)
-				}
 				if loader != nil {
-					if sr.DidStreamToolBody(chunk.ToolCallIndex) {
-						loader.PauseDots()
-					}
 					loader.Feed()
 				}
 			}

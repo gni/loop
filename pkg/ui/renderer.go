@@ -284,9 +284,7 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.GuessedLang = ""
 		sr.parser.NeedsLeadingNewline = false
 
-		// A write must be visible as soon as the call starts. The model is not
-		// required to put the path before the (potentially long) content.
-		if toolName == "write" || (sr.parser.StreamWrites && !sr.parser.NeedsPath()) {
+		if sr.parser.StreamWrites && !sr.parser.NeedsPath() {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
 	}

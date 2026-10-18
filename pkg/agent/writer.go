@@ -67,10 +67,20 @@ func (n *NewlineCounterWriter) Write(p []byte) (int, error) {
 }
 
 // EnsureNewline moves to the next line only if the previous output has not
-// already done so. Tool calls should be adjacent, without a blank row.
+// already done so.
 func (n *NewlineCounterWriter) EnsureNewline() {
 	if n.trailingNewlines == 0 {
 		_, _ = io.WriteString(n, "\n")
+	}
+}
+
+// EnsureActivityGap separates completed output from the next tool header.
+// The one newline terminating the previous line is not a blank row.
+func (n *NewlineCounterWriter) EnsureActivityGap() {
+	for n.trailingNewlines < style.ActivityGapLines+1 {
+		if _, err := io.WriteString(n, "\n"); err != nil {
+			return
+		}
 	}
 }
 

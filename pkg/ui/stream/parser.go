@@ -208,7 +208,7 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 }
 
 func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
-	if p.OutputBuf.Len() == 0 {
+	if p.OutputBuf.Len() == 0 || (!p.TitlePrinted && p.NeedsPath() && strings.TrimSpace(p.Path) == "") {
 		return
 	}
 	if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
@@ -235,15 +235,11 @@ func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
 func (p *JSONStreamParser) EmitContent(s string, w io.Writer, theme style.UITheme) {
 	if !p.TitlePrinted {
 		if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
-			if p.OutputBuf.Len() < 200 {
-				p.OutputBuf.WriteString(s)
-				return
-			}
-			p.FlushOutputBuf(w, theme)
-		} else {
-			p.PrintStreamTitle(w, theme)
-			p.FlushOutputBuf(w, theme)
+			p.OutputBuf.WriteString(s)
+			return
 		}
+		p.PrintStreamTitle(w, theme)
+		p.FlushOutputBuf(w, theme)
 	}
 	fmt.Fprint(w, s)
 }
@@ -437,9 +433,7 @@ func (p *JSONStreamParser) formatCurrentTitle(theme style.UITheme) string {
 }
 
 func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
-	// Write calls can start with content. Print the action while the path is
-	// still unknown, then update its title when the path arrives.
-	if p.TitlePrinted || (p.NeedsPath() && strings.TrimSpace(p.Path) == "" && p.ActiveToolName != "write") {
+	if p.TitlePrinted || (p.NeedsPath() && strings.TrimSpace(p.Path) == "") {
 		return
 	}
 	p.TitlePrinted = true
