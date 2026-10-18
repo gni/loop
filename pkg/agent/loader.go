@@ -46,15 +46,7 @@ func (a *Agent) newTurnLoader(ctx context.Context, w io.Writer, theme style.UITh
 }
 
 func (tl *turnLoader) currentFrame() string {
-	activeDot := style.NewStyle().Foreground(tl.theme.Highlight).Bold(true).Render("•")
-	mutedDot := style.NewStyle().Foreground(tl.theme.Border).Render("·")
-	frames := []string{
-		fmt.Sprintf("%s %s %s", activeDot, mutedDot, mutedDot),
-		fmt.Sprintf("%s %s %s", mutedDot, activeDot, mutedDot),
-		fmt.Sprintf("%s %s %s", mutedDot, mutedDot, activeDot),
-		fmt.Sprintf("%s %s %s", mutedDot, activeDot, mutedDot),
-	}
-	return frames[tl.frameIndex%len(frames)]
+	return style.ActivitySpinnerFrame(tl.theme, tl.frameIndex)
 }
 
 func (tl *turnLoader) renderFrame(frame string) {

@@ -51,6 +51,15 @@ func ActivityDivider(theme UITheme) string {
 	return NewStyle().Foreground(theme.Border).Render(strings.Repeat("· ", 19) + "·")
 }
 
+func ActivitySpinnerFrame(theme UITheme, frameIndex int) string {
+	active := NewStyle().Foreground(theme.Highlight).Bold(true).Render("•")
+	muted := NewStyle().Foreground(theme.Border).Render("·")
+	position := [4]int{0, 1, 2, 1}[frameIndex%4]
+	dots := [3]string{muted, muted, muted}
+	dots[position] = active
+	return strings.Join(dots[:], " ")
+}
+
 func (s Style) MaxWidth(v int) Style {
 	s.maxWidth = v
 	return s

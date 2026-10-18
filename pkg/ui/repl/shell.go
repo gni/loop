@@ -2,17 +2,19 @@ package repl
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
 	"loop/pkg/agent"
-	"loop/pkg/agent/swarm"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui"
@@ -44,9 +46,6 @@ func executeManualShellCommand(
 	messages *[]db.Message,
 	currentSessionID string,
 	kiReader *interceptor.KeyInterceptorReader,
-	rl *term.Terminal,
-	allowedTools []string,
-	mam *swarm.MultiAgentManager,
 	theme style.UITheme,
 ) {
 	isPureCd := false
@@ -62,6 +61,7 @@ func executeManualShellCommand(
 	}
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	ppWriter.EnsureNewline()
 	ppWriter.ForceReposition()
 	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
@@ -87,23 +87,53 @@ func executeManualShellCommand(
 		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", target)
 		*messages = append(*messages, db.Message{Role: "user", Content: contextMsg})
 		_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
-		ppWriter.ForceReposition()
-		kiReader.Drain()
-		refreshREPLStatus(a, *messages, allowedTools, mam, kiReader, rl, false)
 		return
 	}
 
-	cmd := exec.Command("bash", "-c", cmdStr)
+	ctx, cancel := context.WithCancel(context.Background())
+	ui.GetUI().StateMu.Lock()
+	ui.GetUI().ActiveCancelFunc = cancel
+	ui.GetUI().StateMu.Unlock()
+	ui.TerminalMu.Lock()
+	ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, nil, true)
+	ui.TerminalMu.Unlock()
+	defer func() {
+		cancel()
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().ActiveCancelFunc = nil
+		ui.GetUI().StateMu.Unlock()
+	}()
+
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		oldState, err := term.MakeRaw(fd)
+		if err != nil {
+			fmt.Fprintf(ppWriter, "terminal: %v\n", err)
+			return
+		}
+		defer term.Restore(fd, oldState)
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	var stdout, stderr bytes.Buffer
 	cw := interceptor.CRNLWriter{W: ppWriter}
 	cmd.Stdout = io.MultiWriter(cw, &stdout)
 	cmd.Stderr = io.MultiWriter(cw, &stderr)
-	cmd.Stdin = os.Stdin
+	stopIndicator := startManualCommandIndicator(theme)
 	err := cmd.Run()
+	stopIndicator()
 
-	if err == nil && a.FileObservations != nil {
+	if a.FileObservations != nil {
 		a.FileObservations.ForgetAll()
 	}
 
@@ -132,7 +162,34 @@ func executeManualShellCommand(
 	*messages = append(*messages, db.Message{Role: "user", Content: contextMsg})
 	_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
 
-	ppWriter.ForceReposition()
-	kiReader.Drain()
-	refreshREPLStatus(a, *messages, allowedTools, mam, kiReader, rl, false)
+	ppWriter.EnsureNewline()
+}
+
+func startManualCommandIndicator(theme style.UITheme) func() {
+	start := time.Now()
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	elapsedText := func() string {
+		return style.NewStyle().Foreground(theme.Border).Render(fmt.Sprintf("shell (%.1fs)", time.Since(start).Seconds()))
+	}
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(240 * time.Millisecond)
+		defer ticker.Stop()
+		frame := 0
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				ui.DrawStaticStatsLine(os.Stderr, theme, style.ActivitySpinnerFrame(theme, frame), elapsedText())
+				frame++
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-stopped
+		ui.DrawStaticStatsLine(os.Stderr, theme, "", elapsedText())
+	}
 }

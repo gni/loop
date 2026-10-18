@@ -367,20 +367,12 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 
 		if isCmd, cmdStr := parseManualCommand(line, a.Config.DirectCommands); isCmd {
-			executeManualShellCommand(
-				cmdStr,
-				line,
-				promptPrefix,
-				a,
-				ppWriter,
-				&messages,
-				currentSessionID,
-				kiReader,
-				rl,
-				allowedTools,
-				mam,
-				theme,
-			)
+			ui.TerminalMu.Lock()
+			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, false)
+			ui.TerminalMu.Unlock()
+			executeManualShellCommand(cmdStr, line, promptPrefix, a, ppWriter, &messages, currentSessionID, kiReader, theme)
+			rl = createTerminal()
+			refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
 			continue
 		}
 
