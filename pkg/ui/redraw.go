@@ -112,10 +112,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	}
 
 	_, height := GetTerminalSize()
-	scrollBottom := height - 6 - getUI().PasteLinesOffset
-	if scrollBottom < 1 {
-		scrollBottom = 1
-	}
+	scrollBottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
 
 	var finalBuf bytes.Buffer
 	cwFinal := crnlWriter{W: &finalBuf}
@@ -128,6 +125,10 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		_, _ = cwFinal.Write(a.CurrentStreamBuffer.Bytes())
 	}
 	a.CurrentStreamMu.Unlock()
+
+	// The replay bypasses PromptPreservingWriter. End on a fresh scrolling
+	// row before giving control back to live writes.
+	fmt.Fprint(cwFinal, "\r\n")
 
 	var activeMessagesForTokens []db.Message
 	var mam *swarm.MultiAgentManager
@@ -144,6 +145,9 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 
 	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, a.CountActiveTasks(), a.Config.ShowTokens, estimated)
 	DrawConsoleStaticControlsLocked(cwFinal, a, kiReader, rl, true)
+	if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
+		uiImpl.PPWriter.ResetAfterRedrawLocked(height)
+	}
 
 	dest := w
 	if _, isPP := w.(*PromptPreservingWriter); isPP {

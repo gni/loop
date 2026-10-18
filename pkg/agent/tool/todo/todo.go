@@ -26,7 +26,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "todo",
-			Description: domaintool.FormatToolDescription("todo", "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call, or specify action ('update', 'add', 'remove') with task_id and status. Exactly one task may be 'in_progress' at a time."),
+			Description: domaintool.FormatToolDescription("todo", "Track a task plan. Prefer replacing the complete plan using tasks: [{id, task, status}]. For action=update or remove, always provide task_id. Action=list requires no task_id. Exactly one task may be in_progress."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
@@ -165,8 +165,22 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if len(currentTasks) == 0 {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_no_plan_to_update", "cannot update task: no active todo plan exists. Please initialize a plan first with 'tasks'"))
 		}
+		if taskID == "" && status == "" && taskDesc == "" {
+			return nil, t.formatSummary(currentTasks), true, nil
+		}
+		if taskID == "" && len(currentTasks) == 1 {
+			taskID = currentTasks[0].ID
+		}
+		if taskID == "" && status == "completed" {
+			for _, item := range currentTasks {
+				if item.Status == "in_progress" {
+					taskID = item.ID
+					break
+				}
+			}
+		}
 		if taskID == "" {
-			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to update a task"))
+			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "update is ambiguous: provide task_id, or send the complete tasks array"))
 		}
 		matchedIdx := findTaskIndex(currentTasks, taskID)
 		if matchedIdx == -1 {

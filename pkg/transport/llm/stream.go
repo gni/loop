@@ -72,13 +72,14 @@ type Choice struct {
 
 // RawStreamChunk models an OpenAI-compatible SSE chunk payload.
 type RawStreamChunk struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
-	Timings *Timings `json:"timings,omitempty"`
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Choices []Choice        `json:"choices"`
+	Usage   *Usage          `json:"usage,omitempty"`
+	Timings *Timings        `json:"timings,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
 }
 
 // StreamReader consumes and parses SSE data streams.

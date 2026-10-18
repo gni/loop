@@ -9,16 +9,16 @@ import (
 
 	"loop/pkg/domain/output"
 	"loop/pkg/terminal"
+	"loop/pkg/ui/style"
 )
 
 // PromptPreservingWriter wraps an io.Writer (typically os.Stderr) and ensures
-// that all streamed output is confined to the terminal's scrolling region
-// (rows 1 through height-6). After every write, the cursor is repositioned
-// back to the prompt input line (height-2, column 3) so it blinks stably
-// at the "> " prompt, even while tokens are streaming above it.
+// that streamed output stays inside the terminal's scrolling region.
+// The scroll boundary follows style.ActivityGapLines, leaving a stable
+// blank row between output and the pinned stats line. The cursor is restored
+// to the prompt input at height-2 after every write.
 //
-// The bottom 6 lines of the terminal are reserved:
-//   - height-5: blank row separating live output from the stats line
+// The pinned controls occupy the bottom five rows:
 //   - height-4: stats line content
 //   - height-3: ─── prompt ──────────────────────────────
 //   - height-2: > (input line, cursor blinks here)
@@ -38,6 +38,7 @@ type PromptPreservingWriter struct {
 	restoreCursorToPrompt bool
 	autoWrapPending       bool
 	autoWrapDetached      bool
+	pendingLineFeed       bool
 }
 
 func (p *PromptPreservingWriter) getOffsetRow(offset int) int {
@@ -49,7 +50,7 @@ func (p *PromptPreservingWriter) getOffsetRow(offset int) int {
 }
 
 func (p *PromptPreservingWriter) getScrollBottom() int {
-	return p.getOffsetRow(6)
+	return style.ConsoleScrollBottom(p.height, getUI().PasteLinesOffset)
 }
 
 func (p *PromptPreservingWriter) GetScrollBottom() int {
@@ -170,21 +171,21 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 			fmt.Fprintf(&buf, "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
 		}
 		buf.WriteString("\x1b7")
-		fmt.Fprintf(&buf, "\x1b[%d;%dH", p.printLine, p.printCol)
+		fmt.Fprintf(&buf, "\x1b[1;%dr\x1b[%d;%dH", p.getScrollBottom(), p.printLine, p.printCol)
 		p.cursorAtPrompt = false
 		p.needsReposition = false
 		if p.autoWrapPending {
 			p.autoWrapDetached = true
 		}
-	} else if p.needsReposition {
-		fmt.Fprintf(&buf, "\x1b[%d;%dH", p.printLine, p.printCol)
+	} else {
+		fmt.Fprintf(&buf, "\x1b[1;%dr\x1b[%d;%dH", p.getScrollBottom(), p.printLine, p.printCol)
 		p.needsReposition = false
 		if p.autoWrapPending {
 			p.autoWrapDetached = true
 		}
 	}
 
-	if p.autoWrapPending && p.autoWrapDetached && firstTerminalActionIsGraphic(data, p.ansiState) {
+	if p.autoWrapPending && p.autoWrapDetached && !p.pendingLineFeed && firstTerminalActionIsGraphic(data, p.ansiState) {
 		buf.WriteString("\r\n")
 		p.advancePrintLine()
 		p.printCol = 1
@@ -192,8 +193,30 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 		p.autoWrapDetached = false
 	}
 
-	buf.Write(data)
-	p.trackPosition(data)
+	// A trailing LF at the bottom scrolls the last visible line upward.
+	// Hold it until more output arrives so the layout's reserved gap is
+	// the only empty row between the transcript and the pinned loader.
+	if p.pendingLineFeed {
+		buf.WriteString("\r\n")
+		p.trackPosition([]byte("\r\n"))
+		p.pendingLineFeed = false
+	}
+	if data[len(data)-1] == '\n' {
+		body := data[:len(data)-1]
+		buf.Write(body)
+		p.trackPosition(body)
+		if p.printLine == p.getScrollBottom() {
+			p.pendingLineFeed = true
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+		} else {
+			buf.WriteByte('\n')
+			p.trackPosition([]byte{'\n'})
+		}
+	} else {
+		buf.Write(data)
+		p.trackPosition(data)
+	}
 
 	if p.restoreCursorToPrompt {
 		buf.WriteString("\x1b8")
@@ -327,11 +350,39 @@ func (p *PromptPreservingWriter) GetPrintCol() int {
 
 func (p *PromptPreservingWriter) EnsureNewline() {
 	TerminalMu.Lock()
-	needsNewline := p.printCol != 1 || p.autoWrapPending
+	needsNewline := !p.pendingLineFeed && (p.printCol != 1 || p.autoWrapPending)
 	TerminalMu.Unlock()
 	if needsNewline {
 		_, _ = io.WriteString(p, "\n")
 	}
+}
+
+// BeginScrollEntry anchors a new output block to the bottom of the scrolling
+// region. The previous block is completed first so no visible text is overwritten.
+func (p *PromptPreservingWriter) BeginScrollEntry() {
+	p.EnsureNewline()
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if height := getRealTerminalHeight(); height > 0 {
+		p.height = height
+	}
+	p.printLine = p.getScrollBottom()
+	p.printCol = 1
+	p.ansiState = 0
+	p.resetAutoWrap()
+}
+
+// ResetAfterRedrawLocked synchronizes the writer with a full screen rebuild.
+// Call while holding TerminalMu, after the rebuilt content has reached a fresh row.
+func (p *PromptPreservingWriter) ResetAfterRedrawLocked(height int) {
+	if height > 0 {
+		p.height = height
+	}
+	p.printLine = p.getScrollBottom()
+	p.printCol = 1
+	p.ansiState = 0
+	p.pendingLineFeed = false
+	p.resetAutoWrap()
 }
 
 func (p *PromptPreservingWriter) GetScrollCount() int {
@@ -350,6 +401,7 @@ func (p *PromptPreservingWriter) SetPrintLine(line int) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	p.printLine = line
+	p.pendingLineFeed = false
 	p.resetAutoWrap()
 }
 
@@ -357,6 +409,7 @@ func (p *PromptPreservingWriter) SetPrintCol(col int) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	p.printCol = col
+	p.pendingLineFeed = false
 	p.resetAutoWrap()
 }
 

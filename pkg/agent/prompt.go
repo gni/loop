@@ -76,10 +76,14 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
+	hasAskUser := false
 	canSpawnSubagents := false
 	for _, entry := range tools {
 		if entry.Name == "bash" {
 			hasBash = true
+		}
+		if entry.Name == "ask_user" {
+			hasAskUser = true
 		}
 		if tool.IsSpawnTool(entry.Name) {
 			canSpawnSubagents = true
@@ -125,7 +129,11 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	if cfg.GuidedMode {
-		addRule("Guided Workflow Protocol: You are operating in Guided Mode. Never call mutating tools ('write', 'edit', 'bash', 'create_subagent') before completing three steps: (1) inspect relevant files using 'read', 'grep', 'find', or 'list', (2) clarify any ambiguous requirements using 'ask_user', and (3) register a concrete step-by-step execution plan using 'todo'.")
+		if hasAskUser {
+			addRule("Guided Workflow Protocol: Inspect relevant files, clarify ambiguous requirements with 'ask_user', and register an execution plan using 'todo' before mutations.")
+		} else {
+			addRule("Guided Workflow Protocol: Inspect relevant files and register an execution plan using 'todo' before mutations. Do not call unavailable tools to ask for clarification.")
+		}
 		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
 	}
 

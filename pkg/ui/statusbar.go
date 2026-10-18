@@ -74,10 +74,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 		return
 	}
 
-	scrollBottom := height - 2 - ui.ScrollRegionOffset - ui.PasteLinesOffset
-	if scrollBottom < 1 {
-		scrollBottom = 1
-	}
+	scrollBottom := style.ConsoleScrollBottom(height, ui.PasteLinesOffset)
 	if height != ui.LastH || ui.PasteLinesOffset != ui.LastPasteLinesOffset {
 		ui.LastH = height
 		ui.LastPasteLinesOffset = ui.PasteLinesOffset

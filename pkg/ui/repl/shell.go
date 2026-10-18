@@ -61,8 +61,7 @@ func executeManualShellCommand(
 	}
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	ppWriter.EnsureNewline()
-	ppWriter.ForceReposition()
+	ppWriter.BeginScrollEntry()
 	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
 	if isPureCd {
@@ -127,8 +126,8 @@ func executeManualShellCommand(
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	var stdout, stderr bytes.Buffer
 	cw := interceptor.CRNLWriter{W: ppWriter}
-	cmd.Stdout = io.MultiWriter(cw, &stdout)
-	cmd.Stderr = io.MultiWriter(cw, &stderr)
+	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stdout)
+	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stderr)
 	stopIndicator := startManualCommandIndicator(theme)
 	err := cmd.Run()
 	stopIndicator()

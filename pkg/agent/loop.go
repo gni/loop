@@ -135,7 +135,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	})
 	sink := NewAgentSink(a, messages, sessionID)
 	timer := GetTimingRecorder()
-	lastToolEndedWithNewline := false
+	lastToolTrailingNewlines := 0
 
 	for iter := 1; iter <= maxSteps; iter++ {
 		if ctx.Err() != nil {
@@ -159,13 +159,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		if iter > 1 {
-			divider := style.ActivityDivider(theme)
-			// The previous tool may have already ended with a newline. Do not
-			// insert a second one just before the next iteration's divider.
-			if !lastToolEndedWithNewline {
+			for lines := lastToolTrailingNewlines; lines < style.ActivityGapLines+1; lines++ {
 				fmt.Fprint(writerToUse, "\n")
 			}
-			fmt.Fprintln(writerToUse, divider)
+			fmt.Fprintln(writerToUse, style.ActivityDivider(theme))
 		}
 
 		toolsForLog := a.Registry.GetAvailableTools(allowlist)
@@ -354,7 +351,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if halted || aborted {
 			return
 		}
-		lastToolEndedWithNewline = ncw.trailingNewlines > 0
+		lastToolTrailingNewlines = ncw.trailingNewlines
 	}
 
 	if loader != nil {

@@ -104,7 +104,6 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		// streamed. Emit only the saved-file summary, not the raw tool output.
 		if toolName == "write" {
 			renderWriteSummary(w, theme, toolName, argsJSON, output)
-			fmt.Fprintln(w)
 			return
 		}
 		if (IsWriteLikeTool(toolName) || IsCommandLikeTool(toolName)) && bodyWasStreamed {
@@ -160,7 +159,6 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	}
 	if !isError && IsEditLikeTool(toolName) {
 		renderEditSummary(w, theme, toolName, argsJSON, output)
-		fmt.Fprintln(w)
 	}
 }
 

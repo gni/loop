@@ -41,7 +41,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	activeTasks := a.CountActiveTasks()
 
 	ui.ClearTerminalForStartup(os.Stderr)
-	ui.SetScrollRegionOffset(4)
+	ui.SetScrollRegionOffset(style.ConsoleScrollRegionOffset())
 	ui.InitStatusBar(os.Stderr)
 	defer ui.ShutdownStatusBar(os.Stderr)
 	defer ui.ForceExitAlternateScreen(os.Stderr)
@@ -395,8 +395,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 
 	runAgentTurn:
-		ppWriter.EnsureNewline()
-		ppWriter.ForceReposition()
+		ppWriter.BeginScrollEntry()
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader)
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)

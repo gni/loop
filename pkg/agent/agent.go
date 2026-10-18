@@ -187,6 +187,9 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	if a.Config != nil && len(a.Config.DisabledTools) > 0 {
 		a.Registry.Disable(a.Config.DisabledTools...)
 	}
+	if cfg != nil && cfg.AskUserMode == "disabled" {
+		a.Registry.Disable("ask_user")
+	}
 
 	return a
 }
@@ -391,6 +394,9 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 		if len(cfg.DisabledTools) > 0 {
 			a.Registry.Disable(cfg.DisabledTools...)
 		}
+		if cfg.AskUserMode == "disabled" {
+			a.Registry.Disable("ask_user")
+		}
 	}
 	a.markSystemPromptDirty()
 }
@@ -413,6 +419,9 @@ func (a *Agent) EnableTools(names ...string) {
 	a.Registry.Enable(names...)
 	if a.Config != nil {
 		a.Config.DisabledTools = a.Registry.GetDisabledTools()
+		if a.Config.AskUserMode == "disabled" {
+			a.Registry.Disable("ask_user")
+		}
 	}
 	a.markSystemPromptDirty()
 }
@@ -424,6 +433,9 @@ func (a *Agent) EnableAllTools() {
 	a.Registry.EnableAll()
 	if a.Config != nil {
 		a.Config.DisabledTools = nil
+		if a.Config.AskUserMode == "disabled" {
+			a.Registry.Disable("ask_user")
+		}
 	}
 	a.markSystemPromptDirty()
 }
@@ -605,7 +617,7 @@ func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
-	if a.Config != nil && !a.IsGuidedMode() {
+	if a.Config != nil {
 		switch a.Config.AskUserMode {
 		case "auto_recommended":
 			return defaultAskUserSelection(options, recommended), nil

@@ -154,10 +154,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	getUI().StateMu.Unlock()
 
 	delta := effectiveOffset - oldOffset
-	oldScrollBottom := height - 2 - getUI().ScrollRegionOffset - oldOffset
-	if oldScrollBottom < 1 {
-		oldScrollBottom = 1
-	}
+	oldScrollBottom := style.ConsoleScrollBottom(height, oldOffset)
 
 	maxOffset := oldOffset
 	if effectiveOffset > maxOffset {

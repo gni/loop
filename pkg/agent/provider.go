@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -148,6 +149,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		transportllm.ApplyPromptCacheBreakpoints(messages)
 	}
 
+	requestStarted := time.Now()
 	var timeoutDuration time.Duration
 	if p.Config != nil && p.Config.Timeout > 0 {
 		timeoutDuration = time.Duration(p.Config.Timeout) * time.Second
@@ -261,6 +263,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if done {
 			break
 		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			var upstream struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(chunk.Error, &upstream) == nil && upstream.Message != "" {
+				return nil, fmt.Errorf("model server returned a stream error: %s", upstream.Message)
+			}
+			return nil, fmt.Errorf("model server returned a stream error: %.512s", string(chunk.Error))
+		}
 
 		if chunk.Usage != nil {
 			if chunk.Usage.PromptTokens > 0 {
@@ -348,7 +359,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	assistantMsg := buildMessage()
 	if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 && assistantMsg.ReasoningContent == "" {
-		return nil, fmt.Errorf("server closed stream without returning any content or tool calls")
+		return nil, fmt.Errorf("model server closed the stream after %s without assistant output (HTTP %d, finish reason %q); this is not Loop's %s inactivity timeout. Check model server and proxy logs", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, timeoutDuration)
 	}
 
 	var duration time.Duration

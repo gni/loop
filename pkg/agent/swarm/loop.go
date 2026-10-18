@@ -208,6 +208,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
 		}
 
+		currentPrompt := ma.GetSystemPrompt()
+		ma.HistoryMu.Lock()
+		if len(ma.History) > 0 && ma.History[0].Role == "system" {
+			ma.History[0].Content = currentPrompt
+		}
+		ma.HistoryMu.Unlock()
+
 		historyCopy := sink.Messages()
 		if ma.BaseAgent != nil {
 			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)

@@ -127,6 +127,11 @@ func PrintSessionHistory(
 			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
 
 		case "assistant":
+			if lastRole == "tool" {
+				for line := 0; line < style.ActivityGapLines; line++ {
+					fmt.Fprintln(w)
+				}
+			}
 			fmt.Fprintln(w, style.ActivityDivider(theme))
 
 			hasPrintedAnything := false
