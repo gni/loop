@@ -17,18 +17,18 @@ import (
 
 type noopRenderer struct{}
 
-func (r *noopRenderer) Write(string)                       {}
-func (r *noopRenderer) WriteReasoning(string)              {}
-func (r *noopRenderer) Flush()                             {}
-func (r *noopRenderer) HasOutput() bool                    { return false }
-func (r *noopRenderer) StartToolCall(string, int)          {}
-func (r *noopRenderer) SetToolTarget(string, int)          {}
-func (r *noopRenderer) WriteToolCall(string)               {}
-func (r *noopRenderer) GetToolTitleLineNumber(int) int     { return -1 }
-func (r *noopRenderer) DidStreamToolBody(int) bool         { return false }
+func (r *noopRenderer) Write(string)                               {}
+func (r *noopRenderer) WriteReasoning(string)                      {}
+func (r *noopRenderer) Flush()                                     {}
+func (r *noopRenderer) HasOutput() bool                            { return false }
+func (r *noopRenderer) StartToolCall(string, int)                  {}
+func (r *noopRenderer) SetToolTarget(string, int)                  {}
+func (r *noopRenderer) WriteToolCall(string)                       {}
+func (r *noopRenderer) GetToolTitleLineNumber(int) int             { return -1 }
+func (r *noopRenderer) DidStreamToolBody(int) bool                 { return false }
 func (r *noopRenderer) CompleteToolCall(int, string, string, bool) {}
-func (r *noopRenderer) GetReasoningDuration() float64      { return 0 }
-func (r *noopRenderer) SetPrompt(string)                   {}
+func (r *noopRenderer) GetReasoningDuration() float64              { return 0 }
+func (r *noopRenderer) SetPrompt(string)                           {}
 
 func (r *noopRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, args string) {}
 func (r *noopRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
@@ -36,21 +36,23 @@ func (r *noopRenderer) ToolOutput(w io.Writer, theme style.UITheme, output strin
 
 type noopLoader struct{}
 
-func (l *noopLoader) Pause()    {}
-func (l *noopLoader) Resume()   {}
-func (l *noopLoader) ShowDots() {}
-func (l *noopLoader) Feed()     {}
+func (l *noopLoader) Pause()     {}
+func (l *noopLoader) Resume()    {}
+func (l *noopLoader) ShowDots()  {}
+func (l *noopLoader) Feed()      {}
 func (l *noopLoader) PauseDots() {}
 
 // concurrencyTool records the peak number of calls that overlapped, so the test
 // can prove the pipeline actually runs calls concurrently and that the worker
 // pool is bounded by the resolved limit.
 type concurrencyTool struct {
-	mu   sync.Mutex
+	mu     sync.Mutex
 	active int
-	peak int
-	wait time.Duration
+	peak   int
+	wait   time.Duration
 }
+
+func (c *concurrencyTool) ExecutionMode() string { return "parallel" }
 
 func (c *concurrencyTool) Name() string { return "concurrent" }
 
@@ -179,8 +181,8 @@ func TestParallelExecutionRespectsConfigOffSwitch(t *testing.T) {
 	}}
 	engine.ExecuteToolCalls(context.Background(), msg, sink, &noopRenderer{}, &noopLoader{}, discardWriter{}, style.UITheme{}, &noopRenderer{}, nil)
 
-	if len(sink.msgs) != 1 {
-		t.Fatalf("parallel disabled must trim to the first call, got %d", len(sink.msgs))
+	if len(sink.msgs) != 2 {
+		t.Fatalf("parallel disabled must execute every call sequentially, got %d", len(sink.msgs))
 	}
 	if toolInstance.peak > 1 {
 		t.Fatalf("parallel disabled must not overlap")

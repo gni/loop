@@ -12,7 +12,8 @@ import (
 // action:     writes files, executes commands, spawns or kills processes
 var inspectionTools = map[string]bool{
 	"read": true, "grep": true, "find": true, "list": true, "ls": true,
-	"load_skill":       true, "task_status": true, "todo": true, "ask_user": true,
+	"list_mcp_resources": true, "list_mcp_resource_templates": true, "read_mcp_resource": true,
+	"search_tools": true, "load_skill": true, "task_status": true, "todo": true, "ask_user": true,
 }
 
 var actionTools = map[string]bool{

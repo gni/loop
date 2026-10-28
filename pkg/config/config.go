@@ -14,6 +14,8 @@ import (
 )
 
 type MCPServerConfig struct {
+	Exposure   string            `json:"exposure,omitempty"`
+	OAuth      *OAuthConfig      `json:"oauth,omitempty"`
 	Type       string            `json:"type,omitempty"`
 	Command    string            `json:"command,omitempty"`
 	Args       []string          `json:"args,omitempty"`
@@ -25,6 +27,17 @@ type MCPServerConfig struct {
 }
 
 type Config struct {
+	Sources                  map[string]string          `json:"-"`
+	ProjectPath              string                     `json:"-"`
+	ProjectBase              *Config                    `json:"-"`
+	PluginDirectories        []string                   `json:"plugin_directories,omitempty"`
+	ExtensionDirectories     []string                   `json:"extension_directories,omitempty"`
+	DisableProjectPlugins    bool                       `json:"disable_project_plugins,omitempty"`
+	PromptDirectories        []string                   `json:"prompt_directories,omitempty"`
+	SkillDirectories         []string                   `json:"skill_directories,omitempty"`
+	NoContextFiles           bool                       `json:"no_context_files,omitempty"`
+	ShellTimeout             int                        `json:"shell_timeout,omitempty"`
+	ExtensionTimeout         int                        `json:"extension_timeout,omitempty"`
 	Endpoint                 string                     `json:"endpoint,omitempty"`
 	ApiKey                   string                     `json:"api_key,omitempty"`
 	Model                    string                     `json:"model,omitempty"`
@@ -219,7 +232,9 @@ func (cfg *Config) applyDefaults() {
 		cfg.SystemInstruction = DefaultSystemInstruction
 	}
 	if cfg.ApiKey == "" {
-		cfg.ApiKey = os.Getenv("OPENAI_API_KEY")
+		if os.Getenv("OPENAI_API_KEY") != "" {
+			cfg.ApiKey = "env:OPENAI_API_KEY"
+		}
 	}
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = resolveDefaultSkillsDir()
@@ -261,7 +276,6 @@ func (cfg *Config) applyDefaults() {
 		cfg.MaxCompletionTokens = 16384
 	}
 	cfg.Limits = limits.Resolve(cfg.Limits)
-	limits.Set(cfg.Limits)
 }
 
 func populateProviderNames(providers map[string]ProviderConfig) {
@@ -300,6 +314,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 
 		conf.applyDefaults()
+		conf.ensureDefaultProvider()
 		conf.SyncActiveProvider()
 		if err := SaveConfig(path, conf); err != nil {
 			return nil, err
@@ -378,6 +393,14 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func SaveConfig(path string, cfg *Config) error {
+	if cfg.ProjectPath != "" {
+		return saveProjectConfig(cfg)
+	}
+	copy, err := Clone(cfg)
+	if err != nil {
+		return err
+	}
+	cfg = copy
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
@@ -390,6 +413,11 @@ func SaveConfig(path string, cfg *Config) error {
 	cfg.MCPServers = nil
 	cfg.Providers = nil
 
+	if profile, ok := savedProviders[cfg.ActiveProvider]; ok {
+		if _, env := parseEnvVarKey(profile.ApiKey); env {
+			cfg.ApiKey = profile.ApiKey
+		}
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 
 	cfg.MCPServers = savedMCP
@@ -412,12 +440,7 @@ func SaveConfig(path string, cfg *Config) error {
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
-	if cfg.ActiveProvider == "" || cfg.ActiveProvider == "default" {
-		if _, ok := cfg.Providers["default"]; !ok {
-			cfg.ActiveProvider = "default"
-			cfg.Providers["default"] = cfg.defaultProviderProfile("default")
-		}
-	}
+	cfg.ensureDefaultProvider()
 	if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
 		return err
 	}
@@ -591,4 +614,18 @@ func ParseToolList(val string) []string {
 		}
 	}
 	return result
+}
+
+func WritePrivateFile(path string, data []byte) error { return writePrivateConfigFile(path, data) }
+
+func (cfg *Config) ensureDefaultProvider() {
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
+	}
+	if cfg.ActiveProvider == "" || cfg.ActiveProvider == "default" {
+		if _, exists := cfg.Providers["default"]; !exists {
+			cfg.ActiveProvider = "default"
+			cfg.Providers["default"] = cfg.defaultProviderProfile("default")
+		}
+	}
 }

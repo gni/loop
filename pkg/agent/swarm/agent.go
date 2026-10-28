@@ -80,7 +80,11 @@ func newMultiAgentWithSkills(
 ) *MultiAgent {
 	parentCtx := context.Background()
 	if baseAgent != nil {
-		parentCtx = baseAgent.Context()
+		if baseAgent.Lifetime != nil {
+			parentCtx = baseAgent.Lifetime
+		} else {
+			parentCtx = baseAgent.Context()
+		}
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	combined := make([]tool.Skill, 0, len(referenceSkills)+len(localSkills))

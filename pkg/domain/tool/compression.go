@@ -64,11 +64,11 @@ func CompressToolDefinition(t Tool) Tool {
 		setPropDesc(props, "limit", "Max matches")
 		setPropDesc(props, "offset", "Start match")
 	case "write":
-		compressed.Function.Description = "Create or overwrite a file. Specify path first before content."
+		compressed.Function.Description = "Create or overwrite a file. Specify path first before content. Never use after an edit mismatch."
 		setPropDesc(props, "path", "File path (specify first)")
 		setPropDesc(props, "content", "Complete file content")
 	case "edit":
-		compressed.Function.Description = "Replace exact unique blocks copied from latest read."
+		compressed.Function.Description = "Replace exact unique blocks copied from latest read. On mismatch read again and use a smaller block."
 		setPropDesc(props, "path", "File path")
 		if prop, ok := props["updates"]; ok {
 			prop.Description = "Targeted text replacements"
@@ -78,7 +78,7 @@ func CompressToolDefinition(t Tool) Tool {
 				for k, v := range itemsCopy.Properties {
 					itemsProps[k] = v
 				}
-				setPropDesc(itemsProps, "oldText", "Exact unique lines from file")
+				setPropDesc(itemsProps, "oldText", "Exact unique lines copied from latest read")
 				setPropDesc(itemsProps, "newText", "Replacement text")
 				itemsCopy.Properties = itemsProps
 				prop.Items = &itemsCopy

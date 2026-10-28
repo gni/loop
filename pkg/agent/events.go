@@ -26,6 +26,7 @@ type PermissionDecision struct {
 type EventBus struct {
 	mu       sync.Mutex
 	handlers []eventHandler
+	nextID   int
 }
 
 // NewEventBus creates an empty bus.
@@ -39,18 +40,22 @@ type eventHandler struct {
 
 func (b *EventBus) On(handler func(ToolCallEvent) *PermissionDecision) func() {
 	b.mu.Lock()
-	h := eventHandler{id: len(b.handlers), handler: handler}
+	h := eventHandler{id: b.nextID, handler: handler}
+	b.nextID++
 	b.handlers = append(b.handlers, h)
 	b.mu.Unlock()
+	var once sync.Once
 	return func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		for i, x := range b.handlers {
-			if x.id == h.id {
-				b.handlers = append(b.handlers[:i], b.handlers[i+1:]...)
-				return
+		once.Do(func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			for i, x := range b.handlers {
+				if x.id == h.id {
+					b.handlers = append(b.handlers[:i], b.handlers[i+1:]...)
+					return
+				}
 			}
-		}
+		})
 	}
 }
 
@@ -73,7 +78,7 @@ func (b *EventBus) Emit(e ToolCallEvent) *PermissionDecision {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					decision.Reason = "event handler error"
+					decision = &PermissionDecision{Allowed: false, Reason: "event handler error"}
 				}
 			}()
 			if d := h.handler(e); d != nil && !d.Allowed {
@@ -97,12 +102,18 @@ func EventBusInstance() *EventBus { return defaultEventBus }
 // compaction namespaces surfaced by the stats command.
 type TimingRecorder struct {
 	mu         sync.Mutex
-	Namespaces map[string][]struct{ Label string; Ms int64 }
-	last       map[string]time.Time
+	Namespaces map[string][]struct {
+		Label string
+		Ms    int64
+	}
+	last map[string]time.Time
 }
 
 func NewTimingRecorder() *TimingRecorder {
-	return &TimingRecorder{Namespaces: map[string][]struct{ Label string; Ms int64 }{}, last: map[string]time.Time{}}
+	return &TimingRecorder{Namespaces: map[string][]struct {
+		Label string
+		Ms    int64
+	}{}, last: map[string]time.Time{}}
 }
 
 var globalTimingRecorder = NewTimingRecorder()
@@ -118,7 +129,10 @@ func (r *TimingRecorder) Time(namespace, label string) {
 		return
 	}
 	now := time.Now()
-	r.Namespaces[namespace] = append(r.Namespaces[namespace], struct{ Label string; Ms int64 }{label, now.Sub(r.last[namespace]).Milliseconds()})
+	r.Namespaces[namespace] = append(r.Namespaces[namespace], struct {
+		Label string
+		Ms    int64
+	}{label, now.Sub(r.last[namespace]).Milliseconds()})
 	r.last[namespace] = now
 }
 

@@ -77,6 +77,7 @@ func (a *Agent) syncOpenAIProviderLocked(cfg *config.Config, forceReset bool) {
 			Config:            cfg,
 			HttpClient:        a.HttpClient,
 			ChunkDropObserver: a.recordDroppedChunk,
+			ResolveCredential: a.resolveCredential,
 		}
 	case *OpenAICompatibleProvider:
 		if !forceReset && provider.Config == cfg {
@@ -90,6 +91,7 @@ func (a *Agent) syncOpenAIProviderLocked(cfg *config.Config, forceReset bool) {
 			Config:            cfg,
 			HttpClient:        httpClient,
 			ChunkDropObserver: a.recordDroppedChunk,
+			ResolveCredential: a.resolveCredential,
 		}
 	}
 }
@@ -121,6 +123,13 @@ func (a *Agent) StreamChatCompletions(
 	allowlist []string,
 	chunkChan chan<- StreamChunk,
 ) (*db.Message, error) {
+	if a.TransformContext != nil {
+		transformed, err := a.TransformContext(ctx, message.CloneAll(messages))
+		if err != nil {
+			return nil, err
+		}
+		messages = transformed
+	}
 	provider := a.currentLLMProvider()
 
 	var generationDuration time.Duration

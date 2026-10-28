@@ -300,7 +300,7 @@ func TestGuard_ModificationClearsReadWindows(t *testing.T) {
 	guard.RecordPostExecution("read", args, "content", nil)
 	guard.RecordPostExecution("edit", `{"path":"`+file+`","updates":[]}`, "ok", nil)
 
-	if isReadWindowNew("read", args, guard.readWindows) != true {
+	if isReadWindowNew("read", file, args, guard.readWindows) != true {
 		t.Fatal("read window should be fresh after the file was modified")
 	}
 }
@@ -309,6 +309,8 @@ func TestGuard_ModificationClearsReadWindows(t *testing.T) {
 type fakeInvalidator struct {
 	forgotten []string
 }
+
+func (f *fakeInvalidator) ForgetAll() { f.forgotten = append(f.forgotten, "*") }
 
 func (f *fakeInvalidator) Forget(absPath string) {
 	f.forgotten = append(f.forgotten, absPath)
@@ -333,7 +335,7 @@ func TestGuard_BashMutationInvalidatesObservation(t *testing.T) {
 	}
 	guard.RecordPostExecution("bash", bashArgs, "ok", nil)
 
-	if len(inv.forgotten) != 1 || inv.forgotten[0] != "/workspace/src/config/settings.py" {
+	if len(inv.forgotten) != 1 || inv.forgotten[0] != "*" {
 		t.Fatalf("expected observation forgotten at resolved path, got %v", inv.forgotten)
 	}
 }

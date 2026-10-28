@@ -36,6 +36,10 @@ func (mam *MultiAgentManager) getStorage() (*subagent.Storage, error) {
 }
 
 func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) error {
+	if mam.ephemeral {
+		return nil
+	}
+
 	store, err := mam.getStorage()
 	if err != nil {
 		return err
@@ -51,6 +55,10 @@ func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) erro
 }
 
 func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
+	if mam.ephemeral {
+		return nil
+	}
+
 	store, err := mam.getStorage()
 	if err != nil {
 		return err
@@ -68,6 +76,10 @@ func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
 }
 
 func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
+	if mam.ephemeral {
+		return nil
+	}
+
 	store, err := mam.getStorage()
 	if err != nil {
 		return err
@@ -106,6 +118,10 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 }
 
 func (mam *MultiAgentManager) deleteAgentDef(name string) error {
+	if mam.ephemeral {
+		return nil
+	}
+
 	store, err := mam.getStorage()
 	if err != nil {
 		return err
@@ -114,6 +130,10 @@ func (mam *MultiAgentManager) deleteAgentDef(name string) error {
 }
 
 func (mam *MultiAgentManager) LoadSavedAgents() error {
+	if mam.ephemeral {
+		return nil
+	}
+
 	store, err := mam.getStorage()
 	if err != nil {
 		return err

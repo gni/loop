@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"loop/pkg/agent/tool"
@@ -11,12 +10,9 @@ import (
 )
 
 func ensureWorkspaceTrust(cwd string, cfg *config.Config, isNonInteractive bool) {
-	trustFile := filepath.Join(cwd, ".loop-trust")
-	trusted := false
-	if _, err := os.Stat(trustFile); err == nil {
-		trusted = true
-	}
+	trusted := config.WorkspaceTrusted(configPath, cwd)
 
+	cfg.DisableProjectPlugins = !trusted
 	hasLocalCode := false
 	for _, dir := range tool.LocalAddonDirs(cwd) {
 		if dirHasEntries(dir) {
@@ -33,7 +29,10 @@ func ensureWorkspaceTrust(cwd string, cfg *config.Config, isNonInteractive bool)
 		resp = strings.ToLower(strings.TrimSpace(resp))
 		if resp == "y" || resp == "yes" {
 			trusted = true
-			_ = os.WriteFile(trustFile, []byte("trusted"), 0644)
+			cfg.DisableProjectPlugins = false
+			if err := config.TrustWorkspace(configPath, cwd, true); err != nil {
+				fmt.Fprintf(os.Stderr, "cannot save workspace trust: %v\n", err)
+			}
 			fmt.Println("\x1b[32mWorkspace trusted.\x1b[0m")
 		}
 	}
@@ -42,7 +41,7 @@ func ensureWorkspaceTrust(cwd string, cfg *config.Config, isNonInteractive bool)
 		if !isNonInteractive {
 			fmt.Println("\x1b[31mLocal plugins and extensions have been DISABLED for this session.\x1b[0m")
 		}
-		cfg.DisableLocalPlugins = true
+		cfg.DisableProjectPlugins = true
 	}
 }
 

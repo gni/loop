@@ -1,61 +1,31 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
+ "fmt"
+ "os"
+ "path/filepath"
+ "strings"
+ "loop/pkg/resources"
+ "loop/pkg/storage"
 )
 
-// LoadMemoryContext loads global (~/.loop/LOOP.md) and project (MEMORY.md) memory context.
-func (a *Agent) LoadMemoryContext() string {
-	var sb strings.Builder
-
-	// 1. Global Memory (~/.loop/LOOP.md)
-	home, err := os.UserHomeDir()
-	if err == nil {
-		globalPath := filepath.Join(home, ".loop", "LOOP.md")
-		if data, err := os.ReadFile(globalPath); err == nil {
-			trimmed := strings.TrimSpace(string(data))
-			if len(trimmed) > 0 {
-				sb.WriteString(RuntimeMessagef("user_directives_header", "\n\nUser Directives (%s):\nAdhere to these global preferences and personal mandates strictly:\n%s", globalPath, trimmed))
-			}
-		}
-	}
-
-	// 2. Project Memory (current workspace MEMORY.md)
-	// We search in current directory or traverse up to git root or stop at workspace root
-	wd, err := os.Getwd()
-	if err == nil {
-		dir := wd
-		for {
-			found := false
-			for _, p := range []string{filepath.Join(dir, "MEMORY.md"), filepath.Join(dir, ".loop", "MEMORY.md")} {
-				if data, err := os.ReadFile(p); err == nil {
-					if trimmed := strings.TrimSpace(string(data)); len(trimmed) > 0 {
-						sb.WriteString(RuntimeMessagef("project_memory_header", "\n\nProject Architecture & Learnings (%s):\nFollow these repository conventions and architectural decisions strictly:\n%s", p, trimmed))
-					}
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-
-			// Stop if we reach git root, workspace root, or root directory
-			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-				break
-			}
-			if dir == a.WorkspaceRoot {
-				break
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
-
-	return sb.String()
+func(a *Agent)LoadMemoryContext()string{
+ if a.Config!=nil&&a.Config.NoContextFiles{return ""}
+ var output strings.Builder
+ read:=func(path,kind string)bool{
+  data,err:=storage.ReadFile(path,256<<10)
+  if os.IsNotExist(err){return false}
+  if err!=nil{a.emit(Event{Type:"integration_error",Output:err.Error(),IsError:true});return true}
+  if text:=strings.TrimSpace(string(data));text!=""{fmt.Fprintf(&output,"\n\n%s (%s):\n%s",kind,path,text)}
+  return true
+ }
+ read(filepath.Join(resources.AgentDirectory(a.ConfigPath),"LOOP.md"),"User directives")
+ roots:=resources.Ancestors(a.WorkspaceRoot)
+ for i:=len(roots)-1;i>=0;i--{
+  if read(filepath.Join(roots[i],"MEMORY.md"),"Project architecture and learnings")||read(filepath.Join(roots[i],".loop","MEMORY.md"),"Project architecture and learnings"){break}
+ }
+ instructions,diagnostics:=resources.Instructions(resources.AgentDirectory(a.ConfigPath),a.WorkspaceRoot)
+ output.WriteString(instructions)
+ for _,diagnostic:=range diagnostics{a.emit(Event{Type:"integration_error",Output:diagnostic.Path+": "+diagnostic.Message,IsError:true})}
+ return output.String()
 }

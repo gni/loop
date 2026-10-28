@@ -3,10 +3,12 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"loop/pkg/process"
 	"os"
-	"os/exec"
 	"strings"
+	"time"
 
 	"loop/pkg/db"
 )
@@ -14,28 +16,30 @@ import (
 var PermissionHook func(ToolCallEvent) *PermissionDecision
 
 func (a *Agent) executeHookScript(script string, payload any) (string, string, error) {
-	cmd := exec.CommandContext(a.Context(), "bash", "-c", script)
-	cmd.Dir = a.WorkspaceRoot
-	cmd.Env = os.Environ()
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", err
+	}
+	timeout := 15 * time.Second
+	if a.Config != nil && a.Config.ExtensionTimeout > 0 {
+		timeout = time.Duration(a.Config.ExtensionTimeout) * time.Second
+	}
+	result, err := process.Run(a.Context(), process.Options{Executable: "bash", Arguments: []string{"-c", script}, Directory: a.WorkspaceRoot, Environment: os.Environ(), Input: bytes.NewReader(payloadBytes), Timeout: timeout})
+	return result.Stdout, result.Stderr, err
 
-	payloadBytes, _ := json.Marshal(payload)
-	cmd.Stdin = bytes.NewReader(payloadBytes)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
 }
 
 func (a *Agent) runBeforeToolHook(tc db.ToolCall) (bool, string) {
-	if PermissionHook != nil {
+	if a.Bus == nil && PermissionHook != nil {
 		if d := PermissionHook(ToolCallEvent{Type: "tool_call", ToolCall: tc}); d != nil && !d.Allowed {
 			return false, d.Reason
 		}
 	}
-	decision := EventBusInstance().Emit(ToolCallEvent{Type: "tool_call", ToolCall: tc})
+	bus := a.Bus
+	if bus == nil {
+		bus = EventBusInstance()
+	}
+	decision := bus.Emit(ToolCallEvent{Type: "tool_call", ToolCall: tc})
 	if decision != nil && !decision.Allowed {
 		return false, decision.Reason
 	}
@@ -67,7 +71,13 @@ func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
 }
 
 func (a *Agent) runAfterToolHook(tc db.ToolCall, output string, toolErr error) (string, error) {
-	EventBusInstance().Emit(ToolCallEvent{Type: "tool_result", ToolCall: tc, Output: output, Err: toolErr})
+	bus := a.Bus
+	if bus == nil {
+		bus = EventBusInstance()
+	}
+	if decision := bus.Emit(ToolCallEvent{Type: "tool_result", ToolCall: tc, Output: output, Err: toolErr}); decision != nil && !decision.Allowed {
+		return output, errors.Join(toolErr, fmt.Errorf("result hook blocked: %s", decision.Reason))
+	}
 	return a.runExecAfterHook(tc, output, toolErr)
 }
 
@@ -98,7 +108,7 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 	}
 
 	if stdout != "" {
-		return stdout, nil
+		return stdout, toolErr
 	}
 	return output, toolErr
 }

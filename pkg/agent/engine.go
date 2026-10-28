@@ -29,9 +29,12 @@ type agentSink struct {
 
 func (s *agentSink) Append(m db.Message) {
 	*s.messages = append(*s.messages, m)
+	if s.a != nil {
+		s.a.emit(Event{Type: "message_end", SessionID: s.sessionID, Message: &m})
+	}
 	if s.sessionID != "" && s.a != nil {
-		if err := db.SaveMessage(s.sessionID, m); err != nil {
-			s.a.DebugLogError(s.sessionID, "db.SaveMessage ("+s.label+")", err)
+		if err := s.a.SaveMessage(s.sessionID, m); err != nil {
+			s.a.recordPersistenceError(err)
 		}
 	}
 }
@@ -119,7 +122,7 @@ type TurnEngine struct {
 }
 
 func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
-	limit := limits.ConsecutiveLimit()
+	limit := a.GetLimits().ConsecutiveLimit
 	thresholds := []int{3, 5}
 	maxSteps := 30
 	interval := 5
@@ -373,7 +376,8 @@ func (e *TurnEngine) emitRejectedToolCall(
 		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
 	}
 	render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output})
+	e.agent.emit(Event{Type:"tool_execution_end",SessionID:e.policy.SessionKey,ToolCall:&tc,Output:output,IsError:true})
+ sink.Append(db.Message{Role:"tool",ToolCallID:tc.ID,Name:tc.Function.Name,Content:output,IsError:true})
 }
 
 func (e *TurnEngine) finalizeToolCall(
@@ -389,8 +393,10 @@ func (e *TurnEngine) finalizeToolCall(
 	theme style.UITheme,
 	render EngineRenderer,
 	afterCall func(tc db.ToolCall, output string, toolErr error),
+	rich tool.ToolResult,
 ) {
 	a := e.agent
+	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: rawOutput, IsError: toolErr != nil})
 	e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr)
 	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
 		rawOutput += "\n\n[" + reminder + "]"
@@ -406,7 +412,7 @@ func (e *TurnEngine) finalizeToolCall(
 	if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
 		maxOutputBytes = a.Config.MaxToolOutputBytes
 	}
-	if ceiling := limits.MaxOutputBytes(); ceiling < maxOutputBytes {
+	if ceiling := a.GetLimits().MaxOutputBytes; ceiling < maxOutputBytes {
 		maxOutputBytes = ceiling
 	}
 	pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, maxOutputBytes)
@@ -428,7 +434,7 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured,IsError:toolErr!=nil})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}
@@ -467,7 +473,7 @@ func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
 	// File writes and reads must execute in model order. In particular, a
 	// later write must not finish before an earlier write to the same tree.
 	for _, tc := range calls {
-		if tc.Function.Name == "read" || tc.Function.Name == "write" {
+		if !e.agent.Registry.CanParallel(tc.Function.Name) {
 			return false
 		}
 	}
@@ -513,6 +519,7 @@ type callPlan struct {
 	skipped          bool
 	guardHit         bool
 	approvalRendered bool
+	rich             tool.ToolResult
 }
 
 func (e *TurnEngine) prepareToolCallPlan(
@@ -530,6 +537,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 	render EngineRenderer,
 ) (plan callPlan, halted bool, aborted bool) {
 	plan = callPlan{tc: tc, idx: idx}
+	e.agent.emit(Event{Type: "tool_execution_start", SessionID: e.policy.SessionKey, ToolCall: &tc})
 	if ctx.Err() != nil {
 		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
 		return plan, true, false
@@ -563,6 +571,16 @@ func (e *TurnEngine) prepareToolCallPlan(
 		plan.output = plan.toolErr.Error()
 		plan.skipped = true
 		return plan, false, false
+	}
+
+	if _, prepared, err := e.agent.Registry.Prepare(tc.Function.Name, tc.Function.Arguments); err != nil {
+		plan.toolErr = err
+		plan.output = err.Error()
+		plan.skipped = true
+		return plan, false, false
+	} else {
+		tc.Function.Arguments = prepared
+		plan.tc = tc
 	}
 
 	if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
@@ -628,6 +646,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 			}
 			return halted, aborted
 		}
+		tc = plan.tc
 		if plan.skipped {
 			e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 			continue
@@ -640,7 +659,8 @@ func (e *TurnEngine) ExecuteToolCalls(
 				if loader != nil {
 					loader.ShowDots()
 				}
-				plan.output, plan.toolErr = a.Registry.Execute(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
+				plan.rich, plan.toolErr = a.Registry.ExecuteResult(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
+				plan.output = plan.rich.Output
 				if ctx.Err() != nil {
 					e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
 					return true, false
@@ -649,7 +669,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 			}
 		}
 
-		e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall)
+		e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall, plan.rich)
 
 		if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
 			e.emitHaltNotice(sink, w, theme)
@@ -687,7 +707,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 		plans[idx] = plan
 	}
 
-	workers := limits.ParallelToolWorkers()
+	workers := a.GetLimits().ParallelToolWorkers
 	if workers < 1 {
 		workers = 1
 	}
@@ -709,7 +729,9 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 
 		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
-			output, err := a.Registry.Execute(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
+			rich, err := a.Registry.ExecuteResult(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
+			plan.rich = rich
+			output := rich.Output
 			plan.output, plan.toolErr = e.applyAfterHook(plan.tc, output, err)
 			continue
 		}
@@ -733,7 +755,9 @@ func (e *TurnEngine) executeToolCallsParallel(
 			}
 
 			a.SetLiveBodyStreamed(false)
-			output, err := a.Registry.Execute(executionContext(e, a), p.tc.Function.Name, p.tc.Function.Arguments)
+			rich, err := a.Registry.ExecuteResult(executionContext(e, a), p.tc.Function.Name, p.tc.Function.Arguments)
+			p.rich = rich
+			output := rich.Output
 			if ctx.Err() != nil {
 				p.toolErr = fmt.Errorf("cancelled during execution")
 				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
@@ -757,7 +781,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 			e.emitRejectedToolCall(i, plan.tc, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
 			continue
 		}
-		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall)
+		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
 		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
 			shouldHalt = true
 		}

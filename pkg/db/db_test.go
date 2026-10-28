@@ -1,6 +1,7 @@
 package db
 
 import (
+	"loop/pkg/domain/session"
 	"os"
 	"testing"
 )
@@ -8,14 +9,14 @@ import (
 func TestValidateSessionID(t *testing.T) {
 	validIDs := []string{"session-1", "abc_123", "UUID-999000-111"}
 	for _, id := range validIDs {
-		if err := validateSessionID(id); err != nil {
+		if err := session.ValidateID(id); err != nil {
 			t.Errorf("expected valid session ID for %q, got error: %v", id, err)
 		}
 	}
 
 	invalidIDs := []string{"session/1", "abc;drop table", "../secret", "hello world"}
 	for _, id := range invalidIDs {
-		if err := validateSessionID(id); err == nil {
+		if err := session.ValidateID(id); err == nil {
 			t.Errorf("expected error for invalid session ID %q, got nil", id)
 		}
 	}

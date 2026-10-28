@@ -11,6 +11,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/style"
 )
 
@@ -49,7 +50,7 @@ func TestCommitProviderConfigRefreshesLiveAgent(t *testing.T) {
 	}
 
 	// This mirrors the interactive menu, which changes only ActiveProvider.
-	next := cloneProviderConfig(a.Config)
+	next := interactive.CloneProviderConfig(a.Config)
 	next.ActiveProvider = "new"
 	if err := commitProviderConfig(a, next); err != nil {
 		t.Fatalf("commitProviderConfig() error = %v", err)
@@ -139,7 +140,7 @@ func TestCommitProviderConfigResolvesNoneToDefaultProfile(t *testing.T) {
 		},
 	}
 	a := agent.NewAgent(cfg, filepath.Join(t.TempDir(), "config.json"), &http.Client{})
-	next := cloneProviderConfig(cfg)
+	next := interactive.CloneProviderConfig(cfg)
 	next.ActiveProvider = ""
 
 	if err := commitProviderConfig(a, next); err != nil {

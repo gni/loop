@@ -62,8 +62,8 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	depth := int(args.Depth)
 	if depth <= 0 {
 		depth = 1
-	} else if depth > limits.ListMaxDepth() {
-		depth = limits.ListMaxDepth()
+	} else if depth > limits.For(ctx).ListMaxDepth {
+		depth = limits.For(ctx).ListMaxDepth
 	}
 
 	offset := int(args.Offset)
@@ -74,7 +74,7 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	safePath, err := ctx.SafePath(targetPath)
 	if err != nil {
 		safePath = ctx.GetWorkspaceRoot()
-		tree, treeErr := ListDirectoryTreeOffset(safePath, safePath, depth, limits.ListMaxEntries(), offset)
+		tree, treeErr := ListDirectoryTreeOffset(safePath, safePath, depth, limits.For(ctx).ListMaxEntries, offset)
 		if treeErr != nil {
 			return "", err
 		}
@@ -89,7 +89,7 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("path '%s' is a file, not a directory. Use the 'read' tool to view its contents", targetPath)
 	}
 
-	return ListDirectoryTreeOffset(safePath, ctx.GetWorkspaceRoot(), depth, limits.ListMaxEntries(), offset)
+	return ListDirectoryTreeOffset(safePath, ctx.GetWorkspaceRoot(), depth, limits.For(ctx).ListMaxEntries, offset)
 }
 
 func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error) {

@@ -24,7 +24,7 @@
   "debug_log_file": "off",
   "max_paste_lines": 80,
   "max_paste_chars": 8000,
-  "timeout": 1200,
+  "timeout": 120,
   "max_tool_output_bytes": 8192,
   "repeat_reminder_thresholds": [
     3,

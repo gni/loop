@@ -11,19 +11,21 @@ import (
 
 // SchemaProp defines the JSON schema property descriptor for tool parameters.
 type SchemaProp struct {
-	Type        string                `json:"type"`
-	Description string                `json:"description,omitempty"`
-	Enum        []string              `json:"enum,omitempty"`
-	Items       *SchemaProp           `json:"items,omitempty"`
-	Properties  map[string]SchemaProp `json:"properties,omitempty"`
-	Required    []string              `json:"required,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+	Type        string                     `json:"type,omitempty"`
+	Description string                     `json:"description,omitempty"`
+	Enum        []string                   `json:"enum,omitempty"`
+	Items       *SchemaProp                `json:"items,omitempty"`
+	Properties  map[string]SchemaProp      `json:"properties,omitempty"`
+	Required    []string                   `json:"required,omitempty"`
 }
 
 // JSONSchema describes the parameter validation contract for a tool function.
 type JSONSchema struct {
-	Type       string                `json:"type"`
-	Properties map[string]SchemaProp `json:"properties"`
-	Required   []string              `json:"required,omitempty"`
+	Extra      map[string]json.RawMessage `json:"-"`
+	Type       string                     `json:"type"`
+	Properties map[string]SchemaProp      `json:"properties"`
+	Required   []string                   `json:"required,omitempty"`
 }
 
 var (
@@ -99,7 +101,7 @@ func (j JSONSchema) MarshalJSON() ([]byte, error) {
 
 	typeName := FirstNonEmpty(j.Type, "object")
 	fullJSON := fmt.Sprintf("{%q:%q,%q:%s%s}", "type", typeName, "properties", propsJSON, requiredJSON)
-	return []byte(fullJSON), nil
+	return mergeSchema([]byte(fullJSON), j.Extra)
 }
 
 // FunctionDefinition specifies the tool name, description, and parameter schema.
@@ -117,10 +119,11 @@ type Tool struct {
 
 // Skill represents domain instructions and operational guides injected into context.
 type Skill struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Path        string `json:"path"`
-	Content     string `json:"content"`
+	DisableModelInvocation bool   `json:"disable_model_invocation,omitempty"`
+	Name                   string `json:"name"`
+	Description            string `json:"description"`
+	Path                   string `json:"path"`
+	Content                string `json:"content"`
 }
 
 // AgentContext exposes workspace boundaries, skill state, and task spawning to tools.

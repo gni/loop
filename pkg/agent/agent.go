@@ -13,8 +13,12 @@ import (
 	"time"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/auth"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
+	"loop/pkg/domain/session"
+	"loop/pkg/resources"
 	"loop/pkg/ui/style"
 )
 
@@ -64,16 +68,33 @@ type AgentUI interface {
 }
 
 type Agent struct {
-	UI             AgentUI
-	LLMProvider    LLMProvider
-	LLMProviderMu  sync.RWMutex
-	Config         *config.Config
-	ConfigPath     string
-	HttpClient     *http.Client
-	ActiveSkills   []Skill
-	McpClients     map[string]*mcpClient
-	McpClientsMu   sync.Mutex
-	McpStartErrors map[string]error
+	ReloadResources  func() error
+	Lifetime         context.Context
+	CancelLifetime   context.CancelFunc
+	TransformContext func(context.Context, []db.Message) ([]db.Message, error)
+	RunSession       func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
+	Ephemeral        bool
+	ToolSelection    []string
+	Timing           *TimingRecorder
+	Bus              *EventBus
+	Credentials      *auth.Store
+	InputBlocks      []message.ContentBlock
+	Store            session.Store
+	Inquirer         func(string, []tool.AskUserOption, string) (string, error)
+	EventSink        func(Event) error
+	DisposeAgents    func()
+	persistenceErr   error
+	NextInput        func() []db.Message
+	UI               AgentUI
+	LLMProvider      LLMProvider
+	LLMProviderMu    sync.RWMutex
+	Config           *config.Config
+	ConfigPath       string
+	HttpClient       *http.Client
+	ActiveSkills     []Skill
+	McpClients       map[string]*mcpClient
+	McpClientsMu     sync.Mutex
+	McpStartErrors   map[string]error
 
 	mcpGeneration int
 	mcpPending    map[string]config.MCPServerConfig
@@ -125,7 +146,12 @@ type Agent struct {
 }
 
 func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *Agent {
-	cwd, err := os.Getwd()
+	cwd, _ := os.Getwd()
+	return NewAgentAt(cfg, configPath, httpClient, cwd)
+}
+
+func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, workspace string) *Agent {
+	cwd, err := filepath.Abs(workspace)
 	if err != nil {
 		cwd = "."
 	}
@@ -138,8 +164,12 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		guidedEnabled = cfg.GuidedMode
 	}
 
+	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	a := &Agent{
+		Lifetime: lifetime, CancelLifetime: cancelLifetime,
 		Config:           cfg,
+		Timing:           NewTimingRecorder(),
+		Credentials:      auth.NewStore(filepath.Join(resources.AgentDirectory(configPath), "auth.json")),
 		ConfigPath:       configPath,
 		HttpClient:       httpClient,
 		McpClients:       make(map[string]*mcpClient),
@@ -159,12 +189,14 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 		Config:            cfg,
 		HttpClient:        httpClient,
 		ChunkDropObserver: a.recordDroppedChunk,
+		ResolveCredential: a.resolveCredential,
 	}
 
 	a.FileObservations.SetDisabled(cfg != nil && cfg.DisableObservationGuard)
 
 	a.Registry.UnknownToolHook = a.ResolveUnknownTool
 	a.Registry.Register(tool.NewLoadMCPTool())
+	a.Registry.Register(&toolSearch{agent: a})
 	a.Registry.Register(tool.NewBashTool())
 	a.Registry.Register(tool.NewReadTool())
 	a.Registry.Register(tool.NewWriteTool())
@@ -179,7 +211,7 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 	a.Registry.Register(tool.NewAskUserTool())
 
 	if a.Config != nil && !a.Config.DisableLocalPlugins {
-		for _, dir := range getPluginDirs(absWorkspace) {
+		for _, dir := range a.pluginDirs() {
 			_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
 		}
 	}
@@ -215,13 +247,18 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 
 	if len(*messages) == 0 {
 		*messages = []db.Message{{Role: "system", Content: currentSysPrompt}}
+		if sessionID != "" {
+			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: (*messages)[0]}); err != nil {
+				a.recordPersistenceError(err)
+			}
+		}
 		return
 	}
 	if (*messages)[0].Role == "system" && ((*messages)[0].Content != currentSysPrompt || forceUpdate) {
 		(*messages)[0].Content = currentSysPrompt
 		if sessionID != "" {
-			if err := db.RewriteSession(sessionID, *messages); err != nil {
-				a.DebugLogError(sessionID, "db.RewriteSession (system prompt)", err)
+			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: (*messages)[0]}); err != nil {
+				a.recordPersistenceError(err)
 			}
 		}
 	}
@@ -558,13 +595,13 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 	if a == nil || a.Config == nil {
 		return a.GetActiveSkills()
 	}
-	dirs := SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot)
+	dirs := append(SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot), a.Config.SkillDirectories...)
 	if len(dirs) == 0 {
 		return a.GetActiveSkills()
 	}
 	skills, err := LoadSkillsFromDirs(dirs...)
 	a.stateMu.Lock()
-	if err == nil && (len(skills) > 0 || len(a.ActiveSkills) == 0) {
+	if err == nil {
 		a.ActiveSkills = skills
 		a.ForceSystemPromptUpdate = true
 	}
@@ -612,11 +649,17 @@ func defaultAskUserSelection(options []tool.AskUserOption, recommended string) s
 }
 
 func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (int, int) {
-	promptTokens, _ := a.GetGlobalTokens(messages, allowlist)
+	promptTokens := EstimateMessagesTokens(messages)
+	if a.Registry != nil {
+		promptTokens += EstimateToolSchemaTokens(a.Registry.GetAvailableTools(allowlist))
+	}
 	return promptTokens, a.GetEffectiveContextLimit(promptTokens)
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
+	if a.Inquirer != nil {
+		return a.Inquirer(question, options, recommended)
+	}
 	if a.Config != nil {
 		switch a.Config.AskUserMode {
 		case "auto_recommended":
@@ -678,11 +721,13 @@ func (a *Agent) ReloadPlugins() error {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
-	a.Registry.UnregisterPrefix("plugin__")
-
-	for _, dir := range getPluginDirs(a.WorkspaceRoot) {
-		_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
+	staged := tool.NewToolRegistry()
+	for _, dir := range a.pluginDirs() {
+		if err := tool.RegisterPluginsContext(a.Context(), staged, dir); err != nil {
+			return err
+		}
 	}
+	a.Registry.ReplacePrefix("plugin__", staged.GetAllExecutors())
 	a.markSystemPromptDirty()
 	return nil
 }
@@ -691,4 +736,32 @@ func (a *Agent) HasSubagent(name string) bool {
 	a.SpawnedAgentsMu.RLock()
 	defer a.SpawnedAgentsMu.RUnlock()
 	return a.SpawnedAgents[name]
+}
+
+func (a *Agent) ProjectResourceAllowed(path string) bool {
+	if a.Config == nil || !a.Config.DisableProjectPlugins {
+		return true
+	}
+	rel, err := filepath.Rel(a.WorkspaceRoot, path)
+	return err == nil && (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func (a *Agent) pluginDirs() []string {
+	var allowed []string
+ seen:=make(map[string]bool)
+	for _, dir := range append(getPluginDirs(a.WorkspaceRoot), a.Config.PluginDirectories...) {
+		dir=filepath.Clean(dir)
+ if seen[dir]{continue};seen[dir]=true
+ if a.ProjectResourceAllowed(dir) {
+			allowed = append(allowed, dir)
+		}
+	}
+	return allowed
+}
+
+func (a *Agent) GetShellTimeout() time.Duration {
+	if a != nil && a.Config != nil && a.Config.ShellTimeout > 0 {
+		return time.Duration(a.Config.ShellTimeout) * time.Second
+	}
+	return 120 * time.Second
 }

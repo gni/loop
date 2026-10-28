@@ -3,6 +3,9 @@ package agent
 import (
 	"fmt"
 	"io"
+	"loop/pkg/domain/document"
+	"loop/pkg/resources"
+ "loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,50 +33,17 @@ func resolveSkillDir(dir string) string {
 }
 
 func ParseFrontmatter(content string) (map[string]string, string) {
-	trimmed := strings.TrimSpace(content)
-	if !strings.HasPrefix(trimmed, "---") {
+	metadata, body, err := document.Frontmatter(content)
+	if err != nil {
 		return nil, content
 	}
-
-	rest := strings.TrimPrefix(trimmed, "---")
-	if strings.HasPrefix(rest, "\r\n") {
-		rest = rest[2:]
-	} else if strings.HasPrefix(rest, "\n") {
-		rest = rest[1:]
-	}
-
-	endIdx := -1
-	lines := strings.Split(rest, "\n")
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "---" {
-			endIdx = i
-			break
-		}
-	}
-	if endIdx == -1 {
-		return nil, content
-	}
-
-	fmLines := lines[:endIdx]
-	body := strings.Join(lines[endIdx+1:], "\n")
-
-	fm := make(map[string]string)
-	for _, line := range fmLines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if kv := strings.SplitN(line, ":", 2); len(kv) == 2 {
-			val := strings.Trim(strings.TrimSpace(kv[1]), `"'`)
-			fm[strings.TrimSpace(kv[0])] = val
-		}
-	}
-	return fm, body
+	return metadata, body
 }
 
 func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 	var skills []Skill
 	seen := make(map[string]bool)
+	visited := make(map[string]bool)
 
 	for _, rawDir := range dirs {
 		absDir := resolveSkillDir(rawDir)
@@ -84,11 +54,15 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			continue
 		}
 
-		_ = filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || strings.ToLower(filepath.Ext(path)) != ".md" {
 				return nil
 			}
 
+			if visited[path] {
+				return nil
+			}
+			visited[path] = true
 			rel, err := filepath.Rel(absDir, path)
 			if err != nil {
 				return nil
@@ -101,12 +75,18 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 				return nil
 			}
 
-			data, err := os.ReadFile(path)
+			if info.Size() > 512<<10 {
+				return fmt.Errorf("skill %s exceeds 512 KiB", path)
+			}
+			data, err := storage.ReadFile(path,512<<10)
 			if err != nil {
 				return nil
 			}
 
-			fm, body := ParseFrontmatter(string(data))
+			fm, body, err := document.Frontmatter(string(data))
+			if err != nil {
+				return fmt.Errorf("skill %s: %w", path, err)
+			}
 			var name, desc string
 			if fm != nil {
 				name = fm["name"]
@@ -134,17 +114,24 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 				}
 			}
 
+			if seen[name] {
+				return fmt.Errorf("duplicate skill name %q at %s", name, path)
+			}
 			if !seen[name] {
 				seen[name] = true
 				skills = append(skills, Skill{
-					Name:        name,
-					Description: desc,
-					Path:        path,
-					Content:     strings.TrimSpace(body),
+					Name:                   name,
+					Description:            desc,
+					Path:                   path,
+					Content:                strings.TrimSpace(body),
+					DisableModelInvocation: fm["disable-model-invocation"] == "true",
 				})
 			}
 			return nil
 		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return skills, nil
 }
@@ -166,12 +153,19 @@ func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
 	}
 
 	add(skillsDir)
-	for _, root := range []string{workspaceRoot, "."} {
+	for _, root := range []string{workspaceRoot} {
 		if root == "" {
 			continue
 		}
 		add(filepath.Join(root, "skills"))
 		add(filepath.Join(root, ".agents", "skills"))
+	}
+	for _, root := range resources.Ancestors(workspaceRoot) {
+		add(filepath.Join(root, ".agents", "skills"))
+		add(filepath.Join(root, ".loop", "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".agents", "skills"))
 	}
 	return dirs
 }

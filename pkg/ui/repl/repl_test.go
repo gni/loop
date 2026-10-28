@@ -190,8 +190,6 @@ func TestExecuteManualShellCommandDoesNotPolluteHistory(t *testing.T) {
 		{Role: "user", Content: "initial user message"},
 	}
 	ki := &interceptor.KeyInterceptorReader{Agent: a, W: &outBuf}
-	rl := term.NewTerminal(ki, "")
-
 	executeManualShellCommand(
 		"echo 'test shell output'",
 		"!echo 'test shell output'",
@@ -201,9 +199,6 @@ func TestExecuteManualShellCommandDoesNotPolluteHistory(t *testing.T) {
 		&messages,
 		"sess-test",
 		ki,
-		rl,
-		nil,
-		nil,
 		style.UITheme{},
 	)
 
@@ -223,4 +218,3 @@ func TestExecuteManualShellCommandDoesNotPolluteHistory(t *testing.T) {
 		t.Fatalf("expected stdout 'test shell output' in terminal output, got: %q", rendered)
 	}
 }
-

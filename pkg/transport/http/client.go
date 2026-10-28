@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +20,7 @@ type RetryConfig struct {
 	BaseDelay  time.Duration
 	Client     *http.Client
 	OnAttempt  func(attempt int)
+	Backoff    func(ceiling time.Duration) time.Duration
 	// BeforeAttempt runs after the backoff sleep, before the request is issued. It may
 	// return an error to abort the retry loop (used by the streaming provider to report
 	// a watchdog timeout rather than a plain context cancellation).
@@ -63,17 +66,29 @@ func IsNonRetryableError(err error) bool {
 
 // IsRetryableStatus returns true if an HTTP status code warrants a retry (e.g., 5xx server errors).
 func IsRetryableStatus(code int) bool {
-	return code >= 500
+	return code == 408 || code == 429 || (code >= 500 && code <= 599)
 }
 
 // DoWithRetry executes an HTTP request, retrying on transient errors and 5xx responses.
 func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*http.Request, error)) (*http.Response, error) {
 	var resp *http.Response
 	var lastErr error
+	var retryDelay time.Duration
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
-			backoff := time.Duration(attempt) * c.config.BaseDelay
+			ceiling := min(c.config.BaseDelay*time.Duration(1<<min(attempt-1, 10)), 30*time.Second)
+			backoff := time.Duration(rand.Int64N(max(1, int64(ceiling))))
+			if c.config.Backoff != nil {
+				backoff = min(ceiling, max(0, c.config.Backoff(ceiling)))
+			}
+			if retryDelay > backoff {
+				backoff = retryDelay
+			}
+			retryDelay = 0
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -124,6 +139,11 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			}
 
 			if IsRetryableStatus(resp.StatusCode) {
+				if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds >= 0 {
+					retryDelay = min(time.Duration(seconds)*time.Second, 30*time.Second)
+				} else if date, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
+					retryDelay = min(max(0, time.Until(date)), 30*time.Second)
+				}
 				continue
 			}
 			return nil, lastErr

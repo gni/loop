@@ -90,7 +90,13 @@ func executeREPLTurn(
 
 	restore, err := ui.SetNonCanonical(fd)
 
-	a.RunAgentLoop(ctx, ppWriter, messages, line, allowedTools, theme, false, currentSessionID)
+	if a.RunSession != nil {
+		if _, runErr := a.RunSession(ctx, ppWriter, messages, line, allowedTools, theme, currentSessionID); runErr != nil && ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, runErr)
+		}
+	} else {
+		a.RunAgentLoop(ctx, ppWriter, messages, line, allowedTools, theme, false, currentSessionID)
+	}
 
 	if err == nil && restore != nil {
 		restore()

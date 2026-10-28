@@ -151,7 +151,7 @@ func TestReadPaginationContinuesAtTheReportedOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read big line: %v", err)
 	}
-	if !strings.Contains(out3, "sed -n '1 p'") {
+	if !strings.Contains(out3, "[truncated]") || !strings.HasPrefix(out3, strings.Repeat("z", limits.ReadMaxLineLength())) {
 		t.Errorf("over-budget line must produce a runnable command: %s", out3)
 	}
 

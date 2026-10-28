@@ -19,6 +19,11 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if err := os.Remove(s.sessionPath(sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete session file: %w", err)
@@ -37,6 +42,11 @@ func (s *JSONLStore) ClearHistory() error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -63,6 +73,11 @@ func (s *JSONLStore) ClearHistory() error {
 func (s *JSONLStore) SetLatestSessionID(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return s.setLatestSessionIDUnlocked(sessionID)
 }
 
@@ -159,8 +174,13 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 	}
 
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	release, err := s.lock(false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	entries, err := os.ReadDir(s.dir)
-	s.mu.RUnlock()
 
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -183,6 +203,7 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 		}
 
 		var firstTimestamp string
+		var cwd, displayName, parentSession string
 		var msgCount, totalTokens int
 		var previewParts []string
 
@@ -198,6 +219,18 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 				continue
 			}
 
+			if record.Type == "session" {
+				cwd = record.Cwd
+				parentSession = record.ParentSession
+				continue
+			}
+			if record.Type == "name" {
+				displayName = record.Name
+				continue
+			}
+			if record.Message.Role == "" {
+				continue
+			}
 			if isSkippedSlashRecord(record.Message) {
 				continue
 			}
@@ -237,6 +270,7 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 			MsgCount:    msgCount,
 			Preview:     preview,
 			TotalTokens: totalTokens,
+			Name:        displayName, Cwd: cwd, ParentSession: parentSession,
 		})
 	}
 
@@ -260,6 +294,11 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	oldPath := s.sessionPath(oldID)
 	newPath := s.sessionPath(newID)
@@ -289,20 +328,27 @@ func readEntries(filePath string) ([]session.Record, error) {
 		return nil, err
 	}
 	defer f.Close()
-
 	var entries []session.Record
 	scanner := newJSONLScanner(f)
+	line := 0
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
+		line++
+		if len(scanner.Bytes()) == 0 {
 			continue
 		}
-		var record session.Record
-		if json.Unmarshal(line, &record) == nil {
-			entries = append(entries, record)
+		var entry session.Record
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			return nil, fmt.Errorf("session record %d is corrupt: %w", line, err)
 		}
+		entries = append(entries, entry)
 	}
-	return entries, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read session: %w", err)
+	}
+	if err := session.ValidateEntries(entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func (s *JSONLStore) Branch(sessionID, entryID string) error {
@@ -312,6 +358,11 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	filePath := s.sessionPath(sessionID)
 	entries, err := readEntries(filePath)
@@ -346,6 +397,10 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 	if err := writeJSONLine(f, marker); err != nil {
 		return fmt.Errorf("failed to write branch marker: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	delete(s.cache, sessionID)
 	return s.setLatestSessionIDUnlocked(sessionID)
 }
 
@@ -356,6 +411,11 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := s.lock(true)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
 	entries, err := readEntries(s.sessionPath(parentSessionID))
 	if err != nil {
@@ -379,6 +439,7 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 		ID:            newID,
 		Timestamp:     nowTimestamp(),
 		ParentSession: parentSessionID,
+		Cwd:           s.Workspace,
 	}
 	if err := writeJSONLine(f, header); err != nil {
 		return "", fmt.Errorf("failed to write session header: %w", err)
@@ -386,15 +447,19 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 
 	var prev string
 	for _, e := range path {
-		e.ID = session.NewUUID()
+		if e.ID == "" {
+			e.ID = session.NewUUID()
+		}
 		e.ParentID = prev
-		e.Type = "message"
 		if err := writeJSONLine(f, e); err != nil {
 			return "", fmt.Errorf("failed to write forked entry: %w", err)
 		}
 		prev = e.ID
 	}
 
+	if err := f.Sync(); err != nil {
+		return "", err
+	}
 	return newID, nil
 }
 

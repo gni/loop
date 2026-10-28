@@ -14,7 +14,8 @@ import (
 )
 
 type fileTestContext struct {
-	root string
+	root         string
+	observations *FileObservationTracker
 }
 
 func (c *fileTestContext) SafePath(inputPath string) (string, error) {
@@ -54,6 +55,30 @@ func (c *fileTestContext) Context() context.Context {
 
 func (c *fileTestContext) HasSubagent(string) bool {
 	return false
+}
+
+func (c *fileTestContext) tracker() *FileObservationTracker {
+	if c.observations == nil {
+		c.observations = NewFileObservationTracker()
+	}
+	return c.observations
+}
+func (c *fileTestContext) RecordRead(path string, data []byte) { c.tracker().RecordRead(path, data) }
+func (c *fileTestContext) RecordMutation(path string, data []byte) {
+	c.tracker().RecordMutation(path, data)
+}
+func (c *fileTestContext) CheckMutationAllowed(path string, edit bool) error {
+	return c.tracker().CheckMutationAllowed(path, edit)
+}
+func observeFile(t *testing.T, ctx *fileTestContext, path string) {
+	t.Helper()
+	args, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewReadTool().Execute(ctx, string(args)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestBOMHandling(t *testing.T) {
@@ -109,6 +134,7 @@ func TestCRLFPreservation(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
+	observeFile(t, ctx, "crlf.txt")
 	editTool := NewEditTool()
 	_, err := editTool.Execute(ctx, `{"path":"crlf.txt","updates":[{"oldText":"second line","newText":"modified line"}]}`)
 	if err != nil {
@@ -139,6 +165,7 @@ func TestUnicodeFuzzyMatchInEdit(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
+	observeFile(t, ctx, "code.py")
 	editTool := NewEditTool()
 	// Model sends smart quotes and em-dash instead of ASCII
 	_, err := editTool.Execute(ctx, `{"path":"code.py","updates":[{"oldText":"title = “User Profile” — v1","newText":"title = \"Member Profile\" - v2"}]}`)
@@ -204,6 +231,7 @@ app.include_router(items_router)`
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
+	observeFile(t, ctx, "app.py")
 	editTool := NewEditTool()
 
 	newContent := `from fastapi import FastAPI
@@ -439,6 +467,7 @@ func TestEditToolPathAndFormatAliases(t *testing.T) {
 		t.Fatalf("failed to create initial file: %v", err)
 	}
 
+	observeFile(t, ctx, "sample.go")
 	// 1. target_file alias with standard updates
 	_, err := editTool.Execute(ctx, `{"target_file": "sample.go", "updates": [{"oldText": "return \"alpha\"", "newText": "return \"beta\""}]}`)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
@@ -104,7 +105,7 @@ func TestSubagentToolOutputIsPruned(t *testing.T) {
 	ma := &MultiAgent{Name: "tester", BaseAgent: a}
 
 	output := strings.Repeat("q", 2000)
-	pruned := ma.pruneToolOutput("call_1", "bash", output)
+	pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, ma.Name, "call_1", "bash", output, a.Config.MaxToolOutputBytes)
 	if len(pruned) >= len(output) {
 		t.Fatalf("expected pruned output shorter than original: %d vs %d", len(pruned), len(output))
 	}
@@ -114,7 +115,7 @@ func TestSubagentToolOutputIsPruned(t *testing.T) {
 
 	// Output below the threshold must pass through untouched.
 	small := "short output"
-	if got := ma.pruneToolOutput("call_2", "bash", small); got != small {
+	if got, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, ma.Name, "call_2", "bash", small, a.Config.MaxToolOutputBytes); got != small {
 		t.Fatalf("small output must be unchanged, got: %q", got)
 	}
 }

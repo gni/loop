@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+ "loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -41,13 +42,14 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 
 	baseP, baseC := agent.CalculateHistoryTokens(baseMessages)
 	baseCacheR, baseCacheW := agent.CacheTokenTotals(baseMessages)
+ allMessages:=append([]db.Message(nil),baseMessages...)
 	fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Base Agent (Main)"))
 	fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", baseP)))
 	fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", baseC)))
 	if baseCacheR > 0 || baseCacheW > 0 {
 		fmt.Fprintf(w, "    Cache Read/Write:   %s\n", valueStyle.Render(fmt.Sprintf("%d / %d", baseCacheR, baseCacheW)))
 	}
-	fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(fmt.Sprintf("%d", baseP+baseC)))
+	fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(formatCost(message.TotalUsage(baseMessages).Cost)))
 
 	totalSwarmP := baseP
 	totalSwarmC := baseC
@@ -64,6 +66,8 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 			ma := mam.Agents[name]
 			ma.HistoryMu.RLock()
 			subP, subC := agent.CalculateHistoryTokens(ma.History)
+ subUsage:=message.TotalUsage(ma.History)
+ allMessages=append(allMessages,ma.History...)
 			ma.HistoryMu.RUnlock()
 
 			totalSwarmP += subP
@@ -78,7 +82,7 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 			fmt.Fprintf(w, "    Role/Goal:          %s\n", valueStyle.Render(role))
 			fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", subP)))
 			fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", subC)))
-			fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(fmt.Sprintf("%d", subP+subC)))
+			fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(formatCost(subUsage.Cost)))
 		}
 		mam.mu.RUnlock()
 
@@ -87,11 +91,13 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 			fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Total Swarm Utilization"))
 			fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", totalSwarmP)))
 			fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", totalSwarmC)))
-			fmt.Fprintf(w, "    Total Swarm Cost:   %s\n\n", valueStyle.Render(fmt.Sprintf("%d", totalSwarmP+totalSwarmC)))
+			fmt.Fprintf(w, "    Total Swarm Cost:   %s\n\n", valueStyle.Render(formatCost(message.TotalUsage(allMessages).Cost)))
 		}
 	}
 
-	if tr := agent.GetTimingRecorder(); tr != nil {
+	var tr *agent.TimingRecorder
+ if mam!=nil&&mam.BaseAgent!=nil {tr=mam.BaseAgent.Timing}
+ if tr != nil {
 		fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Timings"))
 		for _, ns := range []string{"llm", "tool", "compaction"} {
 			fmt.Fprintf(w, "    %-10s %dms\n", ns, tr.TotalMs(ns))
@@ -99,4 +105,9 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 	}
 
 	fmt.Fprintln(w, headerStyle.Render("╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"))
+}
+
+func formatCost(cost *float64)string{
+ if cost==nil{return "unknown"}
+ return fmt.Sprintf("$%.6f",*cost)
 }

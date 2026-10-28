@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"loop/pkg/domain/message"
+ "loop/pkg/transport/sse"
 )
 
 // Usage reports token consumption metadata from the LLM provider, including
@@ -84,14 +84,15 @@ type RawStreamChunk struct {
 
 // StreamReader consumes and parses SSE data streams.
 type StreamReader struct {
-	reader     *bufio.Reader
+	reader     *sse.Reader
 	OnActivity func()
 	eof        bool
+	Complete   bool
 }
 
 // NewStreamReader wraps an io.Reader into an SSE stream parser.
 func NewStreamReader(r io.Reader) *StreamReader {
-	return &StreamReader{reader: bufio.NewReader(r)}
+	return &StreamReader{reader: sse.NewReader(r)}
 }
 
 // ReadNextChunk reads lines until the next valid data chunk or EOF/[DONE].
@@ -107,28 +108,13 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 			return nil, true, nil
 		}
 
-		line, err := sr.reader.ReadString('\n')
-		if err != nil {
-			if err != io.EOF {
-				return nil, false, fmt.Errorf("error reading stream: %w", err)
-			}
-			if line == "" {
-				return nil, true, nil
-			}
-			sr.eof = true
-		}
-
-		if sr.OnActivity != nil {
-			sr.OnActivity()
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+ sr.reader.OnActivity=sr.OnActivity
+ packet,err:=sr.reader.Read(ctx)
+ if err==io.EOF{sr.eof=true;return nil,true,nil}
+ if err!=nil{return nil,false,fmt.Errorf("error reading stream: %w",err)}
+ data:=strings.TrimSpace(packet.Data)
 		if data == "[DONE]" {
+			sr.Complete = true
 			return nil, true, nil
 		}
 		if data == "" {

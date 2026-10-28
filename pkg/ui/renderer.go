@@ -14,7 +14,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-
 type StreamRenderer struct {
 	mu                        sync.Mutex
 	w                         io.Writer
@@ -251,7 +250,11 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	}
 	// finishLiveTextLocked already ends the prior text on a fresh line.
 	// Do not add a second newline before the streamed tool title.
+	hadText := sr.hasWrittenText
 	sr.finishLiveTextLocked()
+	if hadText && (toolName == "bash" || render.IsCommandLikeTool(toolName)) {
+		fmt.Fprint(sr.w, "\n")
+	}
 	sr.hasWrittenText = false
 
 	if sr.parser != nil {

@@ -16,7 +16,7 @@ import (
 
 type noopSink struct{ msgs []db.Message }
 
-func (s *noopSink) Append(m db.Message) { s.msgs = append(s.msgs, m) }
+func (s *noopSink) Append(m db.Message)    { s.msgs = append(s.msgs, m) }
 func (s *noopSink) Messages() []db.Message { return s.msgs }
 
 // fixedIntervalProvider emits tool calls until a cap, then a plain answer.
@@ -155,9 +155,8 @@ func TestUnwrapWriterPreservesScreenWriter(t *testing.T) {
 	tee := NewCustomTeeWriter(screen, &bytes.Buffer{})
 	ncw := NewNewlineCounterWriter(tee)
 
-	unwrapped := unwrapWriterIfPossible(ncw)
+	unwrapped := GetScreenWriter(ncw)
 	if unwrapped != screen {
 		t.Fatalf("unwrapWriterIfPossible must return the screen writer, got %T instead of mockScreenWriter", unwrapped)
 	}
 }
-

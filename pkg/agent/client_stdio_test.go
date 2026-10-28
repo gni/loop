@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ done
 		t.Fatalf("unexpected tools: %+v", tools)
 	}
 
-	out, err := c.callTool("explore", `{"query":"hello"}`)
+	out, err := c.callTool(context.Background(), "explore", `{"query":"hello"}`)
 	if err != nil {
 		t.Fatalf("callTool: %v", err)
 	}

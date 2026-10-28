@@ -48,7 +48,7 @@ func TestToolSchemaTokensAreCountedInPromptEstimate(t *testing.T) {
 	messages := []db.Message{{Role: "system", Content: strings.Repeat("a", 100)}}
 
 	// No allowlist: message-only estimate (31 tokens at 3.2 chars/token).
-	promptNoTools, _, _ := a.GetGlobalTokenUsage(messages, nil)
+	promptNoTools, _, _ := a.GetGlobalTokenUsage(messages, []string{})
 	if promptNoTools != 31 {
 		t.Fatalf("message-only estimate = %d, want 31", promptNoTools)
 	}

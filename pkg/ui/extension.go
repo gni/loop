@@ -1,21 +1,17 @@
 package ui
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/resources"
 	"loop/pkg/ui/render"
 )
 
@@ -27,46 +23,15 @@ func init() {
 	}
 }
 
-func ListExtensions(workspaceRoot string) []ExtensionInfo {
-	dirs := tool.ExtensionSearchDirs(workspaceRoot)
-
-	var exts []ExtensionInfo
-	seen := make(map[string]bool)
-
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		loc := "project"
-		if strings.Contains(dir, ".loop") {
-			loc = "global"
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) == ".json" {
-				continue
-			}
-			path := filepath.Join(dir, entry.Name())
-			if info, err := os.Stat(path); err == nil && info.Mode()&0111 != 0 {
-				if _, isPlugin := tool.HasPluginDescriptor(path); isPlugin {
-					continue
-				}
-				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-				cmdName := "/" + strings.ToLower(base)
-				if !seen[cmdName] {
-					seen[cmdName] = true
-					exts = append(exts, ExtensionInfo{
-						Name:     cmdName,
-						Path:     path,
-						Location: loc,
-					})
-				}
-			}
-		}
-	}
-
-	sort.Slice(exts, func(i, j int) bool { return exts[i].Name < exts[j].Name })
-	return exts
+func ListExtensions(workspaceRoot string,additional ...string)[]ExtensionInfo{
+ directories:=append(tool.ExtensionSearchDirs(workspaceRoot),additional...)
+ var extensions []ExtensionInfo
+ for _,command:=range resources.Commands(directories){
+  location:="global"
+  if relative,err:=filepath.Rel(workspaceRoot,command.Path);err==nil&&relative!=".."&&!strings.HasPrefix(relative,".."+string(filepath.Separator)){location="project"}
+  extensions=append(extensions,ExtensionInfo{Name:command.Name,Path:command.Path,Location:location})
+ }
+ return extensions
 }
 
 func RunExtension(
@@ -87,8 +52,8 @@ func RunExtension(
 
 	targetCmd := "/" + strings.ToLower(name)
 	var extPath string
-	for _, ext := range ListExtensions(a.GetWorkspaceRoot()) {
-		if ext.Name == targetCmd {
+	for _, ext := range ListExtensions(a.GetWorkspaceRoot(), a.Config.ExtensionDirectories...) {
+		if ext.Name == targetCmd && a.ProjectResourceAllowed(ext.Path) {
 			extPath = ext.Path
 			break
 		}
@@ -102,32 +67,13 @@ func RunExtension(
 	if a != nil {
 		parentCtx = a.Context()
 	}
-	ctxTimeout, cancel := context.WithTimeout(parentCtx, 15*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctxTimeout, extPath, args...)
-	if messages != nil {
-		if jsonData, err := json.Marshal(*messages); err == nil {
-			cmd.Stdin = bytes.NewReader(jsonData)
-		}
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if ctxTimeout.Err() == context.DeadlineExceeded {
-		return true, fmt.Errorf("extension timed out after 15 seconds")
-	}
-
-	if stdout.Len() > 0 {
-		_, _ = io.Copy(w, &stdout)
-	}
-
-	if err != nil {
-		return true, fmt.Errorf("%w (details: %s)", err, strings.TrimSpace(stderr.String()))
-	}
+ var history []db.Message
+ if messages!=nil{history=*messages}
+ timeout:=15*time.Second
+ if a.Config.ExtensionTimeout>0{timeout=time.Duration(a.Config.ExtensionTimeout)*time.Second}
+ output,err:=resources.RunCommand(parentCtx,resources.Command{Name:targetCmd,Path:extPath},args,a.WorkspaceRoot,history,timeout)
+ if output!=""{if _,writeErr:=io.WriteString(w,output);writeErr!=nil{return true,writeErr}}
+ if err!=nil{return true,err}
 
 	return true, nil
 }

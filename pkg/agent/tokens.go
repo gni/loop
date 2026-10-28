@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"math"
 
 	"loop/pkg/agent/tool"
@@ -21,44 +22,29 @@ func TokensFromChars(chars int) int {
 	return tokens
 }
 
-func schemaPropChars(p tool.SchemaProp) int {
-	chars := len(p.Type) + len(p.Description) + 24
-	for _, e := range p.Enum {
-		chars += len(e) + 4
-	}
-	for _, r := range p.Required {
-		chars += len(r) + 4
-	}
-	for k, sub := range p.Properties {
-		chars += len(k) + schemaPropChars(sub) + 8
-	}
-	if p.Items != nil {
-		chars += schemaPropChars(*p.Items)
-	}
-	return chars
-}
 
 func EstimateToolSchemaTokens(tools []tool.Tool) int {
 	if len(tools) == 0 {
 		return 0
 	}
-	chars := 0
-	for _, t := range tools {
-		chars += len(t.Type) + len(t.Function.Name) + len(t.Function.Description) + 48
-		for _, req := range t.Function.Parameters.Required {
-			chars += len(req) + 4
-		}
-		for k, prop := range t.Function.Parameters.Properties {
-			chars += len(k) + schemaPropChars(prop) + 8
-		}
+	data, err := json.Marshal(tools)
+	if err != nil {
+		return 0
 	}
-	return TokensFromChars(chars)
+	return TokensFromChars(len(data))
 }
 
 func messageChars(m db.Message) int {
 	chars := len(m.Content) + len(m.ReasoningContent)
 	for _, tc := range m.ToolCalls {
 		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	for _, block := range m.ContentBlocks {
+		if block.Type == "image" {
+			chars += 4096
+		} else {
+			chars += len(block.Text)
+		}
 	}
 	return chars
 }
@@ -84,13 +70,20 @@ func EstimateMessagesTokens(messages []db.Message) int {
 func CacheTokenTotals(history []db.Message) (int, int) {
 	var reads, writes int
 	for _, m := range history {
+		if m.Usage!=nil{reads+=m.Usage.CacheRead;writes+=m.Usage.CacheWrite}
 		reads += m.CacheReadTokens
 		writes += m.CacheWriteTokens
 	}
 	return reads, writes
 }
 
-func EstimateFallbackTokens(promptTokens, completionTokens int, _ []db.Message, _ []db.ToolCall, _, _ string) (int, int) {
+func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Message, calls []db.ToolCall, reasoning, content string) (int, int) {
+	if promptTokens == 0 {
+		promptTokens = EstimateMessagesTokens(messages)
+	}
+	if completionTokens == 0 {
+		completionTokens = TokensFromChars(messageChars(db.Message{Content: content, ReasoningContent: reasoning, ToolCalls: calls}))
+	}
 	return promptTokens, completionTokens
 }
 
@@ -157,12 +150,18 @@ func ResolveAdaptiveContextLimit(cfg *config.Config, serverLimit, currentTokens 
 }
 
 func CalculateHistoryTokens(history []db.Message) (int, int) {
-	var totalPrompt, totalCompletion int
+	var totalPrompt, totalCompletion, chars int
 	for _, m := range history {
-		if m.Role == "assistant" {
-			totalPrompt += m.PromptTokens
+ if m.Usage!=nil{totalPrompt+=m.Usage.Input;totalCompletion+=m.Usage.Output}
+		if m.Role == "assistant" && (messageChars(m) > 0) {
+			prompt := m.PromptTokens
+			if prompt == 0 {
+				prompt = TokensFromChars(chars)
+			}
+			totalPrompt += prompt
 			totalCompletion += m.CompletionTokens
 		}
+		chars += messageChars(m)
 	}
 	return totalPrompt, totalCompletion
 }
@@ -173,16 +172,19 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
-	trailingTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
-		if m.Role == "assistant" && (m.PromptTokens > 0 || m.CompletionTokens > 0) {
-			if trailingTokens == 0 {
-				return m.PromptTokens, m.CompletionTokens, false
-			}
-			return m.PromptTokens + m.CompletionTokens + trailingTokens, m.CompletionTokens, true
+		if m.Role != "assistant" || messageChars(m) == 0 {
+			continue
 		}
-		trailingTokens += TokensFromChars(messageChars(m))
+		if m.PromptTokens > 0 {
+			return m.PromptTokens, m.CompletionTokens, false
+		}
+		chars := 0
+		for _, prior := range messages[:i] {
+			chars += messageChars(prior)
+		}
+		return TokensFromChars(chars), m.CompletionTokens, true
 	}
 
 	msgChars := 0

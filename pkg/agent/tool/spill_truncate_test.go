@@ -34,7 +34,7 @@ func TestSpillPruneNoticeIsActionable(t *testing.T) {
 	if !strings.Contains(pruned, "omitted to protect context window") {
 		t.Errorf("missing prune marker: %s", pruned)
 	}
-	if !strings.Contains(pruned, "total lines") || !strings.Contains(pruned, "offset=26") {
+	if !strings.Contains(pruned, "total lines") || !strings.Contains(pruned, "offset=7") {
 		t.Errorf("prune notice is not actionable: %s", pruned)
 	}
 	if !strings.Contains(pruned, ".loop/spill/") {

@@ -27,13 +27,16 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	defer func() { ui.IsInteractive = false }()
 
 	currentSessionID := initialSessionID
-	if currentSessionID == "" {
+	if a.Ephemeral {
+		currentSessionID = ""
+	}
+	if currentSessionID == "" && !a.Ephemeral {
 		currentSessionID = db.NewUUID()
 		_ = db.SetLatestSessionID(currentSessionID)
 	}
 
 	var messages []db.Message
-	if dbHistory, err := db.LoadMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
+	if dbHistory, err := a.LoadSessionMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
 		messages = dbHistory
 	}
 	a.SyncSessionSystemPrompt(&messages, currentSessionID)
@@ -59,13 +62,20 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 	fd := int(os.Stdin.Fd())
 
-	historyLines, _ := db.GetUserHistory()
+	var historyLines []string
+	if !a.Ephemeral {
+		historyLines, _ = db.GetUserHistory()
+	}
 	hist := ui.NewCustomHistory()
 	for _, hLine := range historyLines {
 		hist.Add(hLine)
 	}
 
-	mam := swarm.NewMultiAgentManager(a, ppWriter, theme)
+	mam, _ := a.MultiAgentManager.(*swarm.MultiAgentManager)
+	if mam == nil {
+		mam = swarm.NewMultiAgentManager(a, ppWriter, theme)
+	}
+	mam.SetOutput(ppWriter,theme)
 	a.MultiAgentManager = mam
 	a.ClearAgentsFunc = func() { mam.ClearAllAgents() }
 	_ = mam.LoadSavedAgents()
@@ -404,6 +414,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	fmt.Fprint(os.Stderr, "\x1b[?2004l")
 	ui.ShutdownStatusBar(os.Stderr)
 	ui.ForceExitAlternateScreen(os.Stderr)
-	_ = db.SetLatestSessionID(currentSessionID)
-	fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\n", currentSessionID)
+	if !a.Ephemeral {
+		_ = db.SetLatestSessionID(currentSessionID)
+		fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\n", currentSessionID)
+	}
 }

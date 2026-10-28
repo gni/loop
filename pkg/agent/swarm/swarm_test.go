@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,7 +134,7 @@ func TestSubagentDelegationRejectsEmptyPromptObject(t *testing.T) {
 			ActiveCancel:  cancelTurn,
 			ActiveStarted: time.Now(),
 		}
-		executor := &subagentExecutor{subagent: subagent}
+		executor := &SubagentExecutor{subagent: subagent}
 
 		errChan := make(chan error, 1)
 		delivered := make(chan db.Message, 1)
@@ -191,7 +192,7 @@ func TestParentCancellationStopsDelegatedSubagentTurn(t *testing.T) {
 		ActiveCancel:  cancelChildTurn,
 		ActiveStarted: time.Now(),
 	}
-	executor := &subagentExecutor{subagent: subagent}
+	executor := &SubagentExecutor{subagent: subagent}
 
 	result := make(chan error, 1)
 	go func() {
@@ -232,6 +233,7 @@ func TestMultiAgentSpawnSkills(t *testing.T) {
 		},
 	}
 
+	persistTestSkills(t, baseAgent)
 	var buf bytes.Buffer
 	theme := style.UITheme{}
 	mam := NewMultiAgentManager(baseAgent, &buf, theme)
@@ -282,6 +284,7 @@ func TestMultiAgentSpawnSkills(t *testing.T) {
 		{Name: "docker_deploy", Description: "Docker deployer", Content: "Use docker"},
 	}
 
+	persistTestSkills(t, baseAgent)
 	macBob := &multiAgentContext{
 		AgentContext: baseAgent,
 		ma:           genericAgent,
@@ -317,6 +320,7 @@ func TestMultiAgentPersistence(t *testing.T) {
 		},
 	}
 
+	persistTestSkills(t, baseAgent)
 	var buf bytes.Buffer
 	theme := style.UITheme{}
 	mam := NewMultiAgentManager(baseAgent, &buf, theme)
@@ -847,5 +851,22 @@ func TestCleanSubagentToolCatalogNames(t *testing.T) {
 	}
 	if _, ok := mam.Agents["tester"]; !ok {
 		t.Fatalf("subagent 'tester' was not created via alias")
+	}
+}
+
+func persistTestSkills(t *testing.T, a *agent.Agent) {
+	t.Helper()
+	if a.Config.SkillsDir == "" {
+		a.Config.SkillsDir = t.TempDir()
+	}
+	for _, skill := range a.ActiveSkills {
+		directory := filepath.Join(a.Config.SkillsDir, skill.Name)
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n%s\n", skill.Name, skill.Description, skill.Content)
+		if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

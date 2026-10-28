@@ -9,6 +9,7 @@ import (
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -67,6 +68,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				continue
 			}
 			validMessages[lastIdx].Content += "\n\n" + msg.Content
+			validMessages[lastIdx].ContentBlocks = append(append([]message.ContentBlock(nil), validMessages[lastIdx].ContentBlocks...), msg.ContentBlocks...)
 			totalChars += 2 + len(msg.Content)
 			continue
 		}
@@ -122,6 +124,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	budget := -1
 	if enableThinking {
 		budget = limits.ReasoningBudget(effort)
+		if p.Config != nil {
+			budget = limits.Resolve(p.Config.Limits).ReasoningTokenBudgets[effort]
+		}
 	}
 
 	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
@@ -130,16 +135,15 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
 	}
 
-	validMessages, totalChars := sanitizeRequestMessages(inputMsgs)
-
-	pTokensEst := EstimateMessagesTokens(validMessages)
-	effectiveLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), pTokensEst)
-	apiMessages := trimMessagesToCharBudget(validMessages, totalChars, effectiveLimit*4)
-	cleanMessages := EnforceToolPairingInvariance(apiMessages)
+	validMessages, _ := sanitizeRequestMessages(inputMsgs)
 
 	finalTools := prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
 	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
 		finalTools = nil
+	}
+	cleanMessages, maxCompTokens, err := p.budgetRequest(validMessages, finalTools)
+	if err != nil {
+		return ChatCompletionRequest{}, nil, nil, err
 	}
 
 	reasoningEffort := ""
@@ -152,17 +156,6 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		}
 	}
 
-	maxCompTokens := limits.DefaultMaxCompletionTokens
-	if p.Config != nil && p.Config.MaxCompletionTokens > 0 {
-		maxCompTokens = p.Config.MaxCompletionTokens
-	}
-	finalPromptTokensEst := EstimateMessagesTokens(cleanMessages)
-	if remainingTokens := effectiveLimit - finalPromptTokensEst; remainingTokens > 0 && maxCompTokens > remainingTokens {
-		maxCompTokens = remainingTokens
-	}
-	if maxCompTokens < limits.CompletionTokenFloor() {
-		maxCompTokens = limits.CompletionTokenFloor()
-	}
 	if budget > maxCompTokens && maxCompTokens > 0 {
 		budget = maxCompTokens
 	}
@@ -170,7 +163,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	var model string
 	var temperature float64
 	if p.Config != nil {
-		model = p.Config.Model
+		model = p.Config.ResolveModelAlias(p.Config.Model)
 		temperature = p.Config.Temperature
 	}
 
@@ -229,6 +222,31 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 
 	jsonData, err := json.Marshal(reqBody)
+	if err == nil {
+		var payload map[string]any
+		err = json.Unmarshal(jsonData, &payload)
+		if err == nil {
+			wire := make([]map[string]any, 0, len(reqBody.Messages))
+			for _, msg := range reqBody.Messages {
+				item := map[string]any{"role": msg.Role, "content": msg.ChatContent()}
+				if len(msg.ToolCalls) > 0 {
+					item["tool_calls"] = msg.ToolCalls
+				}
+				if msg.ToolCallID != "" {
+					item["tool_call_id"] = msg.ToolCallID
+				}
+				if len(msg.CacheControl) > 0 {
+					item["cache_control"] = msg.CacheControl
+				}
+				if msg.Name != "" {
+					item["name"] = msg.Name
+				}
+				wire = append(wire, item)
+			}
+			payload["messages"] = wire
+			jsonData, err = json.Marshal(payload)
+		}
+	}
 	if err != nil {
 		return reqBody, nil, nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
@@ -241,4 +259,11 @@ func truncateNonFileToolContent(role, name, content string, maxChars int, suffix
 		return filetool.UTF8SafePrefix(content, maxChars) + suffix
 	}
 	return content
+}
+
+func (p *OpenAICompatibleProvider) GetLimits() limits.Limits {
+	if p.Config != nil {
+		return limits.Resolve(p.Config.Limits)
+	}
+	return limits.Resolve(limits.Master)
 }

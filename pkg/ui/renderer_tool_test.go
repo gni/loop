@@ -326,7 +326,7 @@ func TestLiveThoughtToolLayoutMatchesSessionHistory(t *testing.T) {
 	theme := UITheme{}
 
 	var live renderLineCounter
-	fmt.Fprintln(&live, strings.Repeat("╌", 40))
+	fmt.Fprintln(&live, style.ActivityDivider(theme))
 	renderer := NewStreamRenderer(&live, theme, true, false, "test")
 	renderer.WriteReasoning(reasoning)
 	renderer.StartToolCall("read", 0)
@@ -928,8 +928,14 @@ func TestStreamedWriteYamlAndMarkdownRealtime(t *testing.T) {
 			// Post-stream RenderToolOutput must suppress duplicate body
 			beforeOutput := output.String()
 			RenderToolOutput(&output, "wrote "+tc.path, false, false, UITheme{}, "write", fmt.Sprintf(`{"path":%q}`, tc.path), renderer.DidStreamToolBody(0))
-			if output.String() != beforeOutput {
-				t.Fatalf("expected RenderToolOutput to be suppressed when body was streamed")
+			completion := stripAnsi(strings.TrimPrefix(output.String(), beforeOutput))
+			if !strings.Contains(completion, tc.path) {
+				t.Fatalf("missing saved-file summary: %q", completion)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(tc.content), "\n") {
+				if strings.Contains(completion, "\n"+line+"\n") {
+					t.Fatalf("streamed body repeated at completion: %q", completion)
+				}
 			}
 		})
 	}
@@ -1297,6 +1303,3 @@ func TestStreamedWriteConsecutiveTurnsContentBeforePathStreaming(t *testing.T) {
 		t.Fatalf("expected content flushed with file2.txt, got: %s", final)
 	}
 }
-
-
-

@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"loop/pkg/domain/document"
+ "loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -378,7 +380,7 @@ func LoadPromptTemplates(dir string) []PromptTemplate {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		raw, err := os.ReadFile(path)
+		raw, err := storage.ReadFile(path,512<<10)
 		if err != nil {
 			continue
 		}
@@ -390,20 +392,9 @@ func LoadPromptTemplates(dir string) []PromptTemplate {
 }
 
 func parseTemplateFrontmatter(content string) (string, string) {
-	if !strings.HasPrefix(content, "---\n") {
+	metadata, body, err := document.Frontmatter(content)
+	if err != nil {
 		return "", content
 	}
-	rest := content[4:]
-	end := strings.Index(rest, "\n---")
-	if end < 0 {
-		return "", content
-	}
-	head := rest[:end]
-	desc := ""
-	for _, line := range strings.Split(head, "\n") {
-		if strings.HasPrefix(line, "description:") {
-			desc = strings.TrimSpace(strings.TrimPrefix(line, "description:"))
-		}
-	}
-	return desc, strings.TrimPrefix(rest[end+4:], "\n")
+	return metadata["description"], body
 }

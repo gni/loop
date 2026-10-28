@@ -172,7 +172,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	unlock := LockPath(safePath)
 	defer unlock()
 
-	maxReadBytes := limits.MaxReadFileBytes()
+	maxReadBytes := limits.For(ctx).MaxReadFileBytes
 	if info.Size() > int64(maxReadBytes) {
 		return "", fmt.Errorf("file size (%d bytes) is too large; maximum allowed size is %d bytes", info.Size(), maxReadBytes)
 	}
@@ -208,8 +208,8 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	limit := int(args.Limit)
 	if limit <= 0 {
 		limit = readDefaultLimit
-	} else if limit > limits.MaxOutputLines() {
-		limit = limits.MaxOutputLines()
+	} else if limit > limits.For(ctx).MaxOutputLines {
+		limit = limits.For(ctx).MaxOutputLines
 	}
 
 	end := offset + limit - 1
@@ -218,14 +218,14 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	// Apply the documented per-line cap before the byte budget. Otherwise a
 	// single long line blocks the entire page even though its display fits.
-	lineCap := limits.ReadMaxLineLength()
+	lineCap := limits.For(ctx).ReadMaxLineLength
 	window := make([]string, 0, end-offset+1)
 	for _, line := range lines[offset-1 : end] {
 		window = append(window, TruncateLine(line, lineCap))
 	}
-	cut := TruncateHead(window, limit, limits.MaxOutputBytes())
+	cut := TruncateHead(window, limit, limits.For(ctx).MaxOutputBytes)
 	if cut.ShownLines == 0 {
-		return entryHeader + ReadFirstLineOverBudgetNotice(limits.MaxOutputBytes(), offset, targetPath), nil
+		return entryHeader + ReadFirstLineOverBudgetNotice(limits.For(ctx).MaxOutputBytes, offset, targetPath), nil
 	}
 	resultLines := window[:cut.ShownLines]
 

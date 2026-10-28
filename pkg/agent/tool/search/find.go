@@ -75,8 +75,8 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	limit := int(args.Limit)
-	if limit <= 0 || limit > limits.FindMaxResults() {
-		limit = limits.FindMaxResults()
+	if limit <= 0 || limit > limits.For(ctx).FindMaxResults {
+		limit = limits.For(ctx).FindMaxResults
 	}
 
 	offset := int(args.Offset)
@@ -133,7 +133,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	sort.Strings(matchedPaths)
 
-	cut := file.TruncateHead(matchedPaths, len(matchedPaths), limits.MaxOutputBytes())
+	cut := file.TruncateHead(matchedPaths, len(matchedPaths), limits.For(ctx).MaxOutputBytes)
 	result := cut.Content
 	if limitReached || cut.Truncated {
 		result += file.SearchLimitNotice("find", cut.ShownLines, totalMatches, cut.ShownLines+offset)

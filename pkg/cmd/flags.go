@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -93,6 +94,9 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 }
 
 func parseAllowedTools(toolsStr string) []string {
+	if strings.EqualFold(strings.TrimSpace(toolsStr), "none") || strings.EqualFold(strings.TrimSpace(toolsStr), "empty") {
+		return []string{}
+	}
 	return config.ParseToolList(toolsStr)
 }
 
@@ -101,6 +105,14 @@ func initRootFlags(cmd *cobra.Command) {
 	if home, err := os.UserHomeDir(); err == nil {
 		defaultConfig = filepath.Join(home, ".loop", "config.json")
 	}
+	if dir:=os.Getenv("LOOP_AGENT_DIR");dir!=""{defaultConfig=filepath.Join(dir,"config.json")}
+	cmd.PersistentFlags().StringVar(&outputMode, "mode", "text", "Output interface: text, json, rpc")
+	cmd.PersistentFlags().BoolVarP(&printOnce, "print", "p", false, "Print the final answer and exit")
+	cmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Keep this conversation in memory")
+	cmd.PersistentFlags().BoolVar(&noTools, "no-tools", false, "Disable every tool for this run")
+	cmd.PersistentFlags().BoolVar(&trustProject, "trust", false, "Load project resources for this run")
+	cmd.PersistentFlags().BoolVar(&ignoreProject, "no-trust", false, "Ignore executable project resources")
+	cmd.PersistentFlags().StringVar(&sessionName, "name", "", "Session display name")
 	cmd.SetHelpCommand(&cobra.Command{Use: "no-help-command", Hidden: true})
 	cmd.PersistentFlags().StringVar(&configPath, "config", defaultConfig, "Path to config JSON file")
 	cmd.PersistentFlags().StringVar(&endpoint, "endpoint", "", "Override llama.cpp or OpenAI server URL")

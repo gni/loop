@@ -122,9 +122,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	limit := int(args.Limit)
 	if limit <= 0 {
-		limit = defaultGrepLimit()
-	} else if limit > maxGrepLimit() {
-		limit = maxGrepLimit()
+		limit = limits.For(ctx).GrepDefaultLimit
+	} else if limit > limits.For(ctx).GrepMaxLimit {
+		limit = limits.For(ctx).GrepMaxLimit
 	}
 
 	offset := int(args.Offset)
@@ -157,9 +157,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	totalMatches := 0
 	limitReached := false
 	outputSizeReached := false
-	maxOutBytes := maxGrepOutputBytes()
-	maxLineLen := maxGrepLineLength()
-	maxFileBytes := int64(maxGrepFileSize())
+	maxOutBytes := limits.For(ctx).GrepMaxOutputBytes
+	maxLineLen := limits.For(ctx).GrepMaxLineLength
+	maxFileBytes := int64(limits.For(ctx).GrepMaxFileBytes)
 
 	appendOutputLine := func(lineStr string) bool {
 		if out.Len()+len(lineStr) > maxOutBytes {

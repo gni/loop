@@ -11,6 +11,8 @@ import (
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+ "loop/pkg/domain/message"
+	"loop/pkg/domain/session"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
@@ -56,7 +58,10 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
 	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
-		a.CompressHistory(ctx, messages, sessionID, theme, w)
+		if err := a.CompressHistory(ctx, messages, sessionID, theme, w); err != nil {
+			a.recordPersistenceError(err)
+			return promptTokens, effectiveLimit, false
+		}
 		recomputed, limit := a.estimateTurnContext(*messages, allowlist)
 		return recomputed, limit, true
 	}
@@ -172,7 +177,10 @@ func (a *Agent) CompressHistory(
 	sessionID string,
 	theme style.UITheme,
 	w io.Writer,
-) {
+) (compressionErr error) {
+	a.emit(Event{Type: "compaction_start", SessionID: sessionID})
+	defer func() { a.emit(Event{Type: "compaction_end", SessionID: sessionID, IsError: compressionErr != nil}) }()
+
 	keepMsgCount := keepRecentMessageCount(*messages)
 	keepIdx := len(*messages) - keepMsgCount
 	if keepIdx <= 1 {
@@ -256,6 +264,7 @@ func (a *Agent) CompressHistory(
 	case <-time.After(2 * time.Second):
 	}
 	if err != nil {
+		compressionErr = err
 		warnStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 		fmt.Fprintf(w, "%s Failed to compress conversation context: %v\n", warnStyle.Render("WARNING:"), err)
 		return
@@ -275,7 +284,9 @@ func (a *Agent) CompressHistory(
 		}
 	}
 
-	summaryMsg := db.Message{
+	usage:=message.MergeUsage(message.TotalUsage(toCompress),message.TotalUsage([]db.Message{*summaryAssistantMsg}))
+ summaryMsg := db.Message{
+ Usage:&usage,
 		Role:    "system",
 		Content: fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
 	}
@@ -292,12 +303,14 @@ func (a *Agent) CompressHistory(
 	newMessages = EnforceToolPairingInvariance(newMessages)
 
 	if sessionID != "" {
-		if err := db.RewriteSession(sessionID, newMessages); err != nil {
-			a.DebugLogError(sessionID, "db.RewriteSession (after compression)", err)
+		if err := a.AppendEntry(sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
+			a.recordPersistenceError(err)
+			return err
 		}
 	}
 	*messages = newMessages
 
 	compressedStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
 	fmt.Fprintf(w, "%s\n\n", compressedStyle.Render(fmt.Sprintf("context compressed · freed %d messages", keepIdx-1)))
+	return
 }

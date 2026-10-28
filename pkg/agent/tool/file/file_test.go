@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"loop/pkg/domain/observation"
 	domaintool "loop/pkg/domain/tool"
 )
 
 type dummyAgentContext struct {
 	root string
+	*observation.FileObservationTracker
 }
 
 func (c *dummyAgentContext) SafePath(p string) (string, error) {
@@ -33,7 +35,7 @@ func (c *dummyAgentContext) HasSubagent(string) bool                      { retu
 
 func TestFileSubpackageReadWriteEdit(t *testing.T) {
 	tmpDir := t.TempDir()
-	ctx := &dummyAgentContext{root: tmpDir}
+	ctx := &dummyAgentContext{root: tmpDir, FileObservationTracker: observation.NewFileObservationTracker()}
 
 	writeT := NewWriteTool()
 	readT := NewReadTool()

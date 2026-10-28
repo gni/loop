@@ -103,6 +103,11 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		// Never suppress the write completion line just because its code was
 		// streamed. Emit only the saved-file summary, not the raw tool output.
 		if toolName == "write" {
+			if !bodyWasStreamed && !collapse {
+				if content, ok := filetool.ExtractFileContent(argsJSON); ok && content != "" {
+					fmt.Fprintln(w, strings.TrimRight(highlightToolBody(content, toolName, argsJSON, false, false, theme), "\r\n"))
+				}
+			}
 			renderWriteSummary(w, theme, toolName, argsJSON, output)
 			return
 		}

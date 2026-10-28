@@ -211,6 +211,15 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 }
 
 func handleReloadCommand(a *agent.Agent, w io.Writer) {
+	if a.ReloadResources != nil {
+		if err := a.ReloadResources(); err != nil {
+			fmt.Fprintf(w, "reload failed: %v\n", err)
+		} else {
+			fmt.Fprintln(w, "reload ok")
+		}
+		return
+	}
+	a.ReloadSkills()
 	if err := a.ReloadPlugins(); err != nil {
 		fmt.Fprintf(w, "error reloading plugins: %v\n", err)
 	} else {

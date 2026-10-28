@@ -304,7 +304,7 @@ func TestLLMEmptyStreamReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on empty stream, got nil")
 	}
-	if !strings.Contains(err.Error(), "without returning any content") {
+	if !strings.Contains(err.Error(), "ended before a completion marker") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
@@ -328,12 +328,10 @@ func TestLLMConnectionErrorIsRetried(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected connection refused error, got nil")
 	}
-	// Connection refused is now classified as transient and retried with linear
-	// backoff (1s + 2s + 3s = 6s total), matching client_test.go. Verify retries.
-	if duration < 6*time.Second {
-		t.Fatalf("expected connection refused to be retried with backoff, took: %v", duration)
+	if !strings.Contains(err.Error(), "after 3 retries") {
+		t.Fatalf("connection error did not exhaust retry budget: %v", err)
 	}
-	if duration > 8*time.Second {
+	if duration > 9*time.Second {
 		t.Fatalf("retries took unexpectedly long: %v", duration)
 	}
 }

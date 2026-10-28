@@ -3,6 +3,8 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"loop/pkg/ui/render"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +92,7 @@ func TestKeyInterceptorReader(t *testing.T) {
 
 func TestClearTerminalForStartupErasesPreviousViewport(t *testing.T) {
 	var output bytes.Buffer
-	clearTerminalForStartup(&output)
+	ClearTerminalForStartup(&output)
 
 	if got, want := output.String(), "\x1b[r\x1b[2J\x1b[H"; got != want {
 		t.Fatalf("startup clear sequence = %q; want %q", got, want)
@@ -98,9 +100,7 @@ func TestClearTerminalForStartupErasesPreviousViewport(t *testing.T) {
 }
 
 func TestAlternateScreenRefCounting(t *testing.T) {
-	alternateScreenMu.Lock()
-	alternateScreenDepth = 0
-	alternateScreenMu.Unlock()
+	ForceExitAlternateScreen(io.Discard)
 
 	var buf bytes.Buffer
 	// First enteR: outputs alternate screen escape sequence
@@ -138,7 +138,7 @@ func TestRefreshConsoleAfterTurnDoesNotRepaintHistory(t *testing.T) {
 	a := &agent.Agent{Config: &config.Config{}}
 	reader := &keyInterceptorReader{Agent: a}
 
-	refreshConsoleAfterTurn(&output, a, reader, nil)
+	RefreshConsoleAfterTurn(&output, a, reader, nil)
 
 	raw := output.String()
 	for _, fullRepaintSequence := range []string{"\x1b[2J", "\x1b[H\x1b[J"} {
@@ -216,7 +216,7 @@ func TestRedrawKeepsActiveToolAllowlistTokenEstimate(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	redrawScreen(&output, a, reader, nil)
+	RedrawScreen(&output, a, reader, nil)
 
 	getUI().StateMu.Lock()
 	gotPrompt := getUI().State.PromptTokens
@@ -691,7 +691,7 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 		var buf bytes.Buffer
 		// Simulate streaming JSON chunk: {"write_content": "hello world"}
-		p.feed(`{"write_content": "hello world"}`, &buf, theme)
+		p.feed(`{"path":"result.txt", "write_content": "hello world"}`, &buf, theme)
 		got := buf.String()
 		if strings.Contains(got, "hello world") {
 			t.Errorf("expected write_content to be suppressed, but got %q", got)
@@ -705,7 +705,7 @@ func TestJsonStreamParserStreamWrites(t *testing.T) {
 		}
 		var buf bytes.Buffer
 		// Simulate streaming JSON chunk: {"write_content": "hello world"}
-		p.feed(`{"write_content": "hello world"}`, &buf, theme)
+		p.feed(`{"path":"result.txt", "write_content": "hello world"}`, &buf, theme)
 		got := buf.String()
 		if !strings.Contains(got, "hello world") {
 			t.Errorf("expected write_content to be streamed, but got %q", got)
@@ -1232,7 +1232,7 @@ func TestPromptQueue(t *testing.T) {
 }
 
 func TestMultilineHistoryPreservation(t *testing.T) {
-	hist := &customHistory{}
+	hist := &CustomHistory{}
 	rawPrompt := "function main() {\n    fmt.Println(\"hello\")\n}"
 	hist.Add(rawPrompt)
 
@@ -1272,7 +1272,7 @@ func TestQueueVisibilityAndFeedback(t *testing.T) {
 	getUI().State.QueuedPromptsCount = 0
 	getUI().StateMu.Unlock()
 
-	right := formatRight(theme, 80)
+	right := render.FormatStatusBarRight(getUI().State, theme, 80)
 	if strings.Contains(right, "queue") {
 		t.Fatalf("expected no queue badge when queue is empty, got: %s", right)
 	}
@@ -1288,7 +1288,7 @@ func TestQueueVisibilityAndFeedback(t *testing.T) {
 	getUI().State.QueuedPromptsCount = n
 	getUI().StateMu.Unlock()
 
-	right = formatRight(theme, 80)
+	right = render.FormatStatusBarRight(getUI().State, theme, 80)
 	if !strings.Contains(right, "[queue:1]") {
 		t.Fatalf("expected formatRight to contain [queue:1], got: %s", right)
 	}
@@ -1311,7 +1311,7 @@ func TestQueueVisibilityAndFeedback(t *testing.T) {
 	getUI().State.QueuedPromptsCount = ki.QueueLen()
 	getUI().StateMu.Unlock()
 
-	rightAfter := formatRight(theme, 80)
+	rightAfter := render.FormatStatusBarRight(getUI().State, theme, 80)
 	if strings.Contains(rightAfter, "queue") {
 		t.Fatalf("expected no queue badge after queue drained, got: %s", rightAfter)
 	}
@@ -1373,7 +1373,7 @@ func TestPrintSessionHistorySystemEventsFormattedCleanly(t *testing.T) {
 func TestInStreamHistoryNavigation(t *testing.T) {
 	useIsolatedCursorTestUI(t)
 
-	hist := &customHistory{}
+	hist := &CustomHistory{}
 	hist.Add("cmd1: first")
 	hist.Add("cmd2: second")
 	hist.Add("cmd3: third")
@@ -1483,7 +1483,7 @@ func TestInStreamHistoryEmpty(t *testing.T) {
 	ki := &keyInterceptorReader{
 		Agent:           a,
 		W:               &output,
-		Hist:            &customHistory{},
+		Hist:            &CustomHistory{},
 		HistoryIndex:    -1,
 		TypeAheadBuffer: []byte("stay"),
 	}
@@ -1502,7 +1502,7 @@ func TestInStreamHistoryEmpty(t *testing.T) {
 func TestInStreamHistoryFallbackToRLHistory(t *testing.T) {
 	useIsolatedCursorTestUI(t)
 
-	hist := &customHistory{}
+	hist := &CustomHistory{}
 	hist.Add("fallback command")
 
 	var output bytes.Buffer
@@ -1548,7 +1548,7 @@ func TestResetTypeAheadLocked(t *testing.T) {
 func TestInStreamHistoryFullWorkflow(t *testing.T) {
 	useIsolatedCursorTestUI(t)
 
-	hist := &customHistory{}
+	hist := &CustomHistory{}
 	hist.Add("multiline\nfirst\ncommand")
 	hist.Add("git status")
 
@@ -1794,7 +1794,7 @@ func TestSingleLongLine_DoesNotAutoresizePromptVertically(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 	out := buf.String()
 
 	// In 24-height terminal, single line prompt must stay strictly at row 22 (height-2)
@@ -1846,7 +1846,7 @@ func TestPromptAutoresize_StaticBottomDelimiterAndMovingTopDelimiter(t *testing.
 	})
 
 	var buf bytes.Buffer
-	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 	out := buf.String()
 
 	// Bottom delimiter at height-1 (row 23 in 24-height terminal) must be drawn
@@ -1903,13 +1903,13 @@ func TestPromptAutoresize_MovesChatSectionWhenPastingMultipleLines(t *testing.T)
 	})
 
 	var buf bytes.Buffer
-	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 	out := buf.String()
 
 	// In 24-height terminal, 4-line input has effectiveOffset = 3.
 	// Old scroll bottom was 24 - 5 - 0 = 19.
 	// It must scroll the chat region (1..19) up by 3 lines (\x1b[3S) so chat content is not hidden!
-	expectedScroll := "\x1b7\x1b[1;19r\x1b[19;1H\x1b[3S\x1b8"
+	expectedScroll := fmt.Sprintf("\x1b7\x1b[1;%dr\x1b[%d;1H\x1b[3S\x1b8", style.ConsoleScrollBottom(24, 0), style.ConsoleScrollBottom(24, 0))
 	if !strings.Contains(out, expectedScroll) {
 		t.Fatalf("expected chat region to scroll up with %q, output was:\n%q", expectedScroll, out)
 	}
@@ -2058,7 +2058,7 @@ func TestPromptAutoresize_ParagraphWrappingAcrossMultipleRows(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 	out := buf.String()
 
 	// In 80-col terminal, p1 (175 chars) wraps into 3 rows, p2 (170 chars) wraps into 3 rows, p3 (117 chars) wraps into 2 rows = 8 rows total.
@@ -2148,7 +2148,7 @@ func TestPromptAutoresize_NoDeadlockWhenTerminalMuIsHeld(t *testing.T) {
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
 		var buf bytes.Buffer
-		drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+		DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 		close(done)
 	}()
 

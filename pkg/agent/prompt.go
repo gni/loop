@@ -192,6 +192,9 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	if len(cfg.Skills) > 0 {
 		var skillLines strings.Builder
 		for _, s := range cfg.Skills {
+			if s.DisableModelInvocation {
+				continue
+			}
 			skillLines.WriteString(fmt.Sprintf(t.SkillLine, s.Name, s.Description))
 		}
 		sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))

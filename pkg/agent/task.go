@@ -135,10 +135,10 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}
 	a.Tasks[id] = task
 	a.pruneFinishedTasksLocked()
-	if len(a.Tasks) > limits.MaxTrackedTasks() {
+	if len(a.Tasks) > a.GetLimits().MaxTrackedTasks {
 		delete(a.Tasks, id)
 		a.TasksMu.Unlock()
-		return "", fmt.Errorf("maximum number of tracked tasks (%d) reached; remove or finish a task before spawning another", limits.MaxTrackedTasks())
+		return "", fmt.Errorf("maximum number of tracked tasks (%d) reached; remove or finish a task before spawning another", a.GetLimits().MaxTrackedTasks)
 	}
 	task.mu.Lock()
 	a.TasksMu.Unlock()
@@ -417,7 +417,7 @@ func (a *Agent) ClearTasks() int {
 }
 
 func (a *Agent) pruneFinishedTasksLocked() {
-	if a == nil || len(a.Tasks) <= limits.MaxTrackedTasks() {
+	if a == nil || len(a.Tasks) <= a.GetLimits().MaxTrackedTasks {
 		return
 	}
 
@@ -433,7 +433,7 @@ func (a *Agent) pruneFinishedTasksLocked() {
 	sort.Slice(terminal, func(i, j int) bool { return terminal[i].EndTime.Before(terminal[j].EndTime) })
 
 	for _, t := range terminal {
-		if len(a.Tasks) <= limits.MaxTrackedTasks() {
+		if len(a.Tasks) <= a.GetLimits().MaxTrackedTasks {
 			return
 		}
 		delete(a.Tasks, t.ID)

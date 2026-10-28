@@ -43,13 +43,13 @@ func (t *loadSkillTool) Execute(ctx AgentContext, arguments string) (string, err
 
 	for _, s := range ctx.GetActiveSkills() {
 		if strings.EqualFold(s.Name, name) {
-			return fmt.Sprintf("SKILL INSTRUCTIONS FOR '%s':\n\n%s", s.Name, s.Content), nil
+			return fmt.Sprintf("SKILL INSTRUCTIONS FOR '%s' (%s):\nResolve supporting files relative to this skill directory.\n\n%s", s.Name, s.Path, s.Content), nil
 		}
 	}
 
 	for _, s := range ctx.ReloadSkills() {
 		if strings.EqualFold(s.Name, name) {
-			return fmt.Sprintf("SKILL INSTRUCTIONS FOR '%s':\n\n%s", s.Name, s.Content), nil
+			return fmt.Sprintf("SKILL INSTRUCTIONS FOR '%s' (%s):\nResolve supporting files relative to this skill directory.\n\n%s", s.Name, s.Path, s.Content), nil
 		}
 	}
 

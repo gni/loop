@@ -31,6 +31,7 @@ func TestBeforeAttemptRunsAfterBackoffAndCanStopRetries(t *testing.T) {
 	client := NewResilientClient(RetryConfig{
 		MaxRetries: 3,
 		BaseDelay:  20 * time.Millisecond,
+		Backoff:    func(ceiling time.Duration) time.Duration { return ceiling },
 		Client:     server.Client(),
 		BeforeAttempt: func(attempt int) error {
 			observed = append(observed, time.Since(start))

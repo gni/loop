@@ -42,7 +42,7 @@ func TestJSONStreamParserBasic(t *testing.T) {
 		p.ActiveToolName = "write"
 
 		var buf bytes.Buffer
-		p.Feed(`{"write_content": "hello world"}`, &buf, theme)
+		p.Feed(`{"path":"hello.txt","write_content": "hello world"}`, &buf, theme)
 		got := buf.String()
 		if !strings.Contains(got, "hello world") {
 			t.Errorf("expected content to be streamed, got: %q", got)

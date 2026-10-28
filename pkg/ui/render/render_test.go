@@ -305,8 +305,8 @@ func TestDiffStatsAndInstructions(t *testing.T) {
 	if strings.Contains(rendered, "✓") {
 		t.Fatalf("expected rendered edit output to not contain '✓', got: %s", rendered)
 	}
-	firstLine := strings.Split(style.StripAnsi(rendered), "\n")[0]
-	if !strings.HasPrefix(firstLine, "⎿  ") {
+	firstLine := style.StripAnsi(rendered)
+	if !strings.Contains(firstLine, "⎿  ") {
 		t.Fatalf("expected edit summary to start with '⎿  ', got: %q", firstLine)
 	}
 

@@ -107,7 +107,7 @@ func TestSubagentDelegationRulesOnlyForSpawners(t *testing.T) {
 	}
 
 	var restricted []string
-	for _, entry := range promptToolEntries(spawner.Registry) {
+	for _, entry := range PromptToolEntries(spawner.Registry, true) {
 		if entry.Name != "create_subagent" && entry.Name != "spawn_subagent" {
 			restricted = append(restricted, entry.Name)
 		}

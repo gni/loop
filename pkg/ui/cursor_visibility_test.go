@@ -145,7 +145,7 @@ func TestDrawConsoleStaticControlsCursorPosition(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	drawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
+	DrawConsoleStaticControlsLocked(&buf, a, ki, nil, true)
 	out := buf.String()
 
 	// Prompt row should be 22 in 24-height terminal

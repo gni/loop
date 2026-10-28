@@ -132,7 +132,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'task_status') or stop with /stop (or 'task_kill'). Toggle live stream via Ctrl+O.", id, bgCmd), nil
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), 120*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), shellTimeout(ctx))
 	defer cancel()
 
 	var markerBytes [16]byte
@@ -287,4 +287,11 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return combined, fmt.Errorf("%s", exitDesc)
 	}
 	return combined, nil
+}
+
+func shellTimeout(ctx domaintool.AgentContext) time.Duration {
+	if provider, ok := ctx.(interface{ GetShellTimeout() time.Duration }); ok {
+		return provider.GetShellTimeout()
+	}
+	return 120 * time.Second
 }

@@ -37,8 +37,10 @@ func handleClearCommand(
 	}
 	*messages = nil
 	a.SyncSessionSystemPrompt(messages, "")
-	_ = db.ClearSession(*currentSessionID)
-	_ = db.SaveMessage(*currentSessionID, (*messages)[0])
+if !a.Ephemeral{
+ if err:=db.ClearSession(*currentSessionID);err!=nil{fmt.Fprintf(w,"cannot clear session: %v\n",err);return}
+ if err:=a.SaveMessage(*currentSessionID,(*messages)[0]);err!=nil{fmt.Fprintf(w,"cannot save session: %v\n",err);return}
+ }
 	if ch, ok := rlHistory.(interface{ Clear() }); ok {
 		ch.Clear()
 	}
@@ -71,6 +73,10 @@ func handleSessionCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
+if a.Ephemeral&&len(parts)>1{
+  switch parts[1]{case "new","clear":*messages=nil;*currentSessionID="";a.SyncSessionSystemPrompt(messages,"");_ = a.SetTodos(nil);default:fmt.Fprintln(w,"this conversation is ephemeral; persistent session operations require a saved session")}
+  return
+ }
 	rl := terminalFromReader(kiReader)
 
 	resetToFreshSession := func() {

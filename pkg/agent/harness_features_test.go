@@ -105,7 +105,7 @@ func TestHarnessFeaturesIntegration(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected CAS failure after external modification")
 	}
-	if !strings.Contains(err.Error(), "modified on disk since your last read") {
+	if !strings.Contains(err.Error(), "changed since your last read") {
 		t.Errorf("expected stale version error message, got: %v", err)
 	}
 

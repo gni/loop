@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,30 +12,40 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"loop/pkg/config"
-	"loop/pkg/domain/limits"
+ "loop/pkg/transport/sse"
 )
 
 type mcpClient struct {
-	name           string
-	config         config.MCPServerConfig
-	isSSE          bool
-	isStdio        bool
-	cmd            *exec.Cmd
-	stdin          io.WriteCloser
-	postURL        string
-	sseBody        io.ReadCloser
-	requests       map[int64]chan string
-	requestMu      sync.Mutex
-	closed         bool
-	writeMu        sync.Mutex
-	nextID         int64
-	initialized    bool
-	client         *http.Client
-	cancel         context.CancelFunc
-	connectTimeout time.Duration
+	closeOnce         sync.Once
+	processDone       chan struct{}
+	dirty             atomic.Bool
+	timeout           time.Duration
+	resolveCredential func(context.Context) (string, error)
+	name              string
+	config            config.MCPServerConfig
+	isSSE             bool
+	isStdio           bool
+	isHTTP            bool
+	sessionID         string
+	protocolVersion   string
+	cmd               *exec.Cmd
+	stdin             io.WriteCloser
+	postURL           string
+	sseBody           io.ReadCloser
+	requests          map[int64]chan string
+	requestMu         sync.Mutex
+	closed            bool
+	writeMu           sync.Mutex
+	nextID            int64
+	initialized       bool
+	client            *http.Client
+	cancel            context.CancelFunc
+	connectTimeout    time.Duration
 }
 
 type MCPTool struct {
@@ -60,6 +69,26 @@ func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Respons
 		return nil, err
 	}
 	c.applyHeaders(req, "application/json")
+	if c.resolveCredential != nil {
+		key, err := c.resolveCredential(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if key != "" && req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
+	if c.isHTTP {
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		c.requestMu.Lock()
+		if c.sessionID != "" {
+			req.Header.Set("Mcp-Session-Id", c.sessionID)
+		}
+		if c.protocolVersion != "" {
+			req.Header.Set("MCP-Protocol-Version", c.protocolVersion)
+		}
+		c.requestMu.Unlock()
+	}
 	return c.client.Do(req)
 }
 
@@ -101,8 +130,11 @@ func (c *mcpClient) start() error {
 	if c.config.URL == "" {
 		return fmt.Errorf("MCP server '%s' is missing 'url' or 'command' config", c.name)
 	}
-	c.isSSE = true
-	return c.startSSE()
+	if strings.EqualFold(c.config.Type, "sse") {
+		c.isSSE = true
+		return c.startSSE()
+	}
+	return c.startHTTP()
 }
 
 func (c *mcpClient) startSSE() error {
@@ -144,36 +176,15 @@ func (c *mcpClient) startSSE() error {
 	go func() {
 		defer c.failPendingRequests()
 		defer close(endpointChan)
-		scanner := bufio.NewScanner(c.sseBody)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		var lastEvent string
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "event:") {
-				lastEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			} else if strings.HasPrefix(line, "data:") {
-				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				if lastEvent == "endpoint" {
-					postURL := c.resolveEndpointURL(data)
-					if postURL != "" {
-						mcpLog("[MCP] Resolved POST endpoint: %s\n", postURL)
-					}
-					select {
-					case endpointChan <- postURL:
-					default:
-					}
-				} else {
-					mcpLog("[MCP Rx] %s\n", data)
-					c.handleMessage(data)
-				}
-				lastEvent = ""
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			mcpLog("SSE connection error for '%s': %v\n", c.name, err)
-		} else {
-			mcpLog("SSE connection closed for '%s'\n", c.name)
-		}
+ reader:=sse.NewReader(c.sseBody)
+ for{
+  event,err:=reader.Read(ctx)
+  if err!=nil{if err!=io.EOF{mcpLog("SSE connection error for '%s': %v\n",c.name,err)};return}
+  if event.Name=="endpoint"{
+   postURL:=c.resolveEndpointURL(event.Data)
+   select{case endpointChan<-postURL:default:}
+  }else{c.handleMessage(event.Data)}
+ }
 	}()
 
 	select {
@@ -224,33 +235,58 @@ func (c *mcpClient) failPendingRequests() {
 	c.requestMu.Unlock()
 }
 
+func (c *mcpClient) healthy() bool {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	return !c.closed && !c.dirty.Load()
+}
+
 func (c *mcpClient) close() {
-	c.writeMu.Lock()
-	if c.stdin != nil {
-		_ = c.stdin.Close()
-	}
-	c.writeMu.Unlock()
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-		cmd := c.cmd
-		go func() {
-			_ = cmd.Wait()
-		}()
-	}
-	if c.cancel != nil {
-		c.cancel()
-	}
-	if c.sseBody != nil {
-		_ = c.sseBody.Close()
-	}
-	c.failPendingRequests()
+	c.closeOnce.Do(func() {
+		c.writeMu.Lock()
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		c.writeMu.Unlock()
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGTERM)
+			select {
+			case <-c.processDone:
+			case <-time.After(300 * time.Millisecond):
+				_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
+			}
+		}
+		if c.cancel != nil {
+			c.cancel()
+		}
+		if c.sseBody != nil {
+			_ = c.sseBody.Close()
+		}
+		if c.processDone != nil {
+			select {
+			case <-c.processDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		c.failPendingRequests()
+		if c.client != nil {
+			c.client.CloseIdleConnections()
+		}
+	})
 }
 
 func (c *mcpClient) handleMessage(data string) {
 	var msg struct {
-		ID json.RawMessage `json:"id"`
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
 	}
-	if err := json.Unmarshal([]byte(data), &msg); err != nil || len(msg.ID) == 0 {
+	if err := json.Unmarshal([]byte(data), &msg); err != nil {
+		return
+	}
+	if msg.Method == "notifications/tools/list_changed" {
+		c.dirty.Store(true)
+	}
+	if len(msg.ID) == 0 {
 		return
 	}
 
@@ -361,20 +397,26 @@ func (c *mcpClient) requestWithTimeout(parent context.Context, method string, pa
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		if resp.StatusCode == http.StatusNotFound {
+			c.dirty.Store(true)
+		}
 		c.clearPendingRequest(id)
 		return "", fmt.Errorf("HTTP error %d", resp.StatusCode)
 	}
 
+	if c.isHTTP {
+		return c.readHTTPResponse(ctx, resp, id, ch)
+	}
 	return c.awaitRPCResponse(ctx, id, ch, "MCP connection closed while waiting for '%s'", "request timeout or cancellation", method)
 }
 
 func (c *mcpClient) request(method string, params interface{}) (string, error) {
-	return c.requestWithTimeout(context.Background(), method, params, limits.MCPRequestTimeout())
+	return c.requestWithTimeout(context.Background(), method, params, c.requestTimeout())
 }
 
 func (c *mcpClient) handshake() error {
 	params := map[string]interface{}{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": "2025-11-25",
 		"capabilities":    map[string]interface{}{},
 		"clientInfo": map[string]string{
 			"name":    "loop-client",
@@ -386,9 +428,13 @@ func (c *mcpClient) handshake() error {
 	if err != nil {
 		return err
 	}
-	if err := decodeRPCResponse(res, nil); err != nil {
+	var initialized struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := decodeRPCResponse(res, &initialized); err != nil {
 		return err
 	}
+	c.protocolVersion = initialized.ProtocolVersion
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -463,47 +509,7 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 	return nil, fmt.Errorf("MCP tools/list exceeded %d pages", maxPages)
 }
 
-func (c *mcpClient) callTool(ctx context.Context, name string, arguments string) (string, error) {
-	if !c.initialized {
-		return "", fmt.Errorf("client not initialized")
-	}
-
-	argsMap := make(map[string]interface{})
-	if trimmed := strings.TrimSpace(arguments); trimmed != "" {
-		if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
-			return "", err
-		}
-	}
-
-	res, err := c.requestWithTimeout(ctx, "tools/call", map[string]interface{}{
-		"name":      name,
-		"arguments": argsMap,
-	}, limits.MCPRequestTimeout())
-	if err != nil {
-		return "", err
-	}
-
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	}
-	if err := decodeRPCResponse(res, &result); err != nil {
-		return "", err
-	}
-
-	var output []string
-	for _, comp := range result.Content {
-		if comp.Type == "text" {
-			output = append(output, comp.Text)
-		}
-	}
-
-	joined := strings.Join(output, "\n")
-	if result.IsError {
-		return joined, fmt.Errorf("tool execution failed")
-	}
-	return joined, nil
+func (c *mcpClient) callTool(ctx context.Context,name,arguments string)(string,error){
+ result,err:=c.callToolResult(ctx,name,arguments)
+ return result.Output,err
 }

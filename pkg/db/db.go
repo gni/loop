@@ -15,7 +15,7 @@ import (
 	"loop/pkg/domain/session"
 )
 
-const maxJSONLLineBytes = 8 * 1024 * 1024
+const maxJSONLLineBytes = 64 * 1024 * 1024
 
 type ToolFunction = message.ToolFunction
 type ToolCall = message.ToolCall
@@ -27,8 +27,10 @@ func NewUUID() string {
 }
 
 type JSONLStore struct {
-	dir string
-	mu  sync.RWMutex
+	dir       string
+	mu        sync.RWMutex
+	Workspace string
+	cache     map[string]cachedEntries
 }
 
 var _ session.Store = (*JSONLStore)(nil)
@@ -38,7 +40,14 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	if err := os.MkdirAll(clean, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
-	return &JSONLStore{dir: clean}, nil
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = resolved
+	}
+	return &JSONLStore{dir: clean, Workspace: cwd, cache: make(map[string]cachedEntries)}, nil
 }
 
 func newJSONLScanner(r io.Reader) *bufio.Scanner {
@@ -82,6 +91,9 @@ func writeJSONLine(w io.Writer, v any) error {
 	if err != nil {
 		return err
 	}
+	if len(jsonData)+1 >= maxJSONLLineBytes {
+		return fmt.Errorf("session record exceeds %d MiB", maxJSONLLineBytes>>20)
+	}
 	_, err = w.Write(append(jsonData, '\n'))
 	return err
 }
@@ -99,47 +111,10 @@ func (s *JSONLStore) checkReady(sessionID string) error {
 }
 
 func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
-	if err := s.checkReady(sessionID); err != nil {
-		return err
-	}
-	if msg.Role == message.RoleUser && msg.Content == "" {
+	if isSkippedSlashRecord(msg) {
 		return nil
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	filePath := s.sessionPath(sessionID)
-	var parentID string
-	if entries, err := readEntries(filePath); err == nil && len(entries) > 0 {
-		if leaf := session.LeafPath(entries, ""); len(leaf) > 0 {
-			parentID = leaf[len(leaf)-1].ID
-		}
-	}
-
-	record := session.Record{
-		ID:        session.NewUUID(),
-		ParentID:  parentID,
-		Type:      "message",
-		Timestamp: nowTimestamp(),
-		Message:   msg,
-	}
-
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open session file: %w", err)
-	}
-	defer f.Close()
-	if err := f.Chmod(0600); err != nil {
-		return fmt.Errorf("secure session file: %w", err)
-	}
-
-	if err := writeJSONLine(f, record); err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
-	}
-
-	_ = s.setLatestSessionIDUnlocked(sessionID)
-	return nil
+	return s.AppendEntry(sessionID, session.Record{Type: "message", Message: msg})
 }
 
 func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
@@ -147,10 +122,7 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 		return nil, err
 	}
 
-	s.mu.RLock()
-	filePath := s.sessionPath(sessionID)
-	entries, err := readEntries(filePath)
-	s.mu.RUnlock()
+	entries, err := s.Entries(sessionID)
 
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -159,17 +131,12 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 		return nil, fmt.Errorf("failed to open session file: %w", err)
 	}
 
-	activeRecords := session.LeafPath(entries, "")
-	if len(activeRecords) == 0 && len(entries) > 0 {
-		activeRecords = entries
-	}
-
-	var messages []message.Message
-	for _, record := range activeRecords {
-		if record.Type == "branch" || record.Type == "session" || record.Message.Role == "" || isSkippedSlashRecord(record.Message) {
-			continue
+	projected := session.Project(entries)
+	messages := make([]message.Message, 0, len(projected))
+	for _, msg := range projected {
+		if !isSkippedSlashRecord(msg) {
+			messages = append(messages, msg)
 		}
-		messages = append(messages, record.Message)
 	}
 
 	return messages, nil
@@ -188,58 +155,67 @@ func (s *JSONLStore) HasMessages(sessionID string) bool {
 }
 
 func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message) error {
+	return s.AppendEntry(sessionID, session.Record{Type: "context", Messages: messages})
+}
+
+func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error {
 	if err := s.checkReady(sessionID); err != nil {
 		return err
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	tmpFile, err := os.CreateTemp(s.dir, sessionID+"-*.tmp")
+	release, err := s.lock(true)
 	if err != nil {
-		return fmt.Errorf("failed to create temp session file: %w", err)
+		return err
 	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}()
-
-	now := nowTimestamp()
-	var parentID string
-	for _, msg := range messages {
-		if msg.Role == message.RoleUser && msg.Content == "" {
-			continue
-		}
-		id := session.NewUUID()
-		record := session.Record{
-			ID:        id,
-			ParentID:  parentID,
-			Type:      "message",
-			Timestamp: now,
-			Message:   msg,
-		}
-		parentID = id
-		if err := writeJSONLine(tmpFile, record); err != nil {
-			return fmt.Errorf("failed to write message to temp file: %w", err)
+	defer release()
+	entries, err := s.entries(sessionID)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		if last.Type != "session" {
+			record.ParentID = last.ID
+			if record.ParentID == "" {
+				record.ParentID = fmt.Sprintf("legacy-%d", len(entries)-1)
+			}
 		}
 	}
-
-	if err := tmpFile.Chmod(0600); err != nil {
-		return fmt.Errorf("failed to secure temp session file: %w", err)
+	record.ID = session.NewUUID()
+	record.Timestamp = nowTimestamp()
+	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
 	}
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file: %w", err)
+	defer f.Close()
+	if len(entries) == 0 {
+		header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: sessionID, Cwd: s.Workspace, Timestamp: nowTimestamp()}
+		if err := writeJSONLine(f, header); err != nil {
+			return err
+		}
+		entries = append(entries, header)
 	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temp file: %w", err)
+	if err := writeJSONLine(f, record); err != nil {
+		return err
 	}
-
-	if err := os.Rename(tmpPath, s.sessionPath(sessionID)); err != nil {
-		return fmt.Errorf("failed to atomically replace session file: %w", err)
+	if err := f.Sync(); err != nil {
+		delete(s.cache, sessionID)
+		return err
 	}
-
+	if err := s.setLatestSessionIDUnlocked(sessionID); err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	s.cache[sessionID] = cachedEntries{size: info.Size(), modified: info.ModTime(), entries: append(entries, record)}
 	return nil
+}
+
+func AppendEntry(sessionID string, record session.Record) error {
+	return withStore(func(s *JSONLStore) error { return s.AppendEntry(sessionID, record) })
 }
 
 var (
@@ -299,4 +275,8 @@ func HasMessages(sessionID string) bool {
 
 func RewriteSession(sessionID string, messages []Message) error {
 	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
+}
+
+func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {
+	return &JSONLStore{dir: s.dir, Workspace: workspace, cache: make(map[string]cachedEntries)}
 }

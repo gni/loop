@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 )
 
 type OpenAICompatibleProvider struct {
+	ResolveCredential      func(context.Context) (string, error)
 	Config                 *config.Config
 	HttpClient             *http.Client
 	ThinkingSupported      bool
@@ -27,8 +29,8 @@ type OpenAICompatibleProvider struct {
 	ContextLimitChecked    bool
 	ContextLimitMu         sync.RWMutex
 
-	thinkingMu           sync.Mutex
-	ChunkDropObserver    ChunkDropObserver
+	thinkingMu        sync.Mutex
+	ChunkDropObserver ChunkDropObserver
 }
 
 func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
@@ -136,12 +138,34 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	messages []db.Message,
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
-) (*db.Message, error) {
-	if err := p.activeProviderAuthStatus(); err != nil {
+) (result *db.Message, runErr error) {
+	if err := p.validateCapabilities(messages); err != nil {
 		return nil, err
 	}
-	if resolved := p.Config.ResolveModelAlias(p.Config.Model); resolved != "" && resolved != p.Config.Model {
-		p.Config.Model = resolved
+	defer func() {
+		if result != nil {
+			result.Provider = p.Config.ActiveProvider
+			result.Model = p.Config.Model
+			selected := p.selectedModel()
+			if selected.Pricing != nil {
+				result.Cost = selected.Pricing.Cost(result.PromptTokens, result.CompletionTokens, result.CacheReadTokens, result.CacheWriteTokens)
+			}
+		}
+	}()
+	if p.ResolveCredential != nil {
+		key, err := p.ResolveCredential(ctx)
+		if err != nil {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, credentialContextKey{}, key)
+	}
+	if p.ResolveCredential == nil {
+		if err := p.activeProviderAuthStatus(); err != nil {
+			return nil, err
+		}
+	}
+	if p.api() != "chat-completions" {
+		return p.streamNative(ctx, messages, tools, chunkChan)
 	}
 
 	if p.Config != nil && p.Config.PromptCacheBreakpoints {
@@ -158,7 +182,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	streamCtx, kickTimer, timedOut, stopWatchdog := startStreamWatchdog(ctx, timeoutDuration)
 	defer stopWatchdog()
 
-	url := fmt.Sprintf("%s/v1/chat/completions", strings.TrimSuffix(p.Config.Endpoint, "/"))
+	url := completionURL(p.Config.Endpoint)
 
 	if !p.ThinkingProbeChecked() {
 		p.ProbeServerCapabilities(streamCtx)
@@ -175,7 +199,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		BaseDelay:  time.Second,
 		Client:     p.HttpClient,
 		BeforeAttempt: func(int) error {
-			kickTimer()
 			return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after ")
 		},
 		DescribeError: func(err error) error {
@@ -191,8 +214,13 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("loop", "v1.0.0")
-		if p.Config.ApiKey != "" {
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))
+		if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
+			for key, value := range profile.Headers {
+				req.Header.Set(key, os.ExpandEnv(value))
+			}
+		}
+		if key := p.requestKey(streamCtx); key != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 		}
 		return req, nil
 	})
@@ -241,7 +269,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
 
 		return &db.Message{
-			Role:             "assistant",
+			Role:     "assistant",
+			Provider: p.Config.ActiveProvider, Model: p.Config.Model, StopReason: finishReason,
 			Content:          textBuilder.String(),
 			ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
 			PromptTokens:     promptTokens,
@@ -353,8 +382,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
+	if finishReason == "" && !streamReader.Complete {
+		return buildMessage(), fmt.Errorf("provider stream ended before a completion marker")
+	}
 	if finishReason == "length" || finishReason == "content_filter" {
-		return nil, fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
+		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
 	}
 
 	assistantMsg := buildMessage()
@@ -384,4 +416,24 @@ func (p *OpenAICompatibleProvider) checkContextOrTimeout(ctx, streamCtx context.
 		return streamCtx.Err()
 	}
 	return nil
+}
+
+func completionURL(endpoint string) string {
+	base := strings.TrimRight(endpoint, "/")
+	if strings.HasSuffix(base, "/chat/completions") {
+		return base
+	}
+	if strings.HasSuffix(base, "/v1") {
+		return base + "/chat/completions"
+	}
+	return base + "/v1/chat/completions"
+}
+
+type credentialContextKey struct{}
+
+func (p *OpenAICompatibleProvider) requestKey(ctx context.Context) string {
+	if key, ok := ctx.Value(credentialContextKey{}).(string); ok {
+		return key
+	}
+	return p.Config.ApiKey
 }

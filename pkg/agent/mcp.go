@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +15,6 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
-	"loop/pkg/domain/limits"
 )
 
 var mcpDebugLogging = os.Getenv("LOOP_MCP_DEBUG") == "1"
@@ -42,18 +44,15 @@ func (m *mcpToolExecutor) Name() string     { return m.def.Function.Name }
 func (m *mcpToolExecutor) Definition() Tool { return m.def }
 
 func (m *mcpToolExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
-	client, err := m.resolveClient()
-	if err != nil {
-		return "", err
-	}
-	return client.callTool(ctx.Context(), m.toolName, arguments)
+	result, err := m.ExecuteResult(ctx, arguments)
+	return result.Output, err
 }
 
 func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.client != nil {
+	if m.client != nil && m.client.healthy() {
 		return m.client, nil
 	}
 	if m.agent == nil {
@@ -75,6 +74,9 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 		return fmt.Errorf("nil agent")
 	}
 
+	if len(configs) > 0 {
+		a.registerResourceTools()
+	}
 	a.McpClientsMu.Lock()
 	if a.McpClients == nil {
 		a.McpClients = make(map[string]*mcpClient)
@@ -103,7 +105,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 
 	sort.Strings(eager)
 
-	workers := limits.MCPServerWorkers()
+	workers := a.GetLimits().MCPServerWorkers
 	if workers > len(eager) {
 		workers = len(eager)
 	}
@@ -186,7 +188,7 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 		a.McpClientsMu.Unlock()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
-	if existing := a.McpClients[name]; existing != nil && existing.initialized {
+	if existing := a.McpClients[name]; existing != nil && existing.initialized && existing.healthy() {
 		a.McpClientsMu.Unlock()
 		return existing, nil
 	}
@@ -238,8 +240,8 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 	for _, mcpTool := range tools {
 		prefixedName := fmt.Sprintf("mcp__%s__%s", name, mcpTool.Name)
 		if !tool.IsSafeIdentifier(prefixedName) {
-			mcpLog("Skipping MCP tool with invalid name %q from '%s'\n", mcpTool.Name, name)
-			continue
+			sum := sha256.Sum256([]byte(mcpTool.Name))
+			prefixedName = fmt.Sprintf("mcp__%s__tool_%s", name, hex.EncodeToString(sum[:12]))
 		}
 		var jsonSchema JSONSchema
 		if schemaBytes, marshalErr := json.Marshal(mcpTool.InputSchema); marshalErr == nil {
@@ -269,11 +271,18 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 	if a.McpClients == nil {
 		a.McpClients = make(map[string]*mcpClient)
 	}
+	if previous := a.McpClients[name]; previous != nil && previous != client {
+		previous.close()
+	}
+	a.Registry.UnregisterPrefix("mcp__" + name + "__")
 	a.McpClients[name] = client
 	delete(a.mcpPending, name)
 	delete(a.McpStartErrors, name)
 	for _, executor := range executors {
 		a.Registry.Register(executor)
+		if cfg.Exposure == "search" {
+			a.Registry.Hide(executor.Name())
+		}
 	}
 	a.McpClientsMu.Unlock()
 	if len(executors) > 0 {
@@ -318,7 +327,7 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 }
 
 func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient {
-	connectTimeout := limits.MCPConnectTimeout()
+	connectTimeout := a.GetLimits().MCPConnectTimeout
 
 	transport := &http.Transport{ResponseHeaderTimeout: connectTimeout}
 	if a.Config != nil && (a.Config.CertFile != "" || a.Config.SkipVerify) {
@@ -328,7 +337,7 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 	}
 
 	mcpHTTPClient := &http.Client{
-		Timeout:   limits.MCPRequestTimeout(),
+		Timeout:   a.GetLimits().MCPRequestTimeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
@@ -348,6 +357,13 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 		nextID:         1,
 		client:         mcpHTTPClient,
 		connectTimeout: connectTimeout,
+		timeout:        a.GetLimits().MCPRequestTimeout,
+		resolveCredential: func(ctx context.Context) (string, error) {
+			if a.Credentials == nil {
+				return "", nil
+			}
+			return a.Credentials.Resolve(ctx, "mcp:"+name+":"+config.WorkspaceKey(cfg.URL), config.ProviderConfig{Endpoint: cfg.URL, OAuth: cfg.OAuth})
+		},
 	}
 }
 

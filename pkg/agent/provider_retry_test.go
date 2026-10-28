@@ -166,6 +166,7 @@ func TestStreamChatCompletionsWatchdogTimeoutDuringBackoff(t *testing.T) {
 			return
 		}
 		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()

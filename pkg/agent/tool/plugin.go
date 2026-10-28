@@ -1,45 +1,22 @@
 package tool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"loop/pkg/process"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
 const (
-	maxPluginOutputBytes = 1 << 20
-	maxPluginErrorBytes = 32 << 10
+	maxPluginOutputBytes     = 1 << 20
+	maxPluginErrorBytes      = 32 << 10
 	maxPluginDescriptorBytes = 64 << 10
 )
-
-type boundedPluginOutput struct {
-	bytes.Buffer
-	limit int
-	overflow bool
-}
-
-func (b *boundedPluginOutput) Write(p []byte) (int, error) {
-	original := len(p)
-	remaining := b.limit - b.Len()
-	if remaining < len(p) {
-		b.overflow = true
-	}
-	if remaining > 0 {
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = b.Buffer.Write(p)
-	}
-	return original, nil
-}
 
 type pluginTool struct {
 	path string
@@ -72,41 +49,11 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 	if ctx != nil && ctx.Context() != nil {
 		parent = ctx.Context()
 	}
-	ctxTimeout, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctxTimeout, absPath)
-	cmd.Stdin = strings.NewReader(arguments)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 2 * time.Second
-
-	stdout := &boundedPluginOutput{limit: maxPluginOutputBytes}
-	stderr := &boundedPluginOutput{limit: maxPluginErrorBytes}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	err = cmd.Run()
-	if ctxTimeout.Err() != nil {
-		return "", fmt.Errorf("plugin execution interrupted: %w", ctxTimeout.Err())
-	}
-	if stdout.overflow {
-		return "", fmt.Errorf("plugin output exceeded the %d byte limit", maxPluginOutputBytes)
-	}
+	result, err := process.Run(parent, process.Options{Executable: absPath, Input: strings.NewReader(arguments), Timeout: 10 * time.Second, OutputLimit: maxPluginOutputBytes, ErrorLimit: maxPluginErrorBytes})
 	if err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if stderr.overflow {
-			detail += " [stderr truncated]"
-		}
-		return "", fmt.Errorf("plugin error: %w (details: %s)", err, detail)
+		return result.Stdout, fmt.Errorf("plugin execution failed: %w (details: %s)", err, strings.TrimSpace(result.Stderr))
 	}
-
-	return stdout.String(), nil
+	return result.Stdout, nil
 }
 
 func dedupeExistingDirs(candidates []string) []string {
@@ -132,6 +79,7 @@ func PluginSearchDirs(workspaceRoot string) []string {
 	var candidates []string
 	if workspaceRoot != "" {
 		candidates = append(candidates,
+			filepath.Join(workspaceRoot, ".loop", "plugins"),
 			filepath.Join(workspaceRoot, "plugins"),
 			filepath.Join(workspaceRoot, "addons", "plugins"),
 			filepath.Join(workspaceRoot, "addons"),
@@ -144,13 +92,7 @@ func PluginSearchDirs(workspaceRoot string) []string {
 			filepath.Join(home, ".loop", "addons"),
 		)
 	}
-	if workspaceRoot != "/workspace" {
-		candidates = append(candidates,
-			"/workspace/plugins",
-			"/workspace/addons/plugins",
-			"/workspace/addons",
-		)
-	}
+
 	return dedupeExistingDirs(candidates)
 }
 
@@ -165,18 +107,13 @@ func ExtensionSearchDirs(workspaceRoot string) []string {
 	}
 	if workspaceRoot != "" {
 		candidates = append(candidates,
+			filepath.Join(workspaceRoot, ".loop", "extensions"),
 			filepath.Join(workspaceRoot, "extensions"),
 			filepath.Join(workspaceRoot, "addons", "extensions"),
 			filepath.Join(workspaceRoot, "addons"),
 		)
 	}
-	if workspaceRoot != "/workspace" {
-		candidates = append(candidates,
-			"/workspace/extensions",
-			"/workspace/addons/extensions",
-			"/workspace/addons",
-		)
-	}
+
 	return dedupeExistingDirs(candidates)
 }
 
@@ -185,7 +122,9 @@ func LocalAddonDirs(workspaceRoot string) []string {
 		return nil
 	}
 	return []string{
+		filepath.Join(workspaceRoot, ".loop", "plugins"),
 		filepath.Join(workspaceRoot, "plugins"),
+		filepath.Join(workspaceRoot, ".loop", "extensions"),
 		filepath.Join(workspaceRoot, "extensions"),
 		filepath.Join(workspaceRoot, "addons"),
 		filepath.Join(workspaceRoot, "addons", "plugins"),
@@ -253,21 +192,9 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 				continue
 			}
 		} else if isDedicatedPluginDir {
-			ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
-			cmd := exec.CommandContext(ctxTimeout, pluginPath, "--info")
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			cmd.Cancel = func() error {
-				if cmd.Process == nil { return os.ErrProcessDone }
-				return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
-			cmd.WaitDelay = 2 * time.Second
-			cmd.Stderr = io.Discard
-			out := &boundedPluginOutput{limit: maxPluginDescriptorBytes}
-			cmd.Stdout = out
-			runErr := cmd.Run()
-			cancel()
-			if runErr == nil && !out.overflow {
-				jsonBytes = out.Bytes()
+			result, runErr := process.Run(ctx, process.Options{Executable: pluginPath, Arguments: []string{"--info"}, Timeout: 5 * time.Second, OutputLimit: maxPluginDescriptorBytes})
+			if runErr == nil {
+				jsonBytes = []byte(result.Stdout)
 			}
 		}
 
@@ -288,6 +215,9 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 			continue
 		}
 
+		if _, exists := registry.Lookup(functionDef.Name); exists {
+			return fmt.Errorf("duplicate plugin tool %s in %s", functionDef.Name, pluginPath)
+		}
 		registry.Register(&pluginTool{
 			path: pluginPath,
 			def: Tool{

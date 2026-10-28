@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -223,7 +224,7 @@ func TestExactWidthChunkFollowedByExplicitNewlineDoesNotCreateBlankRow(t *testin
 	}
 
 	raw := terminal.String()
-	if !strings.Contains(raw, "\x1b[25;80H\nnext") {
+	if !strings.Contains(raw, fmt.Sprintf("\x1b[%d;80H\nnext", style.ConsoleScrollBottom(30, 0))) {
 		t.Fatalf("explicit newline did not continue from the pending margin: %q", raw)
 	}
 	if strings.Contains(raw, "\r\n\nnext") {

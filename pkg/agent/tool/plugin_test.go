@@ -96,7 +96,10 @@ exit 0
 }
 
 func TestRegisterPluginsWithInfoFlag(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := filepath.Join(t.TempDir(), "plugins")
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 
 	pluginPath := filepath.Join(tmpDir, "info_tool.sh")
 	pluginContent := `#!/bin/bash

@@ -1,5 +1,7 @@
 package message
 
+import "encoding/json"
+
 // Standard conversational roles.
 const (
 	RoleSystem    = "system"
@@ -38,18 +40,26 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
-	Role              string      `json:"role"`
-	Content           string      `json:"content,omitempty"`
-	ReasoningContent  string      `json:"reasoning_content,omitempty"`
-	ReasoningDuration float64     `json:"reasoning_duration,omitempty"`
-	ToolCalls         []ToolCall  `json:"tool_calls,omitempty"`
-	Name              string      `json:"name,omitempty"`
-	ToolCallID        string      `json:"tool_call_id,omitempty"`
-	PromptTokens      int         `json:"prompt_tokens,omitempty"`
-	CompletionTokens  int         `json:"completion_tokens,omitempty"`
-	CacheReadTokens   int         `json:"cache_read_input_tokens,omitempty"`
-	CacheWriteTokens  int         `json:"cache_creation_input_tokens,omitempty"`
-	CacheControl      []CacheBlock `json:"cache_control,omitempty"`
+ IsError bool `json:"is_error,omitempty"`
+ Usage *Usage `json:"usage,omitempty"`
+	Structured        json.RawMessage `json:"structured_content,omitempty"`
+	ContentBlocks     []ContentBlock  `json:"content_blocks,omitempty"`
+	Provider          string          `json:"provider,omitempty"`
+	Model             string          `json:"model,omitempty"`
+	StopReason        string          `json:"stop_reason,omitempty"`
+	Cost              *float64        `json:"cost,omitempty"`
+	Role              string          `json:"role"`
+	Content           string          `json:"content,omitempty"`
+	ReasoningContent  string          `json:"reasoning_content,omitempty"`
+	ReasoningDuration float64         `json:"reasoning_duration,omitempty"`
+	ToolCalls         []ToolCall      `json:"tool_calls,omitempty"`
+	Name              string          `json:"name,omitempty"`
+	ToolCallID        string          `json:"tool_call_id,omitempty"`
+	PromptTokens      int             `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int             `json:"completion_tokens,omitempty"`
+	CacheReadTokens   int             `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteTokens  int             `json:"cache_creation_input_tokens,omitempty"`
+	CacheControl      []CacheBlock    `json:"cache_control,omitempty"`
 }
 
 // IsUser reports whether the message was authored by the user.

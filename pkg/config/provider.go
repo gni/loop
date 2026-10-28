@@ -2,12 +2,26 @@ package config
 
 import (
 	"fmt"
+	"loop/pkg/domain/model"
 	"os"
-	"sort"
 	"strings"
 )
 
+type OAuthConfig struct {
+	AuthorizationURL string   `json:"authorization_url,omitempty"`
+	TokenURL         string   `json:"token_url,omitempty"`
+	RegistrationURL  string   `json:"registration_url,omitempty"`
+	DeviceURL        string   `json:"device_url,omitempty"`
+	ClientID         string   `json:"client_id,omitempty"`
+	ClientSecret     string   `json:"client_secret,omitempty"`
+	RedirectURI      string   `json:"redirect_uri,omitempty"`
+	Scopes           []string `json:"scopes,omitempty"`
+}
+
 type ProviderConfig struct {
+	Models   []model.Model     `json:"models,omitempty"`
+	OAuth    *OAuthConfig      `json:"oauth,omitempty"`
+	API      string            `json:"api,omitempty"`
 	Name     string            `json:"name,omitempty"`
 	Endpoint string            `json:"endpoint"`
 	ApiKey   string            `json:"api_key,omitempty"`
@@ -28,7 +42,7 @@ func parseEnvVarKey(key string) (string, bool) {
 		return strings.TrimPrefix(trimmed, "$"), true
 	}
 	if strings.HasPrefix(trimmed, "env:") {
-		return strings.TrimPrefix(trimmed, "env:"), true
+		return strings.TrimPrefix(strings.TrimPrefix(trimmed, "env:"), "$"), true
 	}
 	return "", false
 }
@@ -56,6 +70,16 @@ func (c *Config) ResolveModelAlias(pattern string) string {
 	if pattern == "" || c == nil || len(c.Providers) == 0 {
 		return pattern
 	}
+	for _, p := range c.Providers {
+		if p.Model == pattern {
+			return pattern
+		}
+		for _, m := range p.Models {
+			if m.ID == pattern {
+				return pattern
+			}
+		}
+	}
 	var candidates []string
 	lowerPattern := strings.ToLower(pattern)
 	for _, p := range c.Providers {
@@ -66,22 +90,14 @@ func (c *Config) ResolveModelAlias(pattern string) string {
 	if len(candidates) == 0 {
 		return pattern
 	}
-	var aliases, dated []string
-	for _, m := range candidates {
-		if isModelAlias(m) {
-			aliases = append(aliases, m)
-		} else {
-			dated = append(dated, m)
-		}
+	unique := make(map[string]bool)
+	for _, candidate := range candidates {
+		unique[candidate] = true
 	}
-	pick := func(list []string) string {
-		sort.Slice(list, func(i, j int) bool { return list[i] > list[j] })
-		return list[0]
+	if len(unique) == 1 {
+		return candidates[0]
 	}
-	if len(aliases) > 0 {
-		return pick(aliases)
-	}
-	return pick(dated)
+	return pattern
 }
 
 func isModelAlias(model string) bool {

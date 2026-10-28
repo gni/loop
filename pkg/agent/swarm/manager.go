@@ -22,6 +22,7 @@ type MultiAgentManager struct {
 	w           io.Writer
 	theme       style.UITheme
 	agentsDir   string
+	ephemeral   bool
 	Supervisor  *subagent.TaskSupervisor
 }
 

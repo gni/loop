@@ -36,14 +36,10 @@ func TestConfigLimitsAreClampedAndInstalled(t *testing.T) {
 		t.Errorf("tracked tasks = %d, want clamped %d", cfg.Limits.MaxTrackedTasks, limits.AbsoluteMaxTrackedTasks)
 	}
 	// Live lookups must reflect the clamped values, never the raw file.
-	if limits.GrepMaxLimit() != limits.AbsoluteMaxGrepLimit {
-		t.Errorf("live grep limit = %d, want %d", limits.GrepMaxLimit(), limits.AbsoluteMaxGrepLimit)
-	}
-	if limits.ReasoningBudget("high") != limits.AbsoluteMaxReasoningBudget {
-		t.Errorf("live reasoning budget = %d, want %d", limits.ReasoningBudget("high"), limits.AbsoluteMaxReasoningBudget)
+	if cfg.Limits.ReasoningTokenBudgets["high"] != limits.AbsoluteMaxReasoningBudget {
+		t.Fatal("reasoning budget was not clamped")
 	}
 
-	limits.Set(limits.Defaults())
 }
 
 func TestConfigProviders(t *testing.T) {

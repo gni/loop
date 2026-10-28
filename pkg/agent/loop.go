@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -54,7 +55,31 @@ func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, er
 	sink.Append(db.Message{Role: "error", Content: err.Error()})
 }
 
-func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) {
+func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) (result RunResult, runErr error) {
+	result.Status = RunCompleted
+	startedAt := len(*messages)
+	a.stateMu.Lock()
+	a.persistenceErr = nil
+	a.stateMu.Unlock()
+	a.emit(Event{Type: "agent_start", SessionID: sessionID})
+	defer func() {
+		if runErr == nil {
+			runErr = a.persistenceError()
+		}
+		if runErr != nil {
+			result.Error = runErr.Error()
+			if result.Status == RunCompleted {
+				result.Status = RunFailed
+			}
+			if errors.Is(runErr, context.Canceled) {
+				result.Status = RunCancelled
+			}
+		}
+		if startedAt <= len(*messages) {
+			result.Messages = append([]db.Message(nil), (*messages)[startedAt:]...)
+		}
+		a.emit(Event{Type: "agent_end", SessionID: sessionID, Result: &result})
+	}()
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return
@@ -103,18 +128,20 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
-	*messages = append(*messages, db.Message{Role: "user", Content: prompt})
+	*messages = append(*messages, db.Message{Role: "user", Content: prompt, ContentBlocks: a.InputBlocks})
 	if sessionID != "" {
-		if !db.HasMessages(sessionID) && len(*messages) > 1 && (*messages)[0].Role == "system" {
-			if err := db.SaveMessage(sessionID, (*messages)[0]); err != nil {
-				a.DebugLogError(sessionID, "db.SaveMessage (system prompt)", err)
+		if !a.HasMessages(sessionID) && len(*messages) > 1 && (*messages)[0].Role == "system" {
+			if err := a.SaveMessage(sessionID, (*messages)[0]); err != nil {
+				a.recordPersistenceError(err)
 			}
 		}
-		if err := db.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
-			a.DebugLogError(sessionID, "db.SaveMessage (user prompt)", err)
+		if err := a.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+			a.recordPersistenceError(err)
 		}
 	}
 
+	a.emit(Event{Type: "message_end", SessionID: sessionID, Message: &(*messages)[len(*messages)-1]})
+	a.InputBlocks = nil
 	a.DebugLogUserCommand(sessionID, prompt)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -134,11 +161,26 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		ShowRecapLine: !isNonInteractive,
 	})
 	sink := NewAgentSink(a, messages, sessionID)
-	timer := GetTimingRecorder()
+	timer := a.Timing
+	if timer == nil {
+		timer = NewTimingRecorder()
+	}
 	lastToolTrailingNewlines := 0
 
 	for iter := 1; iter <= maxSteps; iter++ {
+		result.Turns = iter
+		if err := a.persistenceError(); err != nil {
+			runErr = err
+			return
+		}
+		a.emit(Event{Type: "turn_start", SessionID: sessionID})
+		if a.NextInput != nil {
+			for _, input := range a.NextInput() {
+				sink.Append(input)
+			}
+		}
 		if ctx.Err() != nil {
+			runErr = ctx.Err()
 			return
 		}
 
@@ -151,6 +193,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		globalPromptTokensEst, effectiveLimit := a.estimateTurnContext(*messages, allowlist)
 		timer.Time("compaction", "start")
 		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+		if err := a.persistenceError(); err != nil {
+			runErr = err
+			return
+		}
 		timer.Time("compaction", "end")
 
 		if engine.ShouldRecap() {
@@ -214,6 +260,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		// Tool arguments are collected by the provider. Render headers and
 		// file previews once, from the completed tool calls during execution.
 		for chunk := range chunkChan {
+			a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
 			switch chunk.Type {
 			case "reasoning":
 				if loader != nil {
@@ -257,7 +304,38 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.CurrentStreamMu.Unlock()
 
 		res := <-resChan
+		if res.err != nil && ctx.Err() == nil && isContextOverflow(res.err) && len(*messages) > 4 {
+			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
+			if err := a.CompressHistory(ctx, messages, sessionID, theme, writerToUse); err == nil {
+				retryChunks := make(chan StreamChunk, 200)
+				retryDone := make(chan streamResult, 1)
+				go func() {
+					msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, retryChunks)
+					close(retryChunks)
+					retryDone <- streamResult{msg, err}
+				}()
+				for chunk := range retryChunks {
+					a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
+					if chunk.Type == "text" {
+						sr.Write(chunk.Content)
+					} else if chunk.Type == "reasoning" {
+						sr.WriteReasoning(chunk.Content)
+					}
+				}
+				sr.Flush()
+				res = <-retryDone
+			} else {
+				res.err = errors.Join(res.err, err)
+			}
+		}
 		if res.err != nil {
+			runErr = res.err
+			if res.msg != nil && (res.msg.Content != "" || res.msg.ReasoningContent != "") {
+				partial := *res.msg
+				partial.ToolCalls = nil
+				partial.StopReason = "interrupted"
+				sink.Append(partial)
+			}
 			if loader != nil {
 				loader.Stop()
 			}
@@ -267,6 +345,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		assistantMsg := res.msg
 		if assistantMsg == nil {
+			runErr = fmt.Errorf("provider returned no assistant response")
 			return
 		}
 
@@ -297,6 +376,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
+			result.Text = assistantMsg.Content
 			if loader != nil {
 				loader.Stop()
 			}
@@ -330,7 +411,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
 		})
 		timer.Time("tool", "end")
+		a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
 		if halted || aborted {
+			if ctx.Err() != nil {
+				runErr = ctx.Err()
+			} else {
+				result.Status = RunBlocked
+				runErr = fmt.Errorf("agent execution blocked")
+			}
 			return
 		}
 		lastToolTrailingNewlines = ncw.trailingNewlines
@@ -339,6 +427,22 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	if loader != nil {
 		loader.Stop()
 	}
+	result.Status = RunLimitReached
+	runErr = fmt.Errorf("maximum reasoning steps reached (%d)", maxSteps)
 	errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 	fmt.Fprintf(writerToUse, "\n%s reached maximum reasoning steps limit (%d).\n", errStyle.Render("warning:"), maxSteps)
+	return
+}
+
+func isContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"context_length_exceeded", "maximum context length", "context window exceeded", "prompt is too long", "input token count exceeds"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }

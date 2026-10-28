@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -16,6 +17,14 @@ func (c *mcpClient) startStdio() error {
 	c.cancel = cancel
 
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = os.Environ()
 	for k, v := range c.config.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
@@ -49,6 +58,7 @@ func (c *mcpClient) startStdio() error {
 	}
 
 	c.cmd = cmd
+	c.processDone = make(chan struct{})
 	c.stdin = stdin
 
 	go func() {
@@ -61,6 +71,7 @@ func (c *mcpClient) startStdio() error {
 
 	go func() {
 		defer c.failPendingRequests()
+		defer func() { _ = cmd.Wait(); close(c.processDone) }()
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {

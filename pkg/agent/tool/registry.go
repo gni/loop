@@ -1,8 +1,6 @@
 package tool
 
 import (
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -57,6 +55,8 @@ func GetPromptGuidelines(t ToolExecutor) []string {
 type ToolRegistry struct {
 	mu       sync.RWMutex
 	tools    map[string]ToolExecutor
+	hidden   map[string]bool
+	schemas  map[string]compiledSchema
 	disabled map[string]bool
 
 	// UnknownToolHook resolves a tool that is not registered yet. It exists for MCP
@@ -84,8 +84,7 @@ func (r *ToolRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
-	delete(r.disabled, name)
-	delete(r.disabled, NormalizeName(name))
+	delete(r.schemas, name)
 }
 
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
@@ -94,7 +93,7 @@ func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 	for name := range r.tools {
 		if strings.HasPrefix(name, prefix) {
 			delete(r.tools, name)
-			delete(r.disabled, name)
+			delete(r.schemas, name)
 		}
 	}
 }
@@ -197,31 +196,11 @@ func (r *ToolRegistry) Lookup(name string) (ToolExecutor, bool) {
 }
 
 func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) (string, error) {
-	if r.IsDisabled(name) {
-		return "", fmt.Errorf("tool '%s' is disabled", name)
+	executor, prepared, err := r.Prepare(name, arguments)
+	if err != nil {
+		return "", err
 	}
-	executor, exists := r.Lookup(name)
-	if !exists && r.UnknownToolHook != nil {
-		// Lookup has already released the read lock, so the hook can register.
-		executor, exists = r.UnknownToolHook(name)
-	}
-	if !exists {
-		return "", fmt.Errorf("unknown tool: %s", name)
-	}
-
-	var temp interface{}
-	// 1. Try parsing the raw arguments first
-	if err := json.Unmarshal([]byte(arguments), &temp); err == nil {
-		return executor.Execute(ctx, arguments)
-	}
-
-	// 2. If it fails, try repairing
-	repairedArgs := domaintool.RepairJSON(arguments)
-	if err := json.Unmarshal([]byte(repairedArgs), &temp); err == nil {
-		return executor.Execute(ctx, repairedArgs)
-	} else {
-		return "", fmt.Errorf("JSON validation failed: %w.\nParameters generated: %s\nRecommendation: Please output valid JSON. Double-check closing braces, ensure internal double-quotes are escaped, and verify that newlines inside strings are escaped as '\\n'.", err, arguments)
-	}
+	return executor.Execute(ctx, prepared)
 }
 
 func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
@@ -234,7 +213,7 @@ func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
 		if r.disabled != nil && (r.disabled[name] || r.disabled[norm]) {
 			continue
 		}
-		if IsAllowedTool(name, allowlist) {
+		if !r.hidden[name] && IsAllowedTool(name, allowlist) {
 			allTools = append(allTools, t.Definition())
 		}
 	}
@@ -255,4 +234,34 @@ func (r *ToolRegistry) GetAllExecutors() map[string]ToolExecutor {
 		res[k] = v
 	}
 	return res
+}
+
+func (r *ToolRegistry) Hide(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hidden == nil {
+		r.hidden = make(map[string]bool)
+	}
+	r.hidden[name] = true
+}
+func (r *ToolRegistry) Expose(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.hidden, name)
+}
+
+func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExecutor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name := range r.tools {
+		if strings.HasPrefix(name, prefix) {
+			delete(r.tools, name)
+			delete(r.schemas, name)
+		}
+	}
+	for name, executor := range executors {
+		if strings.HasPrefix(name, prefix) {
+			r.tools[name] = executor
+		}
+	}
 }

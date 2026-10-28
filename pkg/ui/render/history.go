@@ -166,6 +166,9 @@ func PrintSessionHistory(
 				fmt.Fprintln(w)
 			}
 
+			if hasPrintedAnything && strings.TrimSpace(assistantContent) != "" && len(msg.ToolCalls) > 0 && (i+1 >= len(messages) || messages[i+1].Role != "tool") {
+				fmt.Fprintln(w)
+			}
 			printedUnrespondedToolCount := 0
 			for _, tc := range msg.ToolCalls {
 				hasResponse := false
@@ -222,13 +225,13 @@ func PrintSessionHistory(
 			}
 
 			lowerContent := strings.ToLower(msg.Content)
-			isError := strings.HasPrefix(lowerContent, "error:") || strings.Contains(lowerContent, "command failed")
+			isError := msg.IsError || strings.HasPrefix(lowerContent, "error:") || strings.Contains(lowerContent, "command failed")
 			status := ToolStatusSuccess
 			if isError {
 				status = ToolStatusError
 			}
 
-			if lastRole == "tool" {
+			if lastRole == "tool" || (lastRole == "assistant" && i > 0 && strings.TrimSpace(messages[i-1].Content) != "") {
 				for line := 0; line < style.ActivityGapLines; line++ {
 					fmt.Fprintln(w)
 				}
