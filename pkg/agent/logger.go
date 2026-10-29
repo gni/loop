@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,12 +9,11 @@ import (
 	"time"
 
 	"loop/pkg/agent/tool"
-	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 )
 
-// DebugLogger records complete execution traces, function calls, arguments,
-// LLM payloads, and repetition statistics to a persistent file.
+// DebugLogger records metadata only; prompt, reasoning, arguments, outputs,
+// paths, and error messages must never be persisted in debug traces.
 type DebugLogger struct {
 	mu             sync.Mutex
 	filePath       string
@@ -33,7 +30,7 @@ func isDisabledDebugTarget(target string) bool {
 	}
 }
 
-// NewDebugLogger enables sensitive execution tracing only for an explicit target.
+// NewDebugLogger enables metadata-only execution tracing for an explicit target.
 // Set debug_log_file or LOOP_DEBUG_FILE to a path to opt in.
 func NewDebugLogger(_ string, customPath string) *DebugLogger {
 	target := tool.FirstNonEmpty(strings.TrimSpace(customPath), strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE")))
@@ -68,10 +65,9 @@ func NewDebugLogger(_ string, customPath string) *DebugLogger {
 		fileReadCounts: make(map[string]int),
 	}
 
-	dl.writeRaw(fmt.Sprintf("\n%s\n[SESSION START: %s]\nDebug Log File: %s\n%s\n",
+	dl.writeRaw(fmt.Sprintf("\n%s\n[SESSION START: %s]\nMetadata logging only\n%s\n",
 		strings.Repeat("=", 80),
 		nowDebugTimestamp(),
-		target,
 		strings.Repeat("=", 80),
 	))
 
@@ -117,15 +113,8 @@ func (dl *DebugLogger) LogUserCommand(sessionID string, prompt string) {
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
 	dl.fileReadCounts = make(map[string]int)
-
-	sep := strings.Repeat("=", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] USER COMMAND (Session: %s)\nPrompt: %s\n%s\n",
-		sep, nowDebugTimestamp(), sessionID, strings.TrimSpace(prompt), sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] USER COMMAND session=%s prompt_bytes=%d [content omitted]\n", nowDebugTimestamp(), sessionID, len(prompt)))
 }
 
 // LogLLMRequest records the payload and tool loadout sent to the LLM.
@@ -135,41 +124,12 @@ func (dl *DebugLogger) LogLLMRequest(sessionID string, iter int, model, endpoint
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
-	sep := strings.Repeat("-", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] LLM REQUEST (Turn Iteration %d) (Session: %s)\nModel: %s | Endpoint: %s\nMessages Count: %d\n",
-		sep, nowDebugTimestamp(), iter, sessionID, model, endpoint, len(messages))
-
-	for i, m := range messages {
-		contentPreview := strings.TrimSpace(m.Content)
-		if len(contentPreview) > 300 {
-			contentPreview = contentPreview[:300] + "... (truncated)"
-		}
-		fmt.Fprintf(&sb, "  [%d] Role: %-9s", i+1, m.Role)
-		if m.ToolCallID != "" {
-			fmt.Fprintf(&sb, " | ToolCallID: %s | Name: %s", m.ToolCallID, m.Name)
-		}
-		if len(m.ToolCalls) > 0 {
-			tcNames := make([]string, 0, len(m.ToolCalls))
-			for _, tc := range m.ToolCalls {
-				tcNames = append(tcNames, fmt.Sprintf("%s(%s)", tc.Function.Name, tc.Function.Arguments))
-			}
-			fmt.Fprintf(&sb, " | Emitted ToolCalls: %s", strings.Join(tcNames, ", "))
-		}
-		fmt.Fprintf(&sb, "\n      Content: %q\n", contentPreview)
+	var contentBytes, toolCalls int
+	for _, m := range messages {
+		contentBytes += len(m.Content) + len(m.ReasoningContent)
+		toolCalls += len(m.ToolCalls)
 	}
-
-	if len(tools) > 0 {
-		toolNames := make([]string, 0, len(tools))
-		for _, t := range tools {
-			toolNames = append(toolNames, t.Function.Name)
-		}
-		fmt.Fprintf(&sb, "Tools Offered (%d): %s\n", len(tools), strings.Join(toolNames, ", "))
-	}
-	fmt.Fprintf(&sb, "%s\n", sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] LLM REQUEST session=%s iteration=%d messages=%d content_bytes=%d tool_calls=%d offered_tools=%d [payload omitted]\n", nowDebugTimestamp(), sessionID, iter, len(messages), contentBytes, toolCalls, len(tools)))
 }
 
 // LogLLMResponse records the LLM completion response, reasoning thoughts, and proposed tool calls.
@@ -179,33 +139,7 @@ func (dl *DebugLogger) LogLLMResponse(sessionID string, iter int, msg *db.Messag
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
-	sep := strings.Repeat("-", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] LLM RESPONSE (Turn Iteration %d) (Duration: %v) (Session: %s)\n",
-		sep, nowDebugTimestamp(), iter, duration.Round(time.Millisecond), sessionID)
-
-	if msg.ReasoningContent != "" {
-		fmt.Fprintf(&sb, "Reasoning / Thoughts:\n  %s\n", strings.ReplaceAll(strings.TrimSpace(msg.ReasoningContent), "\n", "\n  "))
-	}
-
-	if trimmed := strings.TrimSpace(msg.Content); trimmed != "" {
-		fmt.Fprintf(&sb, "Assistant Content: %s\n", trimmed)
-	}
-
-	if len(msg.ToolCalls) > 0 {
-		fmt.Fprintf(&sb, "Tool Calls Proposed (%d):\n", len(msg.ToolCalls))
-		for i, tc := range msg.ToolCalls {
-			formattedArgs := formatJSONOrRaw(tc.Function.Arguments)
-			fmt.Fprintf(&sb, "  #%d [%s] Function: %s\n      Arguments: %s\n",
-				i+1, tc.ID, tc.Function.Name, strings.ReplaceAll(formattedArgs, "\n", "\n      "))
-		}
-	} else {
-		sb.WriteString("No Tool Calls Proposed (Final Turn Output)\n")
-	}
-	fmt.Fprintf(&sb, "%s\n", sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] LLM RESPONSE session=%s iteration=%d duration=%v content_bytes=%d reasoning_bytes=%d tool_calls=%d [content omitted]\n", nowDebugTimestamp(), sessionID, iter, duration.Round(time.Millisecond), len(msg.Content), len(msg.ReasoningContent), len(msg.ToolCalls)))
 }
 
 // LogToolExecution records a function execution with exact arguments, return result,
@@ -216,53 +150,15 @@ func (dl *DebugLogger) LogToolExecution(sessionID string, iter int, toolName str
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
-	status := "SUCCESS"
+	status := "success"
 	if err != nil {
-		status = fmt.Sprintf("ERROR (%v)", err)
+		status = "error"
 	}
-
-	sep := strings.Repeat("-", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] TOOL EXECUTION: %s | Status: %s | Duration: %v\n",
-		sep, nowDebugTimestamp(), toolName, status, duration.Round(time.Millisecond))
-
-	formattedArgs := formatJSONOrRaw(arguments)
-	fmt.Fprintf(&sb, "Arguments:\n  %s\n", strings.ReplaceAll(formattedArgs, "\n", "\n  "))
-
 	if toolName == "read" {
-		var readArgs struct {
-			Path   string `json:"path"`
-			Offset int    `json:"offset"`
-			Limit  int    `json:"limit"`
-		}
-		_ = json.Unmarshal([]byte(arguments), &readArgs)
-		if targetFile := filetool.ExtractFilePath(arguments, readArgs.Path); targetFile != "" {
-			dl.fileReadCounts[targetFile]++
-			if count := dl.fileReadCounts[targetFile]; count > 1 {
-				fmt.Fprintf(&sb, "⚠️  [RE-READ DETECTED #%d] Target file '%s' has been read %d times this turn! (offset=%d, limit=%d)\n",
-					count, targetFile, count, readArgs.Offset, readArgs.Limit)
-			}
-		}
+		// Count reads without persisting paths or other sensitive arguments.
+		dl.fileReadCounts["read"]++
 	}
-
-	lines := strings.Split(output, "\n")
-	fmt.Fprintf(&sb, "Output (%d bytes, %d lines):\n", len(output), len(lines))
-
-	const maxOutputDebugLen = 4096
-	if len(output) <= maxOutputDebugLen {
-		fmt.Fprintf(&sb, "  %s\n", strings.ReplaceAll(strings.TrimRight(output, "\r\n"), "\n", "\n  "))
-	} else {
-		fmt.Fprintf(&sb, "  %s\n  ... [%d bytes omitted from debug display] ...\n  %s\n",
-			strings.ReplaceAll(output[:2500], "\n", "\n  "),
-			len(output)-3500,
-			strings.ReplaceAll(output[len(output)-1000:], "\n", "\n  "),
-		)
-	}
-
-	fmt.Fprintf(&sb, "%s\n", sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] TOOL session=%s iteration=%d tool=%s status=%s duration=%v argument_bytes=%d output_bytes=%d [payload omitted]\n", nowDebugTimestamp(), sessionID, iter, toolName, status, duration.Round(time.Millisecond), len(arguments), len(output)))
 }
 
 // LogRepetition records an alert when the loop breaker detects repetitive calls.
@@ -272,17 +168,7 @@ func (dl *DebugLogger) LogRepetition(sessionID string, toolName string, argument
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
-	sep := strings.Repeat("!", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] REPETITION WARNING | Function: %s | Repeated: %d times\nArguments: %s\n",
-		sep, nowDebugTimestamp(), toolName, count, strings.TrimSpace(arguments))
-	if detail != "" {
-		fmt.Fprintf(&sb, "Detail: %s\n", detail)
-	}
-	fmt.Fprintf(&sb, "%s\n", sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] REPETITION session=%s tool=%s count=%d [arguments and detail omitted]\n", nowDebugTimestamp(), sessionID, toolName, count))
 }
 
 // LogError records a persistence/config-save failure that the caller cannot surface to
@@ -293,13 +179,7 @@ func (dl *DebugLogger) LogError(sessionID string, op string, err error) {
 	}
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
-
-	sep := strings.Repeat("~", 80)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s\n[%s] ERROR | Operation: %s | Session: %s\nError: %v\n%s\n",
-		sep, nowDebugTimestamp(), op, sessionID, err, sep)
-
-	dl.writeRaw(sb.String())
+	dl.writeRaw(fmt.Sprintf("[%s] ERROR session=%s operation=%s error_type=%T [message omitted]\n", nowDebugTimestamp(), sessionID, op, err))
 }
 
 // Close flushes and closes the underlying debug log file.
@@ -314,16 +194,4 @@ func (dl *DebugLogger) Close() {
 		_ = dl.file.Close()
 		dl.file = nil
 	}
-}
-
-func formatJSONOrRaw(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "(empty)"
-	}
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, []byte(raw), "", "  "); err == nil {
-		return buf.String()
-	}
-	return raw
 }

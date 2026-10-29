@@ -50,11 +50,11 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				if err != nil {
 					return err
 				}
-				cloned.AskUserMode = mode
+				cloned.SetAskUserMode(mode)
 				return nil
 			},
 			onToggle: func() {
-				cloned.AskUserMode = cycleOption(askUserOptions, cloned.AskUserMode)
+				cloned.SetAskUserMode(cycleOption(askUserOptions, cloned.AskUserMode))
 			},
 		},
 		boolConfigItem("show_thinking", "show thinking", "Stream LLM reasoning and internal thought tokens directly to console", &cloned.ShowThinking, formatBool),
@@ -101,6 +101,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		boolConfigItem("direct_commands", "direct commands", "Execute non-tool plain text as system shell instructions when recognized", &cloned.DirectCommands, formatBool),
 		boolConfigItem("compact_prompt", "compact prompt", "Compress standard system guidelines into dense short instructions", &cloned.CompactPrompt, formatBool),
 		boolConfigItem("stream_writes", "stream writes", "Stream tool output and completions smoothly token-by-token", &cloned.StreamWrites, formatBool),
+		boolConfigItem("enable_mcp", "enable MCP", "Permit configured MCP servers to connect and expose tools", &cloned.EnableMCP, formatBool),
 		boolConfigItem("parallel_tool_calls", "parallel tool calls", "Execute multiple simultaneous model tool invocations concurrently", &cloned.ParallelToolCalls, formatBool),
 		boolConfigItem("collapse_results", "collapse results", "Visually collapse lengthy tool execution response text into previews", &cloned.CollapseResults, formatBool),
 		boolConfigItem("show_tokens", "show tokens", "Render token count diagnostics at the bottom of agent responses", &cloned.ShowTokens, formatBool),

@@ -197,7 +197,13 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 // readFreeTextAnswer reads one line of user input (echoed inline) and returns it.
 // Enter confirms; Ctrl+C/Ctrl+D/Esc dismisses with an empty answer.
 func readFreeTextAnswer(input io.Reader, output io.Writer, theme style.UITheme, promptStyle, activeStyle style.Style, initial string) string {
-	fmt.Fprint(output, "\r\x1b[K", promptStyle.Render("  type your answer (Enter to confirm): "))
+	if writer := getScrollBlockReplacer(output); writer != nil {
+		if cursor, ok := writer.(interface{ SetRestoreCursorToPrompt(bool) }); ok {
+			cursor.SetRestoreCursorToPrompt(false)
+			defer cursor.SetRestoreCursorToPrompt(true)
+		}
+	}
+	fmt.Fprint(output, "\r\x1b[K", promptStyle.Render("  type your answer (Enter to confirm): "), "\x1b[?25h")
 
 	answer := []byte{}
 	cleanInitial := strings.TrimLeft(initial, "\r\n")
@@ -383,32 +389,49 @@ func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
 }
 
 func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error) {
-	var menuOptions []ChoiceMenuOption
+	const freeTextLabel = "Other: write what you want"
+	menuOptions := make([]ChoiceMenuOption, 0, len(options)+1)
+	seen := make(map[string]bool, len(options))
 	defaultIdx := 0
+	recommended = strings.TrimSpace(recommended)
+	recommendedLower := strings.ToLower(recommended)
+	preferFreeText := recommendedLower == "other" || strings.HasPrefix(recommendedLower, "other:") || strings.HasPrefix(recommendedLower, "other (")
 
-	if len(options) > 0 {
-		for i, opt := range options {
-			key := fmt.Sprintf("%d", i+1)
-			if strings.EqualFold(opt, recommended) || (recommended == "" && i == 0) {
-				defaultIdx = i
-			}
-			menuOptions = append(menuOptions, ChoiceMenuOption{
-				Label: opt,
-				Keys:  key,
-			})
+	for _, option := range options {
+		label := strings.TrimSpace(option)
+		key := strings.ToLower(label)
+		if label == "" || seen[key] {
+			continue
 		}
+		seen[key] = true
+
+		// A model may supply its own "Other" option. The UI owns that choice
+		// so it always opens the free-text editor instead of returning a label.
+		if key == "other" || strings.HasPrefix(key, "other:") || strings.HasPrefix(key, "other (") {
+			continue
+		}
+		if strings.EqualFold(label, recommended) {
+			defaultIdx = len(menuOptions)
+		}
+		menuOptions = append(menuOptions, ChoiceMenuOption{
+			Label: label,
+			Keys:  fmt.Sprintf("%d", len(menuOptions)+1),
+		})
 	}
+
+	if preferFreeText {
+		defaultIdx = len(menuOptions)
+	}
+	menuOptions = append(menuOptions, ChoiceMenuOption{
+		Label:    freeTextLabel,
+		Keys:     fmt.Sprintf("%d", len(menuOptions)+1),
+		FreeText: true,
+	})
 
 	prompt := strings.TrimSpace(question)
 	if prompt == "" {
 		prompt = "Please select an option:"
 	}
-	// Always append a free-write entry so the user can type exactly what they want.
-	menuOptions = append(menuOptions, ChoiceMenuOption{
-		Label:    "Other: write what you want",
-		Keys:     fmt.Sprintf("%d", len(menuOptions)+1),
-		FreeText: true,
-	})
 
 	selected, dismissed, freeText := runModalChoiceEx(w, theme, " "+prompt, menuOptions, defaultIdx)
 	if dismissed {

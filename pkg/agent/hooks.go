@@ -16,6 +16,9 @@ import (
 var PermissionHook func(ToolCallEvent) *PermissionDecision
 
 func (a *Agent) executeHookScript(script string, payload any) (string, string, error) {
+	if !a.IsShellExecutionAllowed() {
+		return "", "", fmt.Errorf("executable hooks require a trusted workspace")
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", err

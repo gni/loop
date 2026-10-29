@@ -69,15 +69,6 @@ func handleToolsCommand(
 				}
 			}
 			a.DisableTools(toolsToDisable...)
-			if kiReader != nil && len(kiReader.AllowedTools) > 0 {
-				var filtered []string
-				for _, at := range kiReader.AllowedTools {
-					if !a.IsToolDisabled(at) {
-						filtered = append(filtered, at)
-					}
-				}
-				kiReader.AllowedTools = filtered
-			}
 			saveCfg()
 			fmt.Fprintf(w, "disabled tool(s): %s. system prompt updated.\n", strings.Join(toolsToDisable, ", "))
 			syncStatus()

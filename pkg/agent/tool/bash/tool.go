@@ -71,6 +71,10 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err := ctx.Context().Err(); err != nil {
 		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
+	gate, ok := ctx.(interface{ IsShellExecutionAllowed() bool })
+	if !ok || !gate.IsShellExecutionAllowed() {
+		return "", fmt.Errorf("shell execution requires a trusted workspace; trust it explicitly before running commands")
+	}
 
 	args.Dir = domaintool.FirstNonEmpty(args.Dir, args.Cwd)
 

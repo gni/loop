@@ -74,5 +74,6 @@ func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Re
 	if err != nil {
 		return nil, err
 	}
+	cloned.NormalizeSafety()
 	return &cloned, nil
 }

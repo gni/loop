@@ -92,6 +92,37 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 	return body
 }
 
+// trimRenderedToolBody removes extra terminal newlines at the end of a
+// syntax-highlighted write preview without dropping trailing ANSI SGR resets.
+// Chroma can place reset codes *after* a newline, so TrimRight alone misses it.
+func trimRenderedToolBody(body string) string {
+	var sgrSuffix string
+	for {
+		body = strings.TrimRight(body, "\r\n")
+		start := strings.LastIndex(body, "\x1b[")
+		if start < 0 || !strings.HasSuffix(body, "m") {
+			break
+		}
+		sequence := body[start:]
+		if len(sequence) < 3 {
+			break
+		}
+		valid := true
+		for i := 2; i < len(sequence)-1; i++ {
+			if c := sequence[i]; (c < '0' || c > '9') && c != ';' {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			break
+		}
+		sgrSuffix = sequence + sgrSuffix
+		body = body[:start]
+	}
+	return body + sgrSuffix
+}
+
 func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
 	msg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, lineCount)
@@ -105,7 +136,12 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		if toolName == "write" {
 			if !bodyWasStreamed && !collapse {
 				if content, ok := filetool.ExtractFileContent(argsJSON); ok && content != "" {
-					fmt.Fprintln(w, strings.TrimRight(highlightToolBody(content, toolName, argsJSON, false, false, theme), "\r\n"))
+					// Match live streaming: the summary follows the last content
+					// line directly, even if Chroma puts ANSI resets after
+					// trailing newlines. A blank line belongs between calls,
+					// not between a write body and its verified result.
+					body := highlightToolBody(content, toolName, argsJSON, false, false, theme)
+					fmt.Fprintln(w, trimRenderedToolBody(body))
 				}
 			}
 			renderWriteSummary(w, theme, toolName, argsJSON, output)

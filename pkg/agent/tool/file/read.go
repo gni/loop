@@ -11,7 +11,7 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-const readDefaultLimit = 1000
+const readDefaultLimit = 200
 
 var (
 	DirectoryTreeLister func(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
@@ -36,14 +36,14 @@ func (t *readTool) PromptSnippet() string {
 func (t *readTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
-		"Request one 'read' call at a time. Inspect its result before requesting another file, rather than batching multiple reads in one response.",
+		"Batch independent reads when useful. Inspect results before dependent operations such as edits and overwrites.",
 	})
 }
 
 func (t *readTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"read",
-		domaintool.FormatToolDescription("read", "Read file contents. Supports text files. Specify 'path' first before offset or limit. Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete."),
+		domaintool.FormatToolDescription("read", "Read text files, 200 lines by default. Specify path first. Use offset and limit to paginate; configured line and byte ceilings apply, with next-offset notices."),
 		map[string]domaintool.SchemaProp{
 			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees.")),
 			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),

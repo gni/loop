@@ -26,6 +26,76 @@ type MCPServerConfig struct {
 	AlwaysLoad bool              `json:"alwaysLoad,omitempty"`
 }
 
+// ChatCapabilities are explicit opt-ins for non-universal chat-completions fields.
+// An OpenAI-compatible URL does not imply support for any of these extensions.
+// With no capabilities set, the request contains only model, messages, tools and stream.
+type ChatCapabilities struct {
+	Temperature         bool `json:"temperature,omitempty"`
+	MaxTokens           bool `json:"max_tokens,omitempty"`
+	MaxCompletionTokens bool `json:"max_completion_tokens,omitempty"`
+	StreamOptions       bool `json:"stream_options,omitempty"`
+	ParallelToolCalls   bool `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort     bool `json:"reasoning_effort,omitempty"`
+	ThinkingControls    bool `json:"thinking_controls,omitempty"`
+	Penalties           bool `json:"penalties,omitempty"`
+}
+
+// Merge retains a feature if it was explicitly enabled in either scope.
+func (c ChatCapabilities) Merge(other ChatCapabilities) ChatCapabilities {
+	return ChatCapabilities{
+		Temperature:         c.Temperature || other.Temperature,
+		MaxTokens:           c.MaxTokens || other.MaxTokens,
+		MaxCompletionTokens: c.MaxCompletionTokens || other.MaxCompletionTokens,
+		StreamOptions:       c.StreamOptions || other.StreamOptions,
+		ParallelToolCalls:   c.ParallelToolCalls || other.ParallelToolCalls,
+		ReasoningEffort:     c.ReasoningEffort || other.ReasoningEffort,
+		ThinkingControls:    c.ThinkingControls || other.ThinkingControls,
+		Penalties:           c.Penalties || other.Penalties,
+	}
+}
+
+// isAskUserToolName covers the aliases recognized by the tool registry.
+func isAskUserToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ask_user", "ask_user_question", "askuser", "ask_human", "question_user", "ask", "ask_question", "confirm":
+		return true
+	}
+	return false
+}
+
+// SetAskUserMode keeps the mode authoritative over the legacy disabled_tools entry.
+func (c *Config) SetAskUserMode(mode string) {
+	if c == nil {
+		return
+	}
+	c.AskUserMode = mode
+	filtered := c.DisabledTools[:0]
+	for _, name := range c.DisabledTools {
+		if !isAskUserToolName(name) {
+			filtered = append(filtered, name)
+		}
+	}
+	c.DisabledTools = filtered
+}
+
+// NormalizeSafety enforces guided mode and migrates legacy ask_user tool disabling.
+func (c *Config) NormalizeSafety() {
+	if c == nil {
+		return
+	}
+	for _, name := range c.DisabledTools {
+		if isAskUserToolName(name) {
+			c.SetAskUserMode("disabled")
+			break
+		}
+	}
+	if c.GuidedMode {
+		c.AutoApprove = false
+		c.ApprovalAlwaysAnswer = false
+		c.ParallelToolCalls = false
+	}
+}
+
 type Config struct {
 	Sources                  map[string]string          `json:"-"`
 	ProjectPath              string                     `json:"-"`
@@ -58,6 +128,8 @@ type Config struct {
 	SkipVerify               bool                       `json:"skip_verify"`
 	SkillsDir                string                     `json:"skills_dir"`
 	MCPServers               map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+	EnableMCP                bool                       `json:"enable_mcp,omitempty"`
+	ChatCapabilities         ChatCapabilities           `json:"chat_capabilities,omitempty"`
 	MaxReasoningSteps        int                        `json:"max_reasoning_steps"`
 	ContextWindowLimit       int                        `json:"context_window_limit"`
 	AutoAdaptContext         bool                       `json:"auto_adapt_context"`
@@ -185,20 +257,20 @@ func DefaultConfig() *Config {
 		Endpoint:                 endpoint,
 		ApiKey:                   apiKey,
 		Model:                    model,
-		Temperature:              0.7,
+		Temperature:              0.2,
 		SystemInstruction:        DefaultSystemInstruction,
-		ShowThinking:             true,
+		ShowThinking:             false,
 		Theme:                    "dark",
-		DirectCommands:           true,
+		DirectCommands:           false,
 		SkillsDir:                resolveDefaultSkillsDir(),
 		MCPServers:               make(map[string]MCPServerConfig),
-		MaxReasoningSteps:        30,
-		MaxCompletionTokens:      16384,
-		ContextWindowLimit:       128000,
-		AutoAdaptContext:         true,
-		MinContextWindow:         32768,
-		CompressionThreshold:     0.95,
-		ReasoningEffort:          "low",
+		MaxReasoningSteps:        12,
+		MaxCompletionTokens:      4096,
+		ContextWindowLimit:       8192,
+		AutoAdaptContext:         false,
+		MinContextWindow:         8192,
+		CompressionThreshold:     0.85,
+		ReasoningEffort:          "off",
 		StreamWrites:             true,
 		SyntaxTheme:              "auto",
 		Providers:                make(map[string]ProviderConfig),
@@ -213,6 +285,7 @@ func DefaultConfig() *Config {
 		AtomicWrites:             true,
 		AskUserMode:              "interactive",
 		RecapInterval:            5,
+		DisableRecap:             true,
 		Limits:                   limits.Defaults(),
 	}
 }
@@ -246,16 +319,16 @@ func (cfg *Config) applyDefaults() {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
 	if cfg.MaxReasoningSteps == 0 {
-		cfg.MaxReasoningSteps = 30
+		cfg.MaxReasoningSteps = 12
 	}
 	if cfg.ContextWindowLimit == 0 {
-		cfg.ContextWindowLimit = 128000
+		cfg.ContextWindowLimit = 8192
 	}
 	if cfg.MinContextWindow <= 0 {
-		cfg.MinContextWindow = 32768
+		cfg.MinContextWindow = 8192
 	}
 	if cfg.CompressionThreshold == 0.0 {
-		cfg.CompressionThreshold = 0.95
+		cfg.CompressionThreshold = 0.85
 	}
 	if cfg.MaxPasteLines <= 0 {
 		cfg.MaxPasteLines = 80
@@ -267,15 +340,16 @@ func (cfg *Config) applyDefaults() {
 		cfg.MaxPasteChars = 8000
 	}
 	if cfg.ReasoningEffort == "" {
-		cfg.ReasoningEffort = "low"
+		cfg.ReasoningEffort = "off"
 	}
 	if cfg.SyntaxTheme == "" {
 		cfg.SyntaxTheme = "auto"
 	}
 	if cfg.MaxCompletionTokens == 0 {
-		cfg.MaxCompletionTokens = 16384
+		cfg.MaxCompletionTokens = 4096
 	}
 	cfg.Limits = limits.Resolve(cfg.Limits)
+	cfg.NormalizeSafety()
 }
 
 func populateProviderNames(providers map[string]ProviderConfig) {
@@ -313,6 +387,22 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 
+		// Embedded templates may carry legacy high-budget defaults. New
+		// installations start in the conservative local preset; existing
+		// user configuration remains untouched on subsequent loads.
+		conf.Temperature = 0.2
+		conf.MaxReasoningSteps = 12
+		conf.MaxCompletionTokens = 4096
+		conf.ContextWindowLimit = 8192
+		conf.MinContextWindow = 8192
+		conf.AutoAdaptContext = false
+		conf.CompressionThreshold = 0.85
+		conf.ReasoningEffort = "off"
+		conf.ShowThinking = false
+		conf.ParallelToolCalls = false
+		conf.DisableRecap = true
+		conf.DirectCommands = false
+		conf.DisableLocalPlugins = true
 		conf.applyDefaults()
 		conf.ensureDefaultProvider()
 		conf.SyncActiveProvider()
@@ -383,6 +473,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg.SyncActiveProvider()
+	cfg.NormalizeSafety()
 	if envTimeout := os.Getenv("LOOP_TIMEOUT"); envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
 			cfg.Timeout = t
@@ -393,6 +484,10 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func SaveConfig(path string, cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	cfg.NormalizeSafety()
 	if cfg.ProjectPath != "" {
 		return saveProjectConfig(cfg)
 	}
@@ -401,6 +496,7 @@ func SaveConfig(path string, cfg *Config) error {
 		return err
 	}
 	cfg = copy
+	cfg.NormalizeSafety()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
@@ -579,10 +675,14 @@ func ParseReasoningEffort(val string) (string, error) {
 
 func ParseAskUserMode(val string) (string, error) {
 	switch mode := strings.ToLower(strings.TrimSpace(val)); mode {
-	case "interactive", "always_ask", "auto_recommended", "disabled":
+	case "interactive", "enabled", "enable", "on", "true", "1":
+		return "interactive", nil
+	case "disabled", "disable", "off", "false", "0":
+		return "disabled", nil
+	case "always_ask", "auto_recommended":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled", val)
+		return "", fmt.Errorf("invalid ask_user_mode '%s'. Allowed: interactive (on), always_ask, auto_recommended, disabled (off)", val)
 	}
 }
 

@@ -41,6 +41,7 @@ type ToolTextFilter struct {
 	discardLeadingWhitespace bool
 	emit                     func(string)
 	flushed                  bool
+	plain                    bool
 	emitToolName             func(string, int)
 	emitToolTarget           func(string, int)
 	emitToolCall             func(string, int)
@@ -51,6 +52,11 @@ type ToolTextFilter struct {
 // NewToolTextFilter creates a new streaming XML tool filter.
 func NewToolTextFilter(emit func(string)) *ToolTextFilter {
 	return &ToolTextFilter{emit: emit}
+}
+
+// NewPlainTextFilter preserves literal text and never interprets tool-like tags.
+func NewPlainTextFilter(emit func(string)) *ToolTextFilter {
+	return &ToolTextFilter{emit: emit, plain: true}
 }
 
 func (f *ToolTextFilter) SetToolCallbacks(emitToolName func(string, int), emitToolCall func(string, int)) {
@@ -72,6 +78,10 @@ func (f *ToolTextFilter) Write(chunk string) {
 	if f == nil || f.flushed || chunk == "" {
 		return
 	}
+	if f.plain {
+		f.emit(chunk)
+		return
+	}
 	f.pending += chunk
 	f.process(false)
 }
@@ -81,6 +91,9 @@ func (f *ToolTextFilter) Flush() {
 		return
 	}
 	f.flushed = true
+	if f.plain {
+		return
+	}
 	f.process(true)
 }
 

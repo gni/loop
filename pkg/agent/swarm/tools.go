@@ -54,6 +54,9 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	if s.subagent == nil || s.subagent.Manager == nil {
 		return "", fmt.Errorf("subagent has no manager reference")
 	}
+	if s.subagent.BaseAgent == nil || s.subagent.BaseAgent.Config == nil || s.subagent.BaseAgent.Config.MaxSubagentDepth <= 0 {
+		return "", fmt.Errorf("subagents are disabled")
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

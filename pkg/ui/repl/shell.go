@@ -89,6 +89,11 @@ func executeManualShellCommand(
 		return
 	}
 
+	if !a.IsShellExecutionAllowed() {
+		fmt.Fprintln(ppWriter, "shell execution requires a trusted workspace; command not run")
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().ActiveCancelFunc = cancel

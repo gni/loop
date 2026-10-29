@@ -32,6 +32,10 @@ func (p *pluginTool) Definition() Tool {
 }
 
 func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error) {
+	gate, ok := ctx.(interface{ IsShellExecutionAllowed() bool })
+	if !ok || !gate.IsShellExecutionAllowed() {
+		return "", fmt.Errorf("executable plugins require a trusted workspace")
+	}
 	absPath, err := filepath.Abs(p.path)
 	if err != nil {
 		return "", fmt.Errorf("invalid plugin path: %w", err)
@@ -164,8 +168,6 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 		return err
 	}
 
-	isDedicatedPluginDir := strings.EqualFold(filepath.Base(absDir), "plugins")
-
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("plugin registration interrupted: %w", err)
@@ -182,6 +184,10 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 
 		var jsonBytes []byte
 		if descPath, ok := HasPluginDescriptor(pluginPath); ok {
+			info, statErr := os.Lstat(descPath)
+			if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxPluginDescriptorBytes {
+				continue
+			}
 			file, openErr := os.Open(descPath)
 			if openErr != nil {
 				continue
@@ -190,11 +196,6 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 			_ = file.Close()
 			if err != nil || len(jsonBytes) > maxPluginDescriptorBytes {
 				continue
-			}
-		} else if isDedicatedPluginDir {
-			result, runErr := process.Run(ctx, process.Options{Executable: pluginPath, Arguments: []string{"--info"}, Timeout: 5 * time.Second, OutputLimit: maxPluginDescriptorBytes})
-			if runErr == nil {
-				jsonBytes = []byte(result.Stdout)
 			}
 		}
 

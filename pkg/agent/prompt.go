@@ -14,20 +14,22 @@ func tpl() domaintool.PromptTemplates {
 }
 
 type SystemPromptConfig struct {
-	BaseInstruction string
-	WorkspaceRoot   string
-	SkillsDir       string
-	CompactPrompt   bool
-	GuidedMode      bool
-	SkipObservation bool
-	ActiveAgents    []string
-	Skills          []tool.Skill
-	AllSkills       []tool.Skill
-	MemoryContext   string
-	ActiveTasks     []TaskInfo
-	UserGuidelines  string
-	Tools           []ToolEntry
-	Allowlist       []string
+	BaseInstruction   string
+	WorkspaceRoot     string
+	SkillsDir         string
+	CompactPrompt     bool
+	NativeToolSchemas bool
+	GuidedMode        bool
+	SkipObservation   bool
+	SequentialTools   bool
+	ActiveAgents      []string
+	Skills            []tool.Skill
+	AllSkills         []tool.Skill
+	MemoryContext     string
+	ActiveTasks       []TaskInfo
+	UserGuidelines    string
+	Tools             []ToolEntry
+	Allowlist         []string
 }
 
 type ToolEntry struct {
@@ -104,13 +106,19 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
 	var toolLines strings.Builder
-	for _, entry := range tools {
-		toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
+	// Native tool schemas already carry names, descriptions, and arguments.
+	// Keep the detailed listing for XML protocol and non-compact prompts only.
+	if !cfg.CompactPrompt || !cfg.NativeToolSchemas {
+		for _, entry := range tools {
+			toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
+		}
 	}
 	for _, name := range cfg.ActiveAgents {
 		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(domaintool.MasterAgentTemplates.SubagentPrompt, name)))
 	}
-	sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))
+	if toolLines.Len() > 0 {
+		sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))
+	}
 
 	var ruleLines strings.Builder
 	seenRules := make(map[string]bool)
@@ -135,6 +143,10 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			addRule("Guided Workflow Protocol: Inspect relevant files and register an execution plan using 'todo' before mutations. Do not call unavailable tools to ask for clarification.")
 		}
 		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
+	}
+
+	if cfg.SequentialTools && len(tools) > 0 {
+		addRule("Independent tool calls may be returned together in one response; Loop executes them in order and returns their results together. Do not assume later calls can depend on results not yet received. Count only successful file writes as complete.")
 	}
 
 	if cfg.SkipObservation {
@@ -203,21 +215,23 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	var maLines strings.Builder
-	maLines.WriteString(t.SubagentSkillAssignment)
-	if len(skillsForGuidance) > 0 {
-		validNames := make([]string, 0, len(skillsForGuidance))
-		for _, s := range skillsForGuidance {
-			validNames = append(validNames, s.Name)
+	if canSpawnSubagents || len(cfg.ActiveAgents) > 0 {
+		maLines.WriteString(t.SubagentSkillAssignment)
+		if len(skillsForGuidance) > 0 {
+			validNames := make([]string, 0, len(skillsForGuidance))
+			for _, s := range skillsForGuidance {
+				validNames = append(validNames, s.Name)
+			}
+			sort.Strings(validNames)
+			maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
+		} else {
+			maLines.WriteString(t.MultiAgentNoSkills)
 		}
-		sort.Strings(validNames)
-		maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
-	} else {
-		maLines.WriteString(t.MultiAgentNoSkills)
+		if canSpawnSubagents {
+			maLines.WriteString(t.MultiAgentSpawnRules)
+		}
+		sb.WriteString(fmt.Sprintf(t.MultiAgentSection, maLines.String()))
 	}
-	if canSpawnSubagents {
-		maLines.WriteString(t.MultiAgentSpawnRules)
-	}
-	sb.WriteString(fmt.Sprintf(t.MultiAgentSection, maLines.String()))
 
 	if cfg.MemoryContext != "" {
 		sb.WriteString(fmt.Sprintf(t.MemorySection, cfg.MemoryContext))
@@ -253,16 +267,18 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 	}
 
 	return SystemPromptConfig{
-		BaseInstruction: instruction,
-		WorkspaceRoot:   tool.FirstNonEmpty(a.WorkspaceRoot, "."),
-		SkillsDir:       skillsDir,
-		CompactPrompt:   compact,
-		GuidedMode:      a.IsGuidedMode(),
-		SkipObservation: a.Config != nil && a.Config.DisableObservationGuard,
-		Skills:          a.GetActiveSkills(),
-		MemoryContext:   a.LoadMemoryContext(),
-		Allowlist:       allowlist,
-		Tools:           PromptToolEntries(a.Registry, includeSubagentTools),
+		BaseInstruction:   instruction,
+		WorkspaceRoot:     tool.FirstNonEmpty(a.WorkspaceRoot, "."),
+		SkillsDir:         skillsDir,
+		CompactPrompt:     compact,
+		NativeToolSchemas: a.Config == nil || !strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml"),
+		GuidedMode:        a.IsGuidedMode(),
+		SkipObservation:   a.Config != nil && a.Config.DisableObservationGuard,
+		SequentialTools:   a.Config == nil || !a.Config.ParallelToolCalls,
+		Skills:            a.GetActiveSkills(),
+		MemoryContext:     a.LoadMemoryContext(),
+		Allowlist:         allowlist,
+		Tools:             PromptToolEntries(a.Registry, includeSubagentTools),
 	}
 }
 
@@ -304,12 +320,10 @@ func PromptToolEntries(registry *tool.ToolRegistry, includeSubagentTools bool) [
 	if registry == nil {
 		return nil
 	}
-	executors := registry.GetAllExecutors()
+	executors := registry.GetAvailableExecutors(nil)
 	entries := make([]ToolEntry, 0, len(executors))
-	for name, executor := range executors {
-		if registry.IsDisabled(name) {
-			continue
-		}
+	for _, executor := range executors {
+		name := executor.Name()
 		if !includeSubagentTools && tool.IsSubagentTool(name) {
 			continue
 		}

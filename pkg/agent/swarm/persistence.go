@@ -130,7 +130,7 @@ func (mam *MultiAgentManager) deleteAgentDef(name string) error {
 }
 
 func (mam *MultiAgentManager) LoadSavedAgents() error {
-	if mam.ephemeral {
+	if mam.ephemeral || mam.BaseAgent == nil || mam.BaseAgent.Config == nil || mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
 		return nil
 	}
 

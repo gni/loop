@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
@@ -114,10 +115,14 @@ func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Co
 }
 
 func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chunkChan chan<- StreamChunk, chunkType string, dest *strings.Builder) *FallbackToolTextFilter {
-	filter := NewFallbackToolTextFilter(func(text string) {
+	emit := func(text string) {
 		dest.WriteString(text)
 		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: chunkType, Content: text}, p.ChunkDropObserver)
-	})
+	}
+	if p.Config == nil || !strings.EqualFold(p.Config.ToolProtocol, "xml") {
+		return fallback.NewPlainTextFilter(emit)
+	}
+	filter := NewFallbackToolTextFilter(emit)
 	filter.SetToolCallbacks(
 		func(toolName string, idx int) {
 			normName := tool.NormalizeName(toolName)
@@ -266,7 +271,12 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
-		calls := assembleToolCalls(toolCallsMap, rawTextBuilder.String(), reasoningBuilder.String())
+		var calls []db.ToolCall
+		if len(toolCallsMap) > 0 {
+			calls = assembleToolCalls(toolCallsMap, "", "")
+		} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
+			calls = assembleToolCalls(nil, rawTextBuilder.String(), "")
+		}
 
 		return &db.Message{
 			Role:     "assistant",

@@ -64,11 +64,37 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("atomically replace %s: %w", filename, err)
 	}
 	tmpName = ""
-	return nil
+	// Sync the directory as well as the file so the rename survives a crash
+	// on filesystems providing POSIX fsync semantics.
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open parent directory for durability: %w", err)
+	}
+	syncErr := dirFile.Sync()
+	closeErr := dirFile.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync parent directory: %w", syncErr)
+	}
+	return closeErr
 }
 
 func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
-	if info, err := os.Stat(safePath); err == nil {
+	if ctx == nil || ctx.Context() == nil {
+		return fmt.Errorf("file mutation requires an active context")
+	}
+	if err := ctx.Context().Err(); err != nil {
+		return fmt.Errorf("file mutation canceled: %w", err)
+	}
+	// Recheck containment immediately before committing. The final path must
+	// remain within the original workspace after parent creation.
+	verified, err := ctx.SafePath(safePath)
+	if err != nil {
+		return fmt.Errorf("file mutation path no longer safe: %w", err)
+	}
+	if verified != safePath {
+		return fmt.Errorf("file mutation target changed during execution")
+	}
+	if info, err := os.Lstat(safePath); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("refusing to overwrite non-regular file %s", safePath)
 		}
@@ -80,7 +106,6 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 	if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
 		useAtomic = cp.IsAtomicWritesEnabled()
 	}
-	var err error
 	if useAtomic {
 		err = AtomicWriteFile(safePath, data, perm)
 	} else {

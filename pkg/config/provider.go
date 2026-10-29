@@ -19,15 +19,16 @@ type OAuthConfig struct {
 }
 
 type ProviderConfig struct {
-	Models   []model.Model     `json:"models,omitempty"`
-	OAuth    *OAuthConfig      `json:"oauth,omitempty"`
-	API      string            `json:"api,omitempty"`
-	Name     string            `json:"name,omitempty"`
-	Endpoint string            `json:"endpoint"`
-	ApiKey   string            `json:"api_key,omitempty"`
-	Model    string            `json:"model,omitempty"`
-	Timeout  int               `json:"timeout,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
+	ChatCapabilities ChatCapabilities  `json:"chat_capabilities,omitempty"`
+	Models           []model.Model     `json:"models,omitempty"`
+	OAuth            *OAuthConfig      `json:"oauth,omitempty"`
+	API              string            `json:"api,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Endpoint         string            `json:"endpoint"`
+	ApiKey           string            `json:"api_key,omitempty"`
+	Model            string            `json:"model,omitempty"`
+	Timeout          int               `json:"timeout,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
 }
 
 type ProvidersFile struct {

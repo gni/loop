@@ -231,7 +231,7 @@ func handleConfigCommand(
 			fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled\n", val)
 			return
 		}
-		a.Config.AskUserMode = mode
+		a.Config.SetAskUserMode(mode)
 		a.Config.UpdateActiveProvider()
 	case "disabled_tools", "disable_tools", "disable_tool":
 		a.EnableAllTools()

@@ -257,8 +257,73 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		updateStreamStatus(true)
 
-		// Tool arguments are collected by the provider. Render headers and
-		// file previews once, from the completed tool calls during execution.
+		// Stream each tool call in index order while keeping interleaved
+		// argument fragments from different files separate.
+		toolStream := newToolStreamSequencer(sr, a.Config.StreamWrites)
+		batch := NewToolBatch(func(update ToolLifecycleEvent) {
+			if presenter, ok := sr.(interface{ ObserveToolLifecycle(ToolLifecycleEvent) }); ok {
+				presenter.ObserveToolLifecycle(update)
+			}
+			a.emit(Event{Type: "tool_lifecycle", SessionID: sessionID, Data: update})
+		})
+		toolStream.SetBatch(batch)
+		// The display follows model order in both execution modes. A parallel
+		// worker pool may finish out of order, but its headings and results
+		// are published together after the batch completes.
+		sequentialDisplay := a.Config.StreamWrites
+		if sequentialDisplay {
+			toolStream.DeferFollowingCalls()
+			if presenter, ok := sr.(interface{ SetSequentialToolResults(bool) }); ok {
+				presenter.SetSequentialToolResults(true)
+			}
+		}
+		// A completed JSON call can be executed while the model generates
+		// subsequent calls. History remains staged until the assistant's final
+		// response reconciles provider IDs and arguments.
+		var earlyCalls []db.ToolCall
+		var earlyMessages []db.Message
+		earlyStopped := false
+		if a.Config.StreamWrites {
+			if presenter, ok := sr.(interface {
+				ShowLiveToolContent(int, string, string, string)
+				EndLiveToolContent()
+			}); ok {
+				toolStream.PreviewOnly()
+				toolStream.SetLiveContentCallback(presenter.ShowLiveToolContent)
+				toolStream.SetEditDiffPreview(func(name, arguments string) string {
+					return PreviewToolDiff(a, name, arguments)
+				})
+				toolStream.SetOnReady(func(index int, name, arguments string) {
+					// Only commit a contiguous series of completed write/edit
+					// calls. Interleaved, unfinished or unsupported calls continue
+					// through the standard post-inference execution engine.
+					if earlyStopped || ctx.Err() != nil || index != len(earlyCalls) ||
+						(name != "write" && name != "edit") || a.IsGuidedMode() ||
+						engine.needsInteractiveApproval(name) {
+						return
+					}
+					call := db.ToolCall{ID: "call_early_" + db.NewUUID(), Type: "function", Function: db.ToolFunction{Name: name, Arguments: arguments}}
+					presenter.EndLiveToolContent()
+					engine.SetToolBatch(batch)
+					engine.SetInlineEarlyResults(true)
+					staged := &deferredHistorySink{}
+					halted, aborted := engine.ExecuteToolCallAt(ctx, index, call, []db.ToolCall{call}, "", staged, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
+						a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
+					})
+					engine.SetInlineEarlyResults(false)
+					earlyCalls = append(earlyCalls, call)
+					earlyMessages = append(earlyMessages, staged.messages...)
+					if halted || aborted {
+						earlyStopped = true
+						cancel()
+					}
+				})
+			} else {
+				// Keep the original stream mode if the renderer has no live view.
+				toolStream = newToolStreamSequencer(sr, true)
+				toolStream.SetBatch(batch)
+			}
+		}
 		for chunk := range chunkChan {
 			a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
 			switch chunk.Type {
@@ -281,10 +346,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					loader.ShowDots()
 					loader.Feed()
 				}
+				toolStream.Feed(chunk)
+			case "tool_target":
+				toolStream.Feed(chunk)
 			case "tool_call":
 				if loader != nil {
 					loader.Feed()
 				}
+				toolStream.Feed(chunk)
 			}
 		}
 		timer.Time("llm", "end")
@@ -296,6 +365,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			loader.ShowDots()
 		}
 
+		toolStream.Finish()
+		if presenter, ok := sr.(interface{ EndLiveToolContent() }); ok {
+			presenter.EndLiveToolContent()
+		}
 		sr.Flush()
 		stopTicker()
 
@@ -329,8 +402,25 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}
 		}
 		if res.err != nil {
+			batch.CancelUnfinished()
+			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+				pending.MarkPendingWriteResults("Not executed")
+			}
 			runErr = res.err
-			if res.msg != nil && (res.msg.Content != "" || res.msg.ReasoningContent != "") {
+			if len(earlyCalls) > 0 {
+				// A provider error cannot roll back an already approved file
+				// operation. Preserve its tool/assistant history pairing.
+				partial := db.Message{Role: "assistant"}
+				if res.msg != nil {
+					partial = *res.msg
+				}
+				partial.ToolCalls = earlyCalls
+				partial.StopReason = "interrupted"
+				sink.Append(partial)
+				for _, m := range earlyMessages {
+					sink.Append(m)
+				}
+			} else if res.msg != nil && (res.msg.Content != "" || res.msg.ReasoningContent != "") {
 				partial := *res.msg
 				partial.ToolCalls = nil
 				partial.StopReason = "interrupted"
@@ -345,6 +435,16 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		assistantMsg := res.msg
 		if assistantMsg == nil {
+			batch.CancelUnfinished()
+			if len(earlyCalls) > 0 {
+				sink.Append(db.Message{Role: "assistant", ToolCalls: earlyCalls, StopReason: "interrupted"})
+				for _, m := range earlyMessages {
+					sink.Append(m)
+				}
+			}
+			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+				pending.MarkPendingWriteResults("Not executed")
+			}
 			runErr = fmt.Errorf("provider returned no assistant response")
 			return
 		}
@@ -353,15 +453,49 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
 		}
 
+		// Calls already executed during generation must still agree with
+		// the final provider response. Never execute a mismatched call twice.
+		mismatch := len(earlyCalls) > len(assistantMsg.ToolCalls)
+		if !mismatch {
+			for i, early := range earlyCalls {
+				final := assistantMsg.ToolCalls[i]
+				if early.Function.Name != final.Function.Name ||
+					SanitizeLLMControlTokens(early.Function.Arguments) != final.Function.Arguments {
+					mismatch = true
+					break
+				}
+			}
+		}
+		if mismatch {
+			batch.CancelUnfinished()
+			sink.Append(db.Message{Role: "assistant", ToolCalls: earlyCalls, StopReason: "interrupted"})
+			for _, m := range earlyMessages {
+				sink.Append(m)
+			}
+			runErr = fmt.Errorf("provider changed a tool call after its completed arguments were executed; refusing remaining calls")
+			a.renderTurnError(writerToUse, ncw, sink, runErr, ctx.Err(), isNonInteractive, theme)
+			return
+		}
+		for i := range earlyCalls {
+			for j := range earlyMessages {
+				if earlyMessages[j].ToolCallID == earlyCalls[i].ID {
+					earlyMessages[j].ToolCallID = assistantMsg.ToolCalls[i].ID
+				}
+			}
+		}
+		batch.Seal(assistantMsg.ToolCalls)
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
 		sink.Append(*assistantMsg)
+		for _, m := range earlyMessages {
+			sink.Append(m)
+		}
 
+		// Compaction is performed immediately before the next inference, when
+		// another model call is actually necessary. A final answer must not
+		// trigger a separate summarization request.
 		globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(*messages, allowlist)
 		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
-		timer.Time("compaction", "start")
-		globalPromptTokens, postEffectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokens, assistantMsg.CompletionTokens, postEffectiveLimit)
-		timer.Time("compaction", "end")
 
 		var finalTps float64
 		if dur := a.LastGenerationDuration(); dur > 0 {
@@ -376,6 +510,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+				pending.MarkPendingWriteResults("Not executed")
+			}
 			a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
 			result.Text = assistantMsg.Content
 			if loader != nil {
@@ -407,9 +544,40 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		syncPostTurnStatus()
 
 		timer.Time("tool", "start")
-		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
+		engine.SetToolBatch(batch)
+		if sequentialDisplay {
+			engine.SetBeforeToolCall(toolStream.ReplayCall)
+		}
+		logCall := func(tc db.ToolCall, output string, toolErr error) {
 			a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
-		})
+		}
+		var halted, aborted bool
+		if len(earlyCalls) == 0 {
+			halted, aborted = engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), logCall)
+		} else {
+			// Earlier calls already ran and were persisted above. Execute
+			// only the remaining indexes in model order (never twice).
+			for idx := len(earlyCalls); idx < len(assistantMsg.ToolCalls); idx++ {
+				tc := assistantMsg.ToolCalls[idx]
+				halted, aborted = engine.ExecuteToolCallAt(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, sink, sr, loader, ncw, theme, NewMainRenderer(a), logCall)
+				if halted || aborted {
+					if aborted {
+						engine.RecordInterruption(sink, assistantMsg.ToolCalls[idx+1:], "aborted by user")
+					}
+					break
+				}
+			}
+			// This path bypasses ExecuteToolCalls' deferred cleanup. Any
+			// preview left by an interrupted call must not imply success.
+			if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+				marker.MarkPendingWriteResults("Not executed")
+			}
+		}
+		engine.SetBeforeToolCall(nil)
+		engine.SetToolBatch(nil)
+		if halted || aborted {
+			batch.CancelUnfinished()
+		}
 		timer.Time("tool", "end")
 		a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
 		if halted || aborted {

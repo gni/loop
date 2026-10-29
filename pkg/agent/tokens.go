@@ -22,7 +22,6 @@ func TokensFromChars(chars int) int {
 	return tokens
 }
 
-
 func EstimateToolSchemaTokens(tools []tool.Tool) int {
 	if len(tools) == 0 {
 		return 0
@@ -70,7 +69,10 @@ func EstimateMessagesTokens(messages []db.Message) int {
 func CacheTokenTotals(history []db.Message) (int, int) {
 	var reads, writes int
 	for _, m := range history {
-		if m.Usage!=nil{reads+=m.Usage.CacheRead;writes+=m.Usage.CacheWrite}
+		if m.Usage != nil {
+			reads += m.Usage.CacheRead
+			writes += m.Usage.CacheWrite
+		}
 		reads += m.CacheReadTokens
 		writes += m.CacheWriteTokens
 	}
@@ -152,7 +154,12 @@ func ResolveAdaptiveContextLimit(cfg *config.Config, serverLimit, currentTokens 
 func CalculateHistoryTokens(history []db.Message) (int, int) {
 	var totalPrompt, totalCompletion, chars int
 	for _, m := range history {
- if m.Usage!=nil{totalPrompt+=m.Usage.Input;totalCompletion+=m.Usage.Output}
+		if m.Usage != nil {
+			totalPrompt += m.Usage.Input
+			totalCompletion += m.Usage.Output
+			chars += messageChars(m)
+			continue
+		}
 		if m.Role == "assistant" && (messageChars(m) > 0) {
 			prompt := m.PromptTokens
 			if prompt == 0 {

@@ -8,7 +8,6 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	filetool "loop/pkg/agent/tool/file"
-	domaintool "loop/pkg/domain/tool"
 )
 
 type compiledSchema struct {
@@ -37,7 +36,7 @@ func (r *ToolRegistry) Prepare(name, arguments string) (ToolExecutor, string, er
 		return nil, "", fmt.Errorf("tool arguments exceed 8 MiB")
 	}
 	if !json.Valid([]byte(arguments)) {
-		arguments = domaintool.RepairJSON(arguments)
+		return nil, "", fmt.Errorf("invalid JSON tool arguments for %q", name)
 	}
 	var value any
 	if err := json.Unmarshal([]byte(arguments), &value); err != nil {

@@ -29,22 +29,21 @@ func (p *OpenAICompatibleProvider) budgetRequest(messages []db.Message, tools []
 		output = min(output, selected.MaxOutput)
 	}
 	floor := min(output, limits.For(p).CompletionTokenFloor)
-	available := contextLimit - EstimateToolSchemaTokens(tools) - floor
+	// JSON framing, tool wrappers, and tokenizer differences are not captured
+	// by the character-based fallback estimate. Preserve a small safety margin.
+	headroom := max(64, contextLimit/40)
+	available := contextLimit - EstimateToolSchemaTokens(tools) - floor - headroom
 	if available <= 0 {
 		return nil, 0, fmt.Errorf("tool definitions and reserved output exceed model context limit %d", contextLimit)
 	}
 	clean := EnforceToolPairingInvariance(messages)
 	if requestTokens(clean) > available {
-		totalChars := 0
-		for _, msg := range clean {
-			totalChars += messageChars(msg)
-		}
-		clean = trimMessagesToCharBudget(clean, totalChars, int(float64(max(0, available-len(clean)*5))*charsPerToken))
+		clean = trimMessagesToTokenBudget(clean, available)
 		clean = EnforceToolPairingInvariance(clean)
 	}
 	used := requestTokens(clean) + EstimateToolSchemaTokens(tools)
-	if used+floor > contextLimit {
+	if used+floor+headroom > contextLimit {
 		return nil, 0, fmt.Errorf("current input requires approximately %d tokens plus %d reserved output; context limit is %d", used, floor, contextLimit)
 	}
-	return clean, min(output, contextLimit-used), nil
+	return clean, min(output, contextLimit-used-headroom), nil
 }

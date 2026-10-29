@@ -13,6 +13,11 @@ type multiAgentContext struct {
 	ma *MultiAgent
 }
 
+func (mac *multiAgentContext) IsShellExecutionAllowed() bool {
+	gate, ok := mac.AgentContext.(interface{ IsShellExecutionAllowed() bool })
+	return ok && gate.IsShellExecutionAllowed()
+}
+
 func (mac *multiAgentContext) Context() context.Context {
 	if ctx, _, _, ok := mac.ma.activeTurn(); ok {
 		return ctx

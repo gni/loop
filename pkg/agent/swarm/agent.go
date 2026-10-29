@@ -139,7 +139,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 	if ma.BaseAgent.Config != nil {
 		maxDepth = ma.BaseAgent.Config.MaxSubagentDepth
 	}
-	canSpawn := ma.Depth() < subagent.EffectiveMaxDepth(maxDepth)
+	canSpawn := ma.Depth()+1 < subagent.EffectiveMaxDepth(maxDepth)
 
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()
 	allowlist := make([]string, 0, len(allTools))

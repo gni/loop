@@ -80,15 +80,18 @@ func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output strin
 func NewMainRenderer(a *Agent) EngineRenderer { return &mainRenderer{a: a} }
 
 type EnginePolicy struct {
-	AgentName     string
-	ToolAllowlist func() []string
-	AllowApproval bool
-	RunHooks      bool
-	GuidedMode    bool
-	SessionKey    string
-	DebugPrefix   string
-	ShowRecapLine bool
-	ExecContext   func() tool.AgentContext
+	AgentName          string
+	ToolAllowlist      func() []string
+	AllowApproval      bool
+	RunHooks           bool
+	GuidedMode         bool
+	BeforeToolCall     func(index int, call db.ToolCall)
+	ToolBatch          *ToolBatch
+	SessionKey         string
+	DebugPrefix        string
+	ShowRecapLine      bool
+	InlineEarlyResults bool
+	ExecContext        func() tool.AgentContext
 }
 
 type TurnAwareness struct {
@@ -173,6 +176,18 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 	}
 }
 
+func (e *TurnEngine) SetBeforeToolCall(fn func(index int, call db.ToolCall)) {
+	e.policy.BeforeToolCall = fn
+}
+
+func (e *TurnEngine) SetToolBatch(batch *ToolBatch) {
+	e.policy.ToolBatch = batch
+}
+
+func (e *TurnEngine) SetInlineEarlyResults(enabled bool) {
+	e.policy.InlineEarlyResults = enabled
+}
+
 func (e *TurnEngine) Guard() *TurnExecutionGuard { return e.guard }
 func (e *TurnEngine) Awareness() *TurnAwareness  { return e.awareness }
 func (e *TurnEngine) Guided() *GuidedController  { return e.guided }
@@ -220,7 +235,7 @@ func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, to
 	}
 
 	todos := e.agent.GetTodos()
-	if e.agent.Config != nil && (e.agent.Config.AutoApprove || e.agent.Config.ApprovalAlwaysAnswer) {
+	if e.agent.Config != nil && !e.guided.IsEnabled() && (e.agent.Config.AutoApprove || e.agent.Config.ApprovalAlwaysAnswer) {
 		e.guided.ApprovePlan(todos)
 		return nil
 	}
@@ -294,7 +309,7 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 
 func (e *TurnEngine) needsInteractiveApproval(toolName string) bool {
 	a := e.agent
-	return e.policy.AllowApproval && a != nil && a.Config != nil && NeedsApproval(toolName) && !a.Config.AutoApprove && !a.Config.ApprovalAlwaysAnswer
+	return e.policy.AllowApproval && a != nil && a.Config != nil && NeedsApproval(toolName) && ((e.guided != nil && e.guided.IsEnabled()) || (!a.Config.AutoApprove && !a.Config.ApprovalAlwaysAnswer))
 }
 
 func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
@@ -317,7 +332,7 @@ func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w i
 	if loader != nil {
 		loader.Resume()
 	}
-	if always {
+	if always && (e.guided == nil || !e.guided.IsEnabled()) {
 		e.agent.Config.AutoApprove = true
 		if e.agent.ConfigPath != "" {
 			_ = config.SaveConfig(e.agent.ConfigPath, e.agent.Config)
@@ -372,12 +387,25 @@ func (e *TurnEngine) emitRejectedToolCall(
 	render EngineRenderer,
 ) {
 	e.recordRejectedState(output)
+	if e.policy.ToolBatch != nil {
+		e.policy.ToolBatch.SetResult(idx, output, fmt.Errorf("tool rejected"))
+		e.policy.ToolBatch.Finish(idx, true)
+	}
+	if (tc.Function.Name == "write" || tc.Function.Name == "edit") && bodyStreamed {
+		if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+			label := "⎿  Not saved (details below)"
+			if tc.Function.Name == "edit" {
+				label = "⎿  Not applied (details below)"
+			}
+			_ = replacer.TryCompleteWriteResult(idx, label)
+		}
+	}
 	if completeHeader {
 		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
 	}
 	render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
-	e.agent.emit(Event{Type:"tool_execution_end",SessionID:e.policy.SessionKey,ToolCall:&tc,Output:output,IsError:true})
- sink.Append(db.Message{Role:"tool",ToolCallID:tc.ID,Name:tc.Function.Name,Content:output,IsError:true})
+	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: output, IsError: true})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output, IsError: true})
 }
 
 func (e *TurnEngine) finalizeToolCall(
@@ -416,14 +444,54 @@ func (e *TurnEngine) finalizeToolCall(
 		maxOutputBytes = ceiling
 	}
 	pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, maxOutputBytes)
+	if e.policy.ToolBatch != nil {
+		e.policy.ToolBatch.SetResult(idx, pruned, toolErr)
+		e.policy.ToolBatch.Finish(idx, toolErr != nil)
+	}
 
 	isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
 	if !isSubagentCall && !approvalRendered {
 		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, toolErr != nil)
 	}
 	if !isSubagentCall {
-		bodyStreamed := sr.DidStreamToolBody(idx) || (preserveEditOutput && a.DidStreamLiveBody())
-		render.ToolOutput(w, theme, pruned, toolErr != nil, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
+		livePreviewed := sr.DidStreamToolBody(idx)
+		bodyStreamed := livePreviewed || (preserveEditOutput && a.DidStreamLiveBody())
+		// The proposed edit was streamed as +/- lines. Render the verified
+		// one-line result beside that preview, not a duplicate full diff.
+		// On terminal resize, history intentionally shows the authoritative
+		// diff instead of the provisional argument preview.
+		if tc.Function.Name == "edit" {
+			bodyStreamed = false
+		}
+		resultHandled := false
+		if livePreviewed && (tc.Function.Name == "write" || tc.Function.Name == "edit") {
+			if toolErr != nil {
+				if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+					_ = replacer.TryCompleteWriteResult(idx, "⎿  Error (details below)")
+				}
+			} else {
+				var rendered bytes.Buffer
+				render.ToolOutput(&rendered, theme, pruned, false, tc.Function.Name, tc.Function.Arguments, tc.Function.Name == "write")
+				if line := verifiedToolSummaryLine(rendered.String()); line != "" {
+					if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+						resultHandled = replacer.TryCompleteWriteResult(idx, line)
+					}
+					if !resultHandled && e.policy.InlineEarlyResults {
+						// Executing beside this exact preview: a terminal without
+						// tracked rows can safely append the verified summary here.
+						fmt.Fprintln(w, line)
+						resultHandled = true
+					} else if !e.policy.InlineEarlyResults {
+						// Old previews may have scrolled away; never print their
+						// result under an unrelated later file.
+						resultHandled = true
+					}
+				}
+			}
+		}
+		if !resultHandled {
+			render.ToolOutput(w, theme, pruned, toolErr != nil, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
+		}
 	}
 
 	a.stateMu.Lock()
@@ -434,10 +502,24 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured,IsError:toolErr!=nil})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, IsError: toolErr != nil})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}
+}
+
+// verifiedToolSummaryLine extracts the final ⎿ summary from normal tool
+// rendering. It must never return an unverified preview or a multiline diff.
+func verifiedToolSummaryLine(rendered string) string {
+	lines := strings.Split(strings.TrimRight(rendered, "\r\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	line := lines[len(lines)-1]
+	if strings.HasPrefix(strings.TrimSpace(style.StripAnsi(line)), "⎿") {
+		return line
+	}
+	return ""
 }
 
 func (e *TurnEngine) emitHaltNotice(sink HistorySink, w io.Writer, theme style.UITheme) {
@@ -467,7 +549,9 @@ func (e *TurnEngine) applyAfterHook(tc db.ToolCall, output string, err error) (s
 }
 
 func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
-	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || !e.agent.Config.ParallelToolCalls {
+	// Preview replay runs on the presentation goroutine after the worker pool
+	// finishes. It must not disable otherwise safe concurrent tool execution.
+	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || e.agent.Config.GuidedMode || !e.agent.Config.ParallelToolCalls {
 		return false
 	}
 	// File writes and reads must execute in model order. In particular, a
@@ -488,11 +572,14 @@ func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
 }
 
 func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistantContent string, isParallel bool, sr StreamRenderer, w io.Writer, theme style.UITheme, render EngineRenderer) {
+	if e.policy.BeforeToolCall != nil {
+		e.policy.BeforeToolCall(idx, tc)
+	}
 	if isParallel {
 		if sr.GetToolTitleLineNumber(idx) == -1 {
 			e.renderSubagentToolPrefix(w, theme)
+			render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 		}
-		render.ToolHeader(w, theme, tc.Function.Name, tc.Function.Arguments)
 		return
 	}
 	if sr.GetToolTitleLineNumber(idx) == -1 {
@@ -513,6 +600,7 @@ func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistant
 
 type callPlan struct {
 	tc               db.ToolCall
+	executor         tool.ToolExecutor
 	idx              int
 	output           string
 	toolErr          error
@@ -529,6 +617,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 	remainingCalls []db.ToolCall,
 	assistantContent string,
 	isParallel bool,
+	deferPresentation bool,
 	sink HistorySink,
 	sr StreamRenderer,
 	loader EngineLoader,
@@ -542,27 +631,37 @@ func (e *TurnEngine) prepareToolCallPlan(
 		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
 		return plan, true, false
 	}
-	if idx > 0 && sr.GetToolTitleLineNumber(idx) == -1 {
-		if counter, ok := w.(*NewlineCounterWriter); ok {
-			counter.EnsureActivityGap()
-		} else {
-			fmt.Fprint(w, strings.Repeat("\n", style.ActivityGapLines+1))
+	if idx > 0 && !deferPresentation {
+		// A streamed write with a reserved result row needs no extra spacing
+		// during execution. Its completion is shown beside its own preview.
+		inlineResult := false
+		if tc.Function.Name == "write" || tc.Function.Name == "edit" {
+			if pending, ok := sr.(interface{ HasPendingWriteResult(int) bool }); ok {
+				inlineResult = pending.HasPendingWriteResult(idx)
+			}
+		}
+		if !inlineResult {
+			if counter, ok := w.(*NewlineCounterWriter); ok {
+				counter.EnsureActivityGap()
+			} else {
+				fmt.Fprint(w, strings.Repeat("\n", style.ActivityGapLines+1))
+			}
 		}
 	}
 	if !isParallel && e.agent != nil {
 		e.agent.SetLiveBodyStreamed(false)
 	}
 
-	// Tool arguments have now been fully assembled. Reuse the JSON stream
-	// renderer to show a queued write's code immediately before executing it,
-	// then show its completion before moving on to the next queued call.
-	// The first write may already have streamed live: never replay that body.
-	if !isParallel && tc.Function.Name == "write" && sr.GetToolTitleLineNumber(idx) == -1 {
-		sr.StartToolCall(tc.Function.Name, idx)
-		sr.WriteToolCall(tc.Function.Arguments)
-		sr.Flush()
+	// In a concurrent batch, prepare and execute without printing headings.
+	// Render each heading directly before its result, in model order, after
+	// the workers complete. This keeps reads, searches, and plugin results
+	// paired with the call that produced them.
+	if !deferPresentation {
+		e.ensureToolHeaderRendered(idx, tc, assistantContent, isParallel, sr, w, theme, render)
 	}
-	e.ensureToolHeaderRendered(idx, tc, assistantContent, isParallel, sr, w, theme, render)
+	if e.policy.ToolBatch != nil {
+		e.policy.ToolBatch.Start(idx)
+	}
 
 	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)
 
@@ -573,15 +672,16 @@ func (e *TurnEngine) prepareToolCallPlan(
 		return plan, false, false
 	}
 
-	if _, prepared, err := e.agent.Registry.Prepare(tc.Function.Name, tc.Function.Arguments); err != nil {
+	executor, prepared, err := e.agent.Registry.Prepare(tc.Function.Name, tc.Function.Arguments)
+	if err != nil {
 		plan.toolErr = err
 		plan.output = err.Error()
 		plan.skipped = true
 		return plan, false, false
-	} else {
-		tc.Function.Arguments = prepared
-		plan.tc = tc
 	}
+	tc.Function.Arguments = prepared
+	plan.tc = tc
+	plan.executor = executor
 
 	if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
 		plan.toolErr = gateErr
@@ -630,51 +730,70 @@ func (e *TurnEngine) ExecuteToolCalls(
 ) (halted bool, aborted bool) {
 	a := e.agent
 	if a == nil || assistantMsg == nil {
-
 		return false, false
 	}
+	defer func() {
+		if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+			marker.MarkPendingWriteResults("Not executed")
+		}
+	}()
 
 	if e.shouldRunToolCallsParallel(assistantMsg.ToolCalls) {
 		return e.executeToolCallsParallel(ctx, assistantMsg, sink, sr, loader, w, theme, render, afterCall)
 	}
 
 	for idx, tc := range assistantMsg.ToolCalls {
-		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, false, sink, sr, loader, w, theme, render)
+		halted, aborted := e.ExecuteToolCallAt(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, sink, sr, loader, w, theme, render, afterCall)
 		if halted || aborted {
 			if aborted {
 				e.RecordInterruption(sink, assistantMsg.ToolCalls[idx+1:], "aborted by user")
 			}
 			return halted, aborted
 		}
-		tc = plan.tc
-		if plan.skipped {
-			e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
-			continue
-		}
+	}
+	return false, false
+}
 
-		if !plan.guardHit {
-			if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
-				plan.output, plan.toolErr = hookOut, hookErr
-			} else {
-				if loader != nil {
-					loader.ShowDots()
-				}
-				plan.rich, plan.toolErr = a.Registry.ExecuteResult(executionContext(e, a), tc.Function.Name, tc.Function.Arguments)
-				plan.output = plan.rich.Output
-				if ctx.Err() != nil {
-					e.RecordInterruption(sink, assistantMsg.ToolCalls[idx:], "cancelled during execution")
-					return true, false
-				}
-				plan.output, plan.toolErr = e.applyAfterHook(tc, plan.output, plan.toolErr)
+// ExecuteToolCallAt runs one completed call through the same allowlist,
+// schema, approval, observation and hook checks as the batch executor. It
+// keeps the original batch index for inline completion and lifecycle events.
+func (e *TurnEngine) ExecuteToolCallAt(
+	ctx context.Context, idx int, tc db.ToolCall, remaining []db.ToolCall,
+	assistantContent string, sink HistorySink, sr StreamRenderer,
+	loader EngineLoader, w io.Writer, theme style.UITheme,
+	render EngineRenderer,
+	afterCall func(db.ToolCall, string, error),
+) (halted bool, aborted bool) {
+	a := e.agent
+	plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, remaining, assistantContent, false, false, sink, sr, loader, w, theme, render)
+	if halted || aborted {
+		return halted, aborted
+	}
+	tc = plan.tc
+	if plan.skipped {
+		e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
+		return false, false
+	}
+	if !plan.guardHit {
+		if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
+			plan.output, plan.toolErr = hookOut, hookErr
+		} else {
+			if loader != nil {
+				loader.ShowDots()
 			}
+			plan.rich, plan.toolErr = tool.ExecutePreparedResult(executionContext(e, a), plan.executor, tc.Function.Arguments)
+			plan.output = plan.rich.Output
+			if ctx.Err() != nil {
+				e.RecordInterruption(sink, remaining, "cancelled during execution")
+				return true, false
+			}
+			plan.output, plan.toolErr = e.applyAfterHook(tc, plan.output, plan.toolErr)
 		}
-
-		e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall, plan.rich)
-
-		if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
-			e.emitHaltNotice(sink, w, theme)
-			return true, false
-		}
+	}
+	e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall, plan.rich)
+	if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
+		e.emitHaltNotice(sink, w, theme)
+		return true, false
 	}
 	return false, false
 }
@@ -694,7 +813,7 @@ func (e *TurnEngine) executeToolCallsParallel(
 	plans := make([]callPlan, len(assistantMsg.ToolCalls))
 
 	for idx, tc := range assistantMsg.ToolCalls {
-		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, true, sink, sr, loader, w, theme, render)
+		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, true, true, sink, sr, loader, w, theme, render)
 		if halted || aborted {
 			reason := "cancelled before execution"
 			if aborted {
@@ -713,32 +832,42 @@ func (e *TurnEngine) executeToolCallsParallel(
 	}
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	// Tool execution remains parallel, but the renderer consumes each result
+	// as soon as the next call in model order completes. We never wait for
+	// the entire worker pool before presenting the first completed read.
+	ready := make(chan int, len(plans))
 
 	for i := range plans {
 		plan := &plans[i]
 		if plan.skipped || plan.guardHit {
+			ready <- i
 			continue
 		}
 		if ctx.Err() != nil {
-			break
+			plan.toolErr = ctx.Err()
+			plan.output = "cancelled before execution"
+			ready <- i
+			continue
 		}
 
 		if hookOut, hookErr := e.checkBeforeHook(plan.tc); hookErr != nil {
 			plan.output, plan.toolErr = hookOut, hookErr
+			ready <- i
 			continue
 		}
 
 		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
-			rich, err := a.Registry.ExecuteResult(executionContext(e, a), plan.tc.Function.Name, plan.tc.Function.Arguments)
+			rich, err := tool.ExecutePreparedResult(executionContext(e, a), plan.executor, plan.tc.Function.Arguments)
 			plan.rich = rich
-			output := rich.Output
-			plan.output, plan.toolErr = e.applyAfterHook(plan.tc, output, err)
+			plan.output, plan.toolErr = e.applyAfterHook(plan.tc, rich.Output, err)
+			ready <- i
 			continue
 		}
 
 		wg.Add(1)
-		go func(p *callPlan) {
+		go func(i int, p *callPlan) {
 			defer wg.Done()
+			defer func() { ready <- i }()
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -755,37 +884,58 @@ func (e *TurnEngine) executeToolCallsParallel(
 			}
 
 			a.SetLiveBodyStreamed(false)
-			rich, err := a.Registry.ExecuteResult(executionContext(e, a), p.tc.Function.Name, p.tc.Function.Arguments)
+			rich, err := tool.ExecutePreparedResult(executionContext(e, a), p.executor, p.tc.Function.Arguments)
 			p.rich = rich
-			output := rich.Output
 			if ctx.Err() != nil {
 				p.toolErr = fmt.Errorf("cancelled during execution")
 				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
 				return
 			}
-			p.output, p.toolErr = e.applyAfterHook(p.tc, output, err)
-		}(&plans[i])
+			p.output, p.toolErr = e.applyAfterHook(p.tc, rich.Output, err)
+		}(i, plan)
 	}
 
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(ready)
+	}()
 
+	shouldHalt := false
+	completed := make([]bool, len(plans))
+	next := 0
+	for idx := range ready {
+		completed[idx] = true
+		for next < len(plans) && completed[next] {
+			if ctx.Err() != nil {
+				// Drain worker completions before returning; do not render results
+				// that would suggest a cancelled tool completed normally.
+				break
+			}
+			plan := &plans[next]
+			if next > 0 {
+				if counter, ok := w.(*NewlineCounterWriter); ok {
+					counter.EnsureActivityGap()
+				} else {
+					fmt.Fprint(w, strings.Repeat("\n", style.ActivityGapLines+1))
+				}
+			}
+			e.ensureToolHeaderRendered(next, plan.tc, assistantMsg.Content, false, sr, w, theme, render)
+			if plan.skipped {
+				e.emitRejectedToolCall(next, plan.tc, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
+			} else {
+				e.finalizeToolCall(next, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
+			}
+			if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
+				shouldHalt = true
+			}
+			next++
+		}
+	}
 	if ctx.Err() != nil {
-		e.RecordInterruption(sink, assistantMsg.ToolCalls, "cancelled during execution")
+		e.RecordInterruption(sink, assistantMsg.ToolCalls[next:], "cancelled during execution")
 		return true, false
 	}
 
-	shouldHalt := false
-	for i := range plans {
-		plan := &plans[i]
-		if plan.skipped {
-			e.emitRejectedToolCall(i, plan.tc, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
-			continue
-		}
-		e.finalizeToolCall(i, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
-		if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
-			shouldHalt = true
-		}
-	}
 	if shouldHalt {
 		e.emitHaltNotice(sink, w, theme)
 		return true, false
@@ -808,6 +958,9 @@ func (e *TurnEngine) HaltNotice() string {
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
 	for _, tc := range calls {
+		if e.policy.ToolBatch != nil {
+			e.policy.ToolBatch.CancelByProviderID(tc.ID)
+		}
 		sink.Append(db.Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,

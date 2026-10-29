@@ -73,6 +73,9 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 	if a == nil {
 		return fmt.Errorf("nil agent")
 	}
+	if a.Config == nil || !a.Config.EnableMCP {
+		return nil
+	}
 
 	if len(configs) > 0 {
 		a.registerResourceTools()
@@ -141,6 +144,9 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 func (a *Agent) LoadMCPServer(name string) (string, error) {
 	if a == nil {
 		return "", fmt.Errorf("nil agent")
+	}
+	if a.Config == nil || !a.Config.EnableMCP {
+		return "", fmt.Errorf("MCP is disabled; set enable_mcp=true")
 	}
 
 	client, err := a.connectMCPServer(name)
@@ -222,6 +228,9 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 }
 
 func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
+	if strings.TrimSpace(cfg.Command) != "" && !a.IsShellExecutionAllowed() {
+		return nil, fmt.Errorf("local MCP executables require a trusted workspace")
+	}
 	client := a.newMCPClient(name, cfg)
 	if err := client.start(); err != nil {
 		a.recordMCPError(name, generation, err)
@@ -293,25 +302,19 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 }
 
 func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
-	parts := strings.SplitN(name, "__", 3)
-	if len(parts) != 3 || parts[0] != "mcp" {
+	// Resolving an unknown name must never connect to an MCP server. The
+	// model must invoke load_mcp and pass its approval gate first.
+	if a == nil || a.Registry == nil {
 		return nil, false
 	}
-	serverName := parts[1]
-
-	client, err := a.connectMCPServer(serverName)
-	if err != nil || client == nil {
-		return nil, false
-	}
-
 	return a.Registry.Lookup(name)
 }
 
 func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	a.McpClientsMu.Lock()
-	if a.Config == nil {
+	if a.Config == nil || !a.Config.EnableMCP {
 		a.McpClientsMu.Unlock()
-		return nil, fmt.Errorf("no config")
+		return nil, fmt.Errorf("MCP is disabled; set enable_mcp=true")
 	}
 	cfg, exists := a.Config.MCPServers[name]
 	generation := a.mcpGeneration

@@ -7,6 +7,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
@@ -14,8 +15,8 @@ import (
 )
 
 const (
-	nonFileToolMaxChars       = 30000
-	nonFileToolTruncateNotice = "\n... (output truncated to 30000 chars for context optimization)"
+	nonFileToolMaxChars       = 8192
+	nonFileToolTruncateNotice = "\n... (historical tool output truncated to 8192 bytes for context; use spill file for full output)"
 )
 
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
@@ -46,7 +47,9 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 						if json.Unmarshal([]byte(repaired), &dummy) == nil {
 							normalisedTCs[i].Function.Arguments = repaired
 						} else {
-							normalisedTCs[i].Function.Arguments = "{}"
+							// Keep the invalid-call diagnosis visible to the model
+							// without forwarding malformed JSON to the provider.
+							normalisedTCs[i].Function.Arguments = `{"_tool_call_error":"Invalid JSON tool arguments in the earlier assistant message"}`
 						}
 					}
 				}
@@ -80,36 +83,60 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	return validMessages, totalChars
 }
 
-func trimMessagesToCharBudget(validMessages []db.Message, totalChars, limitChars int) []db.Message {
-	startIndex := 0
-	for startIndex < len(validMessages) && validMessages[startIndex].Role == "system" {
-		startIndex++
+// trimMessagesToTokenBudget drops the oldest turns while preserving system
+// instructions and the latest message. Tool-call/result groups are dropped as
+// a unit; pairing is checked again by the caller.
+func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Message {
+	prefix := 0
+	for prefix < len(messages) && messages[prefix].Role == "system" {
+		prefix++
 	}
-	prefixCount := startIndex
-
-	for totalChars > limitChars && startIndex < len(validMessages)-1 {
-		dropEnd := startIndex + 1
-		if validMessages[startIndex].Role == "assistant" && len(validMessages[startIndex].ToolCalls) > 0 {
-			for dropEnd < len(validMessages)-1 && validMessages[dropEnd].Role == "tool" {
-				dropEnd++
+	// Never remove the assistant call that owns the latest tool results.
+	// An orphan tool result would be discarded by the pairing validator.
+	protected := len(messages) - 1
+	if protected >= prefix && messages[protected].Role == "tool" {
+		i := protected
+		for i >= prefix && messages[i].Role == "tool" {
+			i--
+		}
+		if i >= prefix && messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
+			protected = i
+		}
+	}
+	start := prefix
+	for start < protected {
+		candidate := make([]db.Message, 0, prefix+len(messages)-start)
+		candidate = append(candidate, messages[:prefix]...)
+		candidate = append(candidate, messages[start:]...)
+		if requestTokens(candidate) <= limitTokens {
+			return candidate
+		}
+		next := start + 1
+		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
+			for next < protected && messages[next].Role == "tool" {
+				next++
 			}
 		}
-		for k := startIndex; k < dropEnd; k++ {
-			totalChars -= messageChars(validMessages[k])
-		}
-		startIndex = dropEnd
+		start = next
 	}
+	if start == prefix {
+		return messages
+	}
+	trimmed := make([]db.Message, 0, prefix+len(messages)-start)
+	trimmed = append(trimmed, messages[:prefix]...)
+	return append(trimmed, messages[start:]...)
+}
 
-	if startIndex <= prefixCount {
-		return validMessages
+// chatCapabilities never guesses support from the name of the endpoint.
+func (p *OpenAICompatibleProvider) chatCapabilities() config.ChatCapabilities {
+	if p.Config == nil {
+		return config.ChatCapabilities{}
 	}
-
-	apiMessages := make([]db.Message, 0, prefixCount+len(validMessages)-startIndex)
-	apiMessages = append(apiMessages, validMessages[:prefixCount]...)
-	if startIndex < len(validMessages) {
-		apiMessages = append(apiMessages, validMessages[startIndex:]...)
+	caps := p.Config.ChatCapabilities
+	if provider, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
+		caps = caps.Merge(provider.ChatCapabilities)
 	}
-	return apiMessages
+	return caps
 }
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
@@ -160,6 +187,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		budget = maxCompTokens
 	}
 
+	caps := p.chatCapabilities()
 	var model string
 	var temperature float64
 	if p.Config != nil {
@@ -168,18 +196,28 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 
 	reqBody := ChatCompletionRequest{
-		Model:               model,
-		Messages:            cleanMessages,
-		Tools:               finalTools,
-		Temperature:         temperature,
-		Stream:              true,
-		StreamOptions:       &StreamOptions{IncludeUsage: true},
-		ReasoningEffort:     reasoningEffort,
-		MaxCompletionTokens: maxCompTokens,
-		MaxTokens:           maxCompTokens,
+		Model:    model,
+		Messages: cleanMessages,
+		Tools:    finalTools,
+		Stream:   true,
 	}
 
-	if p.Config != nil {
+	if caps.Temperature {
+		reqBody.Temperature = &temperature
+	}
+	if caps.StreamOptions {
+		reqBody.StreamOptions = &StreamOptions{IncludeUsage: true}
+	}
+	// A backend can use one token-limit field, never both in the same request.
+	if caps.MaxCompletionTokens {
+		reqBody.MaxCompletionTokens = maxCompTokens
+	} else if caps.MaxTokens {
+		reqBody.MaxTokens = maxCompTokens
+	}
+	if caps.ReasoningEffort {
+		reqBody.ReasoningEffort = reasoningEffort
+	}
+	if caps.Penalties && p.Config != nil {
 		if p.Config.FrequencyPenalty != 0 {
 			fp := p.Config.FrequencyPenalty
 			reqBody.FrequencyPenalty = &fp
@@ -190,7 +228,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		}
 	}
 
-	if p.ThinkingEnabled() {
+	if caps.ThinkingControls {
 		reqBody.ReasoningControl = true
 		if enableThinking {
 			strength := effort
@@ -217,8 +255,12 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	if len(reqBody.Tools) == 0 {
 		reqBody.Tools = nil
 	} else {
-		parallelCalls := p.Config != nil && p.Config.ParallelToolCalls
-		reqBody.ParallelToolCalls = &parallelCalls
+		if caps.ParallelToolCalls {
+			// Provider batching is independent of local execution concurrency.
+			// The engine still decides which tool calls can run in parallel.
+			parallelCalls := true
+			reqBody.ParallelToolCalls = &parallelCalls
+		}
 	}
 
 	jsonData, err := json.Marshal(reqBody)

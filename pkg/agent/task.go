@@ -117,6 +117,12 @@ func killTaskProcessLocked(task *Task) {
 }
 
 func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
+	if !a.IsShellExecutionAllowed() {
+		return "", fmt.Errorf("background shell execution requires a trusted workspace")
+	}
+	if a.Lifetime != nil && a.Lifetime.Err() != nil {
+		return "", fmt.Errorf("agent already disposed: %w", a.Lifetime.Err())
+	}
 	a.TasksMu.Lock()
 	id := fmt.Sprintf("task_%d", a.NextTaskId)
 	a.NextTaskId++
@@ -164,8 +170,26 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}
 	task.mu.Unlock()
 
+	// Background subprocesses must not survive agent lifetime cancellation.
+	stopWatcher := make(chan struct{})
+	var lifetimeDone <-chan struct{}
+	if a.Lifetime != nil {
+		lifetimeDone = a.Lifetime.Done()
+	}
+	go func() {
+		select {
+		case <-lifetimeDone:
+			task.mu.Lock()
+			if task.Status == "running" {
+				killTaskProcessLocked(task)
+			}
+			task.mu.Unlock()
+		case <-stopWatcher:
+		}
+	}()
 	go func() {
 		waitErr := cmd.Wait()
+		close(stopWatcher)
 		task.mu.Lock()
 		task.EndTime = time.Now()
 		if task.Status == "running" {

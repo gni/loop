@@ -459,6 +459,12 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 	if linesBack < 0 || len(lines) == 0 {
 		return false
 	}
+	// The last newline at the scroll boundary is deferred by Write. Until
+	// it is consumed, printLine still points at the last rendered row, not
+	// the next one. Account for that when replacing already printed rows.
+	if p.pendingLineFeed && linesBack > 0 {
+		linesBack--
+	}
 	startRow := p.printLine - linesBack
 	endRow := startRow + len(lines) - 1
 	if startRow < 1 || endRow > p.getScrollBottom() {

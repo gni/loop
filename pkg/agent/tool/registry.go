@@ -203,26 +203,32 @@ func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) 
 	return executor.Execute(ctx, prepared)
 }
 
-func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
+// GetAvailableExecutors is the common visibility filter for API schemas and
+// system-prompt tool guidance. Hidden, disabled, and disallowed tools stay out
+// of both surfaces.
+func (r *ToolRegistry) GetAvailableExecutors(allowlist []string) []ToolExecutor {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var allTools []Tool
-	for name, t := range r.tools {
+	all := make([]ToolExecutor, 0, len(r.tools))
+	for name, executor := range r.tools {
 		norm := NormalizeName(name)
-		if r.disabled != nil && (r.disabled[name] || r.disabled[norm]) {
+		if r.disabled[name] || r.disabled[norm] || r.hidden[name] || r.hidden[norm] || !IsAllowedTool(name, allowlist) {
 			continue
 		}
-		if !r.hidden[name] && IsAllowedTool(name, allowlist) {
-			allTools = append(allTools, t.Definition())
-		}
+		all = append(all, executor)
 	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Name() < all[j].Name() })
+	return all
+}
 
-	sort.Slice(allTools, func(i, j int) bool {
-		return allTools[i].Function.Name < allTools[j].Function.Name
-	})
-
-	return allTools
+func (r *ToolRegistry) GetAvailableTools(allowlist []string) []Tool {
+	executors := r.GetAvailableExecutors(allowlist)
+	definitions := make([]Tool, 0, len(executors))
+	for _, executor := range executors {
+		definitions = append(definitions, executor.Definition())
+	}
+	return definitions
 }
 
 func (r *ToolRegistry) GetAllExecutors() map[string]ToolExecutor {

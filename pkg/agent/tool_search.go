@@ -26,13 +26,14 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	if strings.TrimSpace(args.Query) == "" {
 		return "", fmt.Errorf("query must not be empty")
 	}
-	names := t.agent.DeferredMCPServers()
+	// Discovery must not launch an executable integration. Connecting to a
+	// deferred server is an explicit load_mcp action subject to approval.
+	deferred := t.agent.DeferredMCPServers()
 	if args.Server != "" {
-		names = []string{args.Server}
-	}
-	for _, name := range names {
-		if _, err := t.agent.connectMCPServer(name); err != nil {
-			return "", err
+		for _, name := range deferred {
+			if name == args.Server {
+				return "", fmt.Errorf("MCP server %q is deferred; use load_mcp before searching its tools", name)
+			}
 		}
 	}
 	type match struct {
@@ -41,8 +42,12 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	}
 	var matches []match
 	words := strings.Fields(strings.ToLower(args.Query))
-	for name, executor := range t.agent.Registry.GetAllExecutors() {
-		if name == t.Name() || t.agent.Registry.IsDisabled(name) || !tool.IsAllowedTool(name, t.agent.ToolSelection) {
+	for _, executor := range t.agent.Registry.GetAvailableExecutors(t.agent.ToolSelection) {
+		name := executor.Name()
+		if name == t.Name() {
+			continue
+		}
+		if args.Server != "" && !strings.HasPrefix(name, "mcp__"+args.Server+"__") {
 			continue
 		}
 		definition := executor.Definition()
@@ -73,6 +78,9 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 		definitions = append(definitions, entry.Definition)
 	}
 	t.agent.markSystemPromptDirty()
+	if len(definitions) == 0 && len(deferred) > 0 {
+		return fmt.Sprintf("no matching connected tools; deferred MCP servers: %s (connect explicitly with load_mcp)", strings.Join(deferred, ", ")), nil
+	}
 	data, err := json.Marshal(definitions)
 	return string(data), err
 }

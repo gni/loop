@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	termpkg "golang.org/x/term"
 	"loop/pkg/cmd"
 	"loop/pkg/lifecycle"
 	"loop/pkg/terminal"
@@ -11,7 +12,9 @@ import (
 
 func main() {
 	term := terminal.Default()
-	term.RestoreCursor()
+	if termpkg.IsTerminal(int(os.Stderr.Fd())) {
+		term.RestoreCursor()
+	}
 
 	exitCode := 0
 

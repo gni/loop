@@ -151,6 +151,9 @@ func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *A
 }
 
 func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, workspace string) *Agent {
+	if cfg != nil {
+		cfg.NormalizeSafety()
+	}
 	cwd, err := filepath.Abs(workspace)
 	if err != nil {
 		cwd = "."
@@ -216,13 +219,7 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 		}
 	}
 
-	if a.Config != nil && len(a.Config.DisabledTools) > 0 {
-		a.Registry.Disable(a.Config.DisabledTools...)
-	}
-	if cfg != nil && cfg.AskUserMode == "disabled" {
-		a.Registry.Disable("ask_user")
-	}
-
+	a.syncToolAvailability()
 	return a
 }
 
@@ -313,11 +310,7 @@ func (a *Agent) SetGuidedMode(enabled bool) {
 	}
 	if a.Config != nil {
 		a.Config.GuidedMode = enabled
-		if enabled {
-			a.Config.AutoApprove = false
-			a.Config.ApprovalAlwaysAnswer = false
-			a.Config.ParallelToolCalls = false
-		}
+		a.Config.NormalizeSafety()
 	}
 	a.ensureGuided().SetEnabled(enabled)
 	a.markSystemPromptDirty()
@@ -414,6 +407,7 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 	a.LLMProviderMu.Lock()
 	defer a.LLMProviderMu.Unlock()
 
+	cfg.NormalizeSafety()
 	a.Config = cfg
 	a.ensureGuided().SetEnabled(cfg.GuidedMode)
 	if a.FileObservations != nil {
@@ -426,26 +420,59 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 	}
 	a.DebugLogger = NewDebugLogger(a.WorkspaceRoot, cfg.DebugLogFile)
 
-	if a.Registry != nil {
-		a.Registry.EnableAll()
-		if len(cfg.DisabledTools) > 0 {
-			a.Registry.Disable(cfg.DisabledTools...)
-		}
-		if cfg.AskUserMode == "disabled" {
-			a.Registry.Disable("ask_user")
+	a.syncToolAvailability()
+	a.markSystemPromptDirty()
+}
+
+// syncToolAvailability keeps explicit permissions separate from disabled-by-feature
+// tools. Registry state is a derived view, never a source for DisabledTools.
+func (a *Agent) syncToolAvailability() {
+	if a == nil || a.Registry == nil {
+		return
+	}
+	a.Registry.EnableAll()
+	if a.Config == nil {
+		return
+	}
+	a.Registry.Disable(a.Config.DisabledTools...)
+	if a.Config.AskUserMode == "disabled" {
+		a.Registry.Disable("ask_user")
+	}
+	a.enforceOptionalTools()
+}
+
+func containsDisabledTool(names []string, name string) bool {
+	for _, current := range names {
+		if tool.NormalizeName(current) == name {
+			return true
 		}
 	}
-	a.markSystemPromptDirty()
+	return false
 }
 
 func (a *Agent) DisableTools(names ...string) {
 	if a == nil || a.Registry == nil {
 		return
 	}
-	a.Registry.Disable(names...)
-	if a.Config != nil {
-		a.Config.DisabledTools = a.Registry.GetDisabledTools()
+	if a.Config == nil {
+		a.Registry.Disable(names...)
+		a.markSystemPromptDirty()
+		return
 	}
+	for _, name := range names {
+		normalized := tool.NormalizeName(name)
+		if normalized == "" {
+			continue
+		}
+		if normalized == "ask_user" {
+			a.Config.SetAskUserMode("disabled")
+			continue
+		}
+		if !containsDisabledTool(a.Config.DisabledTools, normalized) {
+			a.Config.DisabledTools = append(a.Config.DisabledTools, normalized)
+		}
+	}
+	a.syncToolAvailability()
 	a.markSystemPromptDirty()
 }
 
@@ -453,27 +480,101 @@ func (a *Agent) EnableTools(names ...string) {
 	if a == nil || a.Registry == nil {
 		return
 	}
-	a.Registry.Enable(names...)
-	if a.Config != nil {
-		a.Config.DisabledTools = a.Registry.GetDisabledTools()
-		if a.Config.AskUserMode == "disabled" {
-			a.Registry.Disable("ask_user")
+	if a.Config == nil {
+		a.Registry.Enable(names...)
+		a.markSystemPromptDirty()
+		return
+	}
+
+	wasMCPDisabled := !a.Config.EnableMCP
+	wasSubagentsDisabled := a.Config.MaxSubagentDepth <= 0
+	requested := make(map[string]bool, len(names))
+	for _, name := range names {
+		normalized := tool.NormalizeName(name)
+		if normalized == "" {
+			continue
+		}
+		requested[normalized] = true
+		if normalized == "ask_user" && a.Config.AskUserMode == "disabled" {
+			a.Config.SetAskUserMode("interactive")
+		}
+		if normalized == "load_mcp" || normalized == "search_tools" || normalized == "list_mcp_resources" || normalized == "list_mcp_resource_templates" || normalized == "read_mcp_resource" || strings.HasPrefix(normalized, "mcp__") {
+			a.Config.EnableMCP = true
+		}
+		if tool.IsSubagentTool(normalized) {
+			if a.Config.MaxSubagentDepth <= 0 {
+				a.Config.MaxSubagentDepth = 1
+			}
 		}
 	}
+
+	// Turning on a feature through a single tool must not silently enable all
+	// related tools. Those other tools remain individually opt-in.
+	if wasMCPDisabled && a.Config.EnableMCP {
+		for _, name := range []string{"load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
+				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
+			}
+		}
+		a.enableMCPDeferred()
+	}
+	if wasSubagentsDisabled && a.Config.MaxSubagentDepth > 0 {
+		for _, name := range []string{"create_subagent", "remove_subagent", "list_subagents", "audit_subagent"} {
+			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
+				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
+			}
+		}
+	}
+
+	filtered := a.Config.DisabledTools[:0]
+	for _, name := range a.Config.DisabledTools {
+		if !requested[tool.NormalizeName(name)] {
+			filtered = append(filtered, name)
+		}
+	}
+	a.Config.DisabledTools = filtered
+	a.syncToolAvailability()
 	a.markSystemPromptDirty()
+}
+
+// enableMCPDeferred makes configured servers discoverable when MCP is enabled
+// during an existing session, without blocking the tools menu on connections.
+func (a *Agent) enableMCPDeferred() {
+	a.McpClientsMu.Lock()
+	if a.mcpPending == nil {
+		a.mcpPending = make(map[string]config.MCPServerConfig)
+	}
+	for name, server := range a.Config.MCPServers {
+		if !server.Disabled && a.McpClients[name] == nil {
+			a.mcpPending[name] = server
+		}
+	}
+	a.McpClientsMu.Unlock()
+	a.registerResourceTools()
 }
 
 func (a *Agent) EnableAllTools() {
 	if a == nil || a.Registry == nil {
 		return
 	}
-	a.Registry.EnableAll()
-	if a.Config != nil {
-		a.Config.DisabledTools = nil
-		if a.Config.AskUserMode == "disabled" {
-			a.Registry.Disable("ask_user")
-		}
+	if a.Config == nil {
+		a.Registry.EnableAll()
+		a.markSystemPromptDirty()
+		return
 	}
+	wasMCPDisabled := !a.Config.EnableMCP
+	a.Config.DisabledTools = nil
+	if a.Config.AskUserMode == "disabled" {
+		a.Config.SetAskUserMode("interactive")
+	}
+	a.Config.EnableMCP = true
+	if wasMCPDisabled {
+		a.enableMCPDeferred()
+	}
+	if a.Config.MaxSubagentDepth <= 0 {
+		a.Config.MaxSubagentDepth = 1
+	}
+	a.syncToolAvailability()
 	a.markSystemPromptDirty()
 }
 
@@ -657,6 +758,9 @@ func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
+	if a.Config != nil && a.Config.AskUserMode == "disabled" {
+		return "", fmt.Errorf("ask_user tool is disabled by configuration")
+	}
 	if a.Inquirer != nil {
 		return a.Inquirer(question, options, recommended)
 	}
@@ -664,8 +768,6 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 		switch a.Config.AskUserMode {
 		case "auto_recommended":
 			return defaultAskUserSelection(options, recommended), nil
-		case "disabled":
-			return "", fmt.Errorf("ask_user tool is disabled by configuration")
 		case "always_ask":
 			if a.UI == nil {
 				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
@@ -748,15 +850,25 @@ func (a *Agent) ProjectResourceAllowed(path string) bool {
 
 func (a *Agent) pluginDirs() []string {
 	var allowed []string
- seen:=make(map[string]bool)
+	seen := make(map[string]bool)
 	for _, dir := range append(getPluginDirs(a.WorkspaceRoot), a.Config.PluginDirectories...) {
-		dir=filepath.Clean(dir)
- if seen[dir]{continue};seen[dir]=true
- if a.ProjectResourceAllowed(dir) {
+		dir = filepath.Clean(dir)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if a.ProjectResourceAllowed(dir) {
 			allowed = append(allowed, dir)
 		}
 	}
 	return allowed
+}
+
+// IsShellExecutionAllowed gates shell and background tasks on persistent,
+// explicit workspace trust. A cwd restriction is not a process sandbox.
+func (a *Agent) IsShellExecutionAllowed() bool {
+	return a != nil && a.ConfigPath != "" && a.WorkspaceRoot != "" &&
+		config.WorkspaceTrusted(a.ConfigPath, a.WorkspaceRoot)
 }
 
 func (a *Agent) GetShellTimeout() time.Duration {
@@ -764,4 +876,27 @@ func (a *Agent) GetShellTimeout() time.Duration {
 		return time.Duration(a.Config.ShellTimeout) * time.Second
 	}
 	return 120 * time.Second
+}
+
+// enforceOptionalTools enforces opt-in even after enable-all and config reloads.
+func (a *Agent) enforceOptionalTools() {
+	if a == nil || a.Registry == nil || a.Config == nil {
+		return
+	}
+	if !a.Config.EnableMCP {
+		a.Registry.Disable("load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource")
+		for name := range a.Registry.GetAllExecutors() {
+			if strings.HasPrefix(name, "mcp__") {
+				a.Registry.Disable(name)
+			}
+		}
+	}
+	if a.Config.MaxSubagentDepth <= 0 {
+		a.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "audit_subagent")
+		for name := range a.Registry.GetAllExecutors() {
+			if strings.HasPrefix(name, "subagent__") {
+				a.Registry.Disable(name)
+			}
+		}
+	}
 }

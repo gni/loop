@@ -136,13 +136,16 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		return "", fmt.Errorf("create_subagent is not attached to an initialized multi-agent manager")
 	}
 
+	maxDepth := 0
+	if s.mam.BaseAgent.Config != nil {
+		maxDepth = s.mam.BaseAgent.Config.MaxSubagentDepth
+	}
+	if maxDepth <= 0 {
+		return "", fmt.Errorf("subagents are disabled; set max_subagent_depth to a positive number")
+	}
 	var parentName string
 	if mac, ok := ctx.(*multiAgentContext); ok {
-		maxDepth := 0
-		if s.mam.BaseAgent.Config != nil {
-			maxDepth = s.mam.BaseAgent.Config.MaxSubagentDepth
-		}
-		if err := subagent.MaxDepthAllowed(maxDepth, mac.ma.Depth()); err != nil {
+		if err := subagent.MaxDepthAllowed(maxDepth, mac.ma.Depth()+1); err != nil {
 			return "", fmt.Errorf("subagent '%s' is not permitted to spawn further subagents (%v); execute the task directly", mac.ma.Name, err)
 		}
 		parentName = mac.ma.Name

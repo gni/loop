@@ -72,7 +72,9 @@ type Session struct {
 }
 
 func New(options Options) (*Session, error) {
- if options.ConfigPath==""{options.ConfigPath=filepath.Join(resources.AgentDirectory(""),"config.json")}
+	if options.ConfigPath == "" {
+		options.ConfigPath = filepath.Join(resources.AgentDirectory(""), "config.json")
+	}
 	workspace := options.Workspace
 	if workspace == "" {
 		workspace = "."
@@ -90,11 +92,11 @@ func New(options Options) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	agentDirectory:=resources.AgentDirectory(options.ConfigPath)
- cfg.SkillDirectories=append(cfg.SkillDirectories,filepath.Join(agentDirectory,"skills"))
- cfg.PluginDirectories=append(cfg.PluginDirectories,filepath.Join(agentDirectory,"plugins"))
- cfg.ExtensionDirectories=append(cfg.ExtensionDirectories,filepath.Join(agentDirectory,"extensions"))
- packageDirs := []string{agentDirectory}
+	agentDirectory := resources.AgentDirectory(options.ConfigPath)
+	cfg.SkillDirectories = append(cfg.SkillDirectories, filepath.Join(agentDirectory, "skills"))
+	cfg.PluginDirectories = append(cfg.PluginDirectories, filepath.Join(agentDirectory, "plugins"))
+	cfg.ExtensionDirectories = append(cfg.ExtensionDirectories, filepath.Join(agentDirectory, "extensions"))
+	packageDirs := []string{agentDirectory}
 	if !cfg.DisableProjectPlugins {
 		packageDirs = append(packageDirs, filepath.Join(workspace, ".loop"))
 	}
@@ -156,7 +158,7 @@ func New(options Options) (*Session, error) {
 		}
 	}()
 	s.Agent.Inquirer = options.Inquirer
- s.Agent.ToolSelection=options.Tools
+	s.Agent.ToolSelection = options.Tools
 	s.Agent.Ephemeral = options.NoSession
 	s.Agent.RunSession = s.RunInteractive
 	s.Agent.Bus = agent.NewEventBus()
@@ -178,7 +180,9 @@ func New(options Options) (*Session, error) {
 	s.Manager.SetSessionDirectory(filepath.Join(resources.AgentDirectory(options.ConfigPath), "agents", config.WorkspaceKey(workspace), id), options.NoSession)
 	s.Agent.MultiAgentManager = s.Manager
 	s.Agent.DisposeAgents = s.Manager.Close
- if err:=s.validateTools(options.Tools);err!=nil{return nil,err}
+	if err := s.validateTools(options.Tools); err != nil {
+		return nil, err
+	}
 	if store != nil {
 		s.messages, err = store.LoadMessages(id)
 		if err != nil {
@@ -194,8 +198,10 @@ func New(options Options) (*Session, error) {
 		return nil, err
 	}
 	s.view = append([]db.Message(nil), s.messages...)
-	if err := s.Manager.LoadSavedAgents(); err != nil {
-		return nil, err
+	if cfg.MaxSubagentDepth > 0 {
+		if err := s.Manager.LoadSavedAgents(); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.Agent.StartMCPServers(cfg.MCPServers); err != nil {
 		s.event(agent.Event{Type: "integration_error", Output: err.Error(), IsError: true})
@@ -288,36 +294,54 @@ func (s *Session) run(ctx context.Context, prompt string) (agent.RunResult, erro
 	return s.runWith(ctx, prompt, io.Discard, style.GetTheme("plain"), true)
 }
 
-func (s *Session) RunInteractive(ctx context.Context,w io.Writer,messages *[]db.Message,prompt string,tools []string,theme style.UITheme,id string)(agent.RunResult,error){
- ctx,err:=s.reserve(ctx)
- if err!=nil{return agent.RunResult{},err}
- result,err:=s.runPrepared(ctx,prompt,w,theme,false,func()error{return s.adoptInteractive(*messages,tools,id)})
- *messages=message.CloneAll(s.messages)
- return result,err
+func (s *Session) RunInteractive(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, tools []string, theme style.UITheme, id string) (agent.RunResult, error) {
+	ctx, err := s.reserve(ctx)
+	if err != nil {
+		return agent.RunResult{}, err
+	}
+	result, err := s.runPrepared(ctx, prompt, w, theme, false, func() error { return s.adoptInteractive(*messages, tools, id) })
+	*messages = message.CloneAll(s.messages)
+	return result, err
 }
 
-func(s *Session)adoptInteractive(messages []db.Message,tools []string,id string)error{
- if id!=""&&id!=s.ID{
-  cfg,err:=s.Configuration()
-  if err!=nil{return err}
-  var todos []tool.TodoItem
-  if s.Store!=nil{todos,err=restoreSettings(s.Store,id,cfg,&tools,false);if err!=nil{return err}}
-  if err:=s.Manager.SwitchSessionDirectory(filepath.Join(resources.AgentDirectory(s.Agent.ConfigPath),"agents",config.WorkspaceKey(s.Workspace),id),s.options.NoSession);err!=nil{return err}
-  s.mu.Lock();s.Agent.ApplyConfig(cfg);s.mu.Unlock()
-  if err:=s.Agent.SetTodos(todos);err!=nil{return err}
- }
- s.mu.Lock();defer s.mu.Unlock()
- if id!=""{s.ID=id}
- s.messages=message.CloneAll(messages)
- s.options.Tools=tools
- return nil
+func (s *Session) adoptInteractive(messages []db.Message, tools []string, id string) error {
+	if id != "" && id != s.ID {
+		cfg, err := s.Configuration()
+		if err != nil {
+			return err
+		}
+		var todos []tool.TodoItem
+		if s.Store != nil {
+			todos, err = restoreSettings(s.Store, id, cfg, &tools, false)
+			if err != nil {
+				return err
+			}
+		}
+		if err := s.Manager.SwitchSessionDirectory(filepath.Join(resources.AgentDirectory(s.Agent.ConfigPath), "agents", config.WorkspaceKey(s.Workspace), id), s.options.NoSession); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.Agent.ApplyConfig(cfg)
+		s.mu.Unlock()
+		if err := s.Agent.SetTodos(todos); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != "" {
+		s.ID = id
+	}
+	s.messages = message.CloneAll(messages)
+	s.options.Tools = tools
+	return nil
 }
 
-func(s *Session)runWith(ctx context.Context,prompt string,w io.Writer,theme style.UITheme,noninteractive bool)(agent.RunResult,error){
- return s.runPrepared(ctx,prompt,w,theme,noninteractive,nil)
+func (s *Session) runWith(ctx context.Context, prompt string, w io.Writer, theme style.UITheme, noninteractive bool) (agent.RunResult, error) {
+	return s.runPrepared(ctx, prompt, w, theme, noninteractive, nil)
 }
 
-func (s *Session) runPrepared(ctx context.Context,prompt string,w io.Writer,theme style.UITheme,noninteractive bool,setup func()error)(result agent.RunResult,runErr error){
+func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, theme style.UITheme, noninteractive bool, setup func() error) (result agent.RunResult, runErr error) {
 	defer func() {
 		if err := s.persistSettings(); err != nil {
 			runErr = errors.Join(runErr, err)
@@ -341,7 +365,11 @@ func (s *Session) runPrepared(ctx context.Context,prompt string,w io.Writer,them
 		s.runMu.Unlock()
 		close(idle)
 	}()
-	if setup!=nil{if err:=setup();err!=nil{return result,err}}
+	if setup != nil {
+		if err := setup(); err != nil {
+			return result, err
+		}
+	}
 	for {
 		transformed, err := s.transformInput(ctx, prompt)
 		if err != nil {

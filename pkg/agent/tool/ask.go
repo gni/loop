@@ -29,7 +29,7 @@ func (t *AskUserTool) PromptGuidelines() []string {
 	return FormatToolGuidelines(t.Name(), []string{
 		"Call 'ask_user' when you need user input, requirements clarification, or confirmation before destructive actions.",
 		"Provide clear selectable options and specify a 'recommended' choice when appropriate.",
-		"The UI always appends a free-write entry ('Other: write what you want'); if the user selects it and writes nothing, ask again with an explicit prompt for the answer.",
+		"Do not include an 'Other' or free-text option: the UI adds one automatically. If the user submits an empty free-text answer, ask again with an explicit prompt.",
 	})
 }
 

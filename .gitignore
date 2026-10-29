@@ -46,3 +46,5 @@ buildtmp
 bin/
 
 dev_*.txt
+
+.devcat

@@ -312,6 +312,14 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			switch char {
 			case 3, 4:
 				return fmt.Errorf("cancelled")
+			case ' ':
+				if searchQuery == "" && len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
+					item := filtered[selectedIdx]
+					if item.isBool && item.onToggle != nil {
+						item.onToggle()
+						continue
+					}
+				}
 			case 13, 10:
 				if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 					item := filtered[selectedIdx]

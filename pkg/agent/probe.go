@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 )
 
@@ -31,8 +31,21 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/props?model=%s", strings.TrimSuffix(p.Config.Endpoint, "/"), p.Config.Model)
-	req, err := http.NewRequestWithContext(checkCtx, "GET", url, nil)
+	if p.Config == nil || p.Config.Endpoint == "" {
+		return false
+	}
+	base, err := url.Parse(p.Config.Endpoint)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return false
+	}
+	// llama.cpp exposes /props at the server root, even when chat uses /v1.
+	base.Path = "/props"
+	base.RawPath = ""
+	query := url.Values{}
+	query.Set("model", p.Config.Model)
+	base.RawQuery = query.Encode()
+	base.Fragment = ""
+	req, err := http.NewRequestWithContext(checkCtx, "GET", base.String(), nil)
 	if err != nil {
 		return false
 	}
@@ -54,15 +67,25 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
 		if readErr == nil && len(bodyBytes) > 0 {
 			var props struct {
-				NCtx                      int `json:"n_ctx"`
-				MaxContext                int `json:"max_context"`
-				EngineMaxContext          int `json:"engine_max_context"`
+				NCtx                      int             `json:"n_ctx"`
+				MaxContext                int             `json:"max_context"`
+				EngineMaxContext          int             `json:"engine_max_context"`
+				SupportsReasoning         json.RawMessage `json:"supports_reasoning"`
+				SupportsThinking          json.RawMessage `json:"supports_thinking"`
+				Thinking                  json.RawMessage `json:"thinking"`
 				DefaultGenerationSettings struct {
 					NCtx       int `json:"n_ctx"`
 					MaxContext int `json:"max_context"`
 				} `json:"default_generation_settings"`
 			}
 			if json.Unmarshal(bodyBytes, &props) == nil {
+				supported := false
+				for _, flag := range []json.RawMessage{props.SupportsReasoning, props.SupportsThinking, props.Thinking} {
+					var enabled bool
+					if json.Unmarshal(flag, &enabled) == nil && enabled {
+						supported = true
+					}
+				}
 				detected := props.NCtx
 				if detected <= 0 {
 					detected = props.MaxContext
@@ -82,15 +105,16 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 					p.ContextLimitChecked = true
 					p.ContextLimitMu.Unlock()
 				}
+				return supported
 			}
 		}
-		return true
+		return false
 	}
 	return false
 }
 
-// ProbeServerCapabilities queries the backend (/props) to discover
-// reasoning support and the server's native active context window limit.
+// ProbeServerCapabilities reads explicit reasoning metadata, if present, and
+// discovers the active context window. HTTP 200 alone proves neither capability.
 func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) {
 	p.thinkingMu.Lock()
 	p.ThinkingSupported = p.checkThinkingSupportLocked(ctx)

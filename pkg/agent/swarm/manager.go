@@ -40,6 +40,9 @@ func NewMultiAgentManager(baseAgent *agent.Agent, w io.Writer, theme style.UIThe
 		baseAgent.Registry.Register(&RemoveSubagentTool{mam: mam})
 		baseAgent.Registry.Register(&ListSubagentsTool{mam: mam})
 		baseAgent.Registry.Register(&AuditSubagentTool{mam: mam})
+		if baseAgent.Config == nil || baseAgent.Config.MaxSubagentDepth <= 0 {
+			baseAgent.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "audit_subagent")
+		}
 	}
 
 	return mam
@@ -60,6 +63,9 @@ func (mam *MultiAgentManager) spawnAgent(
 	mam.mu.Lock()
 	defer mam.mu.Unlock()
 
+	if mam.BaseAgent == nil || mam.BaseAgent.Config == nil || mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
+		return fmt.Errorf("subagents are disabled; set max_subagent_depth to a positive number")
+	}
 	name = strings.TrimSpace(name)
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	parentName = strings.TrimSpace(parentName)
@@ -88,6 +94,9 @@ func (mam *MultiAgentManager) spawnAgent(
 		p, exists := mam.Agents[parentName]
 		if !exists {
 			return fmt.Errorf("parent agent '%s' not found", parentName)
+		}
+		if err := subagent.MaxDepthAllowed(mam.BaseAgent.Config.MaxSubagentDepth, p.Depth()+1); err != nil {
+			return fmt.Errorf("subagent nesting disallowed: %w", err)
 		}
 		parent = p
 	}
@@ -202,6 +211,9 @@ func (mam *MultiAgentManager) spawnAgent(
 		subagent: ma,
 		def:      toolDef,
 	})
+	if mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
+		mam.BaseAgent.Registry.Disable(toolName)
+	}
 
 	return nil
 }

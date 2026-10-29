@@ -36,6 +36,7 @@ type JSONStreamParser struct {
 	ToolTitleLineNumbers []int
 	ToolTitlePrinted     []bool
 	ToolBodyStreamed     []bool
+	BodyEndsWithNewline  bool
 	ActiveToolIndex      int
 	StreamWrites         bool
 	IsRawStream          bool
@@ -91,6 +92,12 @@ var pathRequiredTools = map[string]bool{
 
 func (p *JSONStreamParser) NeedsPath() bool {
 	return pathRequiredTools[p.ActiveToolName] || strings.HasPrefix(p.ActiveToolName, "subagent__")
+}
+
+// A write preview can begin before its destination is known.
+func (p *JSONStreamParser) CanPrintTitle() bool {
+	return !p.NeedsPath() || strings.TrimSpace(p.Path) != "" ||
+		(p.ActiveToolName == "write" && p.StreamWrites)
 }
 
 func DetectLangFromContent(content string) string {
@@ -195,7 +202,7 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 	p.LineBuffer.Reset()
 
 	if !p.TitlePrinted {
-		if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
+		if !p.CanPrintTitle() {
 			p.OutputBuf.WriteString(line + "\n")
 			return
 		}
@@ -208,10 +215,10 @@ func (p *JSONStreamParser) EmitLine(w io.Writer, theme style.UITheme) {
 }
 
 func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
-	if p.OutputBuf.Len() == 0 || (!p.TitlePrinted && p.NeedsPath() && strings.TrimSpace(p.Path) == "") {
+	if p.OutputBuf.Len() == 0 || (!p.TitlePrinted && !p.CanPrintTitle()) {
 		return
 	}
-	if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+	if !p.TitlePrinted && p.CanPrintTitle() {
 		p.PrintStreamTitle(w, theme)
 	}
 	raw := p.OutputBuf.String()
@@ -233,15 +240,35 @@ func (p *JSONStreamParser) FlushOutputBuf(w io.Writer, theme style.UITheme) {
 }
 
 func (p *JSONStreamParser) EmitContent(s string, w io.Writer, theme style.UITheme) {
+	if s == "" {
+		return
+	}
 	if !p.TitlePrinted {
-		if p.NeedsPath() && strings.TrimSpace(p.Path) == "" {
+		if !p.CanPrintTitle() {
 			p.OutputBuf.WriteString(s)
 			return
 		}
 		p.PrintStreamTitle(w, theme)
 		p.FlushOutputBuf(w, theme)
 	}
+	if p.ActiveToolName == "write" {
+		p.MarkBodyStreamed()
+		p.BodyEndsWithNewline = strings.HasSuffix(s, "\n")
+	}
 	fmt.Fprint(w, s)
+}
+
+// Show write text after every model chunk, even without a filename or newline.
+func (p *JSONStreamParser) FlushContentLine(w io.Writer, theme style.UITheme) {
+	if p.LineBuffer.Len() == 0 {
+		return
+	}
+	if p.ActiveToolName == "write" && p.StreamWrites {
+		p.EmitContent(p.LineBuffer.String(), w, theme)
+		p.LineBuffer.Reset()
+		return
+	}
+	p.EmitLine(w, theme)
 }
 
 func (p *JSONStreamParser) appendStringChunk(s string, w io.Writer, theme style.UITheme) {
@@ -250,7 +277,9 @@ func (p *JSONStreamParser) appendStringChunk(s string, w io.Writer, theme style.
 		return
 	}
 	if p.IsContent {
-		if p.ActiveToolName == "todo" {
+		if p.ActiveToolName == "write" && p.StreamWrites {
+			p.LineBuffer.WriteString(s)
+		} else if p.ActiveToolName == "todo" {
 			p.EmitContent(s, w, theme)
 		} else if s == "\n" {
 			p.EmitLine(w, theme)
@@ -265,8 +294,12 @@ func (p *JSONStreamParser) appendStringChunk(s string, w io.Writer, theme style.
 func (p *JSONStreamParser) FeedRaw(chunk string, w io.Writer, theme style.UITheme) {
 	p.EnsureTrackingIndex()
 	p.IsContent = true
+	if p.ActiveToolName == "write" && p.StreamWrites {
+		p.EmitContent(chunk, w, theme)
+		return
+	}
 	p.MarkBodyStreamed()
-	if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+	if !p.TitlePrinted && p.CanPrintTitle() {
 		p.PrintStreamTitle(w, theme)
 		p.FlushOutputBuf(w, theme)
 	}
@@ -352,7 +385,7 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 						}
 					}
 					if p.IsContent && p.LineBuffer.Len() > 0 {
-						p.EmitLine(w, theme)
+						p.FlushContentLine(w, theme)
 					}
 					p.InValue = false
 					p.IsContent = false
@@ -392,18 +425,20 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 					if p.GuessedLang == "" && p.Path != "" {
 						p.GuessedLang = DetectLangFromPath(p.Path)
 					}
-					p.MarkBodyStreamed()
-					if !p.TitlePrinted && (!p.NeedsPath() || strings.TrimSpace(p.Path) != "") {
+					if p.ActiveToolName != "write" {
+						p.MarkBodyStreamed()
+					}
+					if !p.TitlePrinted && p.CanPrintTitle() {
 						p.PrintStreamTitle(w, theme)
 						p.FlushOutputBuf(w, theme)
 					}
 				}
 			case '}', ']':
 				if p.IsContent && p.LineBuffer.Len() > 0 {
-					p.EmitLine(w, theme)
+					p.FlushContentLine(w, theme)
 				}
 				if !p.TitlePrinted {
-					if !p.NeedsPath() || strings.TrimSpace(p.Path) != "" {
+					if p.CanPrintTitle() {
 						p.PrintStreamTitle(w, theme)
 					}
 					p.FlushOutputBuf(w, theme)
@@ -413,7 +448,7 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 				p.IsPath = false
 			case ',':
 				if p.IsContent && p.LineBuffer.Len() > 0 {
-					p.EmitLine(w, theme)
+					p.FlushContentLine(w, theme)
 				}
 				p.InValue = false
 				p.IsContent = false
@@ -421,6 +456,9 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 			}
 			i++
 		}
+	}
+	if p.ActiveToolName == "write" && p.StreamWrites && p.IsContent {
+		p.FlushContentLine(w, theme)
 	}
 }
 
@@ -433,7 +471,7 @@ func (p *JSONStreamParser) formatCurrentTitle(theme style.UITheme) string {
 }
 
 func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
-	if p.TitlePrinted || (p.NeedsPath() && strings.TrimSpace(p.Path) == "") {
+	if p.TitlePrinted || !p.CanPrintTitle() {
 		return
 	}
 	p.TitlePrinted = true
@@ -446,7 +484,7 @@ func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
 func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UITheme) {
 	p.EnsureTrackingIndex()
 	if !p.TitlePrinted {
-		if !p.NeedsPath() || strings.TrimSpace(p.Path) != "" {
+		if p.CanPrintTitle() {
 			p.PrintStreamTitle(w, theme)
 			p.FlushOutputBuf(w, theme)
 		}
@@ -491,6 +529,73 @@ func GetNewlineCount(w io.Writer) int {
 		break
 	}
 	return -1
+}
+
+// CanReplaceTrackedStreamLine reports whether a previously rendered output row
+// can be updated without moving the terminal cursor. Ordinary pipes cannot.
+func CanReplaceTrackedStreamLine(w io.Writer) bool {
+	if findScrollReplacer(w) != nil {
+		return true
+	}
+	for w != nil {
+		if _, ok := w.(interface{ Bytes() []byte }); ok {
+			return true
+		}
+		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			return false
+		}
+		next := unwrapper.Unwrap()
+		if next == nil || next == w {
+			return false
+		}
+		w = next
+	}
+	return false
+}
+
+// ReplaceTrackedStreamBlock atomically repaints a bounded set of chat rows.
+// No tool text is executed or used as an escape sequence by this operation.
+func ReplaceTrackedStreamBlock(w io.Writer, start int, lines []string) bool {
+	if start < 0 || len(lines) == 0 {
+		return false
+	}
+	current := GetNewlineCount(w)
+	if current < start {
+		return false
+	}
+	if replacer := findScrollReplacer(w); replacer != nil {
+		if block, ok := replacer.(interface{ ReplaceScrollBlockBack(int, []string) bool }); ok {
+			return block.ReplaceScrollBlockBack(current-start, lines)
+		}
+		return false
+	}
+	for w != nil {
+		if buf, ok := w.(interface {
+			String() string
+			Reset()
+			WriteString(string) (int, error)
+		}); ok {
+			original := strings.Split(buf.String(), "\n")
+			if start+len(lines) > len(original) {
+				return false
+			}
+			copy(original[start:], lines)
+			buf.Reset()
+			_, err := buf.WriteString(strings.Join(original, "\n"))
+			return err == nil
+		}
+		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		next := unwrapper.Unwrap()
+		if next == w {
+			break
+		}
+		w = next
+	}
+	return false
 }
 
 func ReplaceTrackedStreamLine(w io.Writer, line int, content string) bool {

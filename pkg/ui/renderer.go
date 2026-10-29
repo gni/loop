@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"loop/pkg/agent"
 	"loop/pkg/ui/render"
@@ -34,6 +35,19 @@ type StreamRenderer struct {
 	hasWrittenThoughts   bool
 	parser               *stream.JSONStreamParser
 	live                 *stream.LiveMarkdownRenderer
+	writeResultLines     map[int]int
+	sequentialResults    bool
+	toolStates           map[string]agent.ToolLifecycleEvent
+	toolIDs              map[int]string
+	chatDraftLine        int
+	chatDraftVisible     bool
+	firstToolName        string
+	livePreviewLine      int
+	livePreviewVisible   bool
+	livePreviewSnapshot  string
+	liveCallViews        map[int]*liveCallView
+	liveActiveCall       int
+	liveResultGap        bool
 }
 
 func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrites bool, _ string) *StreamRenderer {
@@ -43,9 +57,129 @@ func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrit
 		showThinking:         showThinking,
 		lastEndedWithNewline: true,
 		live:                 stream.NewLiveMarkdownRenderer(w, theme),
+		writeResultLines:     make(map[int]int),
+		toolStates:           make(map[string]agent.ToolLifecycleEvent),
+		toolIDs:              make(map[int]string),
+		chatDraftLine:        -1,
+		livePreviewLine:      -1,
+		liveCallViews:        make(map[int]*liveCallView),
+		liveActiveCall:       -1,
 	}
 	sr.parser = stream.NewJSONStreamParser(streamWrites)
 	return sr
+}
+
+// ObserveToolLifecycle keeps the renderer's per-call state keyed by the
+// stable local ID. Provider indices are only used to look up the owning call.
+func (sr *StreamRenderer) ObserveToolLifecycle(event agent.ToolLifecycleEvent) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.toolStates[event.CallID] = event
+	sr.toolIDs[event.Index] = event.CallID
+}
+
+// ShowToolDraft renders deferred tool generation in the conversation output,
+// never in the pinned token or elapsed-time status line. It keeps one mutable
+// preview row, so repeated argument chunks do not flood scrollback. All writes
+// still execute only after validated tool calls are returned by the model.
+func (sr *StreamRenderer) ShowToolDraft(index int, name, excerpt string, size int) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if !sr.sequentialResults || !stream.CanReplaceTrackedStreamLine(sr.w) {
+		return
+	}
+	// Do not allow model-provided tool names to introduce terminal controls.
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			return r
+		}
+		return -1
+	}, name)
+	if name == "" {
+		name = "tool"
+	}
+	escape := false
+	clean := strings.Map(func(r rune) rune {
+		if r == '\x1b' {
+			escape = true
+			return -1
+		}
+		if escape {
+			if unicode.IsLetter(r) || r == '\a' {
+				escape = false
+			}
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, excerpt)
+	clean = strings.Join(strings.Fields(clean), " ")
+	maxExcerpt := 72
+	if width, _ := style.GetTerminalSize(); width > 0 && width < 100 {
+		maxExcerpt = width - 28
+	}
+	if maxExcerpt < 0 {
+		maxExcerpt = 0
+	}
+	runes := []rune(clean)
+	if len(runes) > maxExcerpt {
+		clean = "…" + string(runes[len(runes)-maxExcerpt:])
+	}
+	label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", name, index+1, size)
+	if clean != "" && maxExcerpt > 0 && name == "write" {
+		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
+	}
+	line := style.NewStyle().Foreground(sr.theme.Border).Render(label)
+	if sr.chatDraftVisible {
+		if stream.ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, line) {
+			return
+		}
+		// The row has scrolled out of the visible region. A stale row cannot
+		// be changed safely, so do not print a duplicate progress row.
+		return
+	}
+	// The first tool's JSON must be complete before this method is called.
+	// Flush its unfinished body so progress never interrupts file content.
+	sr.flushActiveToolLocked()
+	position := stream.GetNewlineCount(sr.w)
+	if position < 0 {
+		return
+	}
+	fmt.Fprintln(sr.w, line)
+	sr.chatDraftLine = position
+	sr.chatDraftVisible = true
+}
+
+// ClearToolDraft ends live generation. For a first write, its preview row
+// becomes that call's inline completion slot. Other calls clear the temporary
+// text before execution; their actual output is rendered by the engine.
+func (sr *StreamRenderer) ClearToolDraft() {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if !sr.chatDraftVisible {
+		return
+	}
+	firstBodyStreamed := sr.parser != nil && len(sr.parser.ToolBodyStreamed) > 0 && sr.parser.ToolBodyStreamed[0]
+	if sr.firstToolName == "write" && sr.sequentialResults && firstBodyStreamed {
+		if stream.ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "⎿  writing...") {
+			sr.writeResultLines[0] = sr.chatDraftLine
+		}
+	} else {
+		stream.ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "")
+	}
+	sr.chatDraftVisible = false
+	sr.chatDraftLine = -1
+}
+
+// SetSequentialToolResults disables speculative result rows. Tool output then
+// follows the owning preview directly, even if a previous preview scrolled out
+// of the terminal's redrawable region.
+func (sr *StreamRenderer) SetSequentialToolResults(enabled bool) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.sequentialResults = enabled
 }
 
 func (sr *StreamRenderer) HasOutput() bool {
@@ -97,6 +231,13 @@ func (sr *StreamRenderer) WriteReasoning(chunk string) {
 
 func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 	sr.checkFirstWrite()
+	if sr.liveActiveCall >= 0 {
+		if view := sr.liveCallViews[sr.liveActiveCall]; view != nil {
+			sr.endLiveCallLocked(sr.liveActiveCall, view)
+			fmt.Fprint(sr.w, "\n")
+		}
+		sr.liveActiveCall = -1
+	}
 
 	dimStyle := sr.getThinkingStyle()
 	startSeq, resetSeq := dimStyle.GetSequence()
@@ -169,6 +310,13 @@ func (sr *StreamRenderer) Write(chunk string) {
 	if chunk == "" {
 		return
 	}
+	if sr.liveActiveCall >= 0 {
+		if view := sr.liveCallViews[sr.liveActiveCall]; view != nil {
+			sr.endLiveCallLocked(sr.liveActiveCall, view)
+			fmt.Fprint(sr.w, "\n")
+		}
+		sr.liveActiveCall = -1
+	}
 
 	if sr.pendingThoughtTextGap {
 		fmt.Fprint(sr.w, "\n")
@@ -212,14 +360,27 @@ func (sr *StreamRenderer) flushLocked() {
 
 func (sr *StreamRenderer) flushActiveToolLocked() {
 	if sr.parser != nil && sr.parser.ActiveToolName != "" {
-		if !sr.parser.TitlePrinted {
-			if !sr.parser.NeedsPath() || strings.TrimSpace(sr.parser.Path) != "" {
-				sr.parser.PrintStreamTitle(sr.w, sr.theme)
-			}
+		if !sr.parser.TitlePrinted && sr.parser.CanPrintTitle() {
+			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
 		sr.parser.FlushOutputBuf(sr.w, sr.theme)
-		if sr.parser.LineBuffer.Len() > 0 {
-			sr.parser.EmitLine(sr.w, sr.theme)
+		sr.parser.FlushContentLine(sr.w, sr.theme)
+		if sr.parser.ActiveToolName == "write" && sr.parser.ActiveToolIndex >= 0 &&
+			sr.parser.ActiveToolIndex < len(sr.parser.ToolBodyStreamed) &&
+			sr.parser.ToolBodyStreamed[sr.parser.ActiveToolIndex] {
+			if !sr.parser.BodyEndsWithNewline {
+				fmt.Fprint(sr.w, "\n")
+				sr.parser.BodyEndsWithNewline = true
+			}
+			// The model can finish several calls before any tool executes.
+			// Reserve a result row beside this preview and replace it after
+			// the matching tool has actually completed. Never write a file here.
+			if !sr.sequentialResults && stream.CanReplaceTrackedStreamLine(sr.w) {
+				if line := stream.GetNewlineCount(sr.w); line >= 0 {
+					sr.writeResultLines[sr.parser.ActiveToolIndex] = line
+					fmt.Fprintln(sr.w, style.NewStyle().Foreground(sr.theme.Border).Render("⎿  writing..."))
+				}
+			}
 		}
 		sr.parser.IsRawStream = false
 		sr.parser.ActiveToolName = ""
@@ -248,11 +409,22 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		fmt.Fprint(sr.w, "\n")
 		sr.pendingThoughtTextGap = false
 	}
+	if toolCallIndex == 0 {
+		// Unnamed provider arguments may produce an early chat progress row.
+		// Remove it before rendering the first real tool title.
+		if sr.chatDraftVisible && sr.firstToolName == "" {
+			stream.ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "")
+			sr.chatDraftVisible = false
+			sr.chatDraftLine = -1
+		}
+		sr.firstToolName = toolName
+	}
 	// finishLiveTextLocked already ends the prior text on a fresh line.
 	// Do not add a second newline before the streamed tool title.
 	hadText := sr.hasWrittenText
 	sr.finishLiveTextLocked()
-	if hadText && (toolName == "bash" || render.IsCommandLikeTool(toolName)) {
+	if hadText {
+		// Separate assistant prose from any following tool, not just bash.
 		fmt.Fprint(sr.w, "\n")
 	}
 	sr.hasWrittenText = false
@@ -263,7 +435,13 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 			return
 		}
 		if sr.parser.ActiveToolName != "" {
+			previousWrite := sr.parser.ActiveToolName == "write" && sr.parser.TitlePrinted
 			sr.flushActiveToolLocked()
+			if previousWrite && toolName == "write" {
+				// The previous preview has ended its line; leave one empty row
+				// before starting another file's live content.
+				fmt.Fprint(sr.w, "\n")
+			}
 		}
 		sr.parser.ActiveToolIndex = toolCallIndex
 		sr.parser.EnsureTrackingIndex()
@@ -285,9 +463,13 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.InValue = false
 		sr.parser.Buf.Reset()
 		sr.parser.GuessedLang = ""
+		sr.parser.BodyEndsWithNewline = false
 		sr.parser.NeedsLeadingNewline = false
 
-		if sr.parser.StreamWrites && !sr.parser.NeedsPath() {
+		// Show a provisional write title as soon as the tool name arrives.
+		// Waiting for its path or first content chunk can leave users staring
+		// at an idle terminal while the model is actively generating.
+		if sr.parser.StreamWrites && sr.parser.CanPrintTitle() {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
 	}
@@ -340,6 +522,9 @@ func (sr *StreamRenderer) GetToolTitleLineNumber(index int) int {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
+	if view := sr.liveCallViews[index]; view != nil && view.headerShown {
+		return 0
+	}
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return -1
 	}
@@ -358,6 +543,9 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
+	if view := sr.liveCallViews[index]; view != nil && view.bytes > 0 {
+		return true
+	}
 	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
 }
 
@@ -365,6 +553,27 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
+	if id, tracked := sr.toolIDs[index]; tracked {
+		// Do not update the title of a different call if the provider's
+		// streamed indices were inconsistent with its final response.
+		if current, exists := sr.toolStates[id]; exists && current.Name != "" && current.Name != toolName {
+			return
+		}
+	}
+	if view := sr.liveCallViews[index]; view != nil && view.headerShown && (toolName == "write" || toolName == "edit") {
+		target := extractToolTarget(toolName, toolArgs)
+		if target == "" {
+			target = view.path
+		}
+		status := toolStatusSuccess
+		if isError {
+			status = toolStatusError
+		}
+		if target != "" && view.titleLine >= 0 {
+			stream.ReplaceTrackedStreamLine(sr.w, view.titleLine, FormatToolTitle(renderToolSymbol(toolName, status, sr.theme), toolName, safeLiveLabel(target), sr.theme))
+		}
+		return
+	}
 	if sr.parser == nil || index < 0 || index >= len(sr.parser.ToolTitleLineNumbers) {
 		return
 	}
@@ -388,6 +597,42 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		return
 	}
 	stream.ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatToolTitle(symbol, toolName, target, sr.theme))
+}
+
+// HasPendingWriteResult reports whether a streamed write or edit has an inline completion row.
+func (sr *StreamRenderer) HasPendingWriteResult(index int) bool {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	_, ok := sr.writeResultLines[index]
+	return ok
+}
+
+// TryCompleteWriteResult resolves the reserved row belonging to this tool
+// index. If it scrolled offscreen, the renderer still forgets the slot.
+func (sr *StreamRenderer) TryCompleteWriteResult(index int, line string) bool {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	position, exists := sr.writeResultLines[index]
+	if !exists || strings.ContainsAny(line, "\r\n") {
+		return false
+	}
+	// This call has finished even if its row scrolled offscreen. Forget the
+	// slot so deferred cleanup cannot mislabel a successful operation as
+	// "Not executed" during a later resize or terminal repaint.
+	delete(sr.writeResultLines, index)
+	return stream.ReplaceTrackedStreamLine(sr.w, position, line)
+}
+
+// MarkPendingWriteResults prevents unfinished preview rows from reporting a
+// successful save when execution was interrupted or denied.
+func (sr *StreamRenderer) MarkPendingWriteResults(label string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for index, position := range sr.writeResultLines {
+		if stream.ReplaceTrackedStreamLine(sr.w, position, "⎿  "+label) {
+			delete(sr.writeResultLines, index)
+		}
+	}
 }
 
 func (sr *StreamRenderer) GetReasoningDuration() float64 {

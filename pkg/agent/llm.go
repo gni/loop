@@ -42,7 +42,7 @@ type ChatCompletionRequest struct {
 	Messages             []db.Message        `json:"messages"`
 	Tools                []Tool              `json:"tools,omitempty"`
 	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
-	Temperature          float64             `json:"temperature"`
+	Temperature          *float64            `json:"temperature,omitempty"`
 	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
 	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
 	Stream               bool                `json:"stream"`

@@ -23,15 +23,15 @@ func (t *writeTool) PromptSnippet() string {
 
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use write to create new files or completely replace files. Read unfamiliar files first to avoid losing existing behavior. No preparation call is needed.",
-		"Request one 'write' at a time and inspect its result before requesting the next file. Do not batch writes in one response.",
+		"Use write to create new files or completely replace files. Read existing files before overwriting; new files need no prior read.",
+		"Independent writes to distinct files may share a model response. When names are unspecified, use new distinct paths. Count only successful writes as completed; if an existing unread path blocks a write, choose another unless that filename was explicitly requested.",
 	})
 }
 
 func (t *writeTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"write",
-		domaintool.FormatToolDescription("write", "Create or replace a file. Automatically creates parent directories. File observation requirements depend on configuration."),
+		domaintool.FormatToolDescription("write", "Create or replace a file. Creates parent directories. Read existing files before overwriting; use distinct new filenames when names are unspecified. Independent writes may be batched; execution remains ordered. File observation requirements depend on configuration."),
 		map[string]domaintool.SchemaProp{
 			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. ALWAYS specify 'path' first before 'content'.")),
 			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. ALWAYS specify 'content' after 'path'.")),
