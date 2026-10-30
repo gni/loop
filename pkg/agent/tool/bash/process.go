@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
-	"unicode/utf8"
 )
 
 // ShellQuote protects paths with spaces, quotes, or shell metacharacters.
@@ -100,29 +99,4 @@ func FormatExitError(err error, timeoutCtx context.Context) string {
 	default:
 		return fmt.Sprintf("command failed: exit status %d", exitCode)
 	}
-}
-
-// TruncateOutput bounds the lines and byte volume of terminal output to protect context limits.
-func TruncateOutput(combined string) string {
-	lines := strings.Split(combined, "\n")
-	if len(lines) > 200 {
-		var truncatedLines []string
-		truncatedLines = append(truncatedLines, lines[:20]...)
-		truncatedLines = append(truncatedLines, fmt.Sprintf("\n... [ %d lines omitted to save context length ] ...\n", len(lines)-100))
-		truncatedLines = append(truncatedLines, lines[len(lines)-80:]...)
-		combined = strings.Join(truncatedLines, "\n")
-	}
-
-	if len(combined) > 50000 {
-		left := 25000
-		for left < len(combined) && !utf8.RuneStart(combined[left]) {
-			left++
-		}
-		right := len(combined) - 25000
-		for right < len(combined) && !utf8.RuneStart(combined[right]) {
-			right++
-		}
-		combined = combined[:left] + "\n... [ output too large, truncated middle ] ...\n" + combined[right:]
-	}
-	return combined
 }

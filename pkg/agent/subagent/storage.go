@@ -171,11 +171,3 @@ func (s *Storage) LoadState(name string) (*AgentState, error) {
 	}
 	return &state, nil
 }
-
-// DeleteState removes the state file for the specified agent.
-func (s *Storage) DeleteState(name string) error {
-	if err := ValidateAgentName(name); err != nil {
-		return err
-	}
-	return s.removeIfExists(name + "_state.json")
-}

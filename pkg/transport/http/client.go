@@ -2,12 +2,10 @@ package http
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -164,34 +162,4 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 	}
 
 	return resp, nil
-}
-
-// NewHTTPClient returns a configured *http.Client with resilient connection pooling and TLS options.
-func NewHTTPClient(tlsConfig *tls.Config, timeoutSeconds int) *http.Client {
-	dialerTimeout := 30 * time.Second
-	if timeoutSeconds > 0 && time.Duration(timeoutSeconds)*time.Second < dialerTimeout {
-		dialerTimeout = time.Duration(timeoutSeconds) * time.Second
-	}
-	dialer := &net.Dialer{
-		Timeout:   dialerTimeout,
-		KeepAlive: 30 * time.Second,
-	}
-
-	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
-	}
-
-	return &http.Client{
-		Transport: transport,
-		Timeout:   0, // Streaming requests are bounded by request context timeout
-	}
 }

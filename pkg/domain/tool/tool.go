@@ -160,12 +160,6 @@ type ToolExecutor interface {
 	Execute(ctx AgentContext, arguments string) (string, error)
 }
 
-// PromptContributor contributes prompt snippets and operational guidelines to system instructions.
-type PromptContributor interface {
-	PromptSnippet() string
-	PromptGuidelines() []string
-}
-
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {
 	if pc, ok := t.(interface{ PromptSnippet() string }); ok {

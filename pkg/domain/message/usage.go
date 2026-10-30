@@ -36,3 +36,10 @@ func TotalUsage(messages []Message) Usage {
 	}
 	return total
 }
+
+// AgentUsageSnapshot is a consistent view of one agent's role and usage history.
+type AgentUsageSnapshot struct {
+	Name     string
+	Role     string
+	Messages []Message
+}

@@ -16,6 +16,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -40,7 +41,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 
 	activeTasks := a.CountActiveTasks()
 
-	ui.ClearTerminalForStartup(os.Stderr)
+	render.ClearTerminalForStartup(os.Stderr)
 	ui.SetScrollRegionOffset(style.ConsoleScrollRegionOffset())
 	ui.InitStatusBar(os.Stderr)
 	defer ui.ShutdownStatusBar(os.Stderr)
@@ -54,7 +55,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	}
 
 	if len(a.McpStartErrors) > 0 {
-		ui.RenderMCPStartupErrors(ppWriter, a.McpStartErrors, theme)
+		render.RenderMCPStartupErrors(ppWriter, a.McpStartErrors, theme)
 	}
 
 	fd := int(os.Stdin.Fd())
@@ -265,7 +266,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		ui.GetUI().ClearPromptHint()
 		kiReader.CurrentInputLine = ""
 		line = hist.GetFull(line)
-		line, _ = ui.NormalizeHistoryInput(line, len([]rune(line)))
+		line, _ = render.NormalizeHistoryInput(line, len([]rune(line)))
 		line = strings.ReplaceAll(line, "↵", "\n")
 		if kiReader.PastedCodeBlocks != nil {
 			for tag, code := range kiReader.PastedCodeBlocks {

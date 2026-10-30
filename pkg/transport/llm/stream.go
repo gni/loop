@@ -46,16 +46,6 @@ func ApplyPromptCacheBreakpoints(messages []message.Message) {
 	}
 }
 
-// ParseUsage extracts usage (including cache read/write counts) from a raw SSE
-// data payload without disturbing the existing chunk parser.
-func ParseUsage(data string) (*Usage, error) {
-	var chunk RawStreamChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return nil, err
-	}
-	return chunk.Usage, nil
-}
-
 // ToolCallDelta represents incremental tool call fragments streamed by the model.
 type ToolCallDelta = message.ToolCall
 

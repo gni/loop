@@ -7,6 +7,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -54,7 +55,7 @@ func handleSkillsCommand(a *agent.Agent, parts []string, messages *[]db.Message,
 		}
 		fmt.Fprintln(w, "successfully reloaded all skills from disk.")
 	} else {
-		agent.RenderSkills(w, a.ActiveSkills, *theme)
+		render.RenderSkills(w, a.ActiveSkills, *theme)
 		if len(a.ActiveSkills) == 0 && a.Config != nil {
 			dirs := agent.SkillSearchDirs(a.Config.SkillsDir, a.GetWorkspaceRoot())
 			if len(dirs) > 0 {

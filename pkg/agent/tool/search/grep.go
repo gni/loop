@@ -14,12 +14,6 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-func defaultGrepLimit() int   { return limits.GrepDefaultLimit() }
-func maxGrepLimit() int       { return limits.GrepMaxLimit() }
-func maxGrepLineLength() int  { return limits.GrepMaxLineLength() }
-func maxGrepOutputBytes() int { return limits.GrepMaxOutputBytes() }
-func maxGrepFileSize() int    { return limits.GrepMaxFileBytes() }
-
 type grepTool struct{}
 
 func NewGrepTool() domaintool.ToolExecutor {

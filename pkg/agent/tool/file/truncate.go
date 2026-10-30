@@ -23,12 +23,6 @@ var DefaultLimitTexts = map[string]string{
 	"grep_param_offset": "Match number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue.",
 }
 
-// LimitText returns the adjustable numeric-limit contract for a tool, falling
-// back to the compiled default when the catalog has no entry.
-func LimitText(toolName string) string {
-	return domaintool.RuntimeMessage("limit_text_"+toolName, DefaultLimitTexts[toolName])
-}
-
 // HeadTruncation is the outcome of applying the line limit and the byte limit to
 // a slice of complete lines.
 type HeadTruncation struct {

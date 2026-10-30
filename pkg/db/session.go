@@ -467,10 +467,6 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 	return newID, nil
 }
 
-func Branch(sessionID, entryID string) error {
-	return withStore(func(s *JSONLStore) error { return s.Branch(sessionID, entryID) })
-}
-
 func ForkSession(parentSessionID, entryID string) (string, error) {
 	return withStoreVal(func(s *JSONLStore) (string, error) { return s.ForkSession(parentSessionID, entryID) })
 }
@@ -485,10 +481,6 @@ func ClearSession(sessionID string) error {
 
 func SetLatestSessionID(sessionID string) error {
 	return withStore(func(s *JSONLStore) error { return s.SetLatestSessionID(sessionID) })
-}
-
-func GetLatestSessionID() (string, error) {
-	return withStoreVal(func(s *JSONLStore) (string, error) { return s.GetLatestSessionID() })
 }
 
 func GetSessions() ([]SessionInfo, error) {

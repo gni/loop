@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"bytes"
-	"fmt"
 	"io"
 
 	"loop/pkg/ui/render"
@@ -93,11 +91,5 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	}
 	ui.LastStatusBarText = deltaKey
 
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8\x1b[?2026h\x1b7", scrollBottom)
-	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s", height-1, render.FormatStatusBarSeparator(width, indicator, theme))
-	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s", height, newStatusBarText)
-	buf.WriteString("\x1b8\x1b[?2026l")
-
-	_, _ = w.Write(buf.Bytes())
+	render.DrawStatusBar(w, theme, width, height, scrollBottom, indicator, newStatusBarText)
 }

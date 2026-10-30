@@ -18,15 +18,6 @@ func (ma *MultiAgent) streamBufferView() io.Writer {
 	return &streamBufferWriter{ma: ma}
 }
 
-func (ma *MultiAgent) streamBufferBytes() []byte {
-	ma.StreamBufferMu.Lock()
-	defer ma.StreamBufferMu.Unlock()
-	if ma.StreamBuffer == nil {
-		return nil
-	}
-	return append([]byte(nil), ma.StreamBuffer.Bytes()...)
-}
-
 func (ma *MultiAgent) resolveWriter(fallback io.Writer) io.Writer {
 	if ma != nil && ma.BaseAgent != nil {
 		if w := ma.BaseAgent.CurrentWriter(); w != nil {

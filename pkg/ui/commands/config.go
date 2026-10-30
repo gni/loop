@@ -152,17 +152,6 @@ func configUpdateNotice(saved bool, path string) string {
 	return "config updated. saved to " + path
 }
 
-func configRestartHint(before, after config.Config) string {
-	if before.CertFile != after.CertFile || before.KeyFile != after.KeyFile ||
-		before.CAFile != after.CAFile || before.SkipVerify != after.SkipVerify {
-		return " (restart required to rebuild TLS transport)"
-	}
-	if before.EnableMCP != after.EnableMCP {
-		return " (restart may be needed to reconnect MCP servers)"
-	}
-	return ""
-}
-
 // saveConfigUpdate reports an applied-but-not-persisted setting rather than success.
 func saveConfigUpdate(a *agent.Agent, w io.Writer) bool {
 	if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {

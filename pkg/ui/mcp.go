@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -77,7 +78,7 @@ func HandleMCPCommand(
 	sub := parts[1]
 	switch sub {
 	case "list":
-		RenderMCPServers(w, a.Config, theme)
+		render.RenderMCPServers(w, a.Config, theme)
 		mcpStatuses := a.GetMCPServersStatus()
 		if len(a.Config.MCPServers) > 0 {
 			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("\nmcp connection status:"))

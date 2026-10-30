@@ -91,16 +91,6 @@ func CacheTokenTotals(history []db.Message) (int, int) {
 	return reads, writes
 }
 
-func EstimateFallbackTokens(promptTokens, completionTokens int, messages []db.Message, calls []db.ToolCall, reasoning, content string) (int, int) {
-	if promptTokens == 0 {
-		promptTokens = EstimateMessagesTokens(messages)
-	}
-	if completionTokens == 0 {
-		completionTokens = TokensFromChars(messageChars(db.Message{Content: content, ReasoningContent: reasoning, ToolCalls: calls}))
-	}
-	return promptTokens, completionTokens
-}
-
 var DefaultContextTiers = []int{32768, 65536, 131072, 262144}
 
 func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit int, minWindow int, autoAdapt bool) int {

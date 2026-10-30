@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"loop/pkg/config"
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -76,8 +75,4 @@ func AgentDirectory(configPath string) string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".loop")
-}
-
-func DefaultPromptDirectories(configPath, workspace string, additional []string) []string {
-	return PromptDirectories(AgentDirectory(configPath), workspace, config.WorkspaceTrusted(configPath, workspace), additional)
 }

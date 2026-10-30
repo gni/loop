@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"loop/pkg/config"
-	"loop/pkg/ui"
+	"loop/pkg/ui/render"
 )
 
 var providerCmd = &cobra.Command{
@@ -19,7 +19,7 @@ var providerCmd = &cobra.Command{
 var providerListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured endpoint providers",
-	Run:   runRenderCmd(ui.RenderProviders),
+	Run:   runRenderCmd(render.RenderProviders),
 }
 
 var providerAddCmd = &cobra.Command{

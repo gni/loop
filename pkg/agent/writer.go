@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 
-	"loop/pkg/domain/output"
 	"loop/pkg/ui/style"
 )
 
@@ -189,7 +188,3 @@ func GetScreenWriter(w io.Writer) io.Writer {
 	}
 	return w
 }
-
-type OutputGuard = output.OutputGuard
-
-func NewAgentOutputGuard(w io.Writer) *OutputGuard { return output.New(w) }

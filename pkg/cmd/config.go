@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"loop/pkg/ui"
+	"loop/pkg/ui/render"
 )
 
 var configCmd = &cobra.Command{
@@ -17,7 +18,7 @@ var configCmd = &cobra.Command{
 var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current configuration settings card",
-	Run:   runRenderCmd(ui.RenderConfig),
+	Run:   runRenderCmd(render.RenderConfig),
 }
 
 var configEditCmd = &cobra.Command{

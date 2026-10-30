@@ -106,8 +106,3 @@ func (c *mcpClient) sendStdio(data string) error {
 	}
 	return nil
 }
-
-func (c *mcpClient) requestStdio(method string, params interface{}, timeout time.Duration) (string, error) {
-	c.isStdio = true
-	return c.requestWithTimeout(context.Background(), method, params, timeout)
-}

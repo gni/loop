@@ -2,9 +2,10 @@ package config
 
 import (
 	"fmt"
-	"loop/pkg/domain/model"
 	"os"
 	"strings"
+
+	"loop/pkg/domain/model"
 )
 
 type OAuthConfig struct {
@@ -99,24 +100,6 @@ func (c *Config) ResolveModelAlias(pattern string) string {
 		return candidates[0]
 	}
 	return pattern
-}
-
-func isModelAlias(model string) bool {
-	for _, seg := range strings.Split(model, "-") {
-		if len(seg) == 8 && allDigits(seg) {
-			return false
-		}
-	}
-	return true
-}
-
-func allDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *Config) ActivateProvider(name string) error {

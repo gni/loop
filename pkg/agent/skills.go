@@ -3,15 +3,14 @@ package agent
 import (
 	"fmt"
 	"io"
-	"loop/pkg/domain/document"
-	"loop/pkg/resources"
-	"loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"loop/pkg/agent/tool"
-	"loop/pkg/ui/style"
+	"loop/pkg/domain/document"
+	"loop/pkg/resources"
+	"loop/pkg/storage"
 )
 
 type Skill = tool.Skill
@@ -32,15 +31,13 @@ func resolveSkillDir(dir string) string {
 	return dir
 }
 
-func ParseFrontmatter(content string) (map[string]string, string) {
-	metadata, body, err := document.Frontmatter(content)
-	if err != nil {
-		return nil, content
-	}
-	return metadata, body
+func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
+	return loadSkillsFromDirs(os.Stderr, dirs...)
 }
 
-func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
+// Invalid individual skills are optional resources: warn and keep scanning.
+// Directory discovery errors are still returned to the caller.
+func loadSkillsFromDirs(warnings io.Writer, dirs ...string) ([]Skill, error) {
 	var skills []Skill
 	seen := make(map[string]bool)
 	visited := make(map[string]bool)
@@ -82,16 +79,19 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			}
 
 			if info.Size() > 512<<10 {
-				return fmt.Errorf("skill %s exceeds 512 KiB", path)
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: exceeds 512 KiB\n", path)
+				return nil
 			}
 			data, err := storage.ReadFile(path, 512<<10)
 			if err != nil {
-				return fmt.Errorf("read skill %q: %w", path, err)
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
+				return nil
 			}
 
 			fm, body, err := document.Frontmatter(string(data))
 			if err != nil {
-				return fmt.Errorf("skill %s: %w", path, err)
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
+				return nil
 			}
 			var name, desc string
 			if fm != nil {
@@ -122,7 +122,8 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 
 			key := strings.ToLower(name)
 			if seen[key] {
-				return fmt.Errorf("duplicate skill name %q at %s", name, path)
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: duplicate skill name %q\n", path, name)
+				return nil
 			}
 			seen[key] = true
 			skills = append(skills, Skill{
@@ -139,11 +140,6 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 		}
 	}
 	return skills, nil
-}
-
-func LoadSkills(skillsDir string) ([]Skill, error) {
-	cwd, _ := os.Getwd()
-	return LoadSkillsFromDirs(SkillSearchDirs(skillsDir, cwd)...)
 }
 
 func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
@@ -173,26 +169,4 @@ func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
 		add(filepath.Join(home, ".agents", "skills"))
 	}
 	return dirs
-}
-
-func RenderSkills(w io.Writer, skills []Skill, theme style.UITheme) {
-	if len(skills) == 0 {
-		fmt.Fprintln(w, "No reference skills found.")
-		return
-	}
-
-	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-	descStyle := style.NewStyle().Foreground(theme.Text)
-	pathStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
-
-	fmt.Fprintln(w, headerStyle.Render("╭──────────────────────────────────────────────────────────────────────────────────╮"))
-	fmt.Fprintln(w, headerStyle.Render("│  AVAILABLE SKILLS (Reference Guides)                                             │"))
-	fmt.Fprintln(w, headerStyle.Render("├──────────────────────────────────────────────────────────────────────────────────┤"))
-
-	for _, skill := range skills {
-		fmt.Fprintf(w, "  %s : %s\n", titleStyle.Render(skill.Name), descStyle.Render(skill.Description))
-		fmt.Fprintf(w, "  %s\n\n", pathStyle.Render(skill.Path))
-	}
-	fmt.Fprintln(w, headerStyle.Render("╰──────────────────────────────────────────────────────────────────────────────────╯"))
 }

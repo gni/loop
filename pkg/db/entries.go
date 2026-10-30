@@ -222,8 +222,4 @@ func (s *JSONLStore) RepairTail(id string) error {
 	return nil
 }
 
-func LatestForWorkspace(workspace string) (string, error) {
-	return withStoreVal(func(s *JSONLStore) (string, error) { return s.LatestForWorkspace(workspace) })
-}
-
 func DefaultStore() (*JSONLStore, error) { return getStore() }

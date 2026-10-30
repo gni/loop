@@ -91,37 +91,3 @@ func (m Message) HasToolCalls() bool {
 func (m Message) TotalTokens() int {
 	return m.PromptTokens + m.CompletionTokens
 }
-
-// NewUser creates a user message.
-func NewUser(content string) Message {
-	return Message{
-		Role:    RoleUser,
-		Content: content,
-	}
-}
-
-// NewSystem creates a system instruction message.
-func NewSystem(content string) Message {
-	return Message{
-		Role:    RoleSystem,
-		Content: content,
-	}
-}
-
-// NewAssistant creates an assistant message.
-func NewAssistant(content string) Message {
-	return Message{
-		Role:    RoleAssistant,
-		Content: content,
-	}
-}
-
-// NewToolResult creates a tool result message.
-func NewToolResult(toolCallID string, name string, content string) Message {
-	return Message{
-		Role:       RoleTool,
-		ToolCallID: toolCallID,
-		Name:       name,
-		Content:    content,
-	}
-}

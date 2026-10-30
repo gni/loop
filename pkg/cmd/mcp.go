@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"loop/pkg/config"
-	"loop/pkg/ui"
+	"loop/pkg/ui/render"
 )
 
 var mcpCmd = &cobra.Command{
@@ -17,7 +17,7 @@ var mcpCmd = &cobra.Command{
 var mcpListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured MCP servers",
-	Run:   runRenderCmd(ui.RenderMCPServers),
+	Run:   runRenderCmd(render.RenderMCPServers),
 }
 
 var mcpAddCmd = &cobra.Command{

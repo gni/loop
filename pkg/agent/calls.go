@@ -7,7 +7,6 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
-	transporthttp "loop/pkg/transport/http"
 )
 
 var streamSendTimeout = 500 * time.Millisecond
@@ -85,10 +84,6 @@ func emitChunkObserved(ctx context.Context, chunkChan chan<- StreamChunk, chunk 
 		observer()
 	}
 	return delivered
-}
-
-func isNonRetryableError(err error) bool {
-	return transporthttp.IsNonRetryableError(err)
 }
 
 func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string) []db.ToolCall {

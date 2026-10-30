@@ -173,7 +173,7 @@ func PrintSessionHistory(
 				if hasPrintedAnything {
 					fmt.Fprintln(w)
 				}
-				hooks.RenderMarkdown(w, strings.TrimRight(assistantContent, "\r\n"), theme)
+				hooks.RenderMarkdown(w, strings.Trim(assistantContent, "\r\n"), theme)
 				fmt.Fprintln(w)
 				hasPrintedAnything = true
 			} else if hasPrintedAnything && len(msg.ToolCalls) > 0 {

@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/lifecycle"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -159,13 +160,23 @@ func (ui *AgentUIImpl) DrawPromptSeparator(w io.Writer, showThinking bool, reaso
 }
 
 func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) agent.StreamRenderer {
-	sr := NewStreamRenderer(w, theme, showThinking, streamWrites, agentName)
 	ui.StateMu.Lock()
+	options := render.StreamOptions{Markdown: true}
 	if ui.Config != nil {
-		sr.markdownEnabled = ui.Config.MarkdownRender
-		sr.showMicroseconds = ui.Config.ShowMicroseconds
+		options.Markdown = ui.Config.MarkdownRender
+		options.ShowMicroseconds = ui.Config.ShowMicroseconds
 	}
 	ui.StateMu.Unlock()
+	options.BeforeWrite = func() {
+		ui.StateMu.Lock()
+		restore := ui.PasteLinesOffset > 0
+		ui.PasteLinesOffset = 0
+		ui.StateMu.Unlock()
+		if restore {
+			ui.InitStatusBar(os.Stderr)
+		}
+	}
+	sr := render.NewStreamRenderer(w, theme, showThinking, streamWrites, options)
 	return sr
 }
 
@@ -196,11 +207,11 @@ func (ui *AgentUIImpl) AskForSubagentCancellation(w io.Writer, theme style.UIThe
 }
 
 func (ui *AgentUIImpl) RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, toolArgs string) {
-	RenderToolHeader(w, theme, toolName, toolArgs)
+	render.RenderToolHeader(w, theme, toolName, toolArgs)
 }
 
 func (ui *AgentUIImpl) RenderToolOutput(w io.Writer, output string, isError bool, collapseResults bool, theme style.UITheme, toolName string, toolArgs string, bodyWasStreamed bool) {
-	RenderToolOutput(w, output, isError, collapseResults, theme, toolName, toolArgs, bodyWasStreamed)
+	render.RenderToolOutput(w, output, isError, collapseResults, theme, toolName, toolArgs, bodyWasStreamed)
 }
 
 func (ui *AgentUIImpl) SetCursorHidden(hidden bool) {
@@ -217,7 +228,7 @@ func (ui *AgentUIImpl) GetPPWriter() io.Writer {
 }
 
 func (ui *AgentUIImpl) RenderGenerationError(w io.Writer, message string, theme style.UITheme) {
-	RenderGenerationError(w, message, theme)
+	render.RenderGenerationError(w, message, theme)
 }
 
 // SetPromptHint sets a transient hint message to be displayed at the prompt,

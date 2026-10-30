@@ -35,12 +35,7 @@ var (
 		"file_path", "filePath", "file", "path", "target", "Target",
 		"target_file", "targetFile", "filename", "fileName", "name", "id",
 	}
-	instructionKeys = []string{
-		"instructions", "instruction", "Instructions", "Instruction",
-		"description", "Description", "comment", "Comment",
-		"explanation", "Explanation", "summary", "Summary",
-		"message", "Message",
-	}
+
 	todoListKeys = []string{
 		"tasks", "todos", "items", "plan", "content", "data", "list", "todo_list",
 	}
@@ -219,41 +214,4 @@ func ExtractToolTarget(toolName string, argsJSON string) string {
 	}
 
 	return getString(fallbackTargetKeys...)
-}
-
-func ExtractToolInstructions(argsJSON string) string {
-	trimmed := strings.TrimSpace(argsJSON)
-	if trimmed == "" {
-		return ""
-	}
-
-	if argsMap := parseToolArgsMap(trimmed); argsMap != nil {
-		if s := findWrappedMapString(argsMap, instructionKeys); s != "" {
-			return s
-		}
-		for _, listKey := range []string{"updates", "edits", "replacements"} {
-			if slice, ok := argsMap[listKey].([]interface{}); ok {
-				var itemInstructions []string
-				for _, item := range slice {
-					if itemMap, ok := item.(map[string]interface{}); ok {
-						if s := findMapStringByKeys(itemMap, instructionKeys); s != "" {
-							itemInstructions = append(itemInstructions, s)
-						}
-					}
-				}
-				if len(itemInstructions) > 0 {
-					return strings.Join(itemInstructions, "; ")
-				}
-			}
-		}
-	}
-
-	regexPairs := extractRawJSONStrings(trimmed)
-	for _, k := range instructionKeys {
-		if v := regexPairs[strings.ToLower(k)]; v != "" {
-			return v
-		}
-	}
-
-	return ""
 }

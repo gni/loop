@@ -9,19 +9,6 @@ import (
 	"loop/pkg/domain/limits"
 )
 
-// MaxSubagentDepth is the compiled default ceiling for subagent nesting depth.
-// The live ceiling is resolved from config through limits.SubagentDepth().
-var MaxSubagentDepth = limits.DefaultMaxSubagentDepth
-
-// MaxSupervisedTasks bounds the supervisor registry. Without a cap every delegation
-// adds an entry that lives for the process lifetime, and the poll loop takes the lock on
-// every tick.
-var MaxSupervisedTasks = limits.DefaultSupervisedTasks
-
-// TaskRetentionGrace keeps recently finished tasks readable: pollers look up a task
-// right after it completes, so eviction must not clear entries that are still fresh.
-var TaskRetentionGrace = limits.DefaultTaskRetentionGrace
-
 // TaskSupervisor coordinates task execution tracking across subagents.
 type TaskSupervisor struct {
 	tasks map[string]*SubagentTask
@@ -37,7 +24,7 @@ func NewTaskSupervisor() *TaskSupervisor {
 
 // RegisterTask adds a newly spawned task with "pending" status. Terminal entries
 // (completed/failed) are evicted oldest-first once the registry exceeds
-// MaxSupervisedTasks, so a long-lived process cannot grow the map without bound.
+// limits.MaxSupervisedTasks(), so a long-lived process cannot grow the map without bound.
 func (s *TaskSupervisor) RegisterTask(id, agentName, prompt string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,9 +127,4 @@ func MaxDepthAllowed(cfgMax, currentDepth int) error {
 		return fmt.Errorf("maximum subagent nesting depth (%d) reached", limit)
 	}
 	return nil
-}
-
-// CheckDepthAllowed is the ceiling-only form for callers with no config value.
-func CheckDepthAllowed(currentDepth int) error {
-	return MaxDepthAllowed(MaxSubagentDepth, currentDepth)
 }

@@ -90,13 +90,6 @@ func (s *Supervisor) SetExitFunc(fn func(code int)) {
 	}
 }
 
-// ExitCode returns the code the supervisor decided to terminate with.
-func (s *Supervisor) ExitCode() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.exitCode
-}
-
 // OnShutdown registers a cleanup hook to be executed on shutdown in LIFO order.
 func (s *Supervisor) OnShutdown(hook func()) {
 	s.mu.Lock()
@@ -202,9 +195,4 @@ func (s *Supervisor) executeShutdown(exitCode int) {
 	if exitFunc != nil {
 		exitFunc(exitCode)
 	}
-}
-
-// TriggerSignal simulates an incoming OS signal for testing or programmatic shutdown.
-func (s *Supervisor) TriggerSignal(sig os.Signal) {
-	s.handleSignal(sig)
 }

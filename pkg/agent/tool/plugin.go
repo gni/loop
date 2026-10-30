@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"loop/pkg/process"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"loop/pkg/process"
 )
 
 const (
@@ -121,21 +122,6 @@ func ExtensionSearchDirs(workspaceRoot string) []string {
 	return dedupeExistingDirs(candidates)
 }
 
-func LocalAddonDirs(workspaceRoot string) []string {
-	if workspaceRoot == "" {
-		return nil
-	}
-	return []string{
-		filepath.Join(workspaceRoot, ".loop", "plugins"),
-		filepath.Join(workspaceRoot, "plugins"),
-		filepath.Join(workspaceRoot, ".loop", "extensions"),
-		filepath.Join(workspaceRoot, "extensions"),
-		filepath.Join(workspaceRoot, "addons"),
-		filepath.Join(workspaceRoot, "addons", "plugins"),
-		filepath.Join(workspaceRoot, "addons", "extensions"),
-	}
-}
-
 func HasPluginDescriptor(pluginPath string) (string, bool) {
 	jsonPath1 := pluginPath + ".json"
 	if _, err := os.Stat(jsonPath1); err == nil {
@@ -147,10 +133,6 @@ func HasPluginDescriptor(pluginPath string) (string, bool) {
 		return jsonPath2, true
 	}
 	return "", false
-}
-
-func RegisterPlugins(registry *ToolRegistry, dir string) error {
-	return RegisterPluginsContext(context.Background(), registry, dir)
 }
 
 func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir string) error {

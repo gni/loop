@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 	"loop/pkg/ui/style"
-	"strings"
 )
 
 type HistorySink interface {
@@ -20,7 +21,6 @@ type agentSink struct {
 	a         *Agent
 	messages  *[]db.Message
 	sessionID string
-	label     string
 }
 
 func (s *agentSink) Append(m db.Message) {
@@ -145,12 +145,6 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 	guard := NewTurnExecutionGuardWithConfig(limit, thresholds)
 	if a != nil {
 		guard.SetObservationInvalidator(a.FileObservations)
-		guard.SetPathResolver(func(p string) string {
-			if abs, err := a.SafePath(p); err == nil {
-				return abs
-			}
-			return p
-		})
 	}
 
 	var guidedCtrl *GuidedController
@@ -183,11 +177,6 @@ func (e *TurnEngine) SetToolBatch(batch *ToolBatch) {
 func (e *TurnEngine) SetInlineEarlyResults(enabled bool) {
 	e.policy.InlineEarlyResults = enabled
 }
-
-func (e *TurnEngine) Guard() *TurnExecutionGuard { return e.guard }
-func (e *TurnEngine) Awareness() *TurnAwareness  { return e.awareness }
-func (e *TurnEngine) Guided() *GuidedController  { return e.guided }
-func (e *TurnEngine) SetGuidedMode(enabled bool) { e.guided.SetEnabled(enabled) }
 
 func (e *TurnEngine) agentLabel() string {
 	if e.policy.AgentName != "" {

@@ -324,35 +324,28 @@ var Master = Defaults()
 // Set installs a resolved set as the live limits.
 func Set(l Limits) { Master = Resolve(l) }
 
-// Accessors used by call sites; each returns the live value.
-func GrepDefaultLimit() int               { return Master.GrepDefaultLimit }
-func GrepMaxLimit() int                   { return Master.GrepMaxLimit }
-func GrepMaxLineLength() int              { return Master.GrepMaxLineLength }
-func GrepMaxOutputBytes() int             { return Master.GrepMaxOutputBytes }
-func GrepMaxFileBytes() int               { return Master.GrepMaxFileBytes }
-func WindowsPerTarget() int               { return Master.WindowsPerTarget }
-func MaxTrackedTasks() int                { return Master.MaxTrackedTasks }
-func MaxSupervisedTasks() int             { return Master.MaxSupervisedTasks }
-func TaskRetentionGrace() time.Duration   { return Master.TaskRetentionGrace }
-func AuditTruncationChars() int           { return Master.AuditTruncationChars }
-func NameMaxLength() int                  { return Master.NameMaxLength }
-func SkillDescMaxBytes() int              { return Master.SkillDescMaxBytes }
-func SkillContentMaxBytes() int           { return Master.SkillContentMaxBytes }
-func CompletionTokenFloor() int           { return Master.CompletionTokenFloor }
-func SubagentDepth() int                  { return Master.MaxSubagentDepth }
-func ConsecutiveLimit() int               { return Master.ConsecutiveLimit }
-func MaxOutputLines() int                 { return Master.MaxOutputLines }
-func MaxOutputBytes() int                 { return Master.MaxOutputBytes }
-func MaxReadFileBytes() int               { return Master.MaxReadFileBytes }
-func ReadMaxLineLength() int              { return Master.ReadMaxLineLength }
-func FindMaxResults() int                 { return Master.FindMaxResults }
-func ListMaxEntries() int                 { return Master.ListMaxEntries }
-func ListMaxDepth() int                   { return Master.ListMaxDepth }
-func ParallelToolWorkers() int            { return Master.ParallelToolWorkers }
-func CompactionReserveTokens() int        { return Master.CompactionReserveTokens }
-func CompactionKeepRecentTokens() int     { return Master.CompactionKeepRecentTokens }
-func MCPServerWorkers() int               { return Master.MCPServerWorkers }
-func MCPConnectTimeout() time.Duration    { return Master.MCPConnectTimeout }
+func GrepMaxLineLength() int { return Master.GrepMaxLineLength }
+
+func WindowsPerTarget() int { return Master.WindowsPerTarget }
+
+func MaxSupervisedTasks() int           { return Master.MaxSupervisedTasks }
+func TaskRetentionGrace() time.Duration { return Master.TaskRetentionGrace }
+func AuditTruncationChars() int         { return Master.AuditTruncationChars }
+func NameMaxLength() int                { return Master.NameMaxLength }
+func SkillDescMaxBytes() int            { return Master.SkillDescMaxBytes }
+func SkillContentMaxBytes() int         { return Master.SkillContentMaxBytes }
+
+func SubagentDepth() int    { return Master.MaxSubagentDepth }
+func ConsecutiveLimit() int { return Master.ConsecutiveLimit }
+func MaxOutputLines() int   { return Master.MaxOutputLines }
+func MaxOutputBytes() int   { return Master.MaxOutputBytes }
+
+func ListMaxEntries() int { return Master.ListMaxEntries }
+func ListMaxDepth() int   { return Master.ListMaxDepth }
+
+func CompactionReserveTokens() int    { return Master.CompactionReserveTokens }
+func CompactionKeepRecentTokens() int { return Master.CompactionKeepRecentTokens }
+
 func MCPRequestTimeout() time.Duration    { return Master.MCPRequestTimeout }
 func EscapeDisambiguation() time.Duration { return Master.EscapeDisambiguation }
 

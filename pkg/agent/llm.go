@@ -8,7 +8,6 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	transportllm "loop/pkg/transport/llm"
 )
 
 type contextKey string
@@ -18,9 +17,6 @@ const contextKeyGenerationDuration = contextKey("generation_duration_callback")
 type Tool = tool.Tool
 type FunctionDefinition = tool.FunctionDefinition
 type JSONSchema = tool.JSONSchema
-type SchemaProp = tool.SchemaProp
-type ReplaceEdit = tool.ReplaceEdit
-type ChatCompletionResponseChunk = transportllm.RawStreamChunk
 
 type StreamChunk struct {
 	Type          string
@@ -144,10 +140,6 @@ func (a *Agent) StreamChatCompletions(
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)
 	a.SetLastGenerationDuration(generationDuration)
 	return msg, err
-}
-
-func compressToolDefinition(t tool.Tool) tool.Tool {
-	return tool.CompressToolDefinition(t)
 }
 
 func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {

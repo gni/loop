@@ -12,11 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"loop/pkg/domain/limits"
 )
-
-var MaxTrackedTasks = limits.DefaultMaxTrackedTasks
 
 type Task struct {
 	ID             string

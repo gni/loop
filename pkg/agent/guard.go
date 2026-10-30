@@ -29,11 +29,6 @@ var (
 	}
 )
 
-var (
-	ConsecutiveLimit    = limits.DefaultConsecutiveLimit
-	maxWindowsPerTarget = limits.DefaultWindowsPerTarget
-)
-
 type ObservationInvalidator interface {
 	Forget(absPath string)
 	ForgetAll()
@@ -44,7 +39,6 @@ type TurnExecutionGuard struct {
 	lastTarget             string
 	readWindows            map[string]map[string]bool
 	invalidator            ObservationInvalidator
-	pathResolver           func(string) string
 	callStreaks            map[string]int
 	lastCallKey            string
 	failedStreaks          map[string]int
@@ -53,10 +47,6 @@ type TurnExecutionGuard struct {
 	maxConsecutiveReads    int
 	maxConsecutiveFailures int
 	reminderThresholds     []int
-}
-
-func NewTurnExecutionGuard() *TurnExecutionGuard {
-	return NewTurnExecutionGuardWithConfig(limits.ConsecutiveLimit(), []int{3, 5})
 }
 
 func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecutionGuard {
@@ -89,31 +79,6 @@ func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidato
 	if g != nil {
 		g.invalidator = inv
 	}
-}
-
-func (g *TurnExecutionGuard) SetPathResolver(resolver func(string) string) {
-	if g != nil {
-		g.pathResolver = resolver
-	}
-}
-
-func (g *TurnExecutionGuard) resolvePath(target string) string {
-	if g == nil || target == "" {
-		return ""
-	}
-	if g.pathResolver != nil {
-		if abs := g.pathResolver(target); abs != "" {
-			return abs
-		}
-	}
-	return filepath.Clean(target)
-}
-
-func (g *TurnExecutionGuard) FileReadCount(target string) int {
-	if g == nil {
-		return 0
-	}
-	return g.targetStreaks[filepath.Clean(target)]
 }
 
 func CanonicalizeArguments(arguments string) string {

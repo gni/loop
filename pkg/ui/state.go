@@ -6,7 +6,6 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/terminal"
-	"loop/pkg/ui/style"
 )
 
 var ActiveUI *AgentUIImpl
@@ -44,14 +43,6 @@ func ShutdownStatusBar(w io.Writer) {
 	getUI().ShutdownStatusBar(w)
 }
 
-func StripAnsi(str string) string {
-	return style.StripAnsi(str)
-}
-
-func stripAnsi(str string) string {
-	return style.StripAnsi(str)
-}
-
 var (
 	altTerms   = make(map[io.Writer]*terminal.Terminal)
 	altTermsMu sync.Mutex
@@ -69,14 +60,6 @@ func termForWriter(w io.Writer) *terminal.Terminal {
 		altTerms[w] = t
 	}
 	return t
-}
-
-func EnterAlternateScreen(w io.Writer) {
-	termForWriter(w).EnterAltScreen()
-}
-
-func ExitAlternateScreen(w io.Writer) {
-	termForWriter(w).ExitAltScreen()
 }
 
 func ForceExitAlternateScreen(w io.Writer) {

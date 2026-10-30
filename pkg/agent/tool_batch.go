@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"sync"
 
 	"loop/pkg/db"
@@ -203,16 +202,4 @@ func (b *ToolBatch) CancelByProviderID(providerID string) {
 	for _, i := range ids {
 		b.transition(i, ToolPhaseCancelled)
 	}
-}
-
-func (b *ToolBatch) Snapshot(index int) (ToolCallView, error) {
-	if b == nil {
-		return ToolCallView{}, fmt.Errorf("missing tool batch")
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if index < 0 || index >= len(b.calls) || b.calls[index] == nil {
-		return ToolCallView{}, fmt.Errorf("tool %d is not registered", index)
-	}
-	return *b.calls[index], nil
 }

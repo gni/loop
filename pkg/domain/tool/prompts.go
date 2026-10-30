@@ -232,20 +232,6 @@ func DefaultPromptCatalogPath() string {
 	return filepath.Join(homeDir, ".loop", "prompts.json")
 }
 
-func GetToolPrompt(name string) ToolPrompt {
-	if p, ok := MasterToolPrompts[name]; ok {
-		return p
-	}
-	return ToolPrompt{Name: name}
-}
-
-func SetToolPrompt(p ToolPrompt) {
-	if MasterToolPrompts == nil {
-		MasterToolPrompts = map[string]ToolPrompt{}
-	}
-	MasterToolPrompts[p.Name] = p
-}
-
 func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
 	if p, ok := MasterToolPrompts[toolName]; ok {
 		if desc, found := p.ParamDescriptions[paramName]; found && desc != "" {

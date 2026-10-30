@@ -518,8 +518,3 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 	}
 	return nil, fmt.Errorf("MCP tools/list exceeded %d pages", maxPages)
 }
-
-func (c *mcpClient) callTool(ctx context.Context, name, arguments string) (string, error) {
-	result, err := c.callToolResult(ctx, name, arguments)
-	return result.Output, err
-}

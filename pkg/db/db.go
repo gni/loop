@@ -273,10 +273,6 @@ func HasMessages(sessionID string) bool {
 	return err == nil && store.HasMessages(sessionID)
 }
 
-func RewriteSession(sessionID string, messages []Message) error {
-	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
-}
-
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {
 	return &JSONLStore{dir: s.dir, Workspace: workspace, cache: make(map[string]cachedEntries)}
 }

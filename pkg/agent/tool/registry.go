@@ -16,9 +16,7 @@ type Skill = domaintool.Skill
 type AgentContext = domaintool.AgentContext
 type LiveOutputWriter = domaintool.LiveOutputWriter
 type ToolExecutor = domaintool.ToolExecutor
-type PromptContributor = domaintool.PromptContributor
 
-var CompressToolDefinition = domaintool.CompressToolDefinition
 var PrepareToolDefinitions = domaintool.PrepareToolDefinitions
 var ParseToolArguments = domaintool.ParseToolArguments
 var FirstNonEmpty = domaintool.FirstNonEmpty
@@ -28,13 +26,11 @@ var FormatToolSnippet = domaintool.FormatToolSnippet
 var FormatToolGuidelines = domaintool.FormatToolGuidelines
 var FormatToolDescription = domaintool.FormatToolDescription
 var FormatParamDescription = domaintool.FormatParamDescription
-var MasterToolPrompts = domaintool.MasterToolPrompts
-var GetToolPrompt = domaintool.GetToolPrompt
-var SetToolPrompt = domaintool.SetToolPrompt
+
 var MasterAgentTemplates = domaintool.MasterAgentTemplates
 var StringProp = domaintool.StringProp
 var NumberProp = domaintool.NumberProp
-var BoolProp = domaintool.BoolProp
+
 var RuntimeMessage = domaintool.RuntimeMessage
 var RuntimeMessagef = domaintool.RuntimeMessagef
 var DefaultAskUserSelection = domaintool.DefaultAskUserSelection

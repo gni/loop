@@ -18,10 +18,6 @@ func RoundedBorder() int {
 
 const (
 	Center = iota
-	Left
-	Right
-	Top
-	Bottom
 )
 
 type Style struct {

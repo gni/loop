@@ -12,18 +12,13 @@ import (
 const (
 	// ShowCursor sequence makes the text cursor visible.
 	ShowCursor = "\x1b[?25h"
-	// HideCursor sequence makes the text cursor hidden.
-	HideCursor = "\x1b[?25l"
-	// EnableBracketedPaste sequence enables bracketed paste mode.
-	EnableBracketedPaste = "\x1b[?2004h"
+
 	// DisableBracketedPaste sequence disables bracketed paste mode.
 	DisableBracketedPaste = "\x1b[?2004l"
 	// EnterAlternateScreen sequence switches terminal to alternate screen buffer.
 	EnterAlternateScreen = "\x1b[?1049h\x1b[r\x1b[2J\x1b[H"
 	// ExitAlternateScreen sequence restores primary screen buffer and shows cursor.
 	ExitAlternateScreen = "\x1b[?1049l\x1b[?25h"
-	// ResetStyles sequence resets all colors and font attributes.
-	ResetStyles = "\x1b[0m"
 )
 
 // Terminal manages terminal display modes, screen buffers, and cursor state.
@@ -55,38 +50,6 @@ func (t *Terminal) RestoreCursor() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	fmt.Fprint(t.writer, ShowCursor)
-}
-
-// ResetState resets alternate screen buffer, bracketed paste mode, cursor visibility, and styles.
-func (t *Terminal) ResetState() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.altDepth = 0
-	fmt.Fprint(t.writer, ExitAlternateScreen+DisableBracketedPaste+ResetStyles)
-}
-
-// EnterAltScreen switches the terminal to the alternate screen buffer.
-// It is reference counted so nested components do not prematurely exit the alternate screen.
-func (t *Terminal) EnterAltScreen() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.altDepth == 0 {
-		fmt.Fprint(t.writer, EnterAlternateScreen)
-	}
-	t.altDepth++
-}
-
-// ExitAltScreen decrements the alternate screen reference count and restores
-// the primary screen buffer when the count reaches zero.
-func (t *Terminal) ExitAltScreen() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.altDepth > 0 {
-		t.altDepth--
-		if t.altDepth == 0 {
-			fmt.Fprint(t.writer, ExitAlternateScreen)
-		}
-	}
 }
 
 // ForceExitAltScreen unconditionally exits the alternate screen buffer and makes the cursor visible.

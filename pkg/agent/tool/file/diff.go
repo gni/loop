@@ -161,19 +161,6 @@ func computeMyersDiff(a, b []string) []diffPart {
 	return merged
 }
 
-func CountDiffStats(oldContent, newContent string) (added int, deleted int) {
-	parts := computeMyersDiff(strings.Split(oldContent, "\n"), strings.Split(newContent, "\n"))
-	for _, p := range parts {
-		switch p.op {
-		case diffInsert:
-			added += len(p.lines)
-		case diffDelete:
-			deleted += len(p.lines)
-		}
-	}
-	return added, deleted
-}
-
 func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string {
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")

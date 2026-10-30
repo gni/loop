@@ -11,6 +11,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -87,7 +88,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	cwBuf := crnlWriter{W: &buf}
 
 	if len(a.McpStartErrors) > 0 {
-		RenderMCPStartupErrors(cwBuf, a.McpStartErrors, activeTheme)
+		render.RenderMCPStartupErrors(cwBuf, a.McpStartErrors, activeTheme)
 	}
 
 	PrintBanner(cwBuf, a)

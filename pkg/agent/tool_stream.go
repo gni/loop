@@ -293,12 +293,6 @@ func (s *toolStreamSequencer) SetEditDiffPreview(preview func(toolName, argument
 	s.editDiffPreview = preview
 }
 
-// SetProgressCallback reports transient streamed content for calls whose full
-// preview is intentionally deferred until their execution turn.
-func (s *toolStreamSequencer) SetProgressCallback(callback func(index int, name, preview string, size int)) {
-	s.onProgress = callback
-}
-
 // DeferFollowingCalls keeps later previews out of the terminal until their
 // corresponding tool is ready to execute. The first call still streams live.
 // This prevents stale completion placeholders when multiple previews scroll

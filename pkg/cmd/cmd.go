@@ -72,22 +72,6 @@ func runRenderCmd(render func(io.Writer, *config.Config, ui.UITheme)) func(cmd *
 	}
 }
 
-func isPiped() bool {
-	stat, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (stat.Mode() & os.ModeCharDevice) == 0
-}
-
-func readStdin() (string, error) {
-	data, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
 func init() {
 	initRootFlags(rootCmd)
 }

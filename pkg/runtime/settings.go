@@ -3,10 +3,10 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
-	"loop/pkg/domain/model"
 	"loop/pkg/domain/session"
 )
 
@@ -73,26 +73,4 @@ func (s *Session) Configuration() (*config.Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return config.Clone(s.Agent.Config)
-}
-
-func (s *Session) SelectModel(provider, query string) error {
-	cfg, err := s.Configuration()
-	if err != nil {
-		return err
-	}
-	entry, err := model.Resolve(cfg.Models(), provider, query)
-	if err != nil {
-		return err
-	}
-	if err := cfg.ActivateProvider(entry.Provider); err != nil {
-		return err
-	}
-	cfg.Model = entry.ID
-	if entry.ContextWindow > 0 {
-		cfg.ContextWindowLimit = entry.ContextWindow
-	}
-	if entry.MaxOutput > 0 && cfg.MaxCompletionTokens > entry.MaxOutput {
-		cfg.MaxCompletionTokens = entry.MaxOutput
-	}
-	return s.UpdateConfig(cfg)
 }
