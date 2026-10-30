@@ -328,12 +328,24 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 
 	isTerm := term.IsTerminal(fd)
 	var oldState *term.State
-	if isTerm && !hasActiveReader {
+	// The active reader routes keystrokes; it does not own terminal mode.
+	// Slash commands run after ReadLine restores canonical input and echo.
+	// Capture and restore the current mode for both routed and direct input.
+	if isTerm {
 		var err error
 		oldState, err = term.MakeRaw(fd)
 		if err == nil {
 			defer term.Restore(fd, oldState)
 		}
+	}
+
+	// A free-text-only question is already an editor, not a choice menu.
+	// Open it immediately so users can type without selecting "Other" first.
+	if len(options) == 1 && options[0].FreeText {
+		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+		activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+		fmt.Fprintln(output, promptStyle.Render(prompt))
+		return 0, false, readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, "")
 	}
 
 	// Fallback only if NOT a terminal AND no active reader

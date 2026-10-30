@@ -13,6 +13,7 @@ import (
 )
 
 var baseAutocompleteCandidates = []string{
+	"/nostop", "/nostop setup", "/nostop eco ", "/nostop balanced ", "/nostop continuous ", "/nostop off", "/nostop status", "/loop",
 	"/guided", "/guided on", "/guided off", "/guided status", "/guided plan", "/guided approve",
 	"/plan", "/rollback", "/undo",
 	"/config ", "/config show", "/config set ",
@@ -100,6 +101,9 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 	if len(matches) == 0 {
 		switch {
+		case strings.HasPrefix(prefixToPos, "/nostop ") || strings.HasPrefix(prefixToPos, "/loop "):
+			cmdPrefix, _ := firstMatchingPrefix(prefixToPos, "/nostop ", "/loop ")
+			matches = matchPrefixWithSpace([]string{"eco", "balanced", "continuous", "off", "status", "setup"}, strings.TrimPrefix(prefixToPos, cmdPrefix), map[string]bool{"eco": true, "balanced": true, "continuous": true})
 		case strings.HasPrefix(prefixToPos, "/guided "):
 			matches = matchPrefixWithSpace([]string{"on", "off", "status", "plan", "approve"}, strings.TrimPrefix(prefixToPos, "/guided "), nil)
 

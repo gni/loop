@@ -32,9 +32,19 @@ var (
 	maxSubagentDepthFlag    int
 	timeoutFlag             int
 	recapIntervalFlag       int
+	nostopModeFlag          string
+	nostopIntervalFlag      int
 )
 
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
+	if cmd.Flags().Changed("nostop") {
+		cfg.Nostop = config.NostopConfig{Mode: strings.ToLower(strings.TrimSpace(nostopModeFlag))}
+	}
+	if cmd.Flags().Changed("nostop-interval") {
+		seconds := nostopIntervalFlag
+		cfg.Nostop.IntervalSeconds = &seconds
+	}
+
 	if endpoint != "" {
 		cfg.Endpoint = endpoint
 	}
@@ -137,5 +147,7 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: loop_debug.log in workspace)")
 	cmd.PersistentFlags().IntVar(&maxSubagentDepthFlag, "max-subagent-depth", 0, "Maximum subagent nesting depth (default: 0, leaf subagents cannot spawn further subagents)")
 	cmd.PersistentFlags().IntVar(&timeoutFlag, "timeout", 0, "Override LLM request timeout in seconds (default: 120)")
+	cmd.PersistentFlags().StringVar(&nostopModeFlag, "nostop", "", "Nonstop pacing: eco, balanced, continuous (require --nostop-interval), or off")
+	cmd.PersistentFlags().IntVar(&nostopIntervalFlag, "nostop-interval", 0, "Required pause in seconds for nostop; zero allowed only in continuous mode")
 	cmd.PersistentFlags().IntVar(&recapIntervalFlag, "recap", 5, "Inject a turn/token recap into the agent history every N reasoning steps (negative disables)")
 }

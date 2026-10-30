@@ -101,6 +101,9 @@ func HandleSlashCommand(
 			a.KillAllTasks()
 		}
 		return true, true
+	case "/nostop", "/loop":
+		handleNostopCommand(a, parts, theme, w, kiReader)
+		return true, false
 	case "/guided", "/guide":
 		handleGuidedCommand(a, parts, theme, w, kiReader)
 		return true, false

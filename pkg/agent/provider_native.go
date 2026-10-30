@@ -332,7 +332,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	if err != nil {
 		return nil, err
 	}
-	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, time.Duration(p.Config.Timeout)*time.Second)
+	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
 	defer stop()
 	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HttpClient})
 	response, err := client.DoWithRetry(streamCtx, func() (*http.Request, error) {
@@ -577,10 +577,12 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 
 	if !complete || finish == "" {
-		return result, fmt.Errorf("provider stream ended before completion")
+		return result, fmt.Errorf("provider stream ended before completion: %w", ErrIncompleteResponse)
 	}
 	switch finish {
-	case "length", "max_tokens", "MAX_TOKENS", "SAFETY", "RECITATION", "content_filter":
+	case "length", "max_tokens", "MAX_TOKENS":
+		return result, fmt.Errorf("provider stopped with %s: %w", finish, ErrIncompleteResponse)
+	case "SAFETY", "RECITATION", "content_filter":
 		return result, fmt.Errorf("provider stopped with incomplete outcome %s", finish)
 	}
 	for _, call := range result.ToolCalls {
@@ -588,8 +590,8 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 			return result, fmt.Errorf("incomplete arguments for tool %s", strconv.Quote(call.Function.Name))
 		}
 	}
-	if result.Content == "" && len(result.ToolCalls) == 0 && result.ReasoningContent == "" {
-		return result, fmt.Errorf("provider returned no assistant output")
+	if !hasUsableAssistantResponse(result) {
+		return result, ErrEmptyResponse
 	}
 	return result, nil
 }

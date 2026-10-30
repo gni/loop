@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"loop/pkg/db"
@@ -58,6 +57,12 @@ func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, er
 
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) (result RunResult, runErr error) {
 	result.Status = RunCompleted
+	if err := a.Config.Nostop.Validate(); err != nil {
+		result.Status = RunFailed
+		result.Error = err.Error()
+		return result, err
+	}
+	nostop := a.Config.Nostop.Enabled()
 	startedAt := len(*messages)
 	a.stateMu.Lock()
 	a.persistenceErr = nil
@@ -164,7 +169,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	}
 	lastToolTrailingNewlines := 0
 
-	for iter := 1; iter <= maxSteps; iter++ {
+	failures := 0
+	for iter := 1; nostop || iter <= maxSteps; iter++ {
 		result.Turns = iter
 		if err := a.persistenceError(); err != nil {
 			runErr = err
@@ -183,6 +189,15 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		globalPromptTokensEst, effectiveLimit, err := a.prepareAgentStep(ctx, messages, allowlist, sessionID, iter, lastToolTrailingNewlines, engine, sink, timer, writerToUse, theme)
 		if err != nil {
+			if nostop && ctx.Err() == nil && a.persistenceError() == nil && recoverableNostopError(err) {
+				failures++
+				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "nostop context recovery: " + err.Error()})
+				if waitErr := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, failures); waitErr != nil {
+					runErr = waitErr
+					return
+				}
+				continue
+			}
 			runErr = err
 			return
 		}
@@ -229,14 +244,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				a.UI.DrawStatusBar(rawW, theme)
 			}
 		}
-
-		var stopOnce sync.Once
-		stopTicker := func() {
-			stopOnce.Do(func() {
-				updateStreamStatus(false)
-			})
-		}
-		defer stopTicker()
 
 		updateStreamStatus(true)
 
@@ -340,7 +347,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				view.InvalidateTrackedRows()
 			}
 		}
-		stopTicker()
+		updateStreamStatus(false)
 
 		a.CurrentStreamMu.Lock()
 		a.CurrentStreamBuffer = nil
@@ -373,6 +380,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				res.err = errors.Join(res.err, err)
 			}
 		}
+		if res.err == nil && !hasUsableAssistantResponse(res.msg) {
+			res.err = ErrEmptyResponse
+		}
 		if res.err != nil {
 			batch.CancelUnfinished()
 			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
@@ -398,6 +408,22 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				partial.StopReason = "interrupted"
 				sink.Append(partial)
 			}
+			if nostop && ctx.Err() == nil && recoverableNostopError(res.err) {
+				if err := a.persistenceError(); err != nil {
+					runErr = err
+					return
+				}
+				failures++
+				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "nostop recovery: " + res.err.Error()})
+				ncw.EnsureNewline()
+				if err := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, failures); err != nil {
+					runErr = err
+					return
+				}
+				runErr = nil
+				lastToolTrailingNewlines = ncw.trailingNewlines
+				continue
+			}
 			if loader != nil {
 				loader.Stop()
 			}
@@ -406,20 +432,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		assistantMsg := res.msg
-		if assistantMsg == nil {
-			batch.CancelUnfinished()
-			if len(earlyCalls) > 0 {
-				sink.Append(db.Message{Role: "assistant", ToolCalls: earlyCalls, StopReason: "interrupted"})
-				for _, m := range earlyMessages {
-					sink.Append(m)
-				}
-			}
-			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
-				pending.MarkPendingWriteResults("Not executed")
-			}
-			runErr = fmt.Errorf("provider returned no assistant response")
-			return
-		}
+		failures = 0
 
 		if prompt != "" && assistantMsg.ReasoningContent != "" {
 			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
@@ -464,6 +477,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		if len(assistantMsg.ToolCalls) == 0 {
 			result.Text = assistantMsg.Content
+			// A usable final reply ends the objective in every pacing mode.
+			// Nonstop extends tool execution and recovery, not completed work.
+			if nostop {
+				ncw.EnsureNewline()
+			}
 			timePrinted = true
 			a.renderFinalAgentTurn(assistantMsg, sr, loader, rawW, writerToUse, sessionID, startTime, theme)
 			syncPostTurnStatus()
@@ -497,6 +515,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			return
 		}
 		lastToolTrailingNewlines = ncw.trailingNewlines
+		if nostop && a.Config.Nostop.PauseAfter(iter) {
+			if err := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, 0); err != nil {
+				runErr = err
+				return
+			}
+		}
 	}
 
 	if loader != nil {

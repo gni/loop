@@ -24,6 +24,8 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 	fmt.Fprintln(w)
 
 	commands := [][]string{
+		{"/nostop (or /loop)", "configure Eco, Balanced, or Continuous pacing with a required pause"},
+		{"/nostop <mode> <seconds>|off|status", "set pacing, disable nonstop, or inspect its settings"},
 		{"/guided [on|off|status|approve]", "toggle or inspect guided execution mode (Explore -> Plan -> Execute)"},
 		{"/rollback (or /undo)", "restore files modified in this session to their initial snapshots"},
 		{"/config [show|set <k> <v>]", "view or modify runtime settings"},

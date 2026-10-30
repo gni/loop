@@ -179,10 +179,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	requestStarted := time.Now()
-	var timeoutDuration time.Duration
-	if p.Config != nil && p.Config.Timeout > 0 {
-		timeoutDuration = time.Duration(p.Config.Timeout) * time.Second
-	}
+	timeoutDuration := p.streamTimeout()
 
 	streamCtx, kickTimer, timedOut, stopWatchdog := startStreamWatchdog(ctx, timeoutDuration)
 	defer stopWatchdog()
@@ -297,7 +294,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			if streamErr := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after "); streamErr != nil {
 				return buildMessage(), streamErr
 			}
-			return nil, err
+			return buildMessage(), err
 		}
 		if done {
 			break
@@ -393,15 +390,18 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	if finishReason == "" && !streamReader.Complete {
-		return buildMessage(), fmt.Errorf("provider stream ended before a completion marker")
+		return buildMessage(), fmt.Errorf("provider stream ended before a completion marker: %w", ErrIncompleteResponse)
 	}
-	if finishReason == "length" || finishReason == "content_filter" {
+	if finishReason == "length" {
+		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q: %w", finishReason, ErrIncompleteResponse)
+	}
+	if finishReason == "content_filter" {
 		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
 	}
 
 	assistantMsg := buildMessage()
-	if assistantMsg.Content == "" && len(assistantMsg.ToolCalls) == 0 && assistantMsg.ReasoningContent == "" {
-		return nil, fmt.Errorf("model server closed the stream after %s without assistant output (HTTP %d, finish reason %q); this is not Loop's %s inactivity timeout. Check model server and proxy logs", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, timeoutDuration)
+	if !hasUsableAssistantResponse(assistantMsg) {
+		return assistantMsg, fmt.Errorf("model server closed the stream after %s without a usable answer or tool call (HTTP %d, finish reason %q): %w", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, ErrEmptyResponse)
 	}
 
 	var duration time.Duration

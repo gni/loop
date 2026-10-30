@@ -50,6 +50,15 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	applyFlagOverrides(cmd, cfg)
+	if cmd.Flags().Changed("nostop-interval") && !cmd.Flags().Changed("nostop") {
+		return fmt.Errorf("--nostop-interval requires --nostop <mode>")
+	}
+	if cmd.Flags().Changed("nostop") && strings.TrimSpace(nostopModeFlag) == "" {
+		return fmt.Errorf("--nostop requires eco, balanced, continuous, or off")
+	}
+	if err := cfg.Nostop.Validate(); err != nil {
+		return err
+	}
 	allowed := parseAllowedTools(allowedToolsStr)
 	if cmd.Flags().Changed("tools") && strings.TrimSpace(allowedToolsStr) != "" && len(allowed) == 0 && !strings.EqualFold(strings.TrimSpace(allowedToolsStr), "none") && !strings.EqualFold(strings.TrimSpace(allowedToolsStr), "empty") {
 		return fmt.Errorf("--tools must contain tool names or none")
@@ -69,6 +78,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 	options := runtime.Options{Config: cfg, ConfigPath: configPath, Workspace: workspace, SessionID: sessionIDFlag, Resume: resumeSession, NoSession: noSession, Tools: allowed, KeepSelection: cmd.Flags().Changed("model") || cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("reasoning")}
+	if outputMode == "text" && cfg.Nostop.Enabled() {
+		options.Output = cmd.OutOrStdout()
+	}
 	var outputMu sync.Mutex
 	encode := func(value any) error {
 		outputMu.Lock()
@@ -127,7 +139,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if outputMode == "text" {
+	if outputMode == "text" && !cfg.Nostop.Enabled() {
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), result.Text)
 	}
 	return err

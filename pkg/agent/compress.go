@@ -56,16 +56,15 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, thresh)
 }
 
-func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, bool) {
+func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, error) {
 	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
 		if err := a.CompressHistory(ctx, messages, sessionID, theme, w); err != nil {
-			a.recordPersistenceError(err)
-			return promptTokens, effectiveLimit, false
+			return promptTokens, effectiveLimit, err
 		}
 		recomputed, limit := a.estimateTurnContext(*messages, allowlist)
-		return recomputed, limit, true
+		return recomputed, limit, nil
 	}
-	return promptTokens, effectiveLimit, false
+	return promptTokens, effectiveLimit, nil
 }
 
 func keepRecentMessageCount(messages []db.Message) int {
@@ -262,6 +261,9 @@ func (a *Agent) CompressHistory(
 	select {
 	case <-drained:
 	case <-time.After(2 * time.Second):
+	}
+	if err == nil && (!hasUsableAssistantResponse(summaryAssistantMsg) || strings.TrimSpace(summaryAssistantMsg.Content) == "" || len(summaryAssistantMsg.ToolCalls) > 0) {
+		err = ErrEmptyResponse
 	}
 	if err != nil {
 		compressionErr = err

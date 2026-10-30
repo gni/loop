@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
@@ -87,6 +88,33 @@ func executeREPLTurn(
 	ui.GetUI().ActiveCancelFunc = cancel
 	kiReader.ResetTypeAheadLocked()
 	ui.GetUI().StateMu.Unlock()
+
+	// During nonstop execution, ordinary queued prompts steer the next model
+	// turn. Slash commands remain commands and are never sent to the model.
+	previousInput := a.NextInput
+	if a.Config.Nostop.Enabled() && kiReader != nil {
+		a.NextInput = func() []db.Message {
+			if previousInput != nil {
+				if input := previousInput(); len(input) > 0 {
+					return input
+				}
+			}
+			queued := kiReader.GetQueuedPrompts()
+			if len(queued) == 0 || strings.HasPrefix(queued[0], "/") {
+				return nil
+			}
+			next, ok := kiReader.DequeuePrompt()
+			if !ok {
+				return nil
+			}
+			ui.GetUI().StateMu.Lock()
+			ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
+			ui.GetUI().StateMu.Unlock()
+			renderTurnPromptHeader(ppWriter, a.Config, theme, ui.GetPromptSymbol(a.Config), next, true, kiReader)
+			return []db.Message{{Role: "user", Content: next}}
+		}
+		defer func() { a.NextInput = previousInput }()
+	}
 
 	restore, err := ui.SetNonCanonical(fd)
 

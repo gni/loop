@@ -88,6 +88,34 @@ bypass interactive tool approval prompts (use with caution):
 ./loop --yes
 ```
 
+#### nonstop mode
+
+Run `/nostop` (alias `/loop`) to choose Eco, Balanced, or Continuous, then enter the pause in seconds. The mode cannot start without an explicit interval, including an explicit zero for Continuous. Settings are saved for future sessions. `/nostop status` shows the current choice; `/nostop off` disables it.
+
+| Mode | Pause cadence | Interval |
+| --- | --- | --- |
+| Eco | Between tool turns; local tools run sequentially | At least 1 second |
+| Balanced | Every five tool turns; retains configured tool parallelism | At least 1 second |
+| Continuous | Between tool turns; 0 means no pause; retains configured tool parallelism | 0 seconds or more |
+
+```text
+/nostop eco 30
+/nostop balanced 5
+/nostop continuous 0
+```
+
+For a single launch, both flags are required when enabling the mode:
+
+```bash
+./loop --nostop eco --nostop-interval 30 "continue the implementation"
+./loop --nostop continuous --nostop-interval 0 "finish the current objective"
+./loop --nostop off
+```
+
+Nonstop works on the objective in your prompt until the model gives a nonempty final reply without tool calls, then returns control. A completed summary ends the run immediately, with no extra inference or pacing pause. It does not expand the goal to unrelated work. The selected mode remains enabled for your next prompt.
+
+Empty responses, reasoning-only output, interrupted streams, and transient connection/server failures retry automatically. Failed requests back off for up to 60 seconds, or the chosen interval if longer. Nonstop removes Loop's main reasoning-step ceiling and inference inactivity timeout; history still compacts automatically. Permanent errors, tool approvals, and repetition guards remain authoritative. Ctrl+C cancels inference, tools, or a pacing pause. Prompts typed during a run steer its next turn; cancel first to run slash commands. Provider/proxy deadlines can interrupt requests and are retried when classified as transient.
+
 #### session management
 
 sessions are persistent. state is automatically written to disk.

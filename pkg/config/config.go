@@ -97,6 +97,7 @@ func (c *Config) NormalizeSafety() {
 }
 
 type Config struct {
+	Nostop                   NostopConfig               `json:"nostop,omitempty"`
 	Sources                  map[string]string          `json:"-"`
 	ProjectPath              string                     `json:"-"`
 	ProjectBase              *Config                    `json:"-"`
@@ -489,6 +490,9 @@ func LoadConfig(path string) (*Config, error) {
 func SaveConfig(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
+	}
+	if err := cfg.Nostop.Validate(); err != nil {
+		return err
 	}
 	cfg.NormalizeSafety()
 	if cfg.ProjectPath != "" {

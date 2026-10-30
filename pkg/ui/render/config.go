@@ -66,6 +66,13 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		timeoutVal = fmt.Sprintf("%ds", cfg.Timeout)
 	}
 
+	nostopVal := "off"
+	stepsVal := fmt.Sprintf("%d", cfg.MaxReasoningSteps)
+	if cfg.Nostop.Enabled() {
+		nostopVal = fmt.Sprintf("%s / %s", cfg.Nostop.Mode, cfg.Nostop.Pause())
+		timeoutVal = "disabled (nostop)"
+		stepsVal = "unlimited (nostop)"
+	}
 	disabledToolsVal := "none"
 	if len(cfg.DisabledTools) > 0 {
 		disabledToolsVal = strings.Join(cfg.DisabledTools, ", ")
@@ -80,6 +87,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		{"active provider:", valStyle.Render(cfg.ActiveProvider)},
 		{"temperature:", valStyle.Render(fmt.Sprintf("%.2f", cfg.Temperature))},
 		{"guided mode:", guidedVal},
+		{"nostop pacing:", valStyle.Render(nostopVal)},
 		{"file guard disabled:", valStyle.Render(fmt.Sprintf("%v", cfg.DisableObservationGuard))},
 		{"auto-approve:", approveVal},
 		{"show thinking:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowThinking))},
@@ -91,7 +99,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		{"auto adapt context:", valStyle.Render(fmt.Sprintf("%v", cfg.AutoAdaptContext))},
 		{"min context window:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.MinContextWindow))},
 		{"max completion tokens:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.MaxCompletionTokens))},
-		{"max reasoning steps:", valStyle.Render(fmt.Sprintf("%d", cfg.MaxReasoningSteps))},
+		{"max reasoning steps:", valStyle.Render(stepsVal)},
 		{"direct commands:", directVal},
 		{"client cert:", valStyle.Render(cfg.CertFile)},
 		{"client key:", valStyle.Render(cfg.KeyFile)},

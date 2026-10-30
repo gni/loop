@@ -18,6 +18,9 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if err := copy.Nostop.Validate(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()

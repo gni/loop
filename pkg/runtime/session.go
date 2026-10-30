@@ -107,6 +107,9 @@ func New(options Options) (*Session, error) {
 	if err := applyResources(cfg, resources.PackageResources{}, loaded); err != nil {
 		return nil, err
 	}
+	if err := cfg.Nostop.Validate(); err != nil {
+		return nil, err
+	}
 	store := options.Store
 	if !options.NoSession && store == nil {
 		store, err = db.NewJSONLStore(filepath.Join(resources.AgentDirectory(options.ConfigPath), "sessions"))
@@ -291,7 +294,11 @@ func (s *Session) Run(ctx context.Context, prompt string) (agent.RunResult, erro
 }
 
 func (s *Session) run(ctx context.Context, prompt string) (agent.RunResult, error) {
-	return s.runWith(ctx, prompt, io.Discard, style.GetTheme("plain"), true)
+	var output io.Writer = io.Discard
+	if s.Agent.Config.Nostop.Enabled() && s.options.Output != nil {
+		output = s.options.Output
+	}
+	return s.runWith(ctx, prompt, output, style.GetTheme("plain"), true)
 }
 
 func (s *Session) RunInteractive(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, tools []string, theme style.UITheme, id string) (agent.RunResult, error) {

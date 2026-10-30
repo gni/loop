@@ -39,7 +39,10 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 
 	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
 	timer.Time("compaction", "start")
-	globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+	if err != nil {
+		return 0, 0, err
+	}
 	if err := a.persistenceError(); err != nil {
 		return 0, 0, err
 	}

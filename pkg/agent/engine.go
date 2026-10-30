@@ -105,6 +105,9 @@ func (ta *TurnAwareness) Format(who string, promptTokens, totalCompletion, effec
 	if effectiveLimit > 0 {
 		pct = float64(promptTokens) / float64(effectiveLimit) * 100.0
 	}
+	if ta.MaxTurns == 0 {
+		return fmt.Sprintf("[recap %s] turn %d | nostop | prompt ~%d tokens | completion total ~%d tokens | effective window %d (%.1f%% used)", who, ta.Turn, promptTokens, totalCompletion, effectiveLimit, pct)
+	}
 	next := ta.RecapInterval - (ta.Turn % ta.RecapInterval)
 
 	return RuntimeMessagef("recap_line", "[recap %s] turn %d/%d | prompt ~%d tokens | completion total ~%d tokens | effective window %d (%.1f%% used) | next recap in %d turn(s). Track your remaining budget before opening new work.",
@@ -135,6 +138,9 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 		}
 		if a.Config.MaxReasoningSteps > 0 {
 			maxSteps = a.Config.MaxReasoningSteps
+		}
+		if a.Config.Nostop.Enabled() && policy.AgentName == "" {
+			maxSteps = 0
 		}
 		interval = a.Config.RecapInterval
 		if a.Config.GuidedMode {
@@ -235,7 +241,7 @@ func (e *TurnEngine) applyAfterHook(tc db.ToolCall, output string, err error) (s
 func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
 	// Preview replay runs on the presentation goroutine after the worker pool
 	// finishes. It must not disable otherwise safe concurrent tool execution.
-	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || e.agent.Config.GuidedMode || !e.agent.Config.ParallelToolCalls {
+	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || e.agent.Config.GuidedMode || e.agent.Config.Nostop.Mode == "eco" || !e.agent.Config.ParallelToolCalls {
 		return false
 	}
 	// File writes and reads must execute in model order. In particular, a
