@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"loop/pkg/domain/limits"
- "loop/pkg/transport/sse"
+	"loop/pkg/transport/sse"
 	"net/http"
 	"strings"
 	"time"
@@ -35,14 +35,25 @@ func (c *mcpClient) readHTTPResponse(ctx context.Context, response *http.Respons
 		}
 		c.handleMessage(string(data))
 	} else if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
- reader:=sse.NewReader(response.Body)
- for{
-  event,err:=reader.Read(ctx)
-  if err==io.EOF{break}
-  if err!=nil{return "",err}
-  c.handleMessage(event.Data)
-  select{case value,ok:= <-result:if !ok{return "",fmt.Errorf("MCP connection closed")};return value,nil;default:}
- }
+		reader := sse.NewReader(response.Body)
+		for {
+			event, err := reader.Read(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return "", err
+			}
+			c.handleMessage(event.Data)
+			select {
+			case value, ok := <-result:
+				if !ok {
+					return "", fmt.Errorf("MCP connection closed")
+				}
+				return value, nil
+			default:
+			}
+		}
 	} else {
 		return "", fmt.Errorf("unsupported MCP content type %q", response.Header.Get("Content-Type"))
 	}

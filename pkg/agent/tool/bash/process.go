@@ -16,8 +16,8 @@ func ShellQuote(value string) string {
 }
 
 type cappedOutput struct {
-	buf bytes.Buffer
-	limit int
+	buf      bytes.Buffer
+	limit    int
 	overflow bool
 }
 
@@ -29,7 +29,9 @@ func (c *cappedOutput) Write(p []byte) (int, error) {
 	original := len(p)
 	remaining := c.limit - c.buf.Len()
 	if remaining <= 0 {
-		if original > 0 { c.overflow = true }
+		if original > 0 {
+			c.overflow = true
+		}
 		return original, nil
 	}
 	if len(p) > remaining {

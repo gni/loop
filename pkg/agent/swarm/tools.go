@@ -44,7 +44,7 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		Message string `json:"message"`
 	}
 	if err := tool.ParseToolArguments(arguments, &args, func(v string) { raw = v }); err != nil {
-		raw = arguments
+		return "", fmt.Errorf("parse subagent prompt arguments: %w", err)
 	}
 	prompt := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Prompt, args.Task, args.Input, args.Message))
 	if prompt == "" {
@@ -133,7 +133,9 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			return "", errTimeout
 		case _, ok := <-s.subagent.Output:
 			if !ok {
-				return "", fmt.Errorf("subagent '%s' output channel closed before task completion", s.subagent.Name)
+				errClosed := fmt.Errorf("subagent '%s' output channel closed before task completion", s.subagent.Name)
+				s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errClosed)
+				return "", errClosed
 			}
 			if res, done, err := checkTask(); done {
 				return res, err
@@ -229,7 +231,10 @@ func (s *ListSubagentsTool) Execute(ctx tool.AgentContext, arguments string) (st
 	sb.WriteString("Active Subagents:\n")
 	for _, name := range agents {
 		parentStr := tool.FirstNonEmpty(s.mam.GetParentName(name), "Base Agent")
-		skills, _ := s.mam.ListAgentSkills(name)
+		skills, err := s.mam.ListAgentSkills(name)
+		if err != nil {
+			return "", fmt.Errorf("list skills for subagent %q: %w", name, err)
+		}
 		skillStr := "None"
 		if len(skills) > 0 {
 			skillNames := make([]string, len(skills))

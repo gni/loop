@@ -118,8 +118,10 @@ type Config struct {
 	AutoApprove              bool                       `json:"auto_approve,omitempty"`
 	GuidedMode               bool                       `json:"guided_mode,omitempty"`
 	ShowThinking             bool                       `json:"show_thinking"`
+	MarkdownRender           bool                       `json:"markdown_render"`
 	CollapseResults          bool                       `json:"collapse_results,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
+	ShowMicroseconds         bool                       `json:"show_microseconds"`
 	Theme                    string                     `json:"theme"`
 	DirectCommands           bool                       `json:"direct_commands"`
 	CertFile                 string                     `json:"cert_file,omitempty"`
@@ -260,6 +262,7 @@ func DefaultConfig() *Config {
 		Temperature:              0.2,
 		SystemInstruction:        DefaultSystemInstruction,
 		ShowThinking:             false,
+		MarkdownRender:           true,
 		Theme:                    "dark",
 		DirectCommands:           false,
 		SkillsDir:                resolveDefaultSkillsDir(),

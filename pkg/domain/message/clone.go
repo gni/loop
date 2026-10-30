@@ -2,7 +2,14 @@ package message
 
 func Clone(input Message) Message {
 	output := input
- if input.Usage!=nil{usage:=*input.Usage;if usage.Cost!=nil{cost:=*usage.Cost;usage.Cost=&cost};output.Usage=&usage}
+	if input.Usage != nil {
+		usage := *input.Usage
+		if usage.Cost != nil {
+			cost := *usage.Cost
+			usage.Cost = &cost
+		}
+		output.Usage = &usage
+	}
 	output.Structured = append(input.Structured[:0:0], input.Structured...)
 	output.ContentBlocks = append(input.ContentBlocks[:0:0], input.ContentBlocks...)
 	output.CacheControl = append(input.CacheControl[:0:0], input.CacheControl...)

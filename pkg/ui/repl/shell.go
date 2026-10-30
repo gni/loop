@@ -133,7 +133,7 @@ func executeManualShellCommand(
 	cw := interceptor.CRNLWriter{W: ppWriter}
 	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stdout)
 	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stderr)
-	stopIndicator := startManualCommandIndicator(theme)
+	stopIndicator := startManualCommandIndicator(theme, a.Config != nil && a.Config.ShowMicroseconds)
 	err := cmd.Run()
 	stopIndicator()
 
@@ -169,12 +169,12 @@ func executeManualShellCommand(
 	ppWriter.EnsureNewline()
 }
 
-func startManualCommandIndicator(theme style.UITheme) func() {
+func startManualCommandIndicator(theme style.UITheme, showMicroseconds bool) func() {
 	start := time.Now()
 	stop := make(chan struct{})
 	stopped := make(chan struct{})
 	elapsedText := func() string {
-		return style.NewStyle().Foreground(theme.Border).Render(fmt.Sprintf("shell (%.1fs)", time.Since(start).Seconds()))
+		return style.NewStyle().Foreground(theme.Border).Render(fmt.Sprintf("shell (%s)", style.FormatElapsedDuration(time.Since(start), showMicroseconds)))
 	}
 	go func() {
 		defer close(stopped)

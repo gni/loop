@@ -14,12 +14,12 @@ import (
 )
 
 var (
-	pathlibRe = regexp.MustCompile(`Path\(['"]([^'"]+)['"]\)`)
-	catFileRe = regexp.MustCompile(`(?:cat|head|tail|wc)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
-	sedFileRe = regexp.MustCompile(`sed\s+-[a-zA-Z0-9]+\s+['"][^'"]+['"]\s+['"]?([^\s'"]+)`)
-	lsDirRe   = regexp.MustCompile(`(?:ls|dir)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
-	redirRe   = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
-	rmTouchRe = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
+	pathlibRe  = regexp.MustCompile(`Path\(['"]([^'"]+)['"]\)`)
+	catFileRe  = regexp.MustCompile(`(?:cat|head|tail|wc)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
+	sedFileRe  = regexp.MustCompile(`sed\s+-[a-zA-Z0-9]+\s+['"][^'"]+['"]\s+['"]?([^\s'"]+)`)
+	lsDirRe    = regexp.MustCompile(`(?:ls|dir)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'"]+)`)
+	redirRe    = regexp.MustCompile(`(?:^|[^0-9&])>{1,2}\s*['"]?([^\s'";|&]+)`)
+	rmTouchRe  = regexp.MustCompile(`(?:rm|touch|cp|mv)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^\s'";|&]+)`)
 	cmdSplitRe = regexp.MustCompile(`(?:&&|\|\||;|\|)`)
 
 	bashTargetRegexes  = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}

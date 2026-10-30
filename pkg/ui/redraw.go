@@ -101,57 +101,74 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	if kiReader != nil && kiReader.Messages != nil {
 		activeMessages = *kiReader.Messages
 	}
-	if kiReader != nil && kiReader.MAM != nil && kiReader.MAM.ActiveAgent != nil {
-		kiReader.MAM.ActiveAgent.HistoryMu.RLock()
-		activeMessages = kiReader.MAM.ActiveAgent.History
-		kiReader.MAM.ActiveAgent.HistoryMu.RUnlock()
+	a.CurrentStreamMu.Lock()
+	historySnapshot := a.CurrentHistorySnapshot
+	a.CurrentStreamMu.Unlock()
+	if historySnapshot != nil {
+		activeMessages = historySnapshot()
+	}
+	if kiReader != nil && kiReader.MAM != nil {
+		if history, active := kiReader.MAM.ActiveHistorySnapshot(); active {
+			activeMessages = history
+		}
 	}
 
 	if len(activeMessages) > 0 {
 		PrintSessionHistory(cwBuf, activeMessages, activeTheme, a.Config)
 	}
 
-	_, height := GetTerminalSize()
-	scrollBottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
-
-	var finalBuf bytes.Buffer
-	cwFinal := crnlWriter{W: &finalBuf}
-
-	fmt.Fprintf(cwFinal, "\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", scrollBottom)
-	fmt.Fprint(cwFinal, buf.String())
-
 	a.CurrentStreamMu.Lock()
-	if a.CurrentStreamBuffer != nil && a.CurrentStreamBuffer.Len() > 0 {
-		_, _ = cwFinal.Write(a.CurrentStreamBuffer.Bytes())
+	replay := a.CurrentStreamReplay
+	if replay == nil && a.CurrentStreamBuffer != nil && a.CurrentStreamBuffer.Len() > 0 {
+		_, _ = cwBuf.Write(a.CurrentStreamBuffer.Bytes())
 	}
 	a.CurrentStreamMu.Unlock()
+	if replay != nil {
+		if len(activeMessages) > 0 && activeMessages[len(activeMessages)-1].Role == "user" {
+			fmt.Fprintln(cwBuf, style.ActivityDivider(activeTheme))
+		}
+		replay(cwBuf, a.Config.CollapseResults, activeTheme)
+	} else {
+		// The pinned controls already reserve the activity gap. Keep a
+		// completed transcript on its last occupied row instead of adding
+		// empty rows for history's line ending and a second redraw newline.
+		buf.Truncate(len(bytes.TrimRight(buf.Bytes(), "\r\n")))
+	}
 
-	// The replay bypasses PromptPreservingWriter. End on a fresh scrolling
-	// row before giving control back to live writes.
-	fmt.Fprint(cwFinal, "\r\n")
+	_, height := GetTerminalSize()
+	scrollBottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
+	var finalBuf bytes.Buffer
+	cwFinal := crnlWriter{W: &finalBuf}
+	fmt.Fprintf(cwFinal, "\x1b[?2026h\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", scrollBottom)
+	// buf already contains CRLFs; do not convert its newlines a second time.
+	finalBuf.Write(buf.Bytes())
 
-	var activeMessagesForTokens []db.Message
 	var mam *swarm.MultiAgentManager
 	if kiReader != nil {
-		if kiReader.Messages != nil {
-			activeMessagesForTokens = *kiReader.Messages
-		}
 		mam = kiReader.MAM
 	}
 
-	pTok, cTok, estimated := calculateActiveTokenUsage(a, activeMessagesForTokens, activeToolAllowlist(kiReader), mam)
-	latestTurnTokens := a.GetLatestAssistantCompletionTokens(activeMessagesForTokens)
+	pTok, cTok, estimated := calculateActiveTokenUsage(a, activeMessages, activeToolAllowlist(kiReader), mam)
+	latestTurnTokens := a.GetLatestAssistantCompletionTokens(activeMessages)
 	effLimit := a.GetEffectiveContextLimit(pTok)
 
-	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, a.CountActiveTasks(), a.Config.ShowTokens, estimated)
+	getUI().StateMu.Lock()
+	generating := getUI().State.IsGenerating
+	getUI().StateMu.Unlock()
+	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), a.Config.ShowTokens, estimated)
 	DrawConsoleStaticControlsLocked(cwFinal, a, kiReader, rl, true)
 	if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
-		uiImpl.PPWriter.ResetAfterRedrawLocked(height)
+		uiImpl.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
+	}
+
+	if counter, ok := a.CurrentWriter().(interface{ ResetAfterReplay([]byte) }); ok {
+		counter.ResetAfterReplay(buf.Bytes())
 	}
 
 	dest := w
 	if _, isPP := w.(*PromptPreservingWriter); isPP {
 		dest = os.Stderr
 	}
+	finalBuf.WriteString("\x1b[?2026l")
 	_, _ = dest.Write(finalBuf.Bytes())
 }

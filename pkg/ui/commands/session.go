@@ -30,17 +30,22 @@ func handleClearCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	w io.Writer,
 ) {
-	ui.GetUI().LastStatsText = ""
-	if a != nil {
-		a.ClearTasks()
-		resetSessionSnapshots(a)
+	freshMessages := []db.Message{{Role: "system", Content: a.GetSystemPrompt()}}
+	if !a.Ephemeral {
+		if err := db.ClearSession(*currentSessionID); err != nil {
+			fmt.Fprintf(w, "cannot clear session: %v\n", err)
+			return
+		}
+		if err := a.SaveMessage(*currentSessionID, freshMessages[0]); err != nil {
+			fmt.Fprintf(w, "cannot save session: %v\n", err)
+			return
+		}
 	}
-	*messages = nil
+	*messages = freshMessages
 	a.SyncSessionSystemPrompt(messages, "")
-if !a.Ephemeral{
- if err:=db.ClearSession(*currentSessionID);err!=nil{fmt.Fprintf(w,"cannot clear session: %v\n",err);return}
- if err:=a.SaveMessage(*currentSessionID,(*messages)[0]);err!=nil{fmt.Fprintf(w,"cannot save session: %v\n",err);return}
- }
+	ui.GetUI().LastStatsText = ""
+	a.ClearTasks()
+	resetSessionSnapshots(a)
 	if ch, ok := rlHistory.(interface{ Clear() }); ok {
 		ch.Clear()
 	}
@@ -73,19 +78,31 @@ func handleSessionCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-if a.Ephemeral&&len(parts)>1{
-  switch parts[1]{case "new","clear":*messages=nil;*currentSessionID="";a.SyncSessionSystemPrompt(messages,"");_ = a.SetTodos(nil);default:fmt.Fprintln(w,"this conversation is ephemeral; persistent session operations require a saved session")}
-  return
- }
+	if a.Ephemeral && len(parts) > 1 {
+		switch parts[1] {
+		case "new", "clear":
+			*messages = nil
+			*currentSessionID = ""
+			a.SyncSessionSystemPrompt(messages, "")
+			_ = a.SetTodos(nil)
+		default:
+			fmt.Fprintln(w, "this conversation is ephemeral; persistent session operations require a saved session")
+		}
+		return
+	}
 	rl := terminalFromReader(kiReader)
 
-	resetToFreshSession := func() {
+	resetToFreshSession := func() error {
+		nextID := db.NewUUID()
+		if err := db.SetLatestSessionID(nextID); err != nil {
+			return fmt.Errorf("activate new session: %w", err)
+		}
 		ui.GetUI().LastStatsText = ""
 		resetSessionSnapshots(a)
-		*currentSessionID = db.NewUUID()
-		_ = db.SetLatestSessionID(*currentSessionID)
+		*currentSessionID = nextID
 		*messages = nil
 		a.SyncSessionSystemPrompt(messages, "")
+		return nil
 	}
 
 	refreshSessionUI := func() {
@@ -101,7 +118,11 @@ if a.Ephemeral&&len(parts)>1{
 	switch parts[1] {
 	case "list":
 		sessions, err := db.GetSessions()
-		if err != nil || len(sessions) == 0 {
+		if err != nil {
+			fmt.Fprintf(w, "cannot list sessions: %v\n", err)
+			return
+		}
+		if len(sessions) == 0 {
 			fmt.Fprintln(w, "no past sessions found.")
 			return
 		}
@@ -115,11 +136,18 @@ if a.Ephemeral&&len(parts)>1{
 			if len(previewText) > 40 {
 				previewText = previewText[:40] + "..."
 			}
-			fmt.Fprintf(w, "  - %s [%s] (%d messages) - %s%s\n", s.SessionID, s.Timestamp[:16], s.MsgCount, previewText, activeMarker)
+			timestamp := s.Timestamp
+			if len(timestamp) > 16 {
+				timestamp = timestamp[:16]
+			}
+			fmt.Fprintf(w, "  - %s [%s] (%d messages) - %s%s\n", s.SessionID, timestamp, s.MsgCount, previewText, activeMarker)
 		}
 
 	case "new":
-		resetToFreshSession()
+		if err := resetToFreshSession(); err != nil {
+			fmt.Fprintf(w, "cannot create session: %v\n", err)
+			return
+		}
 		refreshSessionUI()
 
 	case "branch":
@@ -128,28 +156,53 @@ if a.Ephemeral&&len(parts)>1{
 			return
 		}
 		branchID := parts[2]
-		if existing, err := db.LoadMessages(branchID); err == nil && len(existing) > 0 {
+		existing, err := db.LoadMessages(branchID)
+		if err != nil {
+			fmt.Fprintf(w, "cannot inspect session %q: %v\n", branchID, err)
+			return
+		}
+		if len(existing) > 0 {
 			fmt.Fprintf(w, "error: session '%s' already exists.\n", branchID)
 			return
 		}
-		_ = db.ClearSession(branchID)
+		if err := db.ClearSession(branchID); err != nil {
+			fmt.Fprintf(w, "cannot prepare session %q: %v\n", branchID, err)
+			return
+		}
 		for _, msg := range *messages {
-			_ = db.SaveMessage(branchID, msg)
+			if err := db.SaveMessage(branchID, msg); err != nil {
+				fmt.Fprintf(w, "cannot branch session %q: %v\n", branchID, err)
+				if cleanupErr := db.ClearSession(branchID); cleanupErr != nil {
+					fmt.Fprintf(w, "cannot remove incomplete branch %q: %v\n", branchID, cleanupErr)
+				}
+				return
+			}
+		}
+		if err := db.SetLatestSessionID(branchID); err != nil {
+			fmt.Fprintf(w, "branch %q was saved, but could not be activated: %v\n", branchID, err)
+			return
 		}
 		*currentSessionID = branchID
-		_ = db.SetLatestSessionID(*currentSessionID)
 		fmt.Fprintf(w, "successfully branched session into '%s'. active session is now '%s'.\n", branchID, branchID)
 		ui.DrawStatusBar(os.Stderr, *theme)
 
 	case "load":
 		if len(parts) > 2 {
 			selected := parts[2]
-			if dbHistory, err := db.LoadMessages(selected); err == nil && len(dbHistory) > 0 {
-				applyLoadedSession(selected, dbHistory, currentSessionID, messages, a)
-				ui.RedrawScreen(w, a, kiReader, rl)
-			} else {
-				fmt.Fprintf(w, "error: session '%s' not found or empty.\n", selected)
+			dbHistory, err := db.LoadMessages(selected)
+			if err != nil {
+				fmt.Fprintf(w, "cannot load session %q: %v\n", selected, err)
+				return
 			}
+			if len(dbHistory) == 0 {
+				fmt.Fprintf(w, "error: session '%s' not found or empty.\n", selected)
+				return
+			}
+			if err := applyLoadedSession(selected, dbHistory, currentSessionID, messages, a); err != nil {
+				fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, err)
+				return
+			}
+			ui.RedrawScreen(w, a, kiReader, rl)
 			return
 		}
 
@@ -160,10 +213,20 @@ if a.Ephemeral&&len(parts)>1{
 		ui.InitStatusBar(os.Stderr)
 		if err == nil {
 			if startNew {
-				resetToFreshSession()
+				if newErr := resetToFreshSession(); newErr != nil {
+					fmt.Fprintf(w, "cannot create session: %v\n", newErr)
+				}
 			} else if selected != "" {
-				if dbHistory, loadErr := db.LoadMessages(selected); loadErr == nil && len(dbHistory) > 0 {
-					applyLoadedSession(selected, dbHistory, currentSessionID, messages, a)
+				dbHistory, loadErr := db.LoadMessages(selected)
+				switch {
+				case loadErr != nil:
+					fmt.Fprintf(w, "cannot load session %q: %v\n", selected, loadErr)
+				case len(dbHistory) == 0:
+					fmt.Fprintf(w, "session %q is empty.\n", selected)
+				default:
+					if activateErr := applyLoadedSession(selected, dbHistory, currentSessionID, messages, a); activateErr != nil {
+						fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, activateErr)
+					}
 				}
 			}
 		}
@@ -174,7 +237,10 @@ if a.Ephemeral&&len(parts)>1{
 			fmt.Fprintf(w, "error clearing sessions: %v\n", err)
 			return
 		}
-		resetToFreshSession()
+		if err := resetToFreshSession(); err != nil {
+			fmt.Fprintf(w, "sessions deleted, but a new session could not be activated: %v\n", err)
+			return
+		}
 		fmt.Fprintln(w, "all conversation sessions deleted from disk.")
 		refreshSessionUI()
 
@@ -199,11 +265,14 @@ func handleCompressCommand(
 	ui.DrawStatusBar(os.Stderr, *theme)
 }
 
-func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionID *string, messages *[]db.Message, a *agent.Agent) {
+func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionID *string, messages *[]db.Message, a *agent.Agent) error {
+	if err := db.SetLatestSessionID(selected); err != nil {
+		return err
+	}
 	ui.GetUI().LastStatsText = ""
 	resetSessionSnapshots(a)
 	*currentSessionID = selected
-	_ = db.SetLatestSessionID(*currentSessionID)
 	*messages = dbHistory
 	a.SyncSessionSystemPrompt(messages, selected)
+	return nil
 }

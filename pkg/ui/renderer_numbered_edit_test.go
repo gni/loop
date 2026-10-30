@@ -12,7 +12,7 @@ func TestNumberedLiveEditRetainsColorsAndInlineSummary(t *testing.T) {
 	var b bytes.Buffer
 	r := NewStreamRenderer(&b, style.GetTheme("plain"), false, true, "")
 	r.ShowLiveToolContent(0, "edit", "", "")
-	if got := style.StripAnsi(b.String()); !strings.Contains(got, "✎ edit …") {
+	if got := style.StripAnsi(b.String()); !strings.Contains(got, "✐ edit …") {
 		t.Fatalf("missing immediate edit heading: %q", got)
 	}
 
@@ -30,7 +30,7 @@ func TestNumberedLiveEditRetainsColorsAndInlineSummary(t *testing.T) {
 		t.Fatalf("diff colors stripped: %q", got)
 	}
 	plain := style.StripAnsi(got)
-	if !strings.Contains(plain, "✎ edit poem.txt") || !strings.Contains(plain, "4      original context") || !strings.Contains(plain, "⎿  poem.txt (+1 / -1 lines)") {
+	if !strings.Contains(plain, "✐ edit poem.txt") || !strings.Contains(plain, "4      original context") || !strings.Contains(plain, "⎿  poem.txt (+1 / -1 lines)") {
 		t.Fatalf("live numbered edit incomplete: %q", plain)
 	}
 	if strings.Count(plain, "5    + new line") != 1 {

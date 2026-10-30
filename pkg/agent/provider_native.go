@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
- "io"
- "loop/pkg/transport/sse"
+	"io"
+	"loop/pkg/transport/sse"
 	"net/http"
 	"net/url"
 	"os"
@@ -153,7 +153,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 			var content []map[string]any
 			if role == "tool" {
 				role = "user"
-				content = append(content, map[string]any{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content,"is_error":msg.IsError})
+				content = append(content, map[string]any{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content, "is_error": msg.IsError})
 			} else {
 				for _, block := range msg.ContentBlocks {
 					if block.Type == "thinking" && block.Signature != "" && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
@@ -212,7 +212,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 					}
 					part := map[string]any{"functionCall": map[string]any{"id": call.ID, "name": call.Function.Name, "args": arguments}}
 					for _, block := range msg.ContentBlocks {
-						if block.Type == "signature" && block.Signature != "" && (block.ToolCallID==""||block.ToolCallID==call.ID) && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
+						if block.Type == "signature" && block.Signature != "" && (block.ToolCallID == "" || block.ToolCallID == call.ID) && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
 							part["thoughtSignature"] = block.Signature
 						}
 					}
@@ -247,11 +247,18 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 		if len(definitions) > 0 {
 			payload["tools"] = definitions
 		}
-		if effort := p.Config.ReasoningEffort; effort != "" && effort != "off" && effort != "none" {
+		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort != "" && effort != "off" && effort != "none" {
 			if effort == "max" {
 				effort = "high"
 			}
 			payload["reasoning"] = map[string]string{"effort": effort}
+		} else {
+			modelID := strings.ToLower(strings.TrimSpace(p.Config.Model))
+			if len(p.selectedModel().Reasoning) > 0 || strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6") || strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") || strings.HasPrefix(modelID, "o4") {
+				// A missing reasoning field allows the backend to use its default.
+				// Models that cannot disable reasoning must reject this setting.
+				payload["reasoning"] = map[string]string{"effort": "none"}
+			}
 		}
 		if strings.HasSuffix(base, "/responses") {
 			return base, payload, nil
@@ -264,7 +271,20 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 		payload["messages"] = turns
 		payload["system"] = strings.Join(system, "\n\n")
 		payload["max_tokens"] = maxTokens
- if effort:=p.Config.ReasoningEffort;len(p.selectedModel().Reasoning)>0&&effort!=""&&effort!="off"&&effort!="none"&&maxTokens>1024 {budget:=p.GetLimits().ReasoningTokenBudgets[effort];if budget<1024{budget=1024};payload["thinking"]=map[string]any{"type":"enabled","budget_tokens":min(budget,maxTokens-1)}}
+		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
+			modelID := strings.ToLower(p.Config.Model)
+			if len(p.selectedModel().Reasoning) > 0 || strings.Contains(modelID, "sonnet-5") || strings.Contains(modelID, "opus-5") || strings.Contains(modelID, "haiku-5") || strings.Contains(modelID, "fable-5") || strings.Contains(modelID, "mythos") {
+				// Explicitly disable thinking on models that otherwise enable it by default.
+				// Models with mandatory thinking will reject this instead of silently reasoning.
+				payload["thinking"] = map[string]any{"type": "disabled"}
+			}
+		} else if len(p.selectedModel().Reasoning) > 0 && maxTokens > 1024 {
+			budget := p.GetLimits().ReasoningTokenBudgets[effort]
+			if budget < 1024 {
+				budget = 1024
+			}
+			payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": min(budget, maxTokens-1)}
+		}
 		if len(definitions) > 0 {
 			payload["tools"] = definitions
 		}
@@ -280,9 +300,19 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 		delete(payload, "stream")
 		payload["contents"] = turns
 		payload["systemInstruction"] = map[string]any{"parts": []map[string]string{{"text": strings.Join(system, "\n\n")}}}
-		generation:=map[string]any{"maxOutputTokens":maxTokens}
- if effort:=p.Config.ReasoningEffort;len(p.selectedModel().Reasoning)>0&&effort!=""&&effort!="off"&&effort!="none"{generation["thinkingConfig"]=map[string]any{"thinkingBudget":p.GetLimits().ReasoningTokenBudgets[effort],"includeThoughts":true}}
- payload["generationConfig"]=generation
+		generation := map[string]any{"maxOutputTokens": maxTokens}
+		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
+			modelID := strings.ToLower(strings.TrimPrefix(p.Config.Model, "models/"))
+			switch {
+			case strings.HasPrefix(modelID, "gemini-2.5-flash"):
+				generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+			case strings.HasPrefix(modelID, "gemini-2.5-"), strings.HasPrefix(modelID, "gemini-3"), strings.HasPrefix(modelID, "gemini-4"):
+				return "", nil, fmt.Errorf("reasoning:off is not supported by Gemini model %q; select a model that supports disabling thinking", p.Config.Model)
+			}
+		} else if len(p.selectedModel().Reasoning) > 0 {
+			generation["thinkingConfig"] = map[string]any{"thinkingBudget": p.GetLimits().ReasoningTokenBudgets[effort], "includeThoughts": true}
+		}
+		payload["generationConfig"] = generation
 		if len(definitions) > 0 {
 			payload["tools"] = []map[string]any{{"functionDeclarations": definitions}}
 		}
@@ -345,7 +375,12 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	finish := ""
 	thinking := make(map[int]*message.ContentBlock)
 	applyUsage := func(usage nativeUsage) {
-		if usage.Input>0||usage.CacheRead>0||usage.CacheWrite>0{result.PromptTokens=usage.Input;if p.api()=="messages"{result.PromptTokens+=usage.CacheRead+usage.CacheWrite}}
+		if usage.Input > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 {
+			result.PromptTokens = usage.Input
+			if p.api() == "messages" {
+				result.PromptTokens += usage.CacheRead + usage.CacheWrite
+			}
+		}
 		if usage.Output > 0 {
 			result.CompletionTokens = usage.Output
 		}
@@ -376,16 +411,20 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_name", Content: item.Name, ToolCallIndex: index}, p.ChunkDropObserver)
 	}
 	defer func() { result.Content = text.String(); result.ReasoningContent = reasoning.String() }()
- reader:=sse.NewReader(response.Body)
- reader.OnActivity=kick
- for{
-  packet,err:=reader.Read(streamCtx)
-  if err==io.EOF{break}
-  if err!=nil{
-   if timeout:=p.checkContextOrTimeout(ctx,streamCtx,timedOut,"LLM stream timed out after ");timeout!=nil{return result,timeout}
-   return result,err
-  }
-  data:=strings.TrimSpace(packet.Data)
+	reader := sse.NewReader(response.Body)
+	reader.OnActivity = kick
+	for {
+		packet, err := reader.Read(streamCtx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if timeout := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM stream timed out after "); timeout != nil {
+				return result, timeout
+			}
+			return result, err
+		}
+		data := strings.TrimSpace(packet.Data)
 		if data == "" {
 			continue
 		}
@@ -510,7 +549,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					setCall(index, nativeItem{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
 				}
 				if part.Signature != "" {
-					result.ContentBlocks = append(result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature,ToolCallID:signatureCallID(calls)})
+					result.ContentBlocks = append(result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature, ToolCallID: signatureCallID(calls)})
 				}
 			}
 			if candidate.FinishReason != "" {
@@ -537,8 +576,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		result.ContentBlocks = append(result.ContentBlocks, *thinking[index])
 	}
 
-
-	if !complete || finish=="" {
+	if !complete || finish == "" {
 		return result, fmt.Errorf("provider stream ended before completion")
 	}
 	switch finish {
@@ -556,7 +594,9 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	return result, nil
 }
 
-func signatureCallID(calls map[int]*db.ToolCall)string{
- if len(calls)==0{return ""}
- return calls[len(calls)-1].ID
+func signatureCallID(calls map[int]*db.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	return calls[len(calls)-1].ID
 }

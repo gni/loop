@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,12 +18,25 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func removeAllSubagents(mam *swarm.MultiAgentManager) int {
-	agents := mam.ListAgents()
-	for _, ag := range agents {
-		_ = mam.RemoveAgent(ag)
+func removeAllSubagents(mam *swarm.MultiAgentManager) (int, error) {
+	removed := 0
+	var errs []error
+	for _, name := range mam.ListAgents() {
+		if err := mam.RemoveAgent(name); err != nil {
+			errs = append(errs, fmt.Errorf("remove subagent %q: %w", name, err))
+			continue
+		}
+		removed++
 	}
-	return len(agents)
+	return removed, errors.Join(errs...)
+}
+
+func printSubagentRemoval(w io.Writer, mam *swarm.MultiAgentManager, action string) {
+	removed, err := removeAllSubagents(mam)
+	fmt.Fprintf(w, "%s %d subagents.\n", action, removed)
+	if err != nil {
+		fmt.Fprintf(w, "some subagents could not be removed: %v\n", err)
+	}
 }
 
 func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.MultiAgentManager, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
@@ -31,8 +45,11 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
-		_ = interactive.RunInteractiveAgentManager(mam, *theme, input, output)
+		menuErr := interactive.RunInteractiveAgentManager(mam, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
+		if menuErr != nil {
+			fmt.Fprintf(w, "agent menu: %v\n", menuErr)
+		}
 
 		var rl *term.Terminal
 		if kiReader != nil {
@@ -193,7 +210,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 		target := parts[2]
 		if target == "all" || target == "*" {
-			fmt.Fprintf(w, "removed %d subagents.\n", removeAllSubagents(mam))
+			printSubagentRemoval(w, mam, "removed")
 			return
 		}
 		if err := mam.RemoveAgent(target); err != nil {
@@ -203,7 +220,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		}
 
 	case "clear":
-		fmt.Fprintf(w, "cleared %d subagents.\n", removeAllSubagents(mam))
+		printSubagentRemoval(w, mam, "cleared")
 
 	default:
 		fmt.Fprintln(w, "unknown agent subcommand. usage: /agent [list | join <name> | spawn <name> <prompt> [parent_name] [skill_name] | remove <name> | skill [list/load/clear] ...]")

@@ -17,8 +17,8 @@ var subagentSpawnTools = map[string]bool{
 }
 
 var subagentInspectionTools = map[string]bool{
-	"list_subagents":  true,
-	"audit_subagent":  true,
+	"list_subagents": true,
+	"audit_subagent": true,
 }
 
 // IsSubagentTool reports whether a tool name belongs to the subagent family, including

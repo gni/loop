@@ -5,7 +5,6 @@ import (
 	"image/color"
 	"io"
 	"strings"
-	"unicode"
 
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -14,14 +13,6 @@ import (
 const (
 	maxLiveFenceHeaderBytes = 128
 	maxLiveCodeLineBytes    = 256 * 1024
-)
-
-type liveMarkdownBlock uint8
-
-const (
-	liveBlockNone liveMarkdownBlock = iota
-	liveBlockHeading
-	liveBlockQuote
 )
 
 type livePrefixKind uint8
@@ -57,14 +48,7 @@ type LiveMarkdownRenderer struct {
 	codeLine      strings.Builder
 	codeOverflow  bool
 
-	block        liveMarkdownBlock
-	headingLevel int
-	bold         bool
-	italic       bool
-	inlineCode   bool
-	pendingStar  bool
-	escaped      bool
-	styleActive  bool
+	inline *render.InlineMarkdownWriter
 
 	endedWithNewline bool
 }
@@ -76,6 +60,7 @@ func NewLiveMarkdownRenderer(w io.Writer, theme style.UITheme) *LiveMarkdownRend
 		theme:            theme,
 		atLineStart:      true,
 		endedWithNewline: true,
+		inline:           render.NewInlineMarkdownWriter(w, theme, render.MarkdownBody, 0, false),
 	}
 }
 
@@ -85,6 +70,7 @@ func (r *LiveMarkdownRenderer) Write(chunk string) {
 		r.writeRune(current, &plain)
 	}
 	r.flushPlain(&plain)
+	r.inline.Flush()
 }
 
 func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
@@ -103,23 +89,22 @@ func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
 		case livePrefixPending:
 			return
 		case livePrefixFence:
-			r.resetInlineStyles(plain)
+			r.flushPlain(plain)
+			r.inline.EndLine()
 			r.inFenceHeader = true
 			r.atLineStart = false
 			return
 		case livePrefixHeading:
 			r.prefix.Reset()
 			r.atLineStart = false
-			r.block = liveBlockHeading
-			r.headingLevel = decision.headingLevel
-			r.transitionStyle(plain)
+			r.flushPlain(plain)
+			r.inline.SetBlock(render.MarkdownHeading, decision.headingLevel)
 			return
 		case livePrefixQuote:
 			r.prefix.Reset()
 			r.atLineStart = false
 			r.emitStyledMarker("┃ ", r.theme.Border, plain)
-			r.block = liveBlockQuote
-			r.transitionStyle(plain)
+			r.inline.SetBlock(render.MarkdownQuote, 0)
 			return
 		case livePrefixBullet:
 			r.prefix.Reset()
@@ -170,7 +155,7 @@ func (r *LiveMarkdownRenderer) writeFenceHeaderRune(current rune, plain *strings
 		return
 	}
 
-	r.resetInlineStyles(plain)
+	r.inline.EndLine()
 	plain.WriteString(r.prefix.String())
 	plain.WriteString(r.fenceHeader.String())
 	r.prefix.Reset()
@@ -196,6 +181,7 @@ func (r *LiveMarkdownRenderer) writeCodeRune(current rune, plain *strings.Builde
 			r.inCodeBlock = false
 			r.codeLanguage = ""
 			r.atLineStart = true
+			r.inline.Reset()
 			return
 		}
 		r.flushPlain(plain)
@@ -217,127 +203,20 @@ func (r *LiveMarkdownRenderer) writeCodeRune(current rune, plain *strings.Builde
 
 func (r *LiveMarkdownRenderer) writeInlineRune(current rune, plain *strings.Builder) {
 	if current == '\n' {
-		r.finishInlineLine(plain)
-		plain.WriteRune('\n')
+		r.flushPlain(plain)
+		r.inline.EndLine()
+		r.emitVisible("\n")
 		r.atLineStart = true
 		return
 	}
-
-	if r.escaped {
-		if !strings.ContainsRune(`\\`+"`*_{}[]()#+-.!>", current) {
-			plain.WriteRune('\\')
-		}
-		plain.WriteRune(current)
-		r.escaped = false
-		return
-	}
-
-	if !r.inlineCode && current == '\\' {
-		r.escaped = true
-		return
-	}
-
-	if current == '`' {
-		r.resolvePendingStar(plain, false)
-		r.inlineCode = !r.inlineCode
-		r.transitionStyle(plain)
-		return
-	}
-
-	if r.inlineCode {
-		plain.WriteRune(current)
-		return
-	}
-
-	if current == '*' {
-		if r.pendingStar {
-			r.pendingStar = false
-			r.bold = !r.bold
-			r.transitionStyle(plain)
-		} else {
-			r.pendingStar = true
-		}
-		return
-	}
-
-	if r.pendingStar && !r.italic && unicode.IsSpace(current) {
-		r.pendingStar = false
-		plain.WriteRune('*')
-	} else {
-		r.resolvePendingStar(plain, false)
-	}
-	plain.WriteRune(current)
-}
-
-func (r *LiveMarkdownRenderer) resolvePendingStar(plain *strings.Builder, final bool) {
-	if !r.pendingStar {
-		return
-	}
-	r.pendingStar = false
-	if r.italic {
-		r.italic = false
-		r.transitionStyle(plain)
-		return
-	}
-	if final {
-		plain.WriteRune('*')
-		return
-	}
-	r.italic = true
-	r.transitionStyle(plain)
+	r.flushPlain(plain)
+	r.inline.WriteRune(current)
+	r.endedWithNewline = false
 }
 
 func (r *LiveMarkdownRenderer) finishInlineLine(plain *strings.Builder) {
-	if r.escaped {
-		plain.WriteRune('\\')
-		r.escaped = false
-	}
-	r.resolvePendingStar(plain, true)
-	r.block = liveBlockNone
-	r.headingLevel = 0
-	r.resetInlineStyles(plain)
-}
-
-func (r *LiveMarkdownRenderer) resetInlineStyles(plain *strings.Builder) {
-	r.bold = false
-	r.italic = false
-	r.inlineCode = false
-	r.pendingStar = false
-	r.transitionStyle(plain)
-}
-
-func (r *LiveMarkdownRenderer) transitionStyle(plain *strings.Builder) {
 	r.flushPlain(plain)
-	if r.styleActive {
-		fmt.Fprint(r.w, "\x1b[0m")
-		r.styleActive = false
-	}
-
-	current := style.NewStyle()
-	switch r.block {
-	case liveBlockHeading:
-		current = current.Foreground(r.theme.Secondary).Bold(true)
-		if r.headingLevel == 1 {
-			current = current.Underline(true)
-		}
-	case liveBlockQuote:
-		current = current.Foreground(r.theme.Border).Italic(true)
-	}
-	if r.inlineCode {
-		current = current.Foreground(r.theme.Highlight)
-	}
-	if r.bold {
-		current = current.Bold(true)
-	}
-	if r.italic {
-		current = current.Italic(true)
-	}
-
-	start, _ := current.GetSequence()
-	if start != "" {
-		fmt.Fprint(r.w, start)
-		r.styleActive = true
-	}
+	r.inline.EndLine()
 }
 
 func (r *LiveMarkdownRenderer) emitStyledMarker(marker string, markerColor color.Color, plain *strings.Builder) {
@@ -381,7 +260,7 @@ func (r *LiveMarkdownRenderer) Flush() {
 	var plain strings.Builder
 
 	if r.inFenceHeader {
-		r.resetInlineStyles(&plain)
+		r.inline.EndLine()
 		plain.WriteString(r.prefix.String())
 		plain.WriteString(r.fenceHeader.String())
 		r.prefix.Reset()
@@ -434,14 +313,7 @@ func (r *LiveMarkdownRenderer) ResetAtLineStart() {
 	r.inCodeBlock = false
 	r.codeOverflow = false
 	r.codeLanguage = ""
-	r.block = liveBlockNone
-	r.headingLevel = 0
-	r.bold = false
-	r.italic = false
-	r.inlineCode = false
-	r.pendingStar = false
-	r.escaped = false
-	r.styleActive = false
+	r.inline.Reset()
 	r.atLineStart = true
 	r.endedWithNewline = true
 }
@@ -470,6 +342,13 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 	}
 	if strings.ContainsAny(body, "\r\n") {
 		return livePrefixDecision{kind: livePrefixPlain}
+	}
+	// A literal bullet uses the same primary-colored marker as '-' and '*'.
+	if body == "•" {
+		return livePrefixDecision{kind: livePrefixPending}
+	}
+	if body == "• " {
+		return livePrefixDecision{kind: livePrefixBullet}
 	}
 
 	switch body[0] {

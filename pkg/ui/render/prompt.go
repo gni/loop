@@ -137,4 +137,3 @@ func CalculatePromptLayout(promptPrefix string, inputLine string, pos int, termW
 		CursorCol:   cursorCol,
 	}
 }
-

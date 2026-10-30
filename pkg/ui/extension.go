@@ -23,15 +23,17 @@ func init() {
 	}
 }
 
-func ListExtensions(workspaceRoot string,additional ...string)[]ExtensionInfo{
- directories:=append(tool.ExtensionSearchDirs(workspaceRoot),additional...)
- var extensions []ExtensionInfo
- for _,command:=range resources.Commands(directories){
-  location:="global"
-  if relative,err:=filepath.Rel(workspaceRoot,command.Path);err==nil&&relative!=".."&&!strings.HasPrefix(relative,".."+string(filepath.Separator)){location="project"}
-  extensions=append(extensions,ExtensionInfo{Name:command.Name,Path:command.Path,Location:location})
- }
- return extensions
+func ListExtensions(workspaceRoot string, additional ...string) []ExtensionInfo {
+	directories := append(tool.ExtensionSearchDirs(workspaceRoot), additional...)
+	var extensions []ExtensionInfo
+	for _, command := range resources.Commands(directories) {
+		location := "global"
+		if relative, err := filepath.Rel(workspaceRoot, command.Path); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			location = "project"
+		}
+		extensions = append(extensions, ExtensionInfo{Name: command.Name, Path: command.Path, Location: location})
+	}
+	return extensions
 }
 
 func RunExtension(
@@ -67,13 +69,23 @@ func RunExtension(
 	if a != nil {
 		parentCtx = a.Context()
 	}
- var history []db.Message
- if messages!=nil{history=*messages}
- timeout:=15*time.Second
- if a.Config.ExtensionTimeout>0{timeout=time.Duration(a.Config.ExtensionTimeout)*time.Second}
- output,err:=resources.RunCommand(parentCtx,resources.Command{Name:targetCmd,Path:extPath},args,a.WorkspaceRoot,history,timeout)
- if output!=""{if _,writeErr:=io.WriteString(w,output);writeErr!=nil{return true,writeErr}}
- if err!=nil{return true,err}
+	var history []db.Message
+	if messages != nil {
+		history = *messages
+	}
+	timeout := 15 * time.Second
+	if a.Config.ExtensionTimeout > 0 {
+		timeout = time.Duration(a.Config.ExtensionTimeout) * time.Second
+	}
+	output, err := resources.RunCommand(parentCtx, resources.Command{Name: targetCmd, Path: extPath}, args, a.WorkspaceRoot, history, timeout)
+	if output != "" {
+		if _, writeErr := io.WriteString(w, output); writeErr != nil {
+			return true, writeErr
+		}
+	}
+	if err != nil {
+		return true, err
+	}
 
 	return true, nil
 }

@@ -84,6 +84,18 @@ func (n *NewlineCounterWriter) EnsureActivityGap() {
 	}
 }
 
+// ResetAfterReplay gives tracked rows the same origin as the rebuilt screen.
+// The transcript contains display text and styling, without cursor movement.
+func (n *NewlineCounterWriter) ResetAfterReplay(transcript []byte) {
+	position := &NewlineCounterWriter{Writer: io.Discard}
+	_, _ = position.Write(transcript)
+	n.count = position.count
+	n.col = position.col
+	n.inEsc = position.inEsc
+	n.inCSI = position.inCSI
+	n.trailingNewlines = position.trailingNewlines
+}
+
 func (n *NewlineCounterWriter) GetCount() int     { return n.count }
 func (n *NewlineCounterWriter) Unwrap() io.Writer { return n.Writer }
 
@@ -99,18 +111,18 @@ func NewFallbackStreamRenderer(w io.Writer) *FallbackStreamRenderer {
 	return &FallbackStreamRenderer{w: w}
 }
 
-func (f *FallbackStreamRenderer) Write(content string)                        { fmt.Fprint(f.w, content) }
-func (f *FallbackStreamRenderer) WriteReasoning(string)                       {}
-func (f *FallbackStreamRenderer) Flush()                                      {}
-func (f *FallbackStreamRenderer) HasOutput() bool                             { return false }
-func (f *FallbackStreamRenderer) StartToolCall(string, int)                   {}
-func (f *FallbackStreamRenderer) SetToolTarget(string, int)                   {}
-func (f *FallbackStreamRenderer) WriteToolCall(string)                        {}
-func (f *FallbackStreamRenderer) GetToolTitleLineNumber(int) int              { return -1 }
-func (f *FallbackStreamRenderer) DidStreamToolBody(int) bool                  { return false }
-func (f *FallbackStreamRenderer) CompleteToolCall(int, string, string, bool)  {}
-func (f *FallbackStreamRenderer) GetReasoningDuration() float64               { return 0 }
-func (f *FallbackStreamRenderer) SetPrompt(string)                            {}
+func (f *FallbackStreamRenderer) Write(content string)                       { fmt.Fprint(f.w, content) }
+func (f *FallbackStreamRenderer) WriteReasoning(string)                      {}
+func (f *FallbackStreamRenderer) Flush()                                     {}
+func (f *FallbackStreamRenderer) HasOutput() bool                            { return false }
+func (f *FallbackStreamRenderer) StartToolCall(string, int)                  {}
+func (f *FallbackStreamRenderer) SetToolTarget(string, int)                  {}
+func (f *FallbackStreamRenderer) WriteToolCall(string)                       {}
+func (f *FallbackStreamRenderer) GetToolTitleLineNumber(int) int             { return -1 }
+func (f *FallbackStreamRenderer) DidStreamToolBody(int) bool                 { return false }
+func (f *FallbackStreamRenderer) CompleteToolCall(int, string, string, bool) {}
+func (f *FallbackStreamRenderer) GetReasoningDuration() float64              { return 0 }
+func (f *FallbackStreamRenderer) SetPrompt(string)                           {}
 
 type CustomTeeWriter struct {
 	screen io.Writer

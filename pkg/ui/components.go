@@ -67,13 +67,18 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 	isGen := false
 	collapse := false
 	if ui != nil {
-		isGen = ui.State.IsGenerating
+		ui.StateMu.Lock()
+		isGen = ui.State.IsGenerating || ui.ActiveCancelFunc != nil
 		collapse = ui.CollapseResults
+		ui.StateMu.Unlock()
 	}
 	hooks := render.HistoryRenderHooks{
 		RenderMarkdown:  render.RenderMarkdownContent,
 		RenderReasoning: render.RenderReasoningMarkdownContent,
 		RenderError:     RenderGenerationError,
+	}
+	if cfg != nil && !cfg.MarkdownRender {
+		hooks.RenderMarkdown = render.RenderRawMarkdownContent
 	}
 	render.PrintSessionHistory(w, messages, theme, cfg, isGen, collapse, hooks)
 }
@@ -216,4 +221,3 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 
 	_, _ = w.Write(buf.Bytes())
 }
-

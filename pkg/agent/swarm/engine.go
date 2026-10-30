@@ -3,6 +3,7 @@ package swarm
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
@@ -12,7 +13,15 @@ import (
 // historySink adapts MultiAgent to agent.HistorySink so the shared TurnEngine can append
 // tool responses without the subagent loop carrying its own copy of the pipeline.
 type historySink struct {
-	ma *MultiAgent
+	ma  *MultiAgent
+	mu  sync.Mutex
+	err error
+}
+
+func (s *historySink) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
 }
 
 func (s *historySink) Append(m db.Message) {
@@ -23,7 +32,13 @@ func (s *historySink) Append(m db.Message) {
 	s.ma.History = append(s.ma.History, m)
 	s.ma.HistoryMu.Unlock()
 	if s.ma.Manager != nil {
-		_ = s.ma.Manager.SaveAgentState(s.ma, "running")
+		if err := s.ma.Manager.SaveAgentState(s.ma, "running"); err != nil {
+			s.mu.Lock()
+			if s.err == nil {
+				s.err = fmt.Errorf("persist subagent %q history: %w", s.ma.Name, err)
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 

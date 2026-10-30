@@ -12,16 +12,16 @@ func TestLivePreviewShowsBodyAndUpdatesTitleInChat(t *testing.T) {
 	sr := NewStreamRenderer(&out, style.GetTheme("plain"), false, true, "")
 	sr.ShowToolLivePreview(0, "write", "First line\nSecond", 30)
 	plain := style.StripAnsi(out.String())
-	if !strings.Contains(plain, "◆ write …") || !strings.Contains(plain, "First line\nSecond") {
+	if !strings.Contains(plain, "✚ write …") || !strings.Contains(plain, "First line\nSecond") {
 		t.Fatalf("not showing live multiline content: %q", plain)
 	}
 	sr.ShowToolLivePreview(0, "write poem.md", "First line\nSecond done", 60)
 	plain = style.StripAnsi(out.String())
-	if strings.Contains(plain, "◆ write …") || !strings.Contains(plain, "◆ write poem.md") || !strings.Contains(plain, "Second done") {
+	if strings.Contains(plain, "✚ write …") || !strings.Contains(plain, "✚ write poem.md") || !strings.Contains(plain, "Second done") {
 		t.Fatalf("did not redraw title/content in-place: %q", plain)
 	}
 	sr.ClearToolLivePreview()
-	if strings.Contains(out.String(), "First line") || strings.Contains(out.String(), "◆ write") {
+	if strings.Contains(out.String(), "First line") || strings.Contains(out.String(), "✚ write") {
 		t.Fatalf("left stale draft: %q", out.String())
 	}
 }

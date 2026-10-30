@@ -66,7 +66,7 @@ func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlO() {
-	if ki.Agent == nil {
+	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
 	targetTaskId := ki.Agent.StreamingTask
@@ -86,6 +86,17 @@ func (ki *KeyInterceptorReader) HandleCtrlO() {
 	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
 	if ki.Agent.UI != nil {
 		ki.Agent.UI.SetCollapseStatus(ki.Agent.Config.CollapseResults)
+	}
+	// A model turn may still have uncommitted text and tool previews. Queue
+	// an active-turn redraw on the stream consumer instead of clearing the
+	// screen from the input goroutine. The stream consumer repaints history
+	// with its current snapshot, even while waiting for the next chunk.
+	if ki.ActiveTurn.Load() {
+		ki.PendingCollapseRedraw.Store(true)
+		if ki.OnRedrawStatusBar != nil {
+			ki.OnRedrawStatusBar()
+		}
+		return
 	}
 	if ki.OnRedrawScreen != nil {
 		ki.OnRedrawScreen()

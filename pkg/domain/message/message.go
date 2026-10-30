@@ -40,8 +40,8 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
- IsError bool `json:"is_error,omitempty"`
- Usage *Usage `json:"usage,omitempty"`
+	IsError           bool            `json:"is_error,omitempty"`
+	Usage             *Usage          `json:"usage,omitempty"`
 	Structured        json.RawMessage `json:"structured_content,omitempty"`
 	ContentBlocks     []ContentBlock  `json:"content_blocks,omitempty"`
 	Provider          string          `json:"provider,omitempty"`

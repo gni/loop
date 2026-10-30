@@ -69,7 +69,9 @@ var providerSelectCmd = &cobra.Command{
 		name := args[0]
 		if name == "none" || name == "default" {
 			cfg.ActiveProvider = ""
-			_ = config.SaveConfig(configPath, cfg)
+			if !saveConfigOrPrintErr(cfg) {
+				return
+			}
 			fmt.Println("Switched active provider to default settings.")
 			return
 		}

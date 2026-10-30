@@ -413,6 +413,13 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 			state.events = append(state.events, chunk)
 		}
 		if s.onLiveContent != nil {
+			// Edits need their target before rendering a contextual diff.
+			// Writes can display content before the path is available.
+			if state.name == "edit" && state.draft.path == "" {
+				s.progress(index, state)
+				s.notifyReady(index, state)
+				return
+			}
 			delta := state.draft.takeDelta()
 			if state.name == "edit" && s.editDiffPreview != nil {
 				// An oldText/newText fragment has no reliable line numbers:

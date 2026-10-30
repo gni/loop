@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"loop/pkg/config"
- "loop/pkg/transport/sse"
+	"loop/pkg/transport/sse"
 )
 
 type mcpClient struct {
@@ -176,15 +176,25 @@ func (c *mcpClient) startSSE() error {
 	go func() {
 		defer c.failPendingRequests()
 		defer close(endpointChan)
- reader:=sse.NewReader(c.sseBody)
- for{
-  event,err:=reader.Read(ctx)
-  if err!=nil{if err!=io.EOF{mcpLog("SSE connection error for '%s': %v\n",c.name,err)};return}
-  if event.Name=="endpoint"{
-   postURL:=c.resolveEndpointURL(event.Data)
-   select{case endpointChan<-postURL:default:}
-  }else{c.handleMessage(event.Data)}
- }
+		reader := sse.NewReader(c.sseBody)
+		for {
+			event, err := reader.Read(ctx)
+			if err != nil {
+				if err != io.EOF {
+					mcpLog("SSE connection error for '%s': %v\n", c.name, err)
+				}
+				return
+			}
+			if event.Name == "endpoint" {
+				postURL := c.resolveEndpointURL(event.Data)
+				select {
+				case endpointChan <- postURL:
+				default:
+				}
+			} else {
+				c.handleMessage(event.Data)
+			}
+		}
 	}()
 
 	select {
@@ -509,7 +519,7 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 	return nil, fmt.Errorf("MCP tools/list exceeded %d pages", maxPages)
 }
 
-func (c *mcpClient) callTool(ctx context.Context,name,arguments string)(string,error){
- result,err:=c.callToolResult(ctx,name,arguments)
- return result.Output,err
+func (c *mcpClient) callTool(ctx context.Context, name, arguments string) (string, error) {
+	result, err := c.callToolResult(ctx, name, arguments)
+	return result.Output, err
 }

@@ -10,13 +10,13 @@ import (
 )
 
 type ContentBlock struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	Data      string `json:"data,omitempty"`
-	MimeType  string `json:"mime_type,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Signature string `json:"signature,omitempty"`
- ToolCallID string `json:"tool_call_id,omitempty"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	Data       string `json:"data,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Signature  string `json:"signature,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 func ReadAttachment(path string) (ContentBlock, error) {

@@ -27,11 +27,11 @@ func TestEarlyVerifiedWritesHaveOneBlankSeparator(t *testing.T) {
 		if file == "b.txt" {
 			next = "c.txt"
 		}
-		segment := "⎿  " + file + " (5 bytes)\n\n◆ write " + next
+		segment := "⎿  " + file + " (5 bytes)\n\n✚ write " + next
 		if !strings.Contains(output, segment) {
 			t.Fatalf("early completion has no separator %q in %q", segment, output)
 		}
-		if strings.Contains(output, "⎿  "+file+" (5 bytes)\n\n\n◆ write "+next) {
+		if strings.Contains(output, "⎿  "+file+" (5 bytes)\n\n\n✚ write "+next) {
 			t.Fatalf("early completion has extra separator: %q", output)
 		}
 	}
@@ -47,7 +47,7 @@ func TestEarlyVerifiedEditThenWriteHasOneBlankSeparator(t *testing.T) {
 	}
 	r.ShowLiveToolContent(1, "write", "new.txt", "New poem\n")
 	output := style.StripAnsi(out.String())
-	if !strings.Contains(output, "⎿  poem.txt (+1 / -0 lines)\n\n◆ write new.txt") {
+	if !strings.Contains(output, "⎿  poem.txt (+1 / -0 lines)\n\n✚ write new.txt") {
 		t.Fatalf("missing separator after edit: %q", output)
 	}
 }

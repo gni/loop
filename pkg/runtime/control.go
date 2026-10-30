@@ -42,9 +42,11 @@ func (s *Session) SetTools(names []string) error {
 		return ErrBusy
 	}
 	defer s.runMu.Unlock()
-	if err:=s.validateTools(names);err!=nil{return err}
+	if err := s.validateTools(names); err != nil {
+		return err
+	}
 	s.options.Tools = append([]string{}, names...)
- s.Agent.ToolSelection=s.options.Tools
+	s.Agent.ToolSelection = s.options.Tools
 	return s.persistSettings()
 }
 

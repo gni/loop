@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"loop/pkg/terminal"
@@ -60,13 +61,13 @@ func GetToolGlyph(toolName string) string {
 	lower := strings.ToLower(toolName)
 	switch {
 	case isReadLike(lower):
-		return "◈"
+		return "▤"
 	case lower == "grep" || strings.Contains(lower, "grep") || strings.Contains(lower, "search"):
 		return "⌕"
 	case lower == "write" || strings.Contains(lower, "write"):
-		return "◆"
+		return "✚"
 	case IsEditLikeTool(lower) || strings.Contains(lower, "replace"):
-		return "✎"
+		return "✐"
 	case lower == "bash" || lower == "exec" || lower == "sh" || strings.Contains(lower, "command"):
 		return "$"
 	case isSkillLike(lower):
@@ -84,6 +85,36 @@ func GetToolGlyph(toolName string) string {
 	default:
 		return "●"
 	}
+}
+
+func ThinkingLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	lines := strings.Count(content, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		lines++
+	}
+	return lines
+}
+
+func FormatThinkingSummary(theme style.UITheme, seconds float64, active bool, lines int, showMicroseconds bool) string {
+	label := "⋮ thinking…"
+	if !active {
+		label = "⋮ thought"
+		if seconds > 0 {
+			label += " (" + style.FormatElapsedDuration(time.Duration(seconds*float64(time.Second)), showMicroseconds) + ")"
+		}
+	}
+	unit := "lines"
+	if lines == 1 {
+		unit = "line"
+	}
+	label += fmt.Sprintf(" · %d %s hidden", lines, unit)
+	if !active {
+		label += " · Ctrl+O to expand"
+	}
+	return style.NewStyle().Foreground(theme.Border).Italic(true).Render(label)
 }
 
 func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITheme) string {

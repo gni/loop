@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/term"
@@ -54,7 +55,11 @@ type KeyInterceptorReader struct {
 	OnRedrawScreen          func()
 	OnDrawStaticControls    func(w io.Writer)
 	OnRedrawPromptSeparator func()
+	OnRedrawStatusBar       func()
 	OnClearCancelFunc       func()
+
+	ActiveTurn            atomic.Bool // A foreground turn is still streaming.
+	PendingCollapseRedraw atomic.Bool // Repaint history and the active turn after Ctrl+O.
 }
 
 func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
@@ -103,8 +108,10 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 	if cfg != nil {
 		activeTheme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
 	}
-	if ki.MAM != nil && ki.MAM.ActiveAgent != nil {
-		promptPrefix = fmt.Sprintf("[%s]%s", ki.MAM.ActiveAgent.Name, promptPrefix)
+	if ki.MAM != nil {
+		if name := ki.MAM.ActiveAgentName(); name != "" {
+			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
+		}
 	}
 	promptStr := style.NewStyle().Foreground(activeTheme.Primary).Bold(true).Render(promptPrefix)
 

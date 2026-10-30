@@ -47,6 +47,10 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 	if state.PromptTokens >= 1000 {
 		pStr = fmt.Sprintf("%.1fk in", float64(state.PromptTokens)/1000.0)
 	}
+	if state.TokenEstimate {
+		pStr = "~" + pStr
+		pStrCompact = "~" + pStrCompact
+	}
 
 	cStr := fmt.Sprintf("%d out", state.CompletionTokens)
 	if state.CompletionTokens >= 1000 {
@@ -56,13 +60,9 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 		cStr += fmt.Sprintf(" (%.1f t/s)", state.LastTps)
 	}
 
+	// CompletionTokens is cumulative session usage and must not be treated
+	// as tokens resident in the model's current context window.
 	contextTokens := state.PromptTokens + state.CurrentCompletionTokens
-	if state.CurrentCompletionTokens == 0 {
-		contextTokens = state.PromptTokens
-	}
-	if contextTokens == 0 {
-		contextTokens = state.CompletionTokens
-	}
 	var pct float64
 	if state.ContextLimit > 0 {
 		pct = (float64(contextTokens) / float64(state.ContextLimit)) * 100.0

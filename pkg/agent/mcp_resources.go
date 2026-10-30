@@ -2,13 +2,13 @@ package agent
 
 import (
 	"context"
- "encoding/base64"
- "crypto/sha256"
- "path/filepath"
- "loop/pkg/config"
- "loop/pkg/resources"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"loop/pkg/config"
+	"loop/pkg/resources"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,11 +18,11 @@ import (
 
 type mcpResult struct {
 	Content []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		Data     string `json:"data"`
-		MimeType string `json:"mimeType"`
- Resource json.RawMessage `json:"resource"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		Data     string          `json:"data"`
+		MimeType string          `json:"mimeType"`
+		Resource json.RawMessage `json:"resource"`
 	} `json:"content"`
 	Structured json.RawMessage `json:"structuredContent"`
 	IsError    bool            `json:"isError"`
@@ -37,12 +37,16 @@ func (m *mcpToolExecutor) ExecuteResult(ctx tool.AgentContext, arguments string)
 	if ctx != nil {
 		parent = ctx.Context()
 	}
- return client.callToolResult(parent,m.toolName,arguments)
+	return client.callToolResult(parent, m.toolName, arguments)
 }
 
-func(client *mcpClient)callToolResult(parent context.Context,name,arguments string)(tool.ToolResult,error){
- if !client.initialized{return tool.ToolResult{},fmt.Errorf("client not initialized")}
- if strings.TrimSpace(arguments)==""{arguments="{}"}
+func (client *mcpClient) callToolResult(parent context.Context, name, arguments string) (tool.ToolResult, error) {
+	if !client.initialized {
+		return tool.ToolResult{}, fmt.Errorf("client not initialized")
+	}
+	if strings.TrimSpace(arguments) == "" {
+		arguments = "{}"
+	}
 	var params map[string]any
 	if err := json.Unmarshal([]byte(arguments), &params); err != nil {
 		return tool.ToolResult{}, err
@@ -62,7 +66,9 @@ func(client *mcpClient)callToolResult(parent context.Context,name,arguments stri
 		case "text":
 			text = append(text, part.Text)
 		case "resource":
- if len(part.Resource)>0{text=append(text,string(part.Resource))}
+			if len(part.Resource) > 0 {
+				text = append(text, string(part.Resource))
+			}
 		case "image":
 			output.Content = append(output.Content, message.ContentBlock{Type: "image", Data: part.Data, MimeType: part.MimeType})
 		}
@@ -141,35 +147,43 @@ func (t *mcpResourceTool) ExecuteResult(ctx tool.AgentContext, arguments string)
 					Text     string `json:"text"`
 					Blob     string `json:"blob"`
 					MimeType string `json:"mimeType"`
- URI string `json:"uri"`
+					URI      string `json:"uri"`
 				} `json:"contents"`
 			}
 			if err := json.Unmarshal(raw, &response); err != nil {
 				return tool.ToolResult{}, err
 			}
- var contents []map[string]any
- for _,content:=range response.Contents{
-  item:=map[string]any{"uri":content.URI,"mimeType":content.MimeType}
-  if content.Text!=""{item["text"]=content.Text}
-  if content.Blob!=""{
-   data,err:=base64.StdEncoding.DecodeString(content.Blob)
-   if err!=nil{return tool.ToolResult{},fmt.Errorf("invalid MCP resource encoding")}
-   if strings.HasPrefix(content.MimeType,"image/"){
-    blocks=append(blocks,message.ContentBlock{Type:"image",Data:content.Blob,MimeType:content.MimeType})
-    item["image"]=true
-   }else{
-    hash:=sha256.Sum256(data)
-    path:=filepath.Join(resources.AgentDirectory(t.agent.ConfigPath),"artifacts","mcp",fmt.Sprintf("%x",hash[:]))
-    if err:=config.WritePrivateFile(path,data);err!=nil{return tool.ToolResult{},err}
-    item["artifact"]=path
-    item["bytes"]=len(data)
-   }
-  }
-  contents=append(contents,item)
- }
- encoded,err:=json.Marshal(map[string]any{"contents":contents})
- if err!=nil{return tool.ToolResult{},err}
- results[name]=encoded
+			var contents []map[string]any
+			for _, content := range response.Contents {
+				item := map[string]any{"uri": content.URI, "mimeType": content.MimeType}
+				if content.Text != "" {
+					item["text"] = content.Text
+				}
+				if content.Blob != "" {
+					data, err := base64.StdEncoding.DecodeString(content.Blob)
+					if err != nil {
+						return tool.ToolResult{}, fmt.Errorf("invalid MCP resource encoding")
+					}
+					if strings.HasPrefix(content.MimeType, "image/") {
+						blocks = append(blocks, message.ContentBlock{Type: "image", Data: content.Blob, MimeType: content.MimeType})
+						item["image"] = true
+					} else {
+						hash := sha256.Sum256(data)
+						path := filepath.Join(resources.AgentDirectory(t.agent.ConfigPath), "artifacts", "mcp", fmt.Sprintf("%x", hash[:]))
+						if err := config.WritePrivateFile(path, data); err != nil {
+							return tool.ToolResult{}, err
+						}
+						item["artifact"] = path
+						item["bytes"] = len(data)
+					}
+				}
+				contents = append(contents, item)
+			}
+			encoded, err := json.Marshal(map[string]any{"contents": contents})
+			if err != nil {
+				return tool.ToolResult{}, err
+			}
+			results[name] = encoded
 		}
 	}
 	encoded, err := json.Marshal(results)

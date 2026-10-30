@@ -16,8 +16,8 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "loop [prompt]",
- SilenceUsage:true,SilenceErrors:true,
+	Use:          "loop [prompt]",
+	SilenceUsage: true, SilenceErrors: true,
 	Short: "loop is a minimalist, resilient coding agent CLI.",
 	Long:  `loop is a Unix-style agent harness and interactive REPL that supports persistent session tracking, tool execution sandboxes, and terminal visual themes.`,
 	Args:  cobra.ArbitraryArgs,

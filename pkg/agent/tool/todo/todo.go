@@ -258,10 +258,11 @@ func validateTodoItems(items []domaintool.TodoItem) ([]domaintool.TodoItem, erro
 	for i, item := range items {
 		cleanID := domaintool.FirstNonEmpty(strings.TrimSpace(item.ID), fmt.Sprintf("task-%d", i+1))
 		items[i].ID = cleanID
-		if seenIDs[cleanID] {
+		key := strings.ToLower(cleanID)
+		if seenIDs[key] {
 			return nil, errors.New(domaintool.RuntimeMessagef("todo_duplicate_id", "duplicate task id: '%s' appears more than once", cleanID))
 		}
-		seenIDs[cleanID] = true
+		seenIDs[key] = true
 
 		taskDesc := strings.TrimSpace(item.Task)
 		if taskDesc == "" {
@@ -293,8 +294,7 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	var currentTasks []domaintool.TodoItem
 	if ts, ok := ctx.(domaintool.TodoState); ok {
 		currentTasks = ts.GetTodos()
-	}
-	if len(currentTasks) == 0 && len(t.items) > 0 {
+	} else {
 		currentTasks = append([]domaintool.TodoItem(nil), t.items...)
 	}
 
@@ -310,8 +310,13 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	var items []domaintool.TodoItem
 
 	if strings.HasPrefix(trimmed, "[") {
-		_ = json.Unmarshal([]byte(trimmed), &items)
+		if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
+			return "", fmt.Errorf("parse todo list: %w", err)
+		}
 	} else if strings.HasPrefix(trimmed, "{") {
+		if !json.Valid([]byte(trimmed)) {
+			return "", errors.New(domaintool.RuntimeMessage("todo_invalid_args", "invalid JSON arguments for todo"))
+		}
 		var container struct {
 			Tasks    []domaintool.TodoItem `json:"tasks"`
 			Todos    []domaintool.TodoItem `json:"todos"`
@@ -356,12 +361,12 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	t.items = append([]domaintool.TodoItem(nil), validated...)
 	if ts, ok := ctx.(domaintool.TodoState); ok {
 		if err := ts.SetTodos(validated); err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("todo_state_store_failed", "failed to store todo state: %w"), err)
 		}
 	}
+	t.items = append([]domaintool.TodoItem(nil), validated...)
 
 	return t.formatSummary(validated), nil
 }

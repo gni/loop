@@ -39,6 +39,8 @@ type PromptPreservingWriter struct {
 	autoWrapPending       bool
 	autoWrapDetached      bool
 	pendingLineFeed       bool
+	trailingNewlines      int
+	needsSyntaxRefresh    bool // A live code line could not be recolored safely.
 }
 
 func (p *PromptPreservingWriter) getOffsetRow(offset int) int {
@@ -198,7 +200,9 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 	// the only empty row between the transcript and the pinned loader.
 	if p.pendingLineFeed {
 		buf.WriteString("\r\n")
+		trailing := p.trailingNewlines
 		p.trackPosition([]byte("\r\n"))
+		p.trailingNewlines = trailing // This newline was already counted when deferred.
 		p.pendingLineFeed = false
 	}
 	if data[len(data)-1] == '\n' {
@@ -207,6 +211,9 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 		p.trackPosition(body)
 		if p.printLine == p.getScrollBottom() {
 			p.pendingLineFeed = true
+			if p.trailingNewlines < style.ActivityGapLines+1 {
+				p.trailingNewlines++
+			}
 			p.autoWrapPending = false
 			p.autoWrapDetached = false
 		} else {
@@ -278,6 +285,9 @@ func (p *PromptPreservingWriter) trackPosition(data []byte) {
 
 		switch r {
 		case '\n':
+			if p.trailingNewlines < style.ActivityGapLines+1 {
+				p.trailingNewlines++
+			}
 			p.printCol = 1
 			p.autoWrapPending = false
 			p.autoWrapDetached = false
@@ -302,6 +312,7 @@ func (p *PromptPreservingWriter) trackPosition(data []byte) {
 			p.printCol = nextCol
 		default:
 			if r >= 32 && r != '\uFFFD' {
+				p.trailingNewlines = 0
 				if p.autoWrapPending {
 					p.advancePrintLine()
 					p.printCol = 1
@@ -357,6 +368,17 @@ func (p *PromptPreservingWriter) EnsureNewline() {
 	}
 }
 
+// EnsureActivityGap leaves one empty chat row before a submitted prompt,
+// accounting for line endings already emitted by the preceding reply.
+func (p *PromptPreservingWriter) EnsureActivityGap() {
+	TerminalMu.Lock()
+	missing := style.ActivityGapLines + 1 - p.trailingNewlines
+	TerminalMu.Unlock()
+	if missing > 0 {
+		_, _ = io.WriteString(p, strings.Repeat("\n", missing))
+	}
+}
+
 // BeginScrollEntry anchors a new output block to the bottom of the scrolling
 // region. The previous block is completed first so no visible text is overwritten.
 func (p *PromptPreservingWriter) BeginScrollEntry() {
@@ -382,7 +404,22 @@ func (p *PromptPreservingWriter) ResetAfterRedrawLocked(height int) {
 	p.printCol = 1
 	p.ansiState = 0
 	p.pendingLineFeed = false
+	p.trailingNewlines = 0
+	p.needsSyntaxRefresh = false
 	p.resetAutoWrap()
+}
+
+// ResetAfterReplayLocked restores the position of an unfinished streaming line.
+// The transcript contains display text and styling, never cursor movement.
+// Call with TerminalMu held after building the transcript from row one.
+func (p *PromptPreservingWriter) ResetAfterReplayLocked(height int, transcript []byte) {
+	p.ResetAfterRedrawLocked(height)
+	p.printLine = 1
+	p.trackPosition(transcript)
+	p.cursorAtPrompt = true
+	if p.autoWrapPending {
+		p.autoWrapDetached = true
+	}
 }
 
 func (p *PromptPreservingWriter) GetScrollCount() int {
@@ -436,6 +473,50 @@ func firstTerminalActionIsGraphic(data []byte, initialANSIState int) bool {
 		}
 	}
 	return false
+}
+
+// RepaintActiveScrollLine replaces the current unwrapped source row without
+// reentering Write. Write manages scrolling, cursor restoration and deferred
+// line feeds; sending cursor controls through it can move the active row.
+// Like ReplaceScrollBlockBack, this uses an atomic cursor save/restore on the
+// underlying terminal. It does not alter the transcript or the write cursor.
+func (p *PromptPreservingWriter) RepaintActiveScrollLine(content string) bool {
+	if strings.ContainsAny(content, "\r\n") {
+		return false
+	}
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if height := getRealTerminalHeight(); height > 0 && height != p.height {
+		p.AdjustPrintLineLocked(height - p.height)
+		p.height = height
+	}
+	if p.pendingLineFeed || p.autoWrapPending || p.printCol <= 1 ||
+		p.printLine < 1 || p.printLine > p.getScrollBottom() {
+		return false
+	}
+	var buf bytes.Buffer
+	buf.WriteString("\x1b[?2026h\x1b7")
+	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s\x1b8\x1b[?2026l", p.printLine, content)
+	_, err := p.inner.Write(buf.Bytes())
+	return err == nil
+}
+
+// MarkSyntaxRefresh requests a history redraw after the current turn if a
+// streamed source line could not be recolored safely in the live terminal.
+func (p *PromptPreservingWriter) MarkSyntaxRefresh() {
+	TerminalMu.Lock()
+	p.needsSyntaxRefresh = true
+	TerminalMu.Unlock()
+}
+
+// ConsumeSyntaxRefresh is called by the REPL after the turn has finished and
+// the completed tool arguments have been added to conversation history.
+func (p *PromptPreservingWriter) ConsumeSyntaxRefresh() bool {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	needed := p.needsSyntaxRefresh
+	p.needsSyntaxRefresh = false
+	return needed
 }
 
 // ReplaceScrollLineBack atomically replaces one visible line without changing

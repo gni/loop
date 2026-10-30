@@ -32,6 +32,48 @@ func emitChunk(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamCh
 	return false
 }
 
+// relayStreamChunks keeps reading provider output while the presentation goroutine
+// executes an early file operation. The queue is deliberately bounded: under
+// extreme backpressure, emitChunk's existing drop reporting still applies.
+// All rendering remains on the caller goroutine, in original chunk order.
+func relayStreamChunks(ctx context.Context, source <-chan StreamChunk) <-chan StreamChunk {
+	out := make(chan StreamChunk)
+	go func() {
+		defer close(out)
+		const maxQueuedChunks = 8192
+		queue := make([]StreamChunk, 0, 256)
+		for source != nil || len(queue) > 0 {
+			var input <-chan StreamChunk
+			if len(queue) < maxQueuedChunks {
+				input = source
+			}
+			var output chan<- StreamChunk
+			var next StreamChunk
+			if len(queue) > 0 {
+				output = out
+				next = queue[0]
+			}
+			select {
+			case chunk, ok := <-input:
+				if !ok {
+					source = nil
+				} else {
+					queue = append(queue, chunk)
+				}
+			case output <- next:
+				queue[0] = StreamChunk{}
+				queue = queue[1:]
+				if len(queue) == 0 {
+					queue = queue[:0]
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
 // ChunkDropObserver, when set, is invoked for every stream chunk that could not be
 // delivered to the UI consumer. The provider layer cannot reach the agent directly, so
 // it is wired through this field on the provider.

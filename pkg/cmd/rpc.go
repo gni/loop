@@ -14,7 +14,7 @@ import (
 
 type rpcCommand struct {
 	Arguments []string `json:"arguments"`
- ID        string   `json:"id"`
+	ID        string   `json:"id"`
 	Type      string   `json:"type"`
 	Message   string   `json:"message"`
 	Model     string   `json:"model"`
@@ -83,9 +83,9 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		case "discover_models":
 			data, commandErr = s.Agent.DiscoverModels(ctx)
 		case "get_commands":
- data=s.Commands()
+			data = s.Commands()
 		case "execute_command":
- data,commandErr=s.ExecuteCommand(ctx,command.Name,command.Arguments)
+			data, commandErr = s.ExecuteCommand(ctx, command.Name, command.Arguments)
 		case "get_tools":
 			data = s.Agent.Registry.GetAvailableTools(s.Agent.ToolSelection)
 		case "get_entries", "get_tree":
@@ -132,8 +132,10 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 				break
 			}
 			next := options
- next.Config,commandErr=s.Configuration()
- if commandErr!=nil{break}
+			next.Config, commandErr = s.Configuration()
+			if commandErr != nil {
+				break
+			}
 			next.SessionID = command.SessionID
 			next.Resume = false
 			if command.Type == "new_session" {

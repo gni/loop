@@ -59,18 +59,18 @@ func executeREPLTurn(
 	fd int,
 	kiReader *interceptor.KeyInterceptorReader,
 ) {
-	if mam.ActiveAgent != nil {
+	if active := mam.CurrentActiveAgent(); active != nil {
 		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = mam.ActiveAgent.CancelActiveTurn
+		ui.GetUI().ActiveCancelFunc = active.CancelActiveTurn
 		ui.GetUI().StateMu.Unlock()
 
-		if err := mam.SendMessage(mam.ActiveAgent.Name, line); err != nil {
+		if err := mam.SendMessage(active.Name, line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending message: %v\n", err)
 		} else {
 			select {
-			case <-mam.ActiveAgent.Context.Done():
+			case <-active.Context.Done():
 				fmt.Fprintln(os.Stderr, "agent context cancelled.")
-			case <-mam.ActiveAgent.Output:
+			case <-active.Output:
 			}
 			ppWriter.EnsureNewline()
 		}

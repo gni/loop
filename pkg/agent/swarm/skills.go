@@ -49,9 +49,11 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 			break
 		}
 	}
-	if !alreadyHas {
-		ma.Skills = append(ma.Skills, *targetSkill)
+	if alreadyHas {
+		ma.HistoryMu.Unlock()
+		return nil
 	}
+	ma.Skills = append(ma.Skills, *targetSkill)
 
 	ma.History = append(ma.History, db.Message{
 		Role:    "system",
@@ -59,7 +61,9 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 	})
 	ma.HistoryMu.Unlock()
 
-	_ = mam.saveAgentDef(ma)
+	if err := mam.saveAgentDef(ma); err != nil {
+		return fmt.Errorf("save skills for subagent %q: %w", agentName, err)
+	}
 	return nil
 }
 
@@ -81,6 +85,8 @@ func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
 	})
 	ma.HistoryMu.Unlock()
 
-	_ = mam.saveAgentDef(ma)
+	if err := mam.saveAgentDef(ma); err != nil {
+		return fmt.Errorf("clear skills for subagent %q: %w", agentName, err)
+	}
 	return nil
 }

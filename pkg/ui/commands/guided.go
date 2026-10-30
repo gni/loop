@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
-	"loop/pkg/config"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
@@ -62,7 +61,7 @@ func handleGuidedCommand(
 	}
 
 	if a.ConfigPath != "" && a.Config != nil {
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		saveConfigUpdate(a, w)
 	}
 	stateStr := "disabled"
 	if a.IsGuidedMode() {

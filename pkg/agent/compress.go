@@ -11,7 +11,7 @@ import (
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
- "loop/pkg/domain/message"
+	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
@@ -284,9 +284,9 @@ func (a *Agent) CompressHistory(
 		}
 	}
 
-	usage:=message.MergeUsage(message.TotalUsage(toCompress),message.TotalUsage([]db.Message{*summaryAssistantMsg}))
- summaryMsg := db.Message{
- Usage:&usage,
+	usage := message.MergeUsage(message.TotalUsage(toCompress), message.TotalUsage([]db.Message{*summaryAssistantMsg}))
+	summaryMsg := db.Message{
+		Usage:   &usage,
 		Role:    "system",
 		Content: fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
 	}
@@ -311,6 +311,13 @@ func (a *Agent) CompressHistory(
 	*messages = newMessages
 
 	compressedStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-	fmt.Fprintf(w, "%s\n\n", compressedStyle.Render(fmt.Sprintf("context compressed · freed %d messages", keepIdx-1)))
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, compressedStyle.Render("[system: context compression complete]"))
+	fmt.Fprintf(w, "  %d older messages condensed into 1 summary; %d recent messages retained.\n", len(toCompress), len(keptMessages))
+	fmt.Fprintf(w, "  Saved context summary: %d bytes.\n", len(summaryMsg.Content))
+	fmt.Fprintf(w, "  File references retained: %d read, %d modified.\n", len(readFiles), len(modifiedFiles))
+	fmt.Fprintln(w, "  Summary carried into the next agent turn:")
+	fmt.Fprintln(w, CompressionSummaryPreview(summaryMsg.Content))
+	fmt.Fprintln(w)
 	return
 }

@@ -30,6 +30,7 @@ type Style struct {
 	bold          bool
 	italic        bool
 	underline     bool
+	strike        bool
 	borderType    int
 	borderColor   *colorVal
 	paddingLeft   int
@@ -109,6 +110,11 @@ func (s Style) Underline(v bool) Style {
 	return s
 }
 
+func (s Style) Strikethrough(v bool) Style {
+	s.strike = v
+	return s
+}
+
 func (s Style) GetSequence() (string, string) {
 	var ansiStart strings.Builder
 	if s.bold {
@@ -119,6 +125,9 @@ func (s Style) GetSequence() (string, string) {
 	}
 	if s.underline {
 		ansiStart.WriteString("\x1b[4m")
+	}
+	if s.strike {
+		ansiStart.WriteString("\x1b[9m")
 	}
 	if s.fg != nil {
 		fmt.Fprintf(&ansiStart, "\x1b[38;2;%d;%d;%dm", s.fg.R, s.fg.G, s.fg.B)

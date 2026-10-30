@@ -11,12 +11,13 @@ import (
 )
 
 type turnLoader struct {
-	agent     *Agent
-	w         io.Writer
-	theme     style.UITheme
-	startTime time.Time
-	done      chan struct{}
-	stopOnce  sync.Once
+	agent            *Agent
+	w                io.Writer
+	theme            style.UITheme
+	startTime        time.Time
+	done             chan struct{}
+	stopOnce         sync.Once
+	showMicroseconds bool
 
 	mu         sync.Mutex
 	hasDots    bool
@@ -33,13 +34,14 @@ func (a *Agent) newTurnLoader(ctx context.Context, w io.Writer, theme style.UITh
 		startTime = time.Now()
 	}
 	tl := &turnLoader{
-		agent:     a,
-		w:         w,
-		theme:     theme,
-		startTime: startTime,
-		done:      make(chan struct{}),
-		hasDots:   true,
-		lastFeed:  time.Now(),
+		agent:            a,
+		w:                w,
+		theme:            theme,
+		startTime:        startTime,
+		done:             make(chan struct{}),
+		hasDots:          true,
+		showMicroseconds: a.Config != nil && a.Config.ShowMicroseconds,
+		lastFeed:         time.Now(),
 	}
 	go tl.run(ctx)
 	return tl
@@ -55,8 +57,7 @@ func (tl *turnLoader) renderFrame(frame string) {
 		return
 	default:
 	}
-	elapsed := time.Since(tl.startTime).Seconds()
-	timeStr := fmt.Sprintf("(%.1fs)", elapsed)
+	timeStr := fmt.Sprintf("(%s)", style.FormatElapsedDuration(time.Since(tl.startTime), tl.showMicroseconds))
 	timeStyled := style.NewStyle().Foreground(tl.theme.Border).Render(timeStr)
 	tl.agent.UI.DrawStatsLine(tl.w, tl.theme, frame, timeStyled)
 }

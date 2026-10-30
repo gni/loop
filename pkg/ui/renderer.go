@@ -21,16 +21,23 @@ type StreamRenderer struct {
 	theme                     UITheme
 	inThinking                bool
 	showThinking              bool
+	showMicroseconds          bool
 	reasoningStart            time.Time
 	reasoningHasText          bool
 	reasoningEndedWithNewline bool
 	reasoningDuration         float64
 	reasoningResetSequence    string
+	reasoningSummaryLine      int
+	reasoningCollapsed        bool
+	reasoningNewlines         int
+	reasoningLineCount        int
+	reasoningSummaryLines     int
 	pendingThoughtTextGap     bool
 	prompt                    string
 	echoFilter                *agent.PromptEchoFilter
 
 	lastEndedWithNewline bool
+	markdownEnabled      bool
 	hasWrittenText       bool
 	hasWrittenThoughts   bool
 	parser               *stream.JSONStreamParser
@@ -48,6 +55,12 @@ type StreamRenderer struct {
 	liveCallViews        map[int]*liveCallView
 	liveActiveCall       int
 	liveResultGap        bool
+	liveCollapse         bool
+	// Recorded model-visible fragments for active-turn redraws. A full
+	// history replay uses these instead of the terminal write byte stream.
+	liveReplayEvents       []liveReplayEvent
+	liveReplayTextFlushed  bool
+	trackedRowsInvalidated bool
 }
 
 func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrites bool, _ string) *StreamRenderer {
@@ -55,6 +68,7 @@ func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrit
 		w:                    w,
 		theme:                theme,
 		showThinking:         showThinking,
+		markdownEnabled:      true,
 		lastEndedWithNewline: true,
 		live:                 stream.NewLiveMarkdownRenderer(w, theme),
 		writeResultLines:     make(map[int]int),
@@ -64,6 +78,7 @@ func NewStreamRenderer(w io.Writer, theme UITheme, showThinking bool, streamWrit
 		livePreviewLine:      -1,
 		liveCallViews:        make(map[int]*liveCallView),
 		liveActiveCall:       -1,
+		reasoningSummaryLine: -1,
 	}
 	sr.parser = stream.NewJSONStreamParser(streamWrites)
 	return sr
@@ -85,7 +100,7 @@ func (sr *StreamRenderer) ObserveToolLifecycle(event agent.ToolLifecycleEvent) {
 func (sr *StreamRenderer) ShowToolDraft(index int, name, excerpt string, size int) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	if !sr.sequentialResults || !stream.CanReplaceTrackedStreamLine(sr.w) {
+	if sr.trackedRowsInvalidated || !sr.sequentialResults || !stream.CanReplaceTrackedStreamLine(sr.w) {
 		return
 	}
 	// Do not allow model-provided tool names to introduce terminal controls.
@@ -182,6 +197,97 @@ func (sr *StreamRenderer) SetSequentialToolResults(enabled bool) {
 	sr.sequentialResults = enabled
 }
 
+// InvalidateTrackedRows is called after an external full-screen replay.
+// Old terminal row indexes are no longer valid, even though stream parsing
+// state and the already displayed content must continue unchanged.
+func (sr *StreamRenderer) InvalidateTrackedRows() {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.trackedRowsInvalidated = true
+	sr.chatDraftVisible = false
+	sr.chatDraftLine = -1
+	sr.livePreviewVisible = false
+	sr.livePreviewLine = -1
+	sr.reasoningSummaryLine = -1
+	if sr.inThinking {
+		sr.reasoningCollapsed = sr.liveCollapse
+		if sr.liveCollapse {
+			sr.reasoningSummaryLines = sr.reasoningLineCount
+			if position := stream.GetNewlineCount(sr.w); position > 0 {
+				sr.reasoningSummaryLine = position - 1
+			}
+			sr.reasoningEndedWithNewline = true
+		} else if len(sr.liveReplayEvents) > 0 {
+			last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
+			sr.reasoningEndedWithNewline = strings.HasSuffix(last.text, "\n")
+		}
+	}
+	// Only the last unfinished compact call can still be updated. Its
+	// heading and progress row are the final two rows of the replay.
+	compactIndex := -1
+	if sr.liveCollapse && len(sr.liveReplayEvents) > 0 {
+		last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
+		if last.kind == "tool" {
+			if view := sr.liveCallViews[last.index]; view != nil && !view.completed {
+				compactIndex = last.index
+			}
+		}
+	}
+	_, compactResultPending := sr.writeResultLines[compactIndex]
+	clear(sr.writeResultLines)
+	for _, view := range sr.liveCallViews {
+		view.titleLine = -1
+		// A snapshot already shows the compact row for a collapsed call.
+		// Never print a second preview row on the next argument fragment.
+		view.compactLine = -1
+		if sr.liveCollapse && view.headerShown {
+			view.compactLine = -2
+		}
+	}
+	if view := sr.liveCallViews[compactIndex]; view != nil {
+		if position := stream.GetNewlineCount(sr.w); position >= 2 {
+			view.titleLine = position - 2
+			view.compactLine = position - 1
+			if compactResultPending {
+				sr.writeResultLines[compactIndex] = view.compactLine
+			}
+		}
+	}
+	// Resume the exact last source line, including content that was hidden
+	// before expanding. The parser and tool execution state stay intact.
+	if view := sr.liveCallViews[sr.liveActiveCall]; view != nil {
+		view.codeLine.Reset()
+		view.codeLineOverflow = false
+		view.endsWithNewline = true
+		if !sr.liveCollapse {
+			content := view.fullContent.String()
+			view.bytes = view.receivedBytes
+			view.endsWithNewline = content == "" || strings.HasSuffix(content, "\n")
+			if !view.endsWithNewline {
+				tail := content[strings.LastIndexByte(content, '\n')+1:]
+				if len(tail) <= 4096 {
+					view.codeLine.WriteString(tail)
+				} else {
+					view.codeLineOverflow = true
+				}
+			}
+		}
+	}
+	if sr.parser != nil {
+		for i := range sr.parser.ToolTitleLineNumbers {
+			sr.parser.ToolTitleLineNumbers[i] = -1
+		}
+	}
+}
+
+// SafeToReplay reports whether semantic replay covers the active output.
+// The legacy JSON parser can hold tool text outside the replay transcript.
+func (sr *StreamRenderer) SafeToReplay() bool {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	return sr.parser == nil || sr.parser.ActiveToolName == ""
+}
+
 func (sr *StreamRenderer) HasOutput() bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -249,10 +355,39 @@ func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 		sr.reasoningEndedWithNewline = false
 		sr.pendingThoughtTextGap = false
 		sr.reasoningResetSequence = resetSeq
+		sr.reasoningSummaryLine = -1
+		sr.reasoningCollapsed = false
+		sr.reasoningNewlines = 0
+		sr.reasoningLineCount = 0
+		sr.reasoningSummaryLines = 0
 	}
 
+	hadReasoningText := sr.reasoningHasText
 	sr.hasWrittenThoughts = true
 	sr.reasoningHasText = true
+	sr.appendLiveReplayTextLocked("reasoning", chunk)
+	sr.reasoningNewlines += strings.Count(chunk, "\n")
+	sr.reasoningLineCount = sr.reasoningNewlines
+	if !strings.HasSuffix(chunk, "\n") {
+		sr.reasoningLineCount++
+	}
+	if sr.liveCollapse {
+		if !sr.reasoningCollapsed {
+			if hadReasoningText && !sr.reasoningEndedWithNewline {
+				fmt.Fprint(sr.w, "\n")
+			}
+			sr.reasoningSummaryLine = stream.GetNewlineCount(sr.w)
+			fmt.Fprintln(sr.w, render.FormatThinkingSummary(sr.theme, 0, true, sr.reasoningLineCount, sr.showMicroseconds))
+			sr.reasoningCollapsed = true
+		} else if sr.reasoningLineCount != sr.reasoningSummaryLines {
+			if !stream.ReplaceTrackedStreamLine(sr.w, sr.reasoningSummaryLine, render.FormatThinkingSummary(sr.theme, 0, true, sr.reasoningLineCount, sr.showMicroseconds)) {
+				sr.requestLiveSyntaxRefreshLocked()
+			}
+		}
+		sr.reasoningSummaryLines = sr.reasoningLineCount
+		sr.reasoningEndedWithNewline = true
+		return
+	}
 	sr.reasoningEndedWithNewline = strings.HasSuffix(chunk, "\n")
 	fmt.Fprint(sr.w, startSeq+chunk+resetSeq)
 }
@@ -290,11 +425,22 @@ func (sr *StreamRenderer) endThinking() {
 
 	elapsed := time.Since(sr.reasoningStart).Seconds()
 	sr.reasoningDuration = elapsed
+	for i := len(sr.liveReplayEvents) - 1; i >= 0; i-- {
+		if sr.liveReplayEvents[i].kind == "reasoning" {
+			sr.liveReplayEvents[i].duration = elapsed
+			break
+		}
+	}
 	labelStyle := style.NewStyle().Foreground(sr.theme.Border).Italic(true)
 
-	fmt.Fprintf(sr.w, "%s\n",
-		labelStyle.Render(fmt.Sprintf("thought (%.1fs)", elapsed)),
-	)
+	if sr.reasoningCollapsed {
+		if !stream.ReplaceTrackedStreamLine(sr.w, sr.reasoningSummaryLine, render.FormatThinkingSummary(sr.theme, elapsed, false, sr.reasoningLineCount, sr.showMicroseconds)) {
+			sr.requestLiveSyntaxRefreshLocked()
+		}
+	} else {
+		fmt.Fprintf(sr.w, "%s\n", labelStyle.Render(fmt.Sprintf("thought (%s)", style.FormatElapsedDuration(time.Duration(elapsed*float64(time.Second)), sr.showMicroseconds))))
+	}
+	sr.reasoningSummaryLine = -1
 	sr.reasoningHasText = false
 	sr.reasoningEndedWithNewline = true
 	sr.pendingThoughtTextGap = true
@@ -324,11 +470,26 @@ func (sr *StreamRenderer) Write(chunk string) {
 	}
 	sr.checkFirstWrite()
 	sr.hasWrittenText = true
+	sr.appendLiveReplayTextLocked("text", chunk)
+	sr.liveReplayTextFlushed = false
+	if !sr.markdownEnabled {
+		fmt.Fprint(sr.w, chunk)
+		sr.lastEndedWithNewline = strings.HasSuffix(chunk, "\n")
+		return
+	}
 	sr.live.Write(chunk)
 	sr.lastEndedWithNewline = sr.live.EndedWithNewline()
 }
 
 func (sr *StreamRenderer) finishLiveTextLocked() {
+	sr.liveReplayTextFlushed = true
+	if !sr.markdownEnabled {
+		if sr.hasWrittenText && !sr.lastEndedWithNewline {
+			fmt.Fprint(sr.w, "\n")
+			sr.lastEndedWithNewline = true
+		}
+		return
+	}
 	if sr.hasWrittenText {
 		sr.live.EnsureTrailingNewline()
 	} else {
@@ -344,6 +505,7 @@ func (sr *StreamRenderer) Flush() {
 }
 
 func (sr *StreamRenderer) flushLocked() {
+	sr.liveReplayTextFlushed = true
 	sr.endThinking()
 	if sr.pendingThoughtTextGap && sr.parser != nil && sr.parser.ActiveToolName != "" {
 		fmt.Fprint(sr.w, "\n")
@@ -353,6 +515,10 @@ func (sr *StreamRenderer) flushLocked() {
 	// The terminal already reserves one blank row above the stats line.
 	// Finalizing streamed text must not emit another blank terminal row.
 	// StartToolCall still uses finishLiveTextLocked to separate text and tools.
+	if !sr.markdownEnabled {
+		sr.flushActiveToolLocked()
+		return
+	}
 	sr.live.Flush()
 	sr.lastEndedWithNewline = sr.live.EndedWithNewline()
 	sr.flushActiveToolLocked()
@@ -543,7 +709,7 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if view := sr.liveCallViews[index]; view != nil && view.bytes > 0 {
+	if view := sr.liveCallViews[index]; view != nil && (view.bytes > 0 || view.compactLine != -1) {
 		return true
 	}
 	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
@@ -561,6 +727,8 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		}
 	}
 	if view := sr.liveCallViews[index]; view != nil && view.headerShown && (toolName == "write" || toolName == "edit") {
+		view.completed = true
+		view.failed = isError
 		target := extractToolTarget(toolName, toolArgs)
 		if target == "" {
 			target = view.path
@@ -613,6 +781,9 @@ func (sr *StreamRenderer) TryCompleteWriteResult(index int, line string) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	position, exists := sr.writeResultLines[index]
+	if view := sr.liveCallViews[index]; view != nil {
+		view.result = line
+	}
 	if !exists || strings.ContainsAny(line, "\r\n") {
 		return false
 	}

@@ -51,14 +51,22 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 	applyFlagOverrides(cmd, cfg)
 	allowed := parseAllowedTools(allowedToolsStr)
-	if cmd.Flags().Changed("tools")&&strings.TrimSpace(allowedToolsStr)!=""&&len(allowed)==0&& !strings.EqualFold(strings.TrimSpace(allowedToolsStr),"none")&&!strings.EqualFold(strings.TrimSpace(allowedToolsStr),"empty"){return fmt.Errorf("--tools must contain tool names or none")}
- if noTools {
+	if cmd.Flags().Changed("tools") && strings.TrimSpace(allowedToolsStr) != "" && len(allowed) == 0 && !strings.EqualFold(strings.TrimSpace(allowedToolsStr), "none") && !strings.EqualFold(strings.TrimSpace(allowedToolsStr), "empty") {
+		return fmt.Errorf("--tools must contain tool names or none")
+	}
+	if noTools {
 		allowed = []string{}
 	}
 	noninteractive := printOnce || len(args) > 0 || outputMode != "text" || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
 	if !noninteractive && !cmd.Flags().Changed("trust") && !ignoreProject {
-		ensureWorkspaceTrust(workspace,cfg,false)
- if !cfg.DisableProjectPlugins&&!trusted{cfg,err=config.LoadWorkspaceConfig(configPath,workspace,true);if err!=nil{return err};applyFlagOverrides(cmd,cfg)}
+		ensureWorkspaceTrust(workspace, cfg, false)
+		if !cfg.DisableProjectPlugins && !trusted {
+			cfg, err = config.LoadWorkspaceConfig(configPath, workspace, true)
+			if err != nil {
+				return err
+			}
+			applyFlagOverrides(cmd, cfg)
+		}
 	}
 	options := runtime.Options{Config: cfg, ConfigPath: configPath, Workspace: workspace, SessionID: sessionIDFlag, Resume: resumeSession, NoSession: noSession, Tools: allowed, KeepSelection: cmd.Flags().Changed("model") || cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("reasoning")}
 	var outputMu sync.Mutex

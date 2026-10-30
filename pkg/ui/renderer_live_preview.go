@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/stream"
 	"loop/pkg/ui/style"
 )
@@ -85,7 +86,7 @@ func (sr *StreamRenderer) ShowToolLivePreview(index int, name, excerpt string, s
 		name = "…"
 	}
 	name = cleanPreviewLine(name, 32)
-	title := "◆ " + name
+	title := render.GetToolGlyph(name) + " " + name
 	if !strings.Contains(name, " ") {
 		title += " …"
 	}

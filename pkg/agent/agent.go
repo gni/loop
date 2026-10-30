@@ -109,9 +109,19 @@ type Agent struct {
 	StreamingTask string
 
 	CurrentStreamBuffer *bytes.Buffer
+	// CurrentHistorySnapshot supplies the history owned by the running loop.
+	// Invoke on the foreground presentation goroutine, alongside stream replay.
+	CurrentHistorySnapshot func() []db.Message
+	// CurrentStreamReplay renders semantic, not terminal-byte, output from
+	// the uncommitted model step. Its renderer locks its own snapshot.
+	CurrentStreamReplay func(io.Writer, bool, style.UITheme)
 	CurrentStreamMu     sync.Mutex
+	// OnStreamProgress runs on the foreground stream consumer after a chunk
+	// has been rendered. It may request a safe redraw of the active turn.
+	OnStreamProgress func() bool
 
 	stateMu        sync.Mutex
+	liveToolWriter io.Writer
 	currentWriter  io.Writer
 	currentContext context.Context
 	currentTheme   style.UITheme
@@ -278,6 +288,9 @@ func (a *Agent) NewTurnStreamRenderer(w io.Writer, theme style.UITheme, agentNam
 		sr = &FallbackStreamRenderer{w: w}
 	}
 	sr.SetPrompt(prompt)
+	if presenter, ok := sr.(interface{ SetLiveCollapse(bool) }); ok && a != nil && a.Config != nil {
+		presenter.SetLiveCollapse(a.Config.CollapseResults)
+	}
 	return sr
 }
 
@@ -409,6 +422,9 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 
 	cfg.NormalizeSafety()
 	a.Config = cfg
+	if ui, ok := a.UI.(interface{ SetConfig(*config.Config) }); ok {
+		ui.SetConfig(cfg)
+	}
 	a.ensureGuided().SetEnabled(cfg.GuidedMode)
 	if a.FileObservations != nil {
 		a.FileObservations.SetDisabled(cfg.DisableObservationGuard)
@@ -693,26 +709,37 @@ func (a *Agent) GetActiveSkills() []tool.Skill {
 }
 
 func (a *Agent) ReloadSkills() []tool.Skill {
+	skills, _ := a.ReloadSkillsChecked()
+	return skills
+}
+
+func (a *Agent) ReloadSkillsChecked() ([]tool.Skill, error) {
 	if a == nil || a.Config == nil {
-		return a.GetActiveSkills()
+		return a.GetActiveSkills(), nil
 	}
 	dirs := append(SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot), a.Config.SkillDirectories...)
 	if len(dirs) == 0 {
-		return a.GetActiveSkills()
+		return a.GetActiveSkills(), nil
 	}
 	skills, err := LoadSkillsFromDirs(dirs...)
-	a.stateMu.Lock()
-	if err == nil {
-		a.ActiveSkills = skills
-		a.ForceSystemPromptUpdate = true
+	if err != nil {
+		return a.GetActiveSkills(), err
 	}
-	out := make([]tool.Skill, len(a.ActiveSkills))
-	copy(out, a.ActiveSkills)
+	a.stateMu.Lock()
+	a.ActiveSkills = skills
+	a.ForceSystemPromptUpdate = true
+	out := append([]tool.Skill(nil), a.ActiveSkills...)
 	a.stateMu.Unlock()
-	return out
+	return out, nil
 }
 
 func (a *Agent) GetLiveWriter() io.Writer {
+	a.stateMu.Lock()
+	w := a.liveToolWriter
+	a.stateMu.Unlock()
+	if w != nil {
+		return w
+	}
 	return a.CurrentWriter()
 }
 
@@ -750,10 +777,7 @@ func defaultAskUserSelection(options []tool.AskUserOption, recommended string) s
 }
 
 func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (int, int) {
-	promptTokens := EstimateMessagesTokens(messages)
-	if a.Registry != nil {
-		promptTokens += EstimateToolSchemaTokens(a.Registry.GetAvailableTools(allowlist))
-	}
+	promptTokens, _, _ := a.GetGlobalTokenUsage(messages, allowlist)
 	return promptTokens, a.GetEffectiveContextLimit(promptTokens)
 }
 

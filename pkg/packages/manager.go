@@ -227,9 +227,9 @@ func (m Manager) Update(ctx context.Context, source string) error {
 
 func ReadManifest(directory string) (Manifest, error) {
 	var manifest Manifest
-	data, err := storage.ReadFile(filepath.Join(directory, "loop.json"),1<<20)
+	data, err := storage.ReadFile(filepath.Join(directory, "loop.json"), 1<<20)
 	if os.IsNotExist(err) {
-		data, err = storage.ReadFile(filepath.Join(directory, "package.json"),1<<20)
+		data, err = storage.ReadFile(filepath.Join(directory, "package.json"), 1<<20)
 		if err != nil {
 			return manifest, fmt.Errorf("package needs loop.json or package.json")
 		}

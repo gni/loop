@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
+	"reflect"
 	"strings"
 
 	"loop/pkg/agent"
@@ -38,18 +38,40 @@ func handleConfigCommand(
 		ui.ShutdownStatusBar(os.Stderr)
 		newConfig, errInteractive := interactive.RunInteractiveConfig(a.Config, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
-		if errInteractive == nil && newConfig != nil {
-			if newConfig.GuidedMode && !a.Config.GuidedMode {
-				newConfig.AutoApprove = false
-				newConfig.ApprovalAlwaysAnswer = false
-				newConfig.ParallelToolCalls = false
+		if errInteractive != nil {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+			fmt.Fprintf(w, "settings menu failed: %v\n", errInteractive)
+			return
+		}
+		if newConfig == nil || reflect.DeepEqual(a.Config, newConfig) {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+			return
+		}
+
+		previous := *a.Config
+		if newConfig.GuidedMode && !previous.GuidedMode {
+			newConfig.AutoApprove = false
+			newConfig.ApprovalAlwaysAnswer = false
+			newConfig.ParallelToolCalls = false
+		}
+		if newConfig.PromptsFile != previous.PromptsFile {
+			if err := domaintool.LoadPromptCatalog(newConfig.PromptsFile); err != nil {
+				ui.RestoreAfterModal(w, a, kiReader, rl)
+				fmt.Fprintf(w, "prompt catalog not applied: %v\n", err)
+				return
 			}
-			a.ApplyConfig(newConfig)
-			ui.SetCollapseStatus(a.Config.CollapseResults)
-			*theme = style.ResolveConfiguredTheme(a.Config.Theme, a.Config.SyntaxTheme)
-			_ = config.SaveConfig(a.ConfigPath, a.Config)
+		}
+		a.ApplyConfig(newConfig)
+		limits.Set(a.Config.Limits)
+		ui.SetCollapseStatus(a.Config.CollapseResults)
+		saved := saveConfigUpdate(a, w)
+		if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), true) {
+			return
 		}
 		ui.RestoreAfterModal(w, a, kiReader, rl)
+		if saved {
+			fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
+		}
 		return
 	}
 
@@ -77,184 +99,75 @@ func handleConfigCommand(
 	key := parts[startIndex]
 	val := strings.Join(parts[startIndex+1:], " ")
 
-	switch key {
-	case "endpoint", "url":
-		a.Config.Endpoint = val
-		a.Config.UpdateActiveProvider()
-	case "model":
-		a.Config.Model = val
-		a.Config.UpdateActiveProvider()
-	case "api_key", "key":
-		a.Config.ApiKey = val
-		a.Config.UpdateActiveProvider()
-	case "temperature", "temp":
-		t, err := strconv.ParseFloat(val, 64)
-		if err != nil {
-			fmt.Fprintf(w, "Invalid temperature value: %v\n", err)
-			return
-		}
-		a.Config.Temperature = t
-	case "auto_approve", "yes", "yolo":
-		a.Config.AutoApprove = config.ParseBool(val)
-		if a.Config.AutoApprove {
-			a.SetGuidedMode(false)
-		}
-	case "guided_mode", "guided":
-		a.SetGuidedMode(config.ParseBool(val))
-	case "approval_always_answer", "always_answer":
-		a.Config.ApprovalAlwaysAnswer = config.ParseBool(val)
-	case "show_thinking", "thinking":
-		a.Config.ShowThinking = config.ParseBool(val)
-	case "reasoning_effort", "reasoning":
-		effort, err := config.ParseReasoningEffort(val)
-		if err != nil {
-			fmt.Fprintf(w, "Invalid reasoning effort '%s'. Allowed values: off, low, medium, high, max\n", val)
-			return
-		}
-		a.Config.ReasoningEffort = effort
-	case "before_tool_hook", "before_hook":
-		a.Config.BeforeToolHook = val
-	case "after_tool_hook", "after_hook":
-		a.Config.AfterToolHook = val
-	case "collapse_results", "collapse":
-		a.Config.CollapseResults = config.ParseBool(val)
-		ui.SetCollapseStatus(a.Config.CollapseResults)
-	case "show_tokens", "tokens":
-		a.Config.ShowTokens = config.ParseBool(val)
-	case "theme":
-		a.Config.Theme = val
-		*theme = ui.GetConfiguredTheme(a.Config)
-	case "syntax_theme", "syntax":
-		a.Config.SyntaxTheme = val
-		*theme = ui.GetConfiguredTheme(a.Config)
-	case "context_window_limit", "context_limit", "context":
-		if strings.EqualFold(val, "auto") {
-			a.Config.AutoAdaptContext = true
-			_ = config.SaveConfig(a.ConfigPath, a.Config)
-			fmt.Fprintln(w, "context auto-adaptation enabled.")
-			return
-		}
-		if !parseConfigPositiveInt(w, "context window limit", val, &a.Config.ContextWindowLimit) {
-			return
-		}
-	case "auto_adapt_context", "auto_adapt":
-		a.Config.AutoAdaptContext = config.ParseBool(val)
-	case "min_context_window", "min_context":
-		if !parseConfigPositiveInt(w, "min context window", val, &a.Config.MinContextWindow) {
-			return
-		}
-	case "compression_threshold", "compress_threshold", "compression_ratio":
-		f, err := config.ParseCompressionThreshold(val)
-		if err != nil {
-			fmt.Fprintf(w, "Invalid compression threshold: %v\n", err)
-			return
-		}
-		a.Config.CompressionThreshold = f
-	case "compaction_reserve_tokens", "compaction_reserve", "reserve_tokens":
-		var reserve int
-		if !parseConfigPositiveInt(w, "compaction reserve tokens", val, &reserve) {
-			return
-		}
-		a.Config.Limits.CompactionReserveTokens = reserve
-		a.Config.Limits = limits.Resolve(a.Config.Limits)
-		limits.Set(a.Config.Limits)
-	case "max_completion_tokens", "max_tokens", "output_tokens":
-		if !parseConfigPositiveInt(w, "max completion tokens", val, &a.Config.MaxCompletionTokens) {
-			return
-		}
-	case "max_reasoning_steps", "max_steps", "steps":
-		if !parseConfigPositiveInt(w, "max reasoning steps", val, &a.Config.MaxReasoningSteps) {
-			return
-		}
-	case "direct_commands", "direct":
-		a.Config.DirectCommands = config.ParseBool(val)
-	case "cert_file", "cert":
-		a.Config.CertFile = val
-	case "key_file", "client_key":
-		a.Config.KeyFile = val
-	case "ca_file", "ca":
-		a.Config.CAFile = val
-	case "skip_verify", "skip":
-		a.Config.SkipVerify = config.ParseBool(val)
-	case "stream_writes", "stream_write", "stream":
-		a.Config.StreamWrites = config.ParseBool(val)
-	case "debug_log_file", "debug":
-		a.Config.DebugLogFile = val
-	case "max_paste_lines", "paste_lines", "paste_threshold":
-		if !parseConfigPositiveInt(w, "max paste lines", val, &a.Config.MaxPasteLines) {
-			return
-		}
-	case "max_paste_chars", "paste_chars":
-		if !parseConfigPositiveInt(w, "max paste chars", val, &a.Config.MaxPasteChars) {
-			return
-		}
-	case "timeout", "llm_timeout":
-		sec, err := strconv.Atoi(val)
-		if err != nil || sec < 0 {
-			fmt.Fprintf(w, "Invalid timeout value: %v (must be non-negative integer)\n", err)
-			return
-		}
-		a.Config.Timeout = sec
-	case "max_tool_output_bytes", "spill_limit":
-		if !parseConfigPositiveInt(w, "max tool output bytes", val, &a.Config.MaxToolOutputBytes) {
-			return
-		}
-	case "repeat_guard_limit", "guard_limit":
-		if !parseConfigPositiveInt(w, "repeat guard limit", val, &a.Config.RepeatGuardLimit) {
-			return
-		}
-	case "persistent_bash", "persistent_shell":
-		a.Config.PersistentBash = config.ParseBool(val)
-	case "atomic_writes", "atomic_write":
-		a.Config.AtomicWrites = config.ParseBool(val)
-	case "disable_file_observation_guard", "file_guard_off":
-		a.Config.DisableObservationGuard = config.ParseBool(val)
-	case "recap_interval", "recap":
-		n, err := strconv.Atoi(val)
-		if err != nil {
-			fmt.Fprintf(w, "Invalid recap interval: %v (must be an integer; negative disables)\n", err)
-			return
-		}
-		a.Config.RecapInterval = n
-	case "prompts_file", "prompts":
-		a.Config.PromptsFile = val
-		if err := domaintool.LoadPromptCatalog(val); err != nil {
-			fmt.Fprintf(w, "prompt catalog not applied: %v\n", err)
-		} else {
-			fmt.Fprintf(w, "prompt catalog reloaded from %s\n", val)
-		}
-	case "disable_recap":
-		a.Config.DisableRecap = config.ParseBool(val)
-	case "ask_user_mode", "ask_user":
-		mode, err := config.ParseAskUserMode(val)
-		if err != nil {
-			fmt.Fprintf(w, "Invalid ask_user_mode '%s'. Allowed: interactive, always_ask, auto_recommended, disabled\n", val)
-			return
-		}
-		a.Config.SetAskUserMode(mode)
-		a.Config.UpdateActiveProvider()
-	case "disabled_tools", "disable_tools", "disable_tool":
-		a.EnableAllTools()
-		if cleaned := config.ParseToolList(val); len(cleaned) > 0 {
-			a.DisableTools(cleaned...)
-		}
-	default:
-		fmt.Fprintf(w, "unknown config key: %s\n", key)
+	previous := *a.Config
+	if (key == "context_window_limit" || key == "context_limit" || key == "context") && strings.EqualFold(val, "auto") {
+		a.Config.AutoAdaptContext = true
+	} else if !setConfigValue(a, key, val, theme, w) {
 		return
 	}
 
 	a.ApplyConfig(a.Config)
-	_ = config.SaveConfig(a.ConfigPath, a.Config)
-	fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
+	saved := saveConfigUpdate(a, w)
+	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), false) {
+		return
+	}
+	if saved {
+		fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
+	}
 	syncCommandStatus(a, messages, *theme, w, kiReader, calcHistoryTokens, true)
 }
 
-func parseConfigPositiveInt(w io.Writer, name, val string, target *int) bool {
-	n, err := strconv.Atoi(val)
-	if err != nil || n <= 0 {
-		fmt.Fprintf(w, "Invalid %s: %v (must be positive integer)\n", name, err)
+// redrawConfigIfNeeded redraws history only for settings that affect its appearance.
+// The active renderer is never modified mid-turn; subsequent turns use the new config.
+func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader, notice string, force bool) bool {
+	*theme = style.ResolveConfiguredTheme(a.Config.Theme, a.Config.SyntaxTheme)
+	if kiReader != nil {
+		kiReader.Theme = *theme
+		if kiReader.MAM != nil {
+			kiReader.MAM.SetOutput(w, *theme)
+		}
+	}
+	if kiReader == nil || kiReader.RL == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
 		return false
 	}
-	*target = n
+	ui.RedrawScreenWithNotice(w, a, kiReader, kiReader.RL, notice)
+	return true
+}
+
+func configAppearanceChanged(before, after config.Config) bool {
+	return before.MarkdownRender != after.MarkdownRender ||
+		before.Theme != after.Theme ||
+		before.SyntaxTheme != after.SyntaxTheme ||
+		before.CollapseResults != after.CollapseResults ||
+		before.ShowThinking != after.ShowThinking ||
+		before.ReasoningEffort != after.ReasoningEffort ||
+		before.ShowTokens != after.ShowTokens ||
+		before.ShowMicroseconds != after.ShowMicroseconds
+}
+
+func configUpdateNotice(saved bool, path string) string {
+	if !saved {
+		return "config applied in memory, but could not save to " + path
+	}
+	return "config updated. saved to " + path
+}
+
+func configRestartHint(before, after config.Config) string {
+	if before.CertFile != after.CertFile || before.KeyFile != after.KeyFile ||
+		before.CAFile != after.CAFile || before.SkipVerify != after.SkipVerify {
+		return " (restart required to rebuild TLS transport)"
+	}
+	if before.EnableMCP != after.EnableMCP {
+		return " (restart may be needed to reconnect MCP servers)"
+	}
+	return ""
+}
+
+// saveConfigUpdate reports an applied-but-not-persisted setting rather than success.
+func saveConfigUpdate(a *agent.Agent, w io.Writer) bool {
+	if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+		fmt.Fprintf(w, "config applied in memory, but could not save to %s: %v\n", a.ConfigPath, err)
+		return false
+	}
 	return true
 }

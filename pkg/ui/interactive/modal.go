@@ -171,7 +171,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 		for i, char := range buf[:n] {
 			if char == '\r' || char == '\n' {
 				if options[selected].FreeText {
-					pending := string(buf[i+1:n])
+					pending := string(buf[i+1 : n])
 					answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
 					return selected, false, answer
 				}
@@ -183,7 +183,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			for index, option := range options {
 				if strings.ContainsRune(option.Keys, rune(char)) {
 					if option.FreeText {
-						pending := string(buf[i+1:n]) // bytes already consumed past the keypress
+						pending := string(buf[i+1 : n]) // bytes already consumed past the keypress
 						answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
 						return index, false, answer
 					}

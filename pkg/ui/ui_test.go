@@ -1704,7 +1704,7 @@ func TestPrintSessionHistoryHidesThinkingWhenOff(t *testing.T) {
 	cfgOn := &config.Config{ShowThinking: true, ReasoningEffort: "low"}
 	PrintSessionHistory(&buf, messages, theme, cfgOn)
 	outOn := buf.String()
-	if !strings.Contains(outOn, "Secret internal thinking") || !strings.Contains(outOn, "thought (1.5s)") {
+	if !strings.Contains(outOn, "Secret internal thinking") || !strings.Contains(outOn, "thought (1s)") {
 		t.Fatalf("expected thinking text and thought header when reasoning is on, got: %s", outOn)
 	}
 }

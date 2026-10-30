@@ -9,17 +9,21 @@ import (
 	"strings"
 
 	"loop/pkg/domain/message"
- "loop/pkg/transport/sse"
+	"loop/pkg/transport/sse"
 )
 
 // Usage reports token consumption metadata from the LLM provider, including
 // prompt-cache read/write counts when the provider reports them.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-	CacheReadTokens  int `json:"cache_read_input_tokens,omitempty"`
-	CacheWriteTokens int `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	CacheReadTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteTokens    int `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokensDetails struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 // Timings reports llama.cpp token generation counts when usage is omitted.
@@ -108,11 +112,16 @@ func (sr *StreamReader) ReadNextChunk(ctx context.Context) (*RawStreamChunk, boo
 			return nil, true, nil
 		}
 
- sr.reader.OnActivity=sr.OnActivity
- packet,err:=sr.reader.Read(ctx)
- if err==io.EOF{sr.eof=true;return nil,true,nil}
- if err!=nil{return nil,false,fmt.Errorf("error reading stream: %w",err)}
- data:=strings.TrimSpace(packet.Data)
+		sr.reader.OnActivity = sr.OnActivity
+		packet, err := sr.reader.Read(ctx)
+		if err == io.EOF {
+			sr.eof = true
+			return nil, true, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("error reading stream: %w", err)
+		}
+		data := strings.TrimSpace(packet.Data)
 		if data == "[DONE]" {
 			sr.Complete = true
 			return nil, true, nil

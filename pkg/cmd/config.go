@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"loop/pkg/config"
 	"loop/pkg/ui"
 )
 
@@ -32,12 +31,18 @@ var configEditCmd = &cobra.Command{
 		theme := ui.GetConfiguredTheme(cfg)
 
 		newConfig, err := ui.RunInteractiveConfig(cfg, theme, os.Stdin, os.Stdout)
-		if err == nil && newConfig != nil {
-			_ = config.SaveConfig(configPath, newConfig)
-			fmt.Printf("Configuration successfully updated and saved to %s\n", configPath)
-		} else {
-			fmt.Println("interactive configuration cancelled.")
+		if err != nil {
+			fmt.Printf("Error editing configuration: %v\n", err)
+			return
 		}
+		if newConfig == nil {
+			fmt.Println("interactive configuration cancelled.")
+			return
+		}
+		if !saveConfigOrPrintErr(newConfig) {
+			return
+		}
+		fmt.Printf("Configuration successfully updated and saved to %s\n", configPath)
 	},
 }
 

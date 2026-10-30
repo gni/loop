@@ -11,12 +11,13 @@ import (
 	"time"
 
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
-func formatTurnElapsed(startTime time.Time, theme style.UITheme) string {
-	elapsed := time.Since(startTime)
-	timeStr := fmt.Sprintf("%s (%.1fs)", time.Now().Format("2006-01-02 15:04:05"), elapsed.Seconds())
+func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
+	now := time.Now()
+	timeStr := fmt.Sprintf("%s (%s)", now.Format("2006-01-02 15:04:05"), style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds))
 	return style.NewStyle().Foreground(theme.Border).Render(timeStr)
 }
 
@@ -117,32 +118,28 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if !timePrinted {
 			fmt.Fprintln(writerToUse)
 			if isNonInteractive {
-				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme))
+				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme, a.Config.ShowMicroseconds))
 			} else {
 				// Keep the elapsed-time text on the last occupied scroll row.
 				// The reserved row beneath it is already the status-bar gap.
-				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme))
+				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme, a.Config.ShowMicroseconds))
 			}
 		}
 	}()
 
-	a.SyncSessionSystemPrompt(messages, sessionID)
+	// The runtime owns a different history slice from the REPL until the
+	// turn returns. Live redraws need this slice, including completed tool
+	// steps from the current turn, plus the renderer's uncommitted inference.
+	a.CurrentStreamMu.Lock()
+	a.CurrentHistorySnapshot = func() []db.Message { return message.CloneAll(*messages) }
+	a.CurrentStreamMu.Unlock()
+	defer func() {
+		a.CurrentStreamMu.Lock()
+		a.CurrentHistorySnapshot = nil
+		a.CurrentStreamMu.Unlock()
+	}()
 
-	*messages = append(*messages, db.Message{Role: "user", Content: prompt, ContentBlocks: a.InputBlocks})
-	if sessionID != "" {
-		if !a.HasMessages(sessionID) && len(*messages) > 1 && (*messages)[0].Role == "system" {
-			if err := a.SaveMessage(sessionID, (*messages)[0]); err != nil {
-				a.recordPersistenceError(err)
-			}
-		}
-		if err := a.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
-			a.recordPersistenceError(err)
-		}
-	}
-
-	a.emit(Event{Type: "message_end", SessionID: sessionID, Message: &(*messages)[len(*messages)-1]})
-	a.InputBlocks = nil
-	a.DebugLogUserCommand(sessionID, prompt)
+	a.appendTurnInput(messages, prompt, sessionID)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -184,31 +181,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			return
 		}
 
-		if iter > 1 {
-			a.SyncSessionSystemPrompt(messages, sessionID)
-		}
-
-		engine.BeginTurn()
-
-		globalPromptTokensEst, effectiveLimit := a.estimateTurnContext(*messages, allowlist)
-		timer.Time("compaction", "start")
-		globalPromptTokensEst, effectiveLimit, _ = a.maybeCompress(ctx, messages, sessionID, theme, writerToUse, allowlist, globalPromptTokensEst, 0, effectiveLimit)
-		if err := a.persistenceError(); err != nil {
+		globalPromptTokensEst, effectiveLimit, err := a.prepareAgentStep(ctx, messages, allowlist, sessionID, iter, lastToolTrailingNewlines, engine, sink, timer, writerToUse, theme)
+		if err != nil {
 			runErr = err
 			return
-		}
-		timer.Time("compaction", "end")
-
-		if engine.ShouldRecap() {
-			engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, writerToUse, theme)
-			globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
-		}
-
-		if iter > 1 {
-			for lines := lastToolTrailingNewlines; lines < style.ActivityGapLines+1; lines++ {
-				fmt.Fprint(writerToUse, "\n")
-			}
-			fmt.Fprintln(writerToUse, style.ActivityDivider(theme))
 		}
 
 		toolsForLog := a.Registry.GetAvailableTools(allowlist)
@@ -236,6 +212,13 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		ncw := &NewlineCounterWriter{Writer: teeWriter}
 		a.SetCurrentWriter(ncw)
 		sr := a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
+		if replay, ok := sr.(interface {
+			ReplayActiveTurn(io.Writer, bool, style.UITheme)
+		}); ok {
+			a.CurrentStreamMu.Lock()
+			a.CurrentStreamReplay = replay.ReplayActiveTurn
+			a.CurrentStreamMu.Unlock()
+		}
 
 		echoFilter := NewPromptEchoFilter(prompt)
 		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
@@ -289,7 +272,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				EndLiveToolContent()
 			}); ok {
 				toolStream.PreviewOnly()
-				toolStream.SetLiveContentCallback(presenter.ShowLiveToolContent)
+				toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
+					// Ctrl+O may change this setting while the provider is streaming.
+					// Apply it before every chunk, including the first of a new file.
+					if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
+						view.SetLiveCollapse(a.Config.CollapseResults)
+					}
+					presenter.ShowLiveToolContent(index, name, path, delta)
+				})
 				toolStream.SetEditDiffPreview(func(name, arguments string) string {
 					return PreviewToolDiff(a, name, arguments)
 				})
@@ -324,38 +314,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				toolStream.SetBatch(batch)
 			}
 		}
-		for chunk := range chunkChan {
-			a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
-			switch chunk.Type {
-			case "reasoning":
-				if loader != nil {
-					loader.PauseDots()
-					loader.Feed()
-				}
-				if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
-					sr.WriteReasoning(cleaned)
-				}
-			case "text":
-				if loader != nil {
-					loader.PauseDots()
-					loader.Feed()
-				}
-				sr.Write(chunk.Content)
-			case "tool_name":
-				if loader != nil {
-					loader.ShowDots()
-					loader.Feed()
-				}
-				toolStream.Feed(chunk)
-			case "tool_target":
-				toolStream.Feed(chunk)
-			case "tool_call":
-				if loader != nil {
-					loader.Feed()
-				}
-				toolStream.Feed(chunk)
-			}
-		}
+		a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream)
 		timer.Time("llm", "end")
 
 		if pending := echoFilter.Flush(); pending != "" {
@@ -370,14 +329,27 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			presenter.EndLiveToolContent()
 		}
 		sr.Flush()
+		// Handle a toggle received with the last provider chunk before
+		// the live stream snapshot is released.
+		canReplay := true
+		if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+			canReplay = view.SafeToReplay()
+		}
+		if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
+			if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+				view.InvalidateTrackedRows()
+			}
+		}
 		stopTicker()
 
 		a.CurrentStreamMu.Lock()
 		a.CurrentStreamBuffer = nil
+		a.CurrentStreamReplay = nil
 		a.CurrentStreamMu.Unlock()
 
 		res := <-resChan
-		if res.err != nil && ctx.Err() == nil && isContextOverflow(res.err) && len(*messages) > 4 {
+		// Retrying after a speculative file operation could replay a side effect.
+		if res.err != nil && len(earlyCalls) == 0 && ctx.Err() == nil && isContextOverflow(res.err) && len(*messages) > 4 {
 			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
 			if err := a.CompressHistory(ctx, messages, sessionID, theme, writerToUse); err == nil {
 				retryChunks := make(chan StreamChunk, 200)
@@ -387,7 +359,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					close(retryChunks)
 					retryDone <- streamResult{msg, err}
 				}()
-				for chunk := range retryChunks {
+				for chunk := range relayStreamChunks(ctx, retryChunks) {
 					a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
 					if chunk.Type == "text" {
 						sr.Write(chunk.Content)
@@ -453,20 +425,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
 		}
 
-		// Calls already executed during generation must still agree with
-		// the final provider response. Never execute a mismatched call twice.
-		mismatch := len(earlyCalls) > len(assistantMsg.ToolCalls)
-		if !mismatch {
-			for i, early := range earlyCalls {
-				final := assistantMsg.ToolCalls[i]
-				if early.Function.Name != final.Function.Name ||
-					SanitizeLLMControlTokens(early.Function.Arguments) != final.Function.Arguments {
-					mismatch = true
-					break
-				}
-			}
-		}
-		if mismatch {
+		if !reconcileEarlyToolCalls(assistantMsg, earlyCalls, earlyMessages) {
 			batch.CancelUnfinished()
 			sink.Append(db.Message{Role: "assistant", ToolCalls: earlyCalls, StopReason: "interrupted"})
 			for _, m := range earlyMessages {
@@ -476,13 +435,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			a.renderTurnError(writerToUse, ncw, sink, runErr, ctx.Err(), isNonInteractive, theme)
 			return
 		}
-		for i := range earlyCalls {
-			for j := range earlyMessages {
-				if earlyMessages[j].ToolCallID == earlyCalls[i].ID {
-					earlyMessages[j].ToolCallID = assistantMsg.ToolCalls[i].ID
-				}
-			}
-		}
+
 		batch.Seal(assistantMsg.ToolCalls)
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
@@ -510,33 +463,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
-			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
-				pending.MarkPendingWriteResults("Not executed")
-			}
-			a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
 			result.Text = assistantMsg.Content
-			if loader != nil {
-				loader.Stop()
-			}
 			timePrinted = true
-			timeStyled := formatTurnElapsed(startTime, theme)
-
-			statsText := timeStyled
-			if a.Config.ShowTokens && assistantMsg.CompletionTokens > 0 {
-				statsText = formatCompletionTokensBadge(assistantMsg.CompletionTokens, theme) + timeStyled
-			}
-
-			_, height := style.GetTerminalSize()
-			if height > 0 && a.UI != nil {
-				a.UI.DrawStatsLine(rawW, theme, "", statsText)
-			} else {
-				fmt.Fprintln(writerToUse, statsText)
-			}
-
-			if dropped := a.TurnDroppedChunks(); dropped > 0 && a.UI != nil {
-				a.UI.RenderGenerationError(writerToUse, fmt.Sprintf("output truncated: %d stream chunk(s) could not be delivered to the UI", dropped), theme)
-			}
-
+			a.renderFinalAgentTurn(assistantMsg, sr, loader, rawW, writerToUse, sessionID, startTime, theme)
 			syncPostTurnStatus()
 			return
 		}
@@ -544,42 +473,20 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		syncPostTurnStatus()
 
 		timer.Time("tool", "start")
-		engine.SetToolBatch(batch)
-		if sequentialDisplay {
-			engine.SetBeforeToolCall(toolStream.ReplayCall)
-		}
-		logCall := func(tc db.ToolCall, output string, toolErr error) {
-			a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
-		}
-		var halted, aborted bool
-		if len(earlyCalls) == 0 {
-			halted, aborted = engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, loader, ncw, theme, NewMainRenderer(a), logCall)
-		} else {
-			// Earlier calls already ran and were persisted above. Execute
-			// only the remaining indexes in model order (never twice).
-			for idx := len(earlyCalls); idx < len(assistantMsg.ToolCalls); idx++ {
-				tc := assistantMsg.ToolCalls[idx]
-				halted, aborted = engine.ExecuteToolCallAt(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, sink, sr, loader, ncw, theme, NewMainRenderer(a), logCall)
-				if halted || aborted {
-					if aborted {
-						engine.RecordInterruption(sink, assistantMsg.ToolCalls[idx+1:], "aborted by user")
-					}
-					break
-				}
-			}
-			// This path bypasses ExecuteToolCalls' deferred cleanup. Any
-			// preview left by an interrupted call must not imply success.
-			if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
-				marker.MarkPendingWriteResults("Not executed")
-			}
-		}
-		engine.SetBeforeToolCall(nil)
-		engine.SetToolBatch(nil)
-		if halted || aborted {
-			batch.CancelUnfinished()
-		}
+		halted, aborted := a.runRemainingToolCalls(ctx, engine, batch, toolStream, assistantMsg, earlyCalls, sequentialDisplay, sink, sr, loader, ncw, theme, sessionID, iter)
 		timer.Time("tool", "end")
 		a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
+		// Tool execution may run without provider chunks. Handle queued Ctrl+O
+		// after the tool results have entered saved conversation history.
+		canReplay = true
+		if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+			canReplay = view.SafeToReplay()
+		}
+		if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
+			if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+				view.InvalidateTrackedRows()
+			}
+		}
 		if halted || aborted {
 			if ctx.Err() != nil {
 				runErr = ctx.Err()

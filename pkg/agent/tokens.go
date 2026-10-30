@@ -49,13 +49,24 @@ func messageChars(m db.Message) int {
 }
 
 func EstimateMessageTokens(m db.Message) int {
-	if m.PromptTokens > 0 || m.CompletionTokens > 0 {
-		return m.PromptTokens + m.CompletionTokens
-	}
-	return TokensFromChars(messageChars(m))
+	// Provider usage describes an entire request, not the size of this message.
+	// Compaction must budget the content actually retained in the history.
+	return TokensFromChars(messageChars(m) + len(m.Role) + len(m.Name) + len(m.ToolCallID) + 12)
 }
 
 func EstimateMessagesTokens(messages []db.Message) int {
+	// Summarization replaces older history with new text but retains historical
+	// billing totals separately. Old provider prompt counts no longer describe
+	// the compacted request, so estimate from retained content instead.
+	for _, m := range messages {
+		if m.Role == "system" && m.Usage != nil {
+			chars := 0
+			for _, retained := range messages {
+				chars += messageChars(retained) + len(retained.Role) + len(retained.Name) + len(retained.ToolCallID) + 12
+			}
+			return TokensFromChars(chars)
+		}
+	}
 	trailingTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
@@ -72,6 +83,7 @@ func CacheTokenTotals(history []db.Message) (int, int) {
 		if m.Usage != nil {
 			reads += m.Usage.CacheRead
 			writes += m.Usage.CacheWrite
+			continue
 		}
 		reads += m.CacheReadTokens
 		writes += m.CacheWriteTokens
@@ -179,24 +191,28 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Role != "assistant" || messageChars(m) == 0 {
-			continue
+	// The status bar displays the estimated context for the *next* request,
+	// not the input count of the last completed request. A provider-reported
+	// prompt count anchors the estimate; its response and later tool/user
+	// messages must also be accounted for.
+	compacted := false
+	for _, m := range messages {
+		if m.Role == "system" && m.Usage != nil {
+			compacted = true
+			break
 		}
-		if m.PromptTokens > 0 {
-			return m.PromptTokens, m.CompletionTokens, false
+	}
+	if !compacted {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
+				return EstimateMessagesTokens(messages), 0, true
+			}
 		}
-		chars := 0
-		for _, prior := range messages[:i] {
-			chars += messageChars(prior)
-		}
-		return TokensFromChars(chars), m.CompletionTokens, true
 	}
 
-	msgChars := 0
+	chars := 0
 	for _, m := range messages {
-		msgChars += messageChars(m)
+		chars += messageChars(m) + len(m.Role) + len(m.Name) + len(m.ToolCallID) + 12
 	}
 
 	toolTokens := 0
@@ -208,8 +224,8 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 		toolTokens = EstimateToolSchemaTokens(tools)
 	}
 
-	if initialTokens := TokensFromChars(msgChars) + toolTokens; initialTokens > 0 {
-		return initialTokens, 0, true
+	if estimate := TokensFromChars(chars) + toolTokens; estimate > 0 {
+		return estimate, 0, true
 	}
 	return 0, 0, false
 }

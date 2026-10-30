@@ -23,6 +23,16 @@ type UsageTotals struct {
 var CostPerMillionTokens = map[string]struct{ In, Out float64 }{}
 
 func AddUsageToTotals(t *UsageTotals, m message.Message) {
+	if m.Usage != nil {
+		t.Input += m.Usage.Input
+		t.Output += m.Usage.Output
+		t.CacheRead += m.Usage.CacheRead
+		t.CacheWrite += m.Usage.CacheWrite
+		if m.Usage.Cost != nil {
+			t.Cost += *m.Usage.Cost
+		}
+		return
+	}
 	t.Input += m.PromptTokens
 	t.Output += m.CompletionTokens
 	t.CacheRead += m.CacheReadTokens
@@ -54,7 +64,7 @@ func GetUsageCostBreakdown(messages []db.Message, defaultModel string) []UsageCo
 				key = "unknown"
 			}
 		case "toolResult", "system":
-			if m.PromptTokens+m.CompletionTokens+m.CacheReadTokens+m.CacheWriteTokens == 0 {
+			if m.Usage == nil && m.PromptTokens+m.CompletionTokens+m.CacheReadTokens+m.CacheWriteTokens == 0 {
 				continue
 			}
 			key = "Tools/summaries"
@@ -71,7 +81,8 @@ func GetUsageCostBreakdown(messages []db.Message, defaultModel string) []UsageCo
 
 	out := make([]UsageCostBreakdownEntry, 0, len(totals))
 	for key, t := range totals {
-		totalTok := t.Input + t.Output + t.CacheRead + t.CacheWrite
+		// Cache tokens are already included in normalized input usage.
+		totalTok := t.Input + t.Output
 		if t.Cost == 0 && totalTok == 0 {
 			continue
 		}

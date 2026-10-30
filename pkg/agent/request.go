@@ -188,6 +188,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 
 	caps := p.chatCapabilities()
+	if !enableThinking && p.Config != nil && !caps.ReasoningEffort && !caps.ThinkingControls && len(p.selectedModel().Reasoning) > 0 {
+		return ChatCompletionRequest{}, nil, nil, fmt.Errorf("cannot enforce reasoning:off for model %q: the provider has no configured reasoning_effort or thinking_controls capability", p.Config.Model)
+	}
 	var model string
 	var temperature float64
 	if p.Config != nil {
@@ -215,7 +218,12 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		reqBody.MaxTokens = maxCompTokens
 	}
 	if caps.ReasoningEffort {
-		reqBody.ReasoningEffort = reasoningEffort
+		if enableThinking {
+			reqBody.ReasoningEffort = reasoningEffort
+		} else {
+			// Omitting this field can leave the model's default reasoning enabled.
+			reqBody.ReasoningEffort = "none"
+		}
 	}
 	if caps.Penalties && p.Config != nil {
 		if p.Config.FrequencyPenalty != 0 {

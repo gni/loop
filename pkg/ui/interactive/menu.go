@@ -186,7 +186,10 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			termH = 24
 		}
 
-		useTwoCols := termW >= 72 && len(filtered) > 1
+		// Provider profiles are contiguous groups of fields. Splitting the
+		// flattened list in half can separate a provider from its settings.
+		providerMenu := title == "endpoint providers config"
+		useTwoCols := !providerMenu && termW >= 72 && len(filtered) > 1
 		rows := len(filtered)
 		if useTwoCols {
 			rows = (len(filtered) + 1) / 2
@@ -251,8 +254,41 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 				}
 			}
 		} else {
-			for idx, item := range filtered {
-				buf.WriteString(formatMenuCell(item, idx == selectedIdx, termW-4, theme) + "\n")
+			start, end := 0, len(filtered)
+			if providerMenu {
+				// Leave room for the selected field's untruncated value and
+				// the description/navigation footer, even with many providers.
+				visibleRows := termH - 8
+				if termH >= 14 && len(filtered) > 0 {
+					valueWidth := termW - 8
+					if valueWidth < 1 {
+						valueWidth = 1
+					}
+					valueLen := utf8.RuneCountInString(filtered[selectedIdx].value())
+					if valueLen > 0 {
+						valueRows := (valueLen + valueWidth - 1) / valueWidth
+						if valueRows > 3 {
+							valueRows = 3
+						}
+						visibleRows -= valueRows + 1
+					}
+				}
+				if visibleRows < 1 {
+					visibleRows = 1
+				}
+				if len(filtered) > visibleRows {
+					start = selectedIdx - visibleRows + 1
+					if start < 0 {
+						start = 0
+					}
+					if start+visibleRows > len(filtered) {
+						start = len(filtered) - visibleRows
+					}
+					end = start + visibleRows
+				}
+			}
+			for idx := start; idx < end; idx++ {
+				buf.WriteString(formatMenuCell(filtered[idx], idx == selectedIdx, termW-4, theme) + "\n")
 			}
 		}
 
@@ -263,7 +299,33 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			buf.WriteString("\n")
 		}
 
-		if extraRender != nil && termH >= 20 {
+		if providerMenu {
+			// The overview duplicates the provider fields and can push the
+			// next provider out of view. Show the complete selected value
+			// instead; formatMenuCell intentionally shortens long values.
+			if termH >= 14 && len(filtered) > 0 {
+				value := []rune(filtered[selectedIdx].value())
+				if len(value) > 0 {
+					valueWidth := termW - 8
+					if valueWidth < 1 {
+						valueWidth = 1
+					}
+					buf.WriteString("  " + style.NewStyle().Foreground(theme.Secondary).Render("value:") + "\n")
+					for row := 0; row < 3 && len(value) > 0; row++ {
+						n := valueWidth
+						if n > len(value) {
+							n = len(value)
+						}
+						line := string(value[:n])
+						value = value[n:]
+						if row == 2 && len(value) > 0 && n > 1 {
+							line = string([]rune(line)[:n-1]) + "…"
+						}
+						buf.WriteString("    " + style.NewStyle().Foreground(theme.Text).Render(line) + "\n")
+					}
+				}
+			}
+		} else if extraRender != nil && termH >= 20 {
 			extraRender(&buf)
 		}
 

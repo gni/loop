@@ -35,7 +35,9 @@ func (t *loadSkillTool) Execute(ctx AgentContext, arguments string) (string, err
 		Skill     string `json:"skill"`
 		SkillName string `json:"skill_name"`
 	}
-	_ = ParseToolArguments(arguments, &args, func(s string) { raw = s })
+	if err := ParseToolArguments(arguments, &args, func(s string) { raw = s }); err != nil {
+		return "", fmt.Errorf("parse load_skill arguments: %w", err)
+	}
 	name := strings.TrimSpace(FirstNonEmpty(raw, args.Name, args.Skill, args.SkillName))
 	if name == "" {
 		return "", fmt.Errorf("missing required argument: skill name")

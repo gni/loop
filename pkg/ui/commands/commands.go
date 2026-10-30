@@ -10,7 +10,6 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
@@ -120,7 +119,7 @@ func HandleSlashCommand(
 		default:
 			a.Config.CollapseResults = !a.Config.CollapseResults
 		}
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		saveConfigUpdate(a, w)
 		ui.SetCollapseStatus(a.Config.CollapseResults)
 		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
 		return true, false

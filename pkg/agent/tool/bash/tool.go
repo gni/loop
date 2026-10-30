@@ -177,14 +177,24 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	stdout := newCappedOutput(8 << 20)
 	stderr := newCappedOutput(8 << 20)
+	outWriter := io.Writer(stdout)
+	errWriter := io.Writer(stderr)
+	live := newLiveShellOutput(ctx)
+	var finishStdout func()
+	if live != nil {
+		liveOut, liveErr, finish := live.Streams(pwdMarker)
+		outWriter = io.MultiWriter(stdout, bestEffortLiveWriter{liveOut})
+		errWriter = io.MultiWriter(stderr, bestEffortLiveWriter{liveErr})
+		finishStdout = finish
+	}
 	outDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(stdout, stdoutReader)
+		_, _ = io.Copy(outWriter, stdoutReader)
 		close(outDone)
 	}()
 	errDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(stderr, stderrReader)
+		_, _ = io.Copy(errWriter, stderrReader)
 		close(errDone)
 	}()
 
@@ -243,6 +253,10 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	<-errDone
 	_ = stdoutReader.Close()
 	_ = stderrReader.Close()
+	if finishStdout != nil {
+		finishStdout()
+		live.Finish()
+	}
 
 	output := strings.ToValidUTF8(stdout.String(), "\uFFFD")
 	errOutput := strings.ToValidUTF8(stderr.String(), "\uFFFD")

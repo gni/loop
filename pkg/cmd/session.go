@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"loop/pkg/agent"
-	"loop/pkg/config"
 	"loop/pkg/db"
 )
 
@@ -25,7 +24,11 @@ var sessionListCmd = &cobra.Command{
 		}
 
 		sessions, err := db.GetSessions()
-		if err != nil || len(sessions) == 0 {
+		if err != nil {
+			fmt.Printf("Error listing sessions: %v\n", err)
+			return
+		}
+		if len(sessions) == 0 {
 			fmt.Println("No past sessions found.")
 			return
 		}
@@ -74,11 +77,20 @@ var sessionNewCmd = &cobra.Command{
 		}
 
 		newID := db.NewUUID()
-		cfg, _ := config.LoadConfig(configPath)
+		cfg := loadConfigOrPrintErr()
+		if cfg == nil {
+			return
+		}
 		a := agent.NewAgent(cfg, configPath, nil)
 		sysMsg := db.Message{Role: "system", Content: a.GetSystemPrompt()}
-		_ = db.ClearSession(newID)
-		_ = db.SaveMessage(newID, sysMsg)
+		if err := db.ClearSession(newID); err != nil {
+			fmt.Printf("Error preparing session %q: %v\n", newID, err)
+			return
+		}
+		if err := db.SaveMessage(newID, sysMsg); err != nil {
+			fmt.Printf("Error saving session %q: %v\n", newID, err)
+			return
+		}
 
 		fmt.Println(newID)
 	},

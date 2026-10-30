@@ -97,8 +97,8 @@ func (t *AskUserTool) Execute(ctx AgentContext, arguments string) (string, error
 			for _, s := range strOptions {
 				parsedOptions = append(parsedOptions, AskUserOption{Label: s})
 			}
-		} else {
-			_ = json.Unmarshal(raw.Options, &parsedOptions)
+		} else if err := json.Unmarshal(raw.Options, &parsedOptions); err != nil {
+			return "", fmt.Errorf("invalid ask_user options: %w", err)
 		}
 	}
 

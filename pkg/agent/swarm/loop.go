@@ -74,14 +74,17 @@ func latestUserPrompt(history []db.Message) string {
 	return ""
 }
 
-func (ma *MultiAgent) recordTaskAndAgentState(taskID, taskStatus, agentStatus, response string, err error) {
+func (ma *MultiAgent) recordTaskAndAgentState(taskID, taskStatus, agentStatus, response string, taskErr error) error {
 	if ma.Manager == nil {
-		return
+		return nil
 	}
 	if taskID != "" {
-		ma.Manager.UpdateTaskStatus(taskID, taskStatus, response, err)
+		ma.Manager.UpdateTaskStatus(taskID, taskStatus, response, taskErr)
 	}
-	_ = ma.Manager.SaveAgentState(ma, agentStatus)
+	if err := ma.Manager.SaveAgentState(ma, agentStatus); err != nil {
+		return fmt.Errorf("persist subagent %q status %q: %w", ma.Name, agentStatus, err)
+	}
+	return nil
 }
 
 func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
@@ -106,7 +109,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					continue
 				}
 				taskID := msg.ToolCallID
-				ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
+				startErr := ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
 
 				writer := ma.resolveWriter(w)
 				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
@@ -118,13 +121,19 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				turnCtx, turnCancel := context.WithCancel(ma.Context)
 				ma.setActiveTurn(turnCtx, turnCancel, time.Now())
 
-				response, err := ma.executeLoop(turnCtx, writer, theme)
+				var response db.Message
+				err := startErr
+				if err == nil {
+					response, err = ma.executeLoop(turnCtx, writer, theme)
+				}
 
 				turnCancel()
 				ma.setActiveTurn(nil, nil, time.Time{})
 
 				if err != nil {
-					ma.recordTaskAndAgentState(taskID, "failed", "failed", "", err)
+					if saveErr := ma.recordTaskAndAgentState(taskID, "failed", "failed", "", err); saveErr != nil {
+						err = errors.Join(err, saveErr)
+					}
 
 					if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled) {
 						label := "error"
@@ -147,7 +156,12 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					continue
 				}
 
-				ma.recordTaskAndAgentState(taskID, "completed", "idle", response.Content, nil)
+				if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", response.Content, nil); saveErr != nil {
+					if ma.Manager != nil && taskID != "" {
+						ma.Manager.UpdateTaskStatus(taskID, "failed", "", saveErr)
+					}
+					response = db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", saveErr)}
+				}
 
 				select {
 				case ma.Output <- response:
@@ -159,7 +173,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 	}()
 }
 
-func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (db.Message, error) {
+func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (response db.Message, runErr error) {
 	writer := ma.resolveWriter(w)
 	rawW := agent.UnwrapWriter(writer)
 
@@ -188,7 +202,12 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return &multiAgentContext{AgentContext: ma.BaseAgent, ma: ma}
 		},
 	})
-	sink := newSwarmSink(ma)
+	sink := newSwarmSink(ma).(*historySink)
+	defer func() {
+		if err := sink.Err(); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	renderedAgentName := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name)
 
 	for iter := 1; iter <= maxSteps; iter++ {
@@ -222,17 +241,17 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 
 		chunkChan := make(chan agent.StreamChunk, 100)
-		errChan := make(chan error, 1)
+		type completionResult struct {
+			msg *db.Message
+			err error
+		}
+		resChan := make(chan completionResult, 1)
 		dropsBefore := ma.BaseAgent.DroppedChunks()
 
-		var assistantMsg *db.Message
 		go func() {
 			msg, err := ma.BaseAgent.StreamChatCompletions(ctx, historyCopy, allowlist, chunkChan)
-			if msg != nil {
-				assistantMsg = msg
-			}
 			close(chunkChan)
-			errChan <- err
+			resChan <- completionResult{msg: msg, err: err}
 		}()
 
 		ma.StreamBufferMu.Lock()
@@ -325,6 +344,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		sr.Flush()
 
+		completion := <-resChan
+		assistantMsg := completion.msg
 		if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
 			subagentCompletionTokens = assistantMsg.CompletionTokens
 		}
@@ -337,8 +358,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		ma.StreamBuffer = nil
 		ma.StreamBufferMu.Unlock()
 
-		if err := <-errChan; err != nil {
-			return db.Message{}, err
+		if completion.err != nil {
+			return db.Message{}, completion.err
 		}
 		if assistantMsg == nil {
 			return db.Message{}, fmt.Errorf("received empty completion response")
@@ -376,7 +397,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				haltMsg = last[len(last)-1].Content
 			}
 			if ma.Manager != nil && halted {
-				_ = ma.Manager.SaveAgentState(ma, "failed")
+				if err := ma.Manager.SaveAgentState(ma, "failed"); err != nil {
+					return db.Message{}, fmt.Errorf("persist subagent %q failure: %w", ma.Name, err)
+				}
 			}
 			return db.Message{Role: "assistant", Content: haltMsg}, nil
 		}

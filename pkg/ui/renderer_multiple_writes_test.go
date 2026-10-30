@@ -18,7 +18,7 @@ func TestRendererStreamsSecondWriteBeforeFinalFlush(t *testing.T) {
 	renderer.WriteToolCall(`{"content":"Second`)
 
 	partial := style.StripAnsi(out.String())
-	if !strings.Contains(partial, "◆ write\nSecond") {
+	if !strings.Contains(partial, "✚ write\nSecond") {
 		t.Fatalf("second write must stream without path or closing JSON: %q", partial)
 	}
 	if !renderer.DidStreamToolBody(1) {
@@ -28,10 +28,10 @@ func TestRendererStreamsSecondWriteBeforeFinalFlush(t *testing.T) {
 	renderer.WriteToolCall(` file","path":"second.md"}`)
 	renderer.Flush()
 	got := style.StripAnsi(out.String())
-	if strings.Count(got, "◆ write") != 2 || strings.Count(got, "Second file") != 1 {
+	if strings.Count(got, "✚ write") != 2 || strings.Count(got, "Second file") != 1 {
 		t.Fatalf("multi-write output duplicated or missing: %q", got)
 	}
-	if !strings.Contains(got, "◆ write second.md\nSecond file") {
+	if !strings.Contains(got, "✚ write second.md\nSecond file") {
 		t.Fatalf("second write path should replace provisional title: %q", got)
 	}
 }
@@ -45,12 +45,12 @@ func TestRendererSeparatesAdjacentWritePreviews(t *testing.T) {
 		{
 			name:  "no trailing newline",
 			first: `{"path":"first.md","content":"First body"}`,
-			want:  "First body\n⎿  writing...\n\n◆ write second.md\n",
+			want:  "First body\n⎿  writing...\n\n✚ write second.md\n",
 		},
 		{
 			name:  "existing trailing newline",
 			first: `{"path":"first.md","content":"First body\n"}`,
-			want:  "First body\n⎿  writing...\n\n◆ write second.md\n",
+			want:  "First body\n⎿  writing...\n\n✚ write second.md\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,8 +87,8 @@ func TestRendererMatchesInlineResultsToWriteIndexes(t *testing.T) {
 		t.Fatal("cannot replace first result")
 	}
 	got := style.StripAnsi(out.String())
-	first := "◆ write harbor.txt\nHarbor\n⎿  harbor.txt (6 bytes)"
-	second := "◆ write library.txt\nLibrary\n⎿  library.txt (12 bytes)"
+	first := "✚ write harbor.txt\nHarbor\n⎿  harbor.txt (6 bytes)"
+	second := "✚ write library.txt\nLibrary\n⎿  library.txt (12 bytes)"
 	if !strings.Contains(got, first) || !strings.Contains(got, second) {
 		t.Fatalf("result not matched to preview: %q", got)
 	}
@@ -119,7 +119,7 @@ func TestRendererAnnouncesWriteBeforeFilenameAndContent(t *testing.T) {
 	var out bytes.Buffer
 	r := NewStreamRenderer(&out, style.GetTheme("plain"), false, true, "")
 	r.StartToolCall("write", 0)
-	if got := style.StripAnsi(out.String()); !strings.Contains(got, "◆ write\n") {
+	if got := style.StripAnsi(out.String()); !strings.Contains(got, "✚ write\n") {
 		t.Fatalf("missing provisional title before filename: %q", got)
 	}
 	r.WriteToolCall(`{"content":"A poem starts`)
@@ -128,7 +128,7 @@ func TestRendererAnnouncesWriteBeforeFilenameAndContent(t *testing.T) {
 	}
 	r.WriteToolCall(` here","path":"poem.txt"}`)
 	r.Flush()
-	if got := style.StripAnsi(out.String()); strings.Count(got, "◆ write") != 1 || !strings.Contains(got, "A poem starts here") {
+	if got := style.StripAnsi(out.String()); strings.Count(got, "✚ write") != 1 || !strings.Contains(got, "A poem starts here") {
 		t.Fatalf("provisional write was duplicated or lost: %q", got)
 	}
 }

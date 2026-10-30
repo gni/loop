@@ -75,7 +75,7 @@ func TestUnnamedToolProgressIsClearedBeforeFirstTitle(t *testing.T) {
 	}
 	sr.StartToolCall("write", 0)
 	plain := style.StripAnsi(output.String())
-	if strings.Contains(plain, "receiving tool #4") || strings.Count(plain, "◆ write") != 1 {
+	if strings.Contains(plain, "receiving tool #4") || strings.Count(plain, "✚ write") != 1 {
 		t.Fatalf("unnamed preview was not cleared: %q", plain)
 	}
 }

@@ -31,18 +31,18 @@ type RunResult struct {
 }
 
 type Event struct {
-	Version   int       `json:"version"`
-	Type      string    `json:"type"`
-	SessionID string    `json:"session_id,omitempty"`
-	Time      time.Time `json:"time"`
-	Message  *db.Message  `json:"message,omitempty"`
-	Delta    string       `json:"delta,omitempty"`
-	Kind     string       `json:"kind,omitempty"`
-	ToolCall *db.ToolCall `json:"tool_call,omitempty"`
-	Output   string       `json:"output,omitempty"`
-	IsError  bool         `json:"is_error,omitempty"`
-	Result   *RunResult   `json:"result,omitempty"`
-	Data     any          `json:"data,omitempty"`
+	Version   int          `json:"version"`
+	Type      string       `json:"type"`
+	SessionID string       `json:"session_id,omitempty"`
+	Time      time.Time    `json:"time"`
+	Message   *db.Message  `json:"message,omitempty"`
+	Delta     string       `json:"delta,omitempty"`
+	Kind      string       `json:"kind,omitempty"`
+	ToolCall  *db.ToolCall `json:"tool_call,omitempty"`
+	Output    string       `json:"output,omitempty"`
+	IsError   bool         `json:"is_error,omitempty"`
+	Result    *RunResult   `json:"result,omitempty"`
+	Data      any          `json:"data,omitempty"`
 }
 
 func (a *Agent) emit(event Event) {
@@ -131,8 +131,8 @@ func (a *Agent) resolveCredential(ctx context.Context) (string, error) {
 	if !exists {
 		profile = config.ProviderConfig{Endpoint: a.Config.Endpoint, ApiKey: a.Config.ApiKey}
 	}
-	profile.Endpoint=a.Config.Endpoint
- if strings.HasPrefix(a.Config.ApiKey, "env:") || strings.HasPrefix(a.Config.ApiKey, "$") {
+	profile.Endpoint = a.Config.Endpoint
+	if strings.HasPrefix(a.Config.ApiKey, "env:") || strings.HasPrefix(a.Config.ApiKey, "$") {
 		profile.ApiKey = a.Config.ApiKey
 	}
 	key, err := a.Credentials.Resolve(ctx, a.Config.ActiveProvider, profile)

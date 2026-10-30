@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
@@ -79,10 +80,17 @@ func PrintSessionHistory(
 
 	borderStyle := style.NewStyle().Foreground(theme.Border)
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	spacing := agent.NewNewlineCounterWriter(w)
+	w = spacing
 
 	var lastRole, lastUserPrompt string
 	for i, msg := range messages {
 		if msg.Role == "system" {
+			if strings.HasPrefix(msg.Content, "[System: Below is a summary of the earlier conversation history:") {
+				fmt.Fprintln(w, borderStyle.Italic(true).Render("[earlier conversation compressed; summary retained for the agent]"))
+				fmt.Fprintln(w, agent.CompressionSummaryPreview(msg.Content))
+				fmt.Fprintln(w)
+			}
 			continue
 		}
 
@@ -123,6 +131,9 @@ func PrintSessionHistory(
 				continue
 			}
 
+			if lastRole != "" {
+				spacing.EnsureActivityGap()
+			}
 			printPromptDivider(w, borderStyle)
 			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
 
@@ -140,14 +151,17 @@ func PrintSessionHistory(
 				if strings.TrimSpace(cleanReasoning) != "" {
 					effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
 					if cfg.ShowThinking && effort != "off" && effort != "none" {
-						hooks.RenderReasoning(w, strings.TrimRight(cleanReasoning, "\r\n"), theme)
-						fmt.Fprintln(w)
-
-						labelStyle := borderStyle.Italic(true)
-						if msg.ReasoningDuration > 0 {
-							fmt.Fprintf(w, "%s\n", labelStyle.Render(fmt.Sprintf("thought (%.1fs)", msg.ReasoningDuration)))
+						if collapseResults {
+							fmt.Fprintln(w, FormatThinkingSummary(theme, msg.ReasoningDuration, false, ThinkingLineCount(cleanReasoning), cfg.ShowMicroseconds))
 						} else {
-							fmt.Fprintf(w, "%s\n", labelStyle.Render("thought"))
+							hooks.RenderReasoning(w, strings.TrimRight(cleanReasoning, "\r\n"), theme)
+							fmt.Fprintln(w)
+							labelStyle := borderStyle.Italic(true)
+							if msg.ReasoningDuration > 0 {
+								fmt.Fprintf(w, "%s\n", labelStyle.Render("thought ("+style.FormatElapsedDuration(time.Duration(msg.ReasoningDuration*float64(time.Second)), cfg.ShowMicroseconds)+")"))
+							} else {
+								fmt.Fprintf(w, "%s\n", labelStyle.Render("thought"))
+							}
 						}
 						hasPrintedAnything = true
 					}
@@ -188,7 +202,7 @@ func PrintSessionHistory(
 				renderToolTitleLine(w, tc.Function.Name, tc.Function.Arguments, ToolStatusPending, theme)
 
 				if len(tc.Function.Arguments) > 0 && IsWriteLikeTool(tc.Function.Name) {
-					RenderToolOutput(w, "", false, false, theme, tc.Function.Name, tc.Function.Arguments, false)
+					RenderToolOutput(w, "", false, collapseResults, theme, tc.Function.Name, tc.Function.Arguments, false)
 				}
 
 				if i == len(messages)-1 && isGenerating {

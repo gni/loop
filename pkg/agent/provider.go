@@ -319,10 +319,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			if chunk.Usage.CompletionTokens > 0 {
 				completionTokens = chunk.Usage.CompletionTokens
 			}
-			if chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheWriteTokens > 0 {
-				cacheReadTokens = chunk.Usage.CacheReadTokens
-				cacheWriteTokens = chunk.Usage.CacheWriteTokens
-			}
+			// OpenAI reports cached input in prompt_tokens_details; other
+			// compatible servers may expose top-level cache token fields.
+			cacheReadTokens = max(cacheReadTokens, chunk.Usage.CacheReadTokens, chunk.Usage.PromptTokensDetails.CachedTokens)
+			cacheWriteTokens = max(cacheWriteTokens, chunk.Usage.CacheWriteTokens, chunk.Usage.PromptTokensDetails.CacheWriteTokens)
 		}
 		if chunk.Timings != nil {
 			if promptTokens == 0 && chunk.Timings.PromptN > 0 {

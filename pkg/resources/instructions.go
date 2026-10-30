@@ -2,10 +2,10 @@ package resources
 
 import (
 	"fmt"
+	"loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"strings"
- "loop/pkg/storage"
 )
 
 type Diagnostic struct {
@@ -49,7 +49,7 @@ func Instructions(agentDir, workspace string) (string, []Diagnostic) {
 				diagnostics = append(diagnostics, Diagnostic{path, "instruction file exceeds 256 KiB"})
 				break
 			}
-			data, err := storage.ReadFile(path,256<<10)
+			data, err := storage.ReadFile(path, 256<<10)
 			if err != nil {
 				diagnostics = append(diagnostics, Diagnostic{path, err.Error()})
 				break

@@ -9,7 +9,6 @@ import (
 	"golang.org/x/term"
 
 	"loop/pkg/agent"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
@@ -34,7 +33,7 @@ func handleToolsCommand(
 
 	saveCfg := func() {
 		if a.ConfigPath != "" && a.Config != nil {
-			_ = config.SaveConfig(a.ConfigPath, a.Config)
+			saveConfigUpdate(a, w)
 		}
 	}
 
@@ -47,8 +46,11 @@ func handleToolsCommand(
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
-		_ = interactive.RunInteractiveToolsConfig(a, *theme, input, output)
+		menuErr := interactive.RunInteractiveToolsConfig(a, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
+		if menuErr != nil {
+			fmt.Fprintf(w, "tools menu: %v\n", menuErr)
+		}
 
 		ui.RestoreAfterModal(w, a, kiReader, terminalFromReader(kiReader))
 		syncStatus()

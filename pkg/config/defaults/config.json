@@ -5,6 +5,7 @@
   "auto_approve": false,
   "show_thinking": true,
   "show_tokens": true,
+  "show_microseconds": false,
   "theme": "plain",
   "direct_commands": true,
   "skip_verify": false,

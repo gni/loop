@@ -201,4 +201,3 @@ func FormatPromptWithQueue(theme UITheme, promptPrefix string, qLen int) (prompt
 	promptStr = queuePrefix + theme.PromptStyle().Render(promptPrefix)
 	return promptStr, fullPrefixPlain
 }
-

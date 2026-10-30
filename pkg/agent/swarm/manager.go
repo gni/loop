@@ -259,6 +259,12 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 		return fmt.Errorf("agent '%s' not found", name)
 	}
 
+	// The persisted definition must be removed before changing in-memory state.
+	// Otherwise a failed disk removal would resurrect this agent on restart.
+	if err := mam.deleteAgentDef(name); err != nil {
+		return fmt.Errorf("remove saved subagent %q: %w", name, err)
+	}
+
 	ma.CancelActiveTurn()
 	if ma.Cancel != nil {
 		ma.Cancel()
@@ -299,8 +305,33 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 		mam.ActiveAgent = ma.Parent
 	}
 
-	_ = mam.deleteAgentDef(name)
 	return nil
+}
+
+// CurrentActiveAgent returns the selected agent without exposing the manager's
+// selection field to unsynchronized reads. The agent remains valid if another
+// goroutine switches sessions after this snapshot.
+func (mam *MultiAgentManager) CurrentActiveAgent() *MultiAgent {
+	if mam == nil {
+		return nil
+	}
+	mam.mu.RLock()
+	active := mam.ActiveAgent
+	mam.mu.RUnlock()
+	return active
+}
+
+// ActiveHistorySnapshot copies the selected agent's history while holding its
+// history lock. Rendering must not traverse a live, mutable history slice.
+func (mam *MultiAgentManager) ActiveHistorySnapshot() ([]db.Message, bool) {
+	active := mam.CurrentActiveAgent()
+	if active == nil {
+		return nil, false
+	}
+	active.HistoryMu.RLock()
+	history := append([]db.Message(nil), active.History...)
+	active.HistoryMu.RUnlock()
+	return history, true
 }
 
 func (mam *MultiAgentManager) ActiveAgentName() string {

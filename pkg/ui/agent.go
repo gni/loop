@@ -84,6 +84,13 @@ func (ui *AgentUIImpl) SetCollapseStatus(collapsed bool) {
 	ui.StateMu.Unlock()
 }
 
+func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
+	ui.StateMu.Lock()
+	ui.Config = cfg
+	ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+	ui.StateMu.Unlock()
+}
+
 func (ui *AgentUIImpl) SetScrollRegionOffset(offset int) {
 	ui.StateMu.Lock()
 	ui.ScrollRegionOffset = offset
@@ -152,11 +159,20 @@ func (ui *AgentUIImpl) DrawPromptSeparator(w io.Writer, showThinking bool, reaso
 }
 
 func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) agent.StreamRenderer {
-	return NewStreamRenderer(w, theme, showThinking, streamWrites, agentName)
+	sr := NewStreamRenderer(w, theme, showThinking, streamWrites, agentName)
+	ui.StateMu.Lock()
+	if ui.Config != nil {
+		sr.markdownEnabled = ui.Config.MarkdownRender
+		sr.showMicroseconds = ui.Config.ShowMicroseconds
+	}
+	ui.StateMu.Unlock()
+	return sr
 }
 
 func (ui *AgentUIImpl) UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool) {
-	UpdateStatus(model, promptTokens, completionTokens, currentCompletionTokens, contextLimit, isGenerating, tps, activeTasks, showTokens)
+	// The post-turn context occupancy is inferred from provider usage and
+	// retained history; only the provider's per-request usage is exact.
+	UpdateStatus(model, promptTokens, completionTokens, currentCompletionTokens, contextLimit, isGenerating, tps, activeTasks, showTokens, true)
 }
 
 func (ui *AgentUIImpl) UpdatePlanStatus(completed, total int) {

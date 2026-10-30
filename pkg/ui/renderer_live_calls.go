@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 
 	"loop/pkg/ui/stream"
+	"loop/pkg/ui/style"
 )
 
 // liveCallView records what the terminal has already displayed for a call.
@@ -17,8 +19,29 @@ type liveCallView struct {
 	titleLine        int
 	headerShown      bool
 	lastRenderedPath string
-	bytes            int
+	bytes            int // Bytes actually shown, not hidden by collapse.
+	receivedBytes    int
+	compactTail      []rune
+	compactLine      int // -1: no row; -2: emitted but not trackable.
 	endsWithNewline  bool
+	codeLine         strings.Builder
+	codeLineOverflow bool
+	language         string
+	fullContent      strings.Builder // Semantic source, including hidden chunks.
+	result           string
+	output           string
+	arguments        string
+	resultRecorded   bool
+	completed        bool
+	failed           bool
+}
+
+// SetLiveCollapse changes the presentation of subsequent tool chunks without
+// restarting the stream or changing the arguments sent to the executor.
+func (sr *StreamRenderer) SetLiveCollapse(collapsed bool) {
+	sr.mu.Lock()
+	sr.liveCollapse = collapsed
+	sr.mu.Unlock()
 }
 
 // safeLiveLabel strips model-supplied cursor controls and line breaks. A tool
@@ -53,14 +76,28 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	}
 	view := sr.liveCallViews[index]
 	if view == nil {
-		view = &liveCallView{name: name, titleLine: -1, endsWithNewline: true}
+		view = &liveCallView{name: name, titleLine: -1, compactLine: -1, endsWithNewline: true}
 		sr.liveCallViews[index] = view
 	}
 	path = safeLiveLabel(path)
 	if path != "" {
 		view.path = path
 	}
-	if !view.headerShown || sr.liveActiveCall != index {
+	// An edit needs its target before displaying a contextual diff.
+	if name == "edit" && view.path == "" && !view.headerShown {
+		return
+	}
+	// Do not print a write header just because the name arrived. Wait for
+	// a destination or actual content so the title is not a fleeting stub.
+	if name == "write" && view.path == "" && delta == "" && !view.headerShown {
+		return
+	}
+	// A call whose preview was closed by early execution or a later call
+	// must not reopen when the provider sends trailing argument fragments.
+	if view.headerShown && sr.liveActiveCall != index {
+		return
+	}
+	if !view.headerShown {
 		sr.endThinking()
 		if sr.pendingThoughtTextGap {
 			fmt.Fprint(sr.w, "\n")
@@ -85,42 +122,245 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 			fmt.Fprint(sr.w, "\n")
 		}
 		sr.liveResultGap = false
-		title := liveToolTitle(name, view.path)
+		title := sr.liveToolTitle(name, view.path)
 		view.titleLine = stream.GetNewlineCount(sr.w)
 		fmt.Fprintln(sr.w, title)
 		view.headerShown = true
+		sr.liveReplayEvents = append(sr.liveReplayEvents, liveReplayEvent{kind: "tool", index: index})
 		view.lastRenderedPath = view.path
 		view.endsWithNewline = true
 		sr.liveActiveCall = index
 	} else if view.path != "" && view.path != view.lastRenderedPath && view.titleLine >= 0 {
 		// Updating an existing heading is best effort. If it has scrolled
 		// away, leave the original title rather than corrupting another row.
-		if stream.ReplaceTrackedStreamLine(sr.w, view.titleLine, liveToolTitle(name, view.path)) {
+		if stream.ReplaceTrackedStreamLine(sr.w, view.titleLine, sr.liveToolTitle(name, view.path)) {
 			view.lastRenderedPath = view.path
 		}
+	}
+	view.receivedBytes += len(delta)
+	view.fullContent.WriteString(delta)
+	if sr.liveCollapse {
+		// Keep only a bounded excerpt for the compact progress row.
+		for _, r := range delta {
+			view.compactTail = append(view.compactTail, r)
+			if len(view.compactTail) > 96 {
+				view.compactTail = view.compactTail[len(view.compactTail)-96:]
+			}
+		}
+		// Never stream a hidden file body: keep one mutable progress row.
+		// An unfinished visible line from before Ctrl+O must be terminated
+		// before drawing the progress indicator.
+		if !view.endsWithNewline {
+			fmt.Fprint(sr.w, "\n")
+			view.endsWithNewline = true
+			view.codeLine.Reset()
+			view.codeLineOverflow = false
+			sr.requestLiveSyntaxRefreshLocked()
+		}
+		sr.showCollapsedLiveCallLocked(index, view)
+		return
+	}
+	if view.compactLine != -1 {
+		// Expanding during a call resumes new content. The final redraw
+		// restores any earlier bytes deliberately hidden by collapse.
+		view.compactLine = -1
+		sr.requestLiveSyntaxRefreshLocked()
 	}
 	if delta == "" {
 		return
 	}
 	// The stream collector has already decoded JSON string escapes and
 	// filtered terminal control characters. Preserve real newlines here.
-	fmt.Fprint(sr.w, delta)
+	if name == "write" {
+		sr.writeLiveCodeLocked(view, delta)
+	} else {
+		fmt.Fprint(sr.w, delta)
+	}
 	view.bytes += len(delta)
 	view.endsWithNewline = strings.HasSuffix(delta, "\n")
 }
 
-// EndLiveToolContent leaves the transcript on a complete output row. It does
-// not erase generated content or insert placeholder lines; the engine's
-// execution results follow after all model calls have finished generating.
-func liveToolTitle(name, path string) string {
-	symbol := "◆"
-	if name == "edit" {
-		symbol = "✎"
+// showCollapsedLiveCallLocked updates a single compact progress row, using
+// the same label format as ShowToolDraft instead of streaming file content.
+// The source still accumulates in the tool sequencer for normal execution.
+func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallView) {
+	clean := safeLiveLabel(strings.Join(strings.Fields(string(view.compactTail)), " "))
+	maxExcerpt := 72
+	if width, _ := style.GetTerminalSize(); width > 0 && width < 100 {
+		maxExcerpt = width - 28
 	}
+	if maxExcerpt < 0 {
+		maxExcerpt = 0
+	}
+	runes := []rune(clean)
+	if len(runes) > maxExcerpt {
+		clean = "…" + string(runes[len(runes)-maxExcerpt:])
+	}
+	label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", view.name, index+1, view.receivedBytes)
+	if clean != "" && maxExcerpt > 0 && view.name == "write" {
+		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
+	}
+	line := style.NewStyle().Foreground(sr.theme.Border).Render(label)
+	if view.compactLine != -1 {
+		// If the row scrolled away, leave the earlier progress text alone.
+		if view.compactLine >= 0 {
+			_ = stream.ReplaceTrackedStreamLine(sr.w, view.compactLine, line)
+		}
+		return
+	}
+	view.compactLine = stream.GetNewlineCount(sr.w)
+	if view.compactLine < 0 {
+		view.compactLine = -2 // Printed once on a non-repaintable writer.
+	}
+	fmt.Fprintln(sr.w, line)
+	view.endsWithNewline = true
+}
+
+// writeLiveCodeLocked prints every incoming fragment immediately. Once a
+// newline arrives, the completed logical line can be recolored in place.
+func (sr *StreamRenderer) writeLiveCodeLocked(view *liveCallView, delta string) {
+	const maxTrackedLine = 4096
+	for delta != "" {
+		end := strings.IndexByte(delta, '\n')
+		fragment := delta
+		if end >= 0 {
+			fragment = delta[:end]
+		}
+		if fragment != "" {
+			fmt.Fprint(sr.w, fragment)
+			if !view.codeLineOverflow {
+				if view.codeLine.Len()+len(fragment) > maxTrackedLine {
+					view.codeLine.Reset()
+					view.codeLineOverflow = true
+				} else {
+					view.codeLine.WriteString(fragment)
+				}
+			}
+		}
+		if end < 0 {
+			return
+		}
+		sr.flushLiveCodeLineLocked(view)
+		fmt.Fprint(sr.w, "\n")
+		delta = delta[end+1:]
+	}
+}
+
+// flushLiveCodeLineLocked recolors only the current visible row. The plain
+// text is already on screen; a failed repaint must never duplicate the body.
+func (sr *StreamRenderer) flushLiveCodeLineLocked(view *liveCallView) {
+	line := view.codeLine.String()
+	overflow := view.codeLineOverflow
+	view.codeLine.Reset()
+	view.codeLineOverflow = false
+	if overflow {
+		sr.requestLiveSyntaxRefreshLocked()
+		return
+	}
+	if line == "" {
+		return
+	}
+
+	width, _ := style.GetTerminalSize()
+	if width <= 1 || len(line) >= width {
+		sr.requestLiveSyntaxRefreshLocked()
+		return
+	}
+	for _, r := range line {
+		// Tabs, control characters and wide glyphs do not have a reliable
+		// one-byte-per-cell mapping for single-row terminal replacement.
+		if r < ' ' || r > '~' {
+			sr.requestLiveSyntaxRefreshLocked()
+			return
+		}
+	}
+
+	// Use the streamed file extension, as in the previously working live
+	// write renderer. Do not run a second lexer-resolution path here.
+	language := stream.DetectLangFromPath(view.path)
+	if language == "plaintext" {
+		if view.language == "" {
+			view.language = stream.DetectLangFromContent(line)
+		}
+		if view.language != "" {
+			language = view.language
+		}
+	}
+	var colored strings.Builder
+	if err := HighlightWithoutTrailingNewline(&colored, line, language, sr.theme.ChromaStyle); err != nil {
+		sr.requestLiveSyntaxRefreshLocked()
+		return
+	}
+	// If a destination arrived after the source, the history renderer will
+	// have a more reliable lexer than the live preview had at this point.
+	if view.path == "" {
+		sr.requestLiveSyntaxRefreshLocked()
+	}
+	if !strings.Contains(colored.String(), "\x1b[") {
+		if language != "plaintext" {
+			sr.requestLiveSyntaxRefreshLocked()
+		}
+		return
+	}
+	// Prefer the direct terminal row repaint. Unlike printing cursor controls
+	// through the stream, it preserves the writer's tracking and scroll state.
+	for w := sr.w; w != nil; {
+		if painter, ok := w.(interface{ RepaintActiveScrollLine(string) bool }); ok {
+			if painter.RepaintActiveScrollLine(colored.String()) {
+				return
+			}
+			break
+		}
+		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		next := unwrapper.Unwrap()
+		if next == nil || next == w {
+			break
+		}
+		w = next
+	}
+	// One last tracked-row attempt for non-interactive writers and terminals
+	// that temporarily cannot repaint their current row.
+	if !sr.trackedRowsInvalidated {
+		if position := stream.GetNewlineCount(sr.w); position >= 0 &&
+			stream.ReplaceTrackedStreamLine(sr.w, position, colored.String()) {
+			return
+		}
+	}
+	sr.requestLiveSyntaxRefreshLocked()
+}
+
+// requestLiveSyntaxRefreshLocked does not redraw while a model is streaming;
+// doing so would replay incomplete tool arguments. The REPL consumes the flag
+// after the turn, when saved history can be rendered correctly.
+func (sr *StreamRenderer) requestLiveSyntaxRefreshLocked() {
+	for w := sr.w; w != nil; {
+		if refresher, ok := w.(interface{ MarkSyntaxRefresh() }); ok {
+			refresher.MarkSyntaxRefresh()
+			return
+		}
+		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			return
+		}
+		next := unwrapper.Unwrap()
+		if next == nil || next == w {
+			return
+		}
+		w = next
+	}
+}
+
+// liveToolTitle matches the final tool title's path formatting so previews
+// do not alternate between absolute and relative paths during execution.
+func (sr *StreamRenderer) liveToolTitle(name, path string) string {
 	if path == "" {
 		path = "…"
 	}
-	return symbol + " " + name + " " + path
+	symbol := renderToolSymbol(name, toolStatusPending, sr.theme)
+	return FormatToolTitle(symbol, name, path, sr.theme)
 }
 
 func (sr *StreamRenderer) EndLiveToolContent() {
@@ -139,6 +379,19 @@ func (sr *StreamRenderer) EndLiveToolContent() {
 // or edit. The engine replaces this row with a verified summary, not a second
 // copy of the edit diff. Failed operations still show their full error.
 func (sr *StreamRenderer) endLiveCallLocked(index int, view *liveCallView) {
+	if view.compactLine != -1 {
+		// The compact progress row becomes this call's verified result.
+		// Reusing it avoids a spare row between progress and completion,
+		// and lets the engine skip its normal inter-tool spacing here.
+		if sr.writeResultLines == nil {
+			sr.writeResultLines = make(map[int]int)
+		}
+		sr.writeResultLines[index] = view.compactLine
+		return
+	}
+	if view.name == "write" && view.codeLine.Len() > 0 {
+		sr.flushLiveCodeLineLocked(view)
+	}
 	if !view.endsWithNewline {
 		fmt.Fprint(sr.w, "\n")
 		view.endsWithNewline = true
@@ -153,4 +406,18 @@ func (sr *StreamRenderer) endLiveCallLocked(index int, view *liveCallView) {
 		sr.writeResultLines[index] = line
 	}
 	fmt.Fprint(sr.w, "\n")
+}
+
+// RecordToolResult retains the authoritative output of an early call until its
+// assistant response and tool result have reached committed history.
+func (sr *StreamRenderer) RecordToolResult(index int, arguments, output string, failed bool) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if view := sr.liveCallViews[index]; view != nil {
+		view.arguments = arguments
+		view.output = output
+		view.failed = failed
+		view.completed = true
+		view.resultRecorded = true
+	}
 }

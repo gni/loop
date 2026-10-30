@@ -21,7 +21,7 @@ func TestWriteStreamBeforePathAndBeforeClosingQuote(t *testing.T) {
 	theme := style.GetTheme("plain")
 
 	p.Feed(`{"content":"First`, &out, theme)
-	if text := style.StripAnsi(out.String()); !strings.Contains(text, "◆ write\nFirst") {
+	if text := style.StripAnsi(out.String()); !strings.Contains(text, "✚ write\nFirst") {
 		t.Fatalf("content should stream without path, newline or closing quote: %q", text)
 	}
 	if !p.ToolBodyStreamed[0] {
@@ -29,10 +29,10 @@ func TestWriteStreamBeforePathAndBeforeClosingQuote(t *testing.T) {
 	}
 	p.Feed(` line","path":"poem.md"}`, &out, theme)
 	got := style.StripAnsi(out.String())
-	if !strings.Contains(got, "◆ write poem.md\nFirst line") {
+	if !strings.Contains(got, "✚ write poem.md\nFirst line") {
 		t.Fatalf("destination should update without repeating the content: %q", got)
 	}
-	if strings.Count(got, "◆ write") != 1 || strings.Count(got, "First line") != 1 {
+	if strings.Count(got, "✚ write") != 1 || strings.Count(got, "First line") != 1 {
 		t.Fatalf("write header or body duplicated: %q", got)
 	}
 }
@@ -43,7 +43,7 @@ func TestWriteStreamWhenPathComesFirst(t *testing.T) {
 	theme := style.GetTheme("plain")
 	p.Feed(`{"path":"poem.md","content":"Hi`, &out, theme)
 	got := style.StripAnsi(out.String())
-	if !strings.Contains(got, "◆ write poem.md\nHi") {
+	if !strings.Contains(got, "✚ write poem.md\nHi") {
 		t.Fatalf("write content should stream during the current chunk: %q", got)
 	}
 	p.Feed(` there\nsecond line"}`, &out, theme)
@@ -51,7 +51,7 @@ func TestWriteStreamWhenPathComesFirst(t *testing.T) {
 	if !strings.Contains(got, "Hi there\nsecond line") {
 		t.Fatalf("escaped newline should stream as content: %q", got)
 	}
-	if strings.Count(got, "◆ write") != 1 {
+	if strings.Count(got, "✚ write") != 1 {
 		t.Fatalf("duplicate title: %q", got)
 	}
 }

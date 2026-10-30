@@ -28,7 +28,11 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 				if len(preview) > 50 {
 					preview = preview[:50] + "..."
 				}
-				fmt.Fprintf(rlOutput, "  [%d] %s (%d messages) - %s\n", i+1, s.Timestamp[:16], s.MsgCount, preview)
+				timestamp := s.Timestamp
+				if len(timestamp) > 16 {
+					timestamp = timestamp[:16]
+				}
+				fmt.Fprintf(rlOutput, "  [%d] %s (%d messages) - %s\n", i+1, timestamp, s.MsgCount, preview)
 			}
 		}
 		fmt.Fprintln(rlOutput, "--------------------------------------------------")

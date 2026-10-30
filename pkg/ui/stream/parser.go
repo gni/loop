@@ -144,6 +144,11 @@ func DetectLangFromContent(content string) string {
 			strings.HasPrefix(trimmed, "export function "), strings.HasPrefix(trimmed, "export interface "),
 			strings.HasPrefix(trimmed, "export type "), (strings.HasPrefix(trimmed, "const ") && strings.Contains(trimmed, "require(")):
 			return "typescript"
+		case strings.HasPrefix(trimmed, "module.exports"), strings.HasPrefix(trimmed, "async function "),
+			strings.HasPrefix(trimmed, "function "), strings.HasPrefix(trimmed, `"use strict"`),
+			(strings.HasPrefix(trimmed, "const ") && strings.Contains(trimmed, " = ")),
+			(strings.HasPrefix(trimmed, "let ") && strings.Contains(trimmed, " = ")):
+			return "javascript"
 		case strings.HasPrefix(trimmed, "<!DOCTYPE"), strings.HasPrefix(trimmed, "<html"), strings.HasPrefix(trimmed, "<?xml"):
 			return "html"
 		case strings.HasPrefix(trimmed, "---"), strings.HasPrefix(trimmed, "version:"), strings.HasPrefix(trimmed, "services:"):

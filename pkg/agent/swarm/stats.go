@@ -8,7 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
- "loop/pkg/domain/message"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -42,7 +42,7 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 
 	baseP, baseC := agent.CalculateHistoryTokens(baseMessages)
 	baseCacheR, baseCacheW := agent.CacheTokenTotals(baseMessages)
- allMessages:=append([]db.Message(nil),baseMessages...)
+	allMessages := append([]db.Message(nil), baseMessages...)
 	fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Base Agent (Main)"))
 	fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", baseP)))
 	fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", baseC)))
@@ -66,8 +66,8 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 			ma := mam.Agents[name]
 			ma.HistoryMu.RLock()
 			subP, subC := agent.CalculateHistoryTokens(ma.History)
- subUsage:=message.TotalUsage(ma.History)
- allMessages=append(allMessages,ma.History...)
+			subUsage := message.TotalUsage(ma.History)
+			allMessages = append(allMessages, ma.History...)
 			ma.HistoryMu.RUnlock()
 
 			totalSwarmP += subP
@@ -96,8 +96,10 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 	}
 
 	var tr *agent.TimingRecorder
- if mam!=nil&&mam.BaseAgent!=nil {tr=mam.BaseAgent.Timing}
- if tr != nil {
+	if mam != nil && mam.BaseAgent != nil {
+		tr = mam.BaseAgent.Timing
+	}
+	if tr != nil {
 		fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Timings"))
 		for _, ns := range []string{"llm", "tool", "compaction"} {
 			fmt.Fprintf(w, "    %-10s %dms\n", ns, tr.TotalMs(ns))
@@ -107,7 +109,9 @@ func (mam *MultiAgentManager) RenderStats(w io.Writer, baseMessages []db.Message
 	fmt.Fprintln(w, headerStyle.Render("╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"))
 }
 
-func formatCost(cost *float64)string{
- if cost==nil{return "unknown"}
- return fmt.Sprintf("$%.6f",*cost)
+func formatCost(cost *float64) string {
+	if cost == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("$%.6f", *cost)
 }

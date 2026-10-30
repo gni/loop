@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -17,7 +15,6 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
 	"loop/pkg/ui"
-	"loop/pkg/ui/commands"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
 )
@@ -75,7 +72,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	if mam == nil {
 		mam = swarm.NewMultiAgentManager(a, ppWriter, theme)
 	}
-	mam.SetOutput(ppWriter,theme)
+	mam.SetOutput(ppWriter, theme)
 	a.MultiAgentManager = mam
 	a.ClearAgentsFunc = func() { mam.ClearAllAgents() }
 	_ = mam.LoadSavedAgents()
@@ -94,21 +91,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		Hist:         hist,
 		HistoryIndex: -1,
 	}
-	kiReader.OnClearPromptHint = func() { ui.GetUI().ClearPromptHint() }
-	kiReader.OnRedrawScreen = func() { ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, kiReader.RL) }
-	kiReader.OnDrawStaticControls = func(targetWriter io.Writer) {
-		ui.TerminalMu.Lock()
-		ui.DrawConsoleStaticControlsLocked(targetWriter, kiReader.Agent, kiReader, kiReader.RL, true)
-		ui.TerminalMu.Unlock()
-	}
-	kiReader.OnRedrawPromptSeparator = func() {
-		ui.DrawStaticPromptSeparator(kiReader.W, kiReader.Agent.Config.ShowThinking, kiReader.Agent.Config.ReasoningEffort, theme)
-	}
-	kiReader.OnClearCancelFunc = func() {
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = nil
-		ui.GetUI().StateMu.Unlock()
-	}
+	configureREPLCallbacks(kiReader, &theme)
 
 	ui.GetUI().ActiveInputReader = kiReader
 	defer func() {
@@ -116,35 +99,8 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		ui.GetUI().ActiveInputReader = nil
 	}()
 
-	rawChan := make(chan byte, 1000)
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := kiReader.R.Read(buf)
-			if err != nil {
-				if err == io.EOF || strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "closed") {
-					close(rawChan)
-					return
-				}
-				time.Sleep(50 * time.Millisecond)
-				continue
-			}
-			for i := 0; i < n; i++ {
-				rawChan <- buf[i]
-			}
-		}
-	}()
-
-	go func() {
-		for event := range a.SystemEvents {
-			ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(a.Config))
-			if event != "" && kiReader.IsAtMainPrompt {
-				ui.GetUI().SetPromptHint(fmt.Sprintf("[%s]", event), 3*time.Second, nil)
-			}
-		}
-	}()
-
-	go startREPLRawInputDispatcher(rawChan, kiReader)
+	startREPLSystemNotifications(a, kiReader)
+	go startREPLRawInputDispatcher(startREPLInputReader(kiReader), kiReader)
 
 	createTerminal := func() *term.Terminal {
 		t := term.NewTerminal(kiReader, "")
@@ -181,59 +137,12 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	ui.DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
 	ui.DrawStatusBar(os.Stderr, theme)
 
-	sigChan := make(chan os.Signal, 1)
-	resizeDone := make(chan struct{})
-	signal.Notify(sigChan, syscall.SIGWINCH)
-	go func() {
-		var debounceTimer *time.Timer
-		defer func() {
-			if debounceTimer != nil {
-				debounceTimer.Stop()
-			}
-		}()
-		for {
-			select {
-			case <-resizeDone:
-				return
-			case <-sigChan:
-				if debounceTimer != nil {
-					debounceTimer.Stop()
-				}
-				debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
-					select {
-					case <-resizeDone:
-						return
-					default:
-					}
-					ui.GetUI().StateMu.Lock()
-					inModal := ui.GetUI().InApprovalPrompt
-					idle := ui.GetUI().ActiveCancelFunc == nil
-					ui.GetUI().StateMu.Unlock()
-					if inModal {
-						return
-					}
-					if w, h, err := term.GetSize(fd); err == nil {
-						rl.SetSize(w, h)
-						if idle {
-							ui.RedrawScreen(os.Stderr, a, kiReader, rl)
-						} else {
-							ui.HandleResize(os.Stderr, a, kiReader, rl)
-							kiReader.RedrawTypeAhead()
-						}
-					}
-				})
-			}
-		}
-	}()
-	defer func() {
-		signal.Stop(sigChan)
-		close(resizeDone)
-	}()
+	defer watchREPLResizes(a, kiReader, rl, fd)()
 
 	for {
 		promptPrefix := ui.GetPromptSymbol(a.Config)
-		if mam.ActiveAgent != nil {
-			promptPrefix = fmt.Sprintf("[%s]%s", mam.ActiveAgent.Name, promptPrefix)
+		if name := mam.ActiveAgentName(); name != "" {
+			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
 		}
 
 		var line string
@@ -386,28 +295,47 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			continue
 		}
 
-		if strings.HasPrefix(trimmedLine, "/") || commands.IsHelpCommand(trimmedLine) {
-			parts := strings.Fields(trimmedLine)
-			if len(parts) > 0 {
-				if expanded, isTpl := commands.ExpandPromptTemplate(parts[0], strings.TrimSpace(strings.TrimPrefix(trimmedLine, parts[0]))); isTpl {
-					line = expanded
-					goto runAgentTurn
-				}
+		line, handled, quit := dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl, mam, kiReader)
+		if handled {
+			if quit {
+				break
 			}
-			handled, quit := commands.HandleSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl.History, mam, kiReader)
-			kiReader.Drain()
-			if handled {
-				if quit {
-					break
-				}
-				continue
-			}
+			continue
 		}
 
-	runAgentTurn:
+		kiReader.ActiveTurn.Store(true)
+		collapseRedrawn := false
+		// Consume redraw requests on the foreground renderer so committed
+		// history and the current inference form one consistent frame.
+		a.OnStreamProgress = func() bool {
+			ui.GetUI().StateMu.Lock()
+			inModal := ui.GetUI().InApprovalPrompt
+			ui.GetUI().StateMu.Unlock()
+			if inModal || !kiReader.PendingCollapseRedraw.Swap(false) {
+				return false
+			}
+			ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+			collapseRedrawn = true
+			return true
+		}
 		ppWriter.BeginScrollEntry()
+		for _, previous := range messages {
+			if previous.Role != "system" {
+				ppWriter.EnsureActivityGap()
+				break
+			}
+		}
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader)
+		a.OnStreamProgress = nil
+		kiReader.ActiveTurn.Store(false)
+		// Both a deferred Ctrl+O and an unsafe live syntax repaint require
+		// one authoritative replay, after tool calls and text reach history.
+		redrawCollapse := kiReader.PendingCollapseRedraw.Swap(false)
+		redrawSyntax := ppWriter.ConsumeSyntaxRefresh()
+		if collapseRedrawn || redrawCollapse || redrawSyntax {
+			ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+		}
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
 	}
 

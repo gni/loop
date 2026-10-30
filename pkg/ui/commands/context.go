@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
@@ -69,7 +68,7 @@ func handleContextCommand(
 	}
 
 	syncContextBar := func() {
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
+		saveConfigUpdate(a, w)
 		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
 	}
 

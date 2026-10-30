@@ -446,7 +446,7 @@ func TestCollapsedResultsNeverHideToolErrors(t *testing.T) {
 	if !strings.Contains(rendered, diagnostic) {
 		t.Fatalf("collapsed results hid the command diagnostic: %q", rendered)
 	}
-	if strings.Contains(rendered, "lines collapsed") {
+	if strings.Contains(rendered, "lines hidden") {
 		t.Fatalf("tool error was replaced by a collapsed placeholder: %q", rendered)
 	}
 }

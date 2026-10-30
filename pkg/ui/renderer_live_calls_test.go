@@ -17,7 +17,7 @@ func TestWriteStreamStartsBeforeFilenameAndStreamsSecondCall(t *testing.T) {
 	r.ShowLiveToolContent(1, "write", "second.md", " ends")
 	r.EndLiveToolContent()
 	output := style.StripAnsi(b.String())
-	for _, text := range []string{"◆ write first.md", "First\nLine one continued", "◆ write second.md", "Second\nLine two ends"} {
+	for _, text := range []string{"✚ write first.md", "First\nLine one continued", "✚ write second.md", "Second\nLine two ends"} {
 		if !strings.Contains(output, text) {
 			t.Fatalf("missing %q in %q", text, output)
 		}
@@ -27,7 +27,7 @@ func TestWriteStreamStartsBeforeFilenameAndStreamsSecondCall(t *testing.T) {
 	}
 	// The middle empty row is reserved for the first write's result.
 	// The following row must remain blank after that result is filled.
-	if !strings.Contains(output, "First\nLine one continued\n\n\n◆ write second.md\nSecond") {
+	if !strings.Contains(output, "First\nLine one continued\n\n\n✚ write second.md\nSecond") {
 		t.Fatalf("missing blank row between completed writes: %q", output)
 	}
 	if r.GetToolTitleLineNumber(1) < 0 || !r.DidStreamToolBody(1) {
@@ -70,7 +70,7 @@ func TestWriteCompletionOccupiesOwnBlankRowWithoutPlaceholder(t *testing.T) {
 			t.Fatalf("missing grouped output %q in %q", item, out)
 		}
 	}
-	if !strings.Contains(out, "⎿  a.txt (6 bytes)\n\n◆ write b.txt") {
+	if !strings.Contains(out, "⎿  a.txt (6 bytes)\n\n✚ write b.txt") {
 		t.Fatalf("write results must be followed by a blank separator: %q", out)
 	}
 }

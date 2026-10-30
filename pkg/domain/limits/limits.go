@@ -39,10 +39,10 @@ const (
 	// A connect timeout above this would make first paint slower than the value it is
 	// meant to protect against; the point of the ceiling is that startup never waits
 	// more than a bounded time per server.
-	AbsoluteMaxMCPConnectTimeout      = 30 * time.Second
-	AbsoluteMaxMCPRequestTimeout      = 60 * time.Second
-	AbsoluteMaxEscapeDisambiguation   = 100 * time.Millisecond
-	AbsoluteMaxSubagentDepth     = 16
+	AbsoluteMaxMCPConnectTimeout    = 30 * time.Second
+	AbsoluteMaxMCPRequestTimeout    = 60 * time.Second
+	AbsoluteMaxEscapeDisambiguation = 100 * time.Millisecond
+	AbsoluteMaxSubagentDepth        = 16
 	// AbsoluteMinConsecutiveLimit keeps the repetition guard switchable-on but
 	// never disabled: a guard threshold of 1 or 0 would block every call or
 	// silently turn the guard off.
@@ -89,9 +89,9 @@ const (
 	// ConnectTimeout is deliberately far below the historical 5s endpoint wait so a
 	// server that never emits an endpoint event fails fast instead of stalling first
 	// paint.
-	DefaultMCPServerWorkers     = 4
-	DefaultMCPConnectTimeout    = 2 * time.Second
-	DefaultMCPRequestTimeout    = 15 * time.Second
+	DefaultMCPServerWorkers  = 4
+	DefaultMCPConnectTimeout = 2 * time.Second
+	DefaultMCPRequestTimeout = 15 * time.Second
 
 	// EscapeDisambiguation is how long a lone ESC byte is held to see whether it begins
 	// a sequence. The buffered channel is checked without waiting first, so this only
@@ -325,35 +325,35 @@ var Master = Defaults()
 func Set(l Limits) { Master = Resolve(l) }
 
 // Accessors used by call sites; each returns the live value.
-func GrepDefaultLimit() int             { return Master.GrepDefaultLimit }
-func GrepMaxLimit() int                 { return Master.GrepMaxLimit }
-func GrepMaxLineLength() int            { return Master.GrepMaxLineLength }
-func GrepMaxOutputBytes() int           { return Master.GrepMaxOutputBytes }
-func GrepMaxFileBytes() int             { return Master.GrepMaxFileBytes }
-func WindowsPerTarget() int             { return Master.WindowsPerTarget }
-func MaxTrackedTasks() int              { return Master.MaxTrackedTasks }
-func MaxSupervisedTasks() int           { return Master.MaxSupervisedTasks }
-func TaskRetentionGrace() time.Duration { return Master.TaskRetentionGrace }
-func AuditTruncationChars() int         { return Master.AuditTruncationChars }
-func NameMaxLength() int                { return Master.NameMaxLength }
-func SkillDescMaxBytes() int            { return Master.SkillDescMaxBytes }
-func SkillContentMaxBytes() int         { return Master.SkillContentMaxBytes }
-func CompletionTokenFloor() int         { return Master.CompletionTokenFloor }
-func SubagentDepth() int                { return Master.MaxSubagentDepth }
-func ConsecutiveLimit() int             { return Master.ConsecutiveLimit }
-func MaxOutputLines() int               { return Master.MaxOutputLines }
-func MaxOutputBytes() int               { return Master.MaxOutputBytes }
-func MaxReadFileBytes() int             { return Master.MaxReadFileBytes }
-func ReadMaxLineLength() int            { return Master.ReadMaxLineLength }
-func FindMaxResults() int               { return Master.FindMaxResults }
-func ListMaxEntries() int               { return Master.ListMaxEntries }
-func ListMaxDepth() int                 { return Master.ListMaxDepth }
-func ParallelToolWorkers() int          { return Master.ParallelToolWorkers }
-func CompactionReserveTokens() int      { return Master.CompactionReserveTokens }
-func CompactionKeepRecentTokens() int   { return Master.CompactionKeepRecentTokens }
-func MCPServerWorkers() int             { return Master.MCPServerWorkers }
-func MCPConnectTimeout() time.Duration  { return Master.MCPConnectTimeout }
-func MCPRequestTimeout() time.Duration  { return Master.MCPRequestTimeout }
+func GrepDefaultLimit() int               { return Master.GrepDefaultLimit }
+func GrepMaxLimit() int                   { return Master.GrepMaxLimit }
+func GrepMaxLineLength() int              { return Master.GrepMaxLineLength }
+func GrepMaxOutputBytes() int             { return Master.GrepMaxOutputBytes }
+func GrepMaxFileBytes() int               { return Master.GrepMaxFileBytes }
+func WindowsPerTarget() int               { return Master.WindowsPerTarget }
+func MaxTrackedTasks() int                { return Master.MaxTrackedTasks }
+func MaxSupervisedTasks() int             { return Master.MaxSupervisedTasks }
+func TaskRetentionGrace() time.Duration   { return Master.TaskRetentionGrace }
+func AuditTruncationChars() int           { return Master.AuditTruncationChars }
+func NameMaxLength() int                  { return Master.NameMaxLength }
+func SkillDescMaxBytes() int              { return Master.SkillDescMaxBytes }
+func SkillContentMaxBytes() int           { return Master.SkillContentMaxBytes }
+func CompletionTokenFloor() int           { return Master.CompletionTokenFloor }
+func SubagentDepth() int                  { return Master.MaxSubagentDepth }
+func ConsecutiveLimit() int               { return Master.ConsecutiveLimit }
+func MaxOutputLines() int                 { return Master.MaxOutputLines }
+func MaxOutputBytes() int                 { return Master.MaxOutputBytes }
+func MaxReadFileBytes() int               { return Master.MaxReadFileBytes }
+func ReadMaxLineLength() int              { return Master.ReadMaxLineLength }
+func FindMaxResults() int                 { return Master.FindMaxResults }
+func ListMaxEntries() int                 { return Master.ListMaxEntries }
+func ListMaxDepth() int                   { return Master.ListMaxDepth }
+func ParallelToolWorkers() int            { return Master.ParallelToolWorkers }
+func CompactionReserveTokens() int        { return Master.CompactionReserveTokens }
+func CompactionKeepRecentTokens() int     { return Master.CompactionKeepRecentTokens }
+func MCPServerWorkers() int               { return Master.MCPServerWorkers }
+func MCPConnectTimeout() time.Duration    { return Master.MCPConnectTimeout }
+func MCPRequestTimeout() time.Duration    { return Master.MCPRequestTimeout }
 func EscapeDisambiguation() time.Duration { return Master.EscapeDisambiguation }
 
 // ConsecutiveLimitClamped applies the guard safety bounds to a raw value, so a

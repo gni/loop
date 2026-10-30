@@ -63,7 +63,7 @@ func TestWriteShowsOneTitleAndRunsOnce(t *testing.T) {
 	if got := probe.executions; got != 1 {
 		t.Fatalf("write executions = %d; want 1", got)
 	}
-	if got := strings.Count(style.StripAnsi(output.String()), "◆ write "); got != 1 {
+	if got := strings.Count(style.StripAnsi(output.String()), "✚ write "); got != 1 {
 		t.Fatalf("write titles = %d; want 1; output = %q", got, style.StripAnsi(output.String()))
 	}
 	if len(sink.messages) != 1 || sink.messages[0].Role != "tool" || sink.messages[0].IsError {
@@ -148,7 +148,7 @@ func TestWriteStreamsContentDuringGenerationWithoutDuplicateTitle(t *testing.T) 
 		t.Fatal(err)
 	}
 	plain := style.StripAnsi(output.String())
-	if got := strings.Count(plain, "◆ write "); got != 1 {
+	if got := strings.Count(plain, "✚ write "); got != 1 {
 		t.Fatalf("tool title appeared %d times, output: %q", got, plain)
 	}
 	if got := strings.Count(plain, "hello"); got != 1 {

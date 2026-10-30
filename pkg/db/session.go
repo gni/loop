@@ -30,7 +30,9 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 	}
 	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == sessionID {
-		_ = os.Remove(latestPath)
+		if err := os.Remove(latestPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove latest-session pointer: %w", err)
+		}
 	}
 	return nil
 }
@@ -66,7 +68,9 @@ func (s *JSONLStore) ClearHistory() error {
 		}
 	}
 
-	_ = os.Remove(s.latestSessionPath())
+	if err := os.Remove(s.latestSessionPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove latest-session pointer: %w", err)
+	}
 	return nil
 }
 

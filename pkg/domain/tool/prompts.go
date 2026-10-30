@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"loop/pkg/domain/document"
- "loop/pkg/storage"
+	"loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -380,7 +380,7 @@ func LoadPromptTemplates(dir string) []PromptTemplate {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		raw, err := storage.ReadFile(path,512<<10)
+		raw, err := storage.ReadFile(path, 512<<10)
 		if err != nil {
 			continue
 		}

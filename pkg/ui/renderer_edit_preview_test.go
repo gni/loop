@@ -12,7 +12,7 @@ func TestExtraEditPreviewStreamsWithInlineResult(t *testing.T) {
 	var b bytes.Buffer
 	r := NewStreamRenderer(&b, style.GetTheme("plain"), false, true, "")
 	r.ShowLiveToolContent(0, "edit", "", "- old\n")
-	if got := style.StripAnsi(b.String()); !strings.Contains(got, "✎ edit …\n- old") {
+	if got := style.StripAnsi(b.String()); !strings.Contains(got, "✐ edit …\n- old") {
 		t.Fatalf("edit must be visible before filename arrives: %q", got)
 	}
 	r.ShowLiveToolContent(0, "edit", "poem.go", "+ new\n")
@@ -33,7 +33,7 @@ func TestExtraWriteAndEditPreviewsHaveOneBlankSeparator(t *testing.T) {
 	r.ShowLiveToolContent(2, "write", "b.txt", "Third\n")
 	r.EndLiveToolContent()
 	out := style.StripAnsi(b.String())
-	for _, part := range []string{"First\n\n\n✎ edit a.txt", "+ Second\n\n\n◆ write b.txt"} {
+	for _, part := range []string{"First\n\n\n✐ edit a.txt", "+ Second\n\n\n✚ write b.txt"} {
 		if !strings.Contains(out, part) {
 			t.Fatalf("missing blank separator %q in %q", part, out)
 		}
@@ -49,7 +49,7 @@ func TestExtraAssistantProseSeparatedFromLiveEdit(t *testing.T) {
 	r.Write("Fixing the typo now.")
 	r.ShowLiveToolContent(0, "edit", "", "+ corrected\n")
 	out := style.StripAnsi(b.String())
-	if !strings.Contains(out, "Fixing the typo now.\n\n✎ edit …\n+ corrected") {
+	if !strings.Contains(out, "Fixing the typo now.\n\n✐ edit …\n+ corrected") {
 		t.Fatalf("assistant text and edit must be separated: %q", out)
 	}
 }

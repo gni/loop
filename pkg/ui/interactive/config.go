@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/alecthomas/chroma/v2/quick"
+	"github.com/alecthomas/chroma/v3/quick"
 
 	"loop/pkg/config"
 	"loop/pkg/ui/style"

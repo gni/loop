@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/alecthomas/chroma/v2/quick"
+	"github.com/alecthomas/chroma/v3/quick"
 
 	filetool "loop/pkg/agent/tool/file"
 	domaintool "loop/pkg/domain/tool"
@@ -61,9 +61,7 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 		lang = "json"
 	} else {
 		if filePath := ExtractToolTarget(toolName, argsJSON); filePath != "" {
-			if ext := filepath.Ext(filePath); len(ext) > 1 {
-				lang = ext[1:]
-			}
+			lang = filePath
 		}
 
 		if IsWriteLikeTool(toolName) && !bodyWasStreamed && argsJSON != "" {
@@ -76,6 +74,7 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 		}
 	}
 
+	lang = ResolveSyntaxLanguage(lang, body)
 	chromaStyle := theme.ChromaStyle
 	if chromaStyle == "" || chromaStyle == "bw" {
 		chromaStyle = "friendly"
@@ -124,8 +123,12 @@ func trimRenderedToolBody(body string) string {
 }
 
 func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
-	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
-	msg := fmt.Sprintf("%s... [%d lines collapsed. Press Ctrl+O or type /expand to view output] ...", branchStyle, lineCount)
+	collapseMarker := style.NewStyle().Foreground(theme.Border).Render("⋮  ")
+	unit := "lines"
+	if lineCount == 1 {
+		unit = "line"
+	}
+	msg := fmt.Sprintf("%s%d %s hidden · Ctrl+O to expand", collapseMarker, lineCount, unit)
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(msg))
 }
 
@@ -157,6 +160,18 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			renderTaskSummary(w, theme, toolName, argsJSON, output, collapse)
 			return
 		}
+	}
+
+	if isError && toolName == "bash" && bodyWasStreamed {
+		finalDot := RenderToolSymbol(toolName, ToolStatusError, theme)
+		message := "Command failed"
+		if first, ok := strings.CutPrefix(output, "[Command Failed: "); ok {
+			if detail, _, found := strings.Cut(first, "]"); found {
+				message += ": " + detail
+			}
+		}
+		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(fmt.Sprintf("⎿  %s %s", finalDot, message)))
+		return
 	}
 
 	if isError {

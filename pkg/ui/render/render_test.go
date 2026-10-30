@@ -60,8 +60,8 @@ func TestRenderConfig(t *testing.T) {
 }
 
 func TestToolGlyphsAndTargetExtraction(t *testing.T) {
-	if glyph := GetToolGlyph("read"); glyph != "◈" {
-		t.Fatalf("expected ◈ for read, got %s", glyph)
+	if glyph := GetToolGlyph("read"); glyph != "▤" {
+		t.Fatalf("expected ▤ for read, got %s", glyph)
 	}
 	if glyph := GetToolGlyph("bash"); glyph != "$" {
 		t.Fatalf("expected $ for bash, got %s", glyph)

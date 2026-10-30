@@ -5,7 +5,7 @@ import (
 	"io"
 	"loop/pkg/domain/document"
 	"loop/pkg/resources"
- "loop/pkg/storage"
+	"loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,12 +50,18 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 		if absDir == "" {
 			continue
 		}
-		if _, err := os.Stat(absDir); os.IsNotExist(err) {
-			continue
+		if _, err := os.Stat(absDir); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect skills directory %q: %w", absDir, err)
 		}
 
 		err := filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || strings.ToLower(filepath.Ext(path)) != ".md" {
+			if err != nil {
+				return fmt.Errorf("visit skill path %q: %w", path, err)
+			}
+			if info.IsDir() || strings.ToLower(filepath.Ext(path)) != ".md" {
 				return nil
 			}
 
@@ -65,7 +71,7 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			visited[path] = true
 			rel, err := filepath.Rel(absDir, path)
 			if err != nil {
-				return nil
+				return fmt.Errorf("resolve skill path %q: %w", path, err)
 			}
 			relParts := strings.Split(filepath.ToSlash(rel), "/")
 			baseName := info.Name()
@@ -78,9 +84,9 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 			if info.Size() > 512<<10 {
 				return fmt.Errorf("skill %s exceeds 512 KiB", path)
 			}
-			data, err := storage.ReadFile(path,512<<10)
+			data, err := storage.ReadFile(path, 512<<10)
 			if err != nil {
-				return nil
+				return fmt.Errorf("read skill %q: %w", path, err)
 			}
 
 			fm, body, err := document.Frontmatter(string(data))
@@ -114,19 +120,18 @@ func LoadSkillsFromDirs(dirs ...string) ([]Skill, error) {
 				}
 			}
 
-			if seen[name] {
+			key := strings.ToLower(name)
+			if seen[key] {
 				return fmt.Errorf("duplicate skill name %q at %s", name, path)
 			}
-			if !seen[name] {
-				seen[name] = true
-				skills = append(skills, Skill{
-					Name:                   name,
-					Description:            desc,
-					Path:                   path,
-					Content:                strings.TrimSpace(body),
-					DisableModelInvocation: fm["disable-model-invocation"] == "true",
-				})
-			}
+			seen[key] = true
+			skills = append(skills, Skill{
+				Name:                   name,
+				Description:            desc,
+				Path:                   path,
+				Content:                strings.TrimSpace(body),
+				DisableModelInvocation: fm["disable-model-invocation"] == "true",
+			})
 			return nil
 		})
 		if err != nil {

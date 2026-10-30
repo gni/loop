@@ -105,7 +105,9 @@ func initRootFlags(cmd *cobra.Command) {
 	if home, err := os.UserHomeDir(); err == nil {
 		defaultConfig = filepath.Join(home, ".loop", "config.json")
 	}
-	if dir:=os.Getenv("LOOP_AGENT_DIR");dir!=""{defaultConfig=filepath.Join(dir,"config.json")}
+	if dir := os.Getenv("LOOP_AGENT_DIR"); dir != "" {
+		defaultConfig = filepath.Join(dir, "config.json")
+	}
 	cmd.PersistentFlags().StringVar(&outputMode, "mode", "text", "Output interface: text, json, rpc")
 	cmd.PersistentFlags().BoolVarP(&printOnce, "print", "p", false, "Print the final answer and exit")
 	cmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Keep this conversation in memory")

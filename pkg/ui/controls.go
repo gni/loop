@@ -29,8 +29,10 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	activeTheme := GetConfiguredTheme(a.Config)
 
 	promptPrefix := GetPromptSymbol(a.Config)
-	if kiReader != nil && kiReader.MAM != nil && kiReader.MAM.ActiveAgent != nil {
-		promptPrefix = fmt.Sprintf("[%s]%s", kiReader.MAM.ActiveAgent.Name, promptPrefix)
+	if kiReader != nil && kiReader.MAM != nil {
+		if name := kiReader.MAM.ActiveAgentName(); name != "" {
+			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
+		}
 	}
 
 	qLen := 0

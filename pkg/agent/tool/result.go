@@ -1,7 +1,7 @@
 package tool
 
 import (
- "fmt"
+	"fmt"
 	domaintool "loop/pkg/domain/tool"
 )
 
