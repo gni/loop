@@ -146,13 +146,13 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	if cfg.SequentialTools && len(tools) > 0 {
-		addRule("Independent tool calls may be returned together in one response; Loop executes them in order and returns their results together. Do not assume later calls can depend on results not yet received. Count only successful file writes as complete.")
+		addRule("Batch independent calls; execution is ordered. Do not depend on unseen results or claim writes succeeded before confirmation.")
 	}
 
 	if cfg.SkipObservation {
-		addRule("File observation guard is disabled: write and edit do not require a previous read or revision match. Use edit for targeted changes, write for complete replacements, and never write outside the workspace.")
+		addRule("Observation guard is off: prior reads and revision matches are optional. Use edit for targeted changes, write for replacements; stay inside the workspace.")
 	} else {
-		addRule("Read an existing file with the read tool before editing or overwriting it. New files can be written directly. Use edit for small changes and write for full replacements; no preparation tool is required. The harness validates paths and file revisions at execution.")
+		addRule("Read existing files before edit/overwrite; new files need no read. Use edit for targeted changes, write for replacements. Paths and revisions are validated.")
 	}
 
 	for _, rule := range FormatCoreRules(workspaceRoot) {
@@ -174,7 +174,11 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		addRule("Commands: Command execution is unavailable. Always use available tools instead of commands.")
 	}
 	for _, entry := range tools {
-		for _, rule := range entry.Guidelines {
+		guidelines := entry.Guidelines
+		if cfg.CompactPrompt && cfg.NativeToolSchemas {
+			guidelines = domaintool.CompactToolGuidelines(entry.Name, guidelines)
+		}
+		for _, rule := range guidelines {
 			if !hasBash {
 				rule = sanitizeNoBashInstruction(rule)
 			}

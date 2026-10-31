@@ -78,6 +78,7 @@ var (
 	MasterTemplates       PromptTemplates
 	MasterAgentTemplates  AgentToolTemplates
 	MasterRuntimeMessages RuntimeMessages
+	customToolPrompts     map[string]bool
 )
 
 func init() {
@@ -85,6 +86,7 @@ func init() {
 }
 
 func LoadPromptCatalog(path string) error {
+	customTools := make(map[string]bool)
 	catalog, err := decodeCatalog(embeddedPromptCatalog)
 	if err != nil {
 		return fmt.Errorf("embedded prompt catalog is invalid: %w", err)
@@ -94,6 +96,7 @@ func LoadPromptCatalog(path string) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				applyCatalog(catalog)
+				customToolPrompts = customTools
 				return nil
 			}
 			return fmt.Errorf("failed to read prompt catalog: %w", err)
@@ -102,11 +105,20 @@ func LoadPromptCatalog(path string) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse prompt catalog JSON: %w", err)
 		}
+		for name, prompt := range user.ToolPrompts {
+			if prompt.Description != "" || prompt.Snippet != "" || len(prompt.Guidelines) > 0 || len(prompt.ParamDescriptions) > 0 {
+				customTools[name] = true
+			}
+		}
 		mergeCatalog(&catalog, user)
 	}
 	applyCatalog(catalog)
+	customToolPrompts = customTools
 	return nil
 }
+
+// hasToolPromptOverride protects explicit catalog instructions from compaction.
+func hasToolPromptOverride(name string) bool { return customToolPrompts[name] }
 
 func applyCatalog(catalog PromptCatalog) {
 	MasterSystemPrompts = catalog.SystemPrompts

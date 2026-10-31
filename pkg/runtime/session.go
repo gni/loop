@@ -77,6 +77,13 @@ func New(options Options) (*Session, error) {
 	if options.ConfigPath == "" {
 		options.ConfigPath = filepath.Join(resources.AgentDirectory(""), "config.json")
 	}
+	// Manual cd changes the process cwd. Keep the trust store and session
+	// resources anchored to the config selected when the session started.
+	if absolute, err := filepath.Abs(options.ConfigPath); err != nil {
+		return nil, err
+	} else {
+		options.ConfigPath = absolute
+	}
 	workspace := options.Workspace
 	if workspace == "" {
 		workspace = "."

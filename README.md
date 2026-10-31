@@ -85,6 +85,8 @@ Foreground scans observe cancellation throughout traversal. Ctrl+C stops their s
 
 Shell execution is not sandboxed. Workspace file-tool checks do not restrict shell commands, plugins, or child processes. Run untrusted work in an isolated environment.
 
+Workspace trust applies to the chosen directory and its descendants, including folders created during a session. The nearest saved trust decision takes precedence, so an explicitly untrusted child stays untrusted. Symlinks use their resolved destination; links outside a trusted tree do not inherit its trust.
+
 Debug execution traces are disabled by default because they may include prompts and tool arguments. Set `LOOP_DEBUG_FILE=/private/path/loop.log` or `debug_log_file` to opt in. Newly written trace, config, and session files are private. Review older files when upgrading.
 
 bypass interactive tool approval prompts (use with caution):
@@ -117,6 +119,12 @@ Set `prompt_max_lines` to 1 for a one-row viewport, or increase it for a larger 
 Tool names and readable arguments appear as the model generates them, including shell commands, todo descriptions and file targets. Interleaved calls stay in order. Once a tool is awaiting its result, following calls keep their headings beside their own results instead of printing an empty stack of titles. File write and edit bodies can continue streaming during generation. File headings precede their bodies; content generated before its filename waits until that filename arrives. Previews do not bypass argument validation or approvals; shell commands and todo changes wait for the completed model response before execution.
 
 Shell stdout and stderr appear as bytes arrive, including partial lines. Python output is unbuffered, and Loop uses `stdbuf` when installed. Collapse mode can hide completed results, but does not hold back running shell output or todo descriptions. After the initial display budget, noisy commands continue showing recent output at a limited rate. Tools that return a single structured result show it when ready. Streaming is local and adds no model requests.
+
+Source printed by commands such as `cat file.py`, `head file.rs`, or `sed -n '1,100p' file.go` uses the file's syntax colors in live output and history. Manual `!` commands use the same renderer. Existing program colors are preserved, and ambiguous output stays plain. Highlighting changes only the display, not the text returned to the model.
+
+Native `grep` results highlight matched source and context lines using each file's language. Paths, line numbers, match/context markers, and result notices remain intact, including when expanding history.
+
+Full todo plans prefer a streaming `markdown` checklist, for example `{"markdown":"- [ ] task-1: Describe work\n- [>] task-2: Active work"}`. The text appears during generation; the complete plan is validated and saved only after the call finishes. Stable IDs, status updates, and session resume work as before. Structured `tasks` arrays remain supported, but providers that buffer array values may deliver those tasks together. After a preview, completion shows status counts instead of repeating the list.
 
 #### queued prompts
 
@@ -185,6 +193,8 @@ sessions are persistent. state is automatically written to disk.
 
 by default, configuration is stored in `~/.loop/config.json`.
 the harness is heavily optimized for `llama.cpp`. Each model request still includes conversation history. For endpoints that explicitly support message `cache_control` metadata, set `"prompt_cache_breakpoints": true` in the config to opt in. Leave it off for servers that do not support that field. This cannot guarantee faster prompt processing, which depends on the provider.
+
+`compact_prompt` defaults to `true`: builtin schemas omit obvious field descriptions and native requests avoid repeating the same tool rules in the system prompt. Names, arguments, types, enums, required fields, and behavioral constraints are retained across provider APIs. Explicit prompt-catalog overrides and integration schemas keep their instructions. Set `compact_prompt` to `false` for fuller builtin descriptions. Skills, project instructions, and conversation history contribute separately to input tokens.
 
 ```bash
 ./llama-server -m models/your-model.gguf -c 4096 --port 8080

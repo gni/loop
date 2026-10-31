@@ -107,17 +107,21 @@ func (ui *AgentUIImpl) ClearScrollRegionOffset() {
 }
 
 func (ui *AgentUIImpl) InitStatusBar(w io.Writer) {
+	_, height := GetTerminalSize()
 	ui.StateMu.Lock()
 	ui.Enabled = true
+	// Shutdown clears the pinned rows. Identical status text must still be
+	// painted when returning from a full-screen menu.
+	ui.LastStatusBarText = ""
+	ui.LastH = height
+	scrollOffset := ui.ScrollRegionOffset
 	ui.StateMu.Unlock()
 
-	_, height := GetTerminalSize()
 	if height > 3 {
 		// Print newline and cursor up to ensure we scroll if we are near the bottom
 		fmt.Fprint(w, "\n\n\x1b[2A")
 		// Save cursor, set scroll region, restore cursor to prevent jumping to top
-		fmt.Fprintf(w, "\x1b7\x1b[1;%dr\x1b8", height-2-ui.ScrollRegionOffset)
-		ui.LastH = height
+		fmt.Fprintf(w, "\x1b7\x1b[1;%dr\x1b8", height-2-scrollOffset)
 	}
 }
 

@@ -101,7 +101,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		intConfigItem("max_completion_tokens", "max completion tokens", "Hard upper ceiling on generated tokens per single LLM turn", &cloned.MaxCompletionTokens),
 		intConfigItem("max_reasoning_steps", "max reasoning steps", "Safety ceiling on autonomous tool execution turns before stopping", &cloned.MaxReasoningSteps),
 		boolConfigItem("direct_commands", "direct commands", "Execute non-tool plain text as system shell instructions when recognized", &cloned.DirectCommands, formatBool),
-		boolConfigItem("compact_prompt", "compact prompt", "Compress standard system guidelines into dense short instructions", &cloned.CompactPrompt, formatBool),
+		boolConfigItem("compact_prompt", "compact prompt", "Use short builtin schemas and avoid repeating native tool listings", &cloned.CompactPrompt, formatBool),
 		boolConfigItem("stream_writes", "stream writes", "Stream tool output and completions smoothly token-by-token", &cloned.StreamWrites, formatBool),
 		boolConfigItem("enable_mcp", "enable MCP", "Permit configured MCP servers to connect and expose tools", &cloned.EnableMCP, formatBool),
 		boolConfigItem("parallel_tool_calls", "parallel tool calls", "Execute multiple simultaneous model tool invocations concurrently", &cloned.ParallelToolCalls, formatBool),

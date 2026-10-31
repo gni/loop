@@ -102,6 +102,7 @@ func (p *OpenAICompatibleProvider) api() string {
 func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []tool.Tool) (string, map[string]any, error) {
 	api := p.api()
 	base := strings.TrimRight(p.Config.Endpoint, "/")
+	tools = prepareToolDefinitions(tools, p.Config.CompactPrompt)
 	clean, maxTokens, err := p.budgetRequest(messages, tools)
 	if err != nil {
 		return "", nil, err

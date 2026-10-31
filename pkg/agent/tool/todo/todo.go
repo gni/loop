@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 
 	domaintool "loop/pkg/domain/tool"
 )
@@ -26,10 +27,11 @@ func (t *todoTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "todo",
-			Description: domaintool.FormatToolDescription("todo", "Track a task plan. Prefer replacing the complete plan using tasks: [{id, task, status}]. For action=update or remove, always provide task_id. Action=list requires no task_id. At most one task may be in_progress."),
+			Description: domaintool.FormatToolDescription("todo", "Track a task plan. Prefer markdown for full plans, especially long lists, so tasks can stream as text. Use one checklist row per task: '- [ ] task-1: Describe work'. Use [>] for the one active task and [x] for completed tasks. Structured tasks arrays remain supported. For action=update or remove, always provide task_id. Action=list requires no task_id. At most one task may be in_progress."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
+					"markdown": domaintool.StringProp(domaintool.FormatParamDescription("todo", "markdown", "Complete plan as a newline-separated checklist string. Prefer this for full plans so tasks appear while generated. Each line must have a stable ID and description: - [ ] task-1: Describe work. IDs use letters, digits, underscore, dot or hyphen. [ ] pending, [>] in_progress, [x] completed. Send markdown OR tasks, not both; use action for individual updates.")),
 					"tasks": {
 						Type:        "array",
 						Description: domaintool.FormatParamDescription("todo", "tasks", "The complete updated list of tasks representing the active plan."),
@@ -54,12 +56,13 @@ func (t *todoTool) Definition() domaintool.Tool {
 }
 
 func (t *todoTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement or action-based update; at most one task in_progress.")
+	return domaintool.FormatToolSnippet(t.Name(), "Manage a plan. Prefer {\"markdown\":\"- [ ] task-1: Describe work\\n- [>] task-2: Active work\"} for full plans; actions update individual tasks. At most one task in_progress.")
 }
 
 func (t *todoTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Task Planning: For complex multi-step objectives, use the 'todo' tool to initialize and update your plan. Mark the active task 'in_progress' and check off tasks as 'completed'.",
+		"Use the markdown string for full plan creation or replacement, especially long lists, so each task can appear as it is generated. Include a stable task ID before the colon on every checklist row and preserve those IDs on later replacements. Use action and task_id for individual status updates.",
 	})
 }
 
@@ -351,6 +354,8 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 			return nil, "", invalidArguments(errors.New("malformed JSON"))
 		}
 		var container struct {
+			Markdown *string               `json:"markdown"`
+			Action   string                `json:"action"`
 			Tasks    []domaintool.TodoItem `json:"tasks"`
 			Todos    []domaintool.TodoItem `json:"todos"`
 			Items    []domaintool.TodoItem `json:"items"`
@@ -365,6 +370,16 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 		items = firstNonEmptyList(container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList, container.Actions)
 		if decodeErr != nil && len(items) == 0 {
 			return nil, "", invalidArguments(decodeErr)
+		}
+		if container.Markdown != nil {
+			if len(items) > 0 || container.Action != "" {
+				return nil, "", invalidArguments(errors.New("provide markdown, tasks, or an action separately"))
+			}
+			parsed, err := parseMarkdownPlan(*container.Markdown)
+			if err != nil {
+				return nil, "", err
+			}
+			items = parsed
 		}
 
 		if len(items) == 0 {
@@ -399,6 +414,27 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 	}
 
 	return validated, "", nil
+}
+
+func parseMarkdownPlan(markdown string) ([]domaintool.TodoItem, error) {
+	items := domaintool.ParseMarkdownTodoLines(markdown, "task-")
+	if len(items) == 0 {
+		return nil, invalidArguments(errors.New("markdown plan is empty"))
+	}
+	for i := range items {
+		id, description, ok := strings.Cut(items[i].Task, ":")
+		id = strings.TrimSpace(id)
+		if !ok || id == "" {
+			return nil, invalidArguments(fmt.Errorf("markdown row %d needs a task ID followed by a colon, e.g. - [ ] task-1: Describe work", i+1))
+		}
+		for _, r := range id {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != '.' {
+				return nil, invalidArguments(fmt.Errorf("invalid task ID on markdown row %d", i+1))
+			}
+		}
+		items[i].ID, items[i].Task = id, strings.TrimSpace(description)
+	}
+	return items, nil
 }
 
 func invalidArguments(reason error) error {

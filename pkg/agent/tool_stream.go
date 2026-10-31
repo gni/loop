@@ -156,7 +156,7 @@ func (d *streamedDraft) appendJSON(fragment string) {
 					d.appendDecoded(utf8.RuneError)
 					d.highSurrogate = 0
 				}
-				if d.toolName == "todo" && d.readingBody {
+				if d.toolName == "todo" && d.readingBody && d.lastKey != "markdown" {
 					d.appendPlain('\n')
 				}
 				if d.edit && d.readingBody && !d.lineStart {
@@ -198,8 +198,8 @@ func (d *streamedDraft) appendJSON(fragment string) {
 				d.readingBody = d.valueNext && (key == "command" || key == "cmd" || key == "arguments")
 			}
 			if d.toolName == "todo" {
-				d.readingBody = d.valueNext && (key == "task" || key == "description" || key == "title" || key == "content" || key == "desc" || key == "summary")
-				if d.readingBody {
+				d.readingBody = d.valueNext && (key == "markdown" || key == "task" || key == "description" || key == "title" || key == "content" || key == "desc" || key == "summary")
+				if d.readingBody && key != "markdown" {
 					for _, prefix := range "  • " {
 						d.appendPlain(prefix)
 					}

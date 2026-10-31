@@ -19,6 +19,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
@@ -131,8 +132,9 @@ func executeManualShellCommand(
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	var stdout, stderr bytes.Buffer
 	cw := interceptor.CRNLWriter{W: ppWriter}
-	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stdout)
-	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(cw), &stderr)
+	console := render.NewShellOutputWriter(cw, cmdStr, theme)
+	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), &stdout)
+	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), &stderr)
 	stopIndicator := startManualCommandIndicator(theme, a.Config != nil && a.Config.ShowMicroseconds)
 	err := cmd.Run()
 	stopIndicator()

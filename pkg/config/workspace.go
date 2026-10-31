@@ -36,20 +36,33 @@ func WorkspaceKey(path string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// WorkspaceTrusted inherits the nearest saved decision along the canonical
+// directory ancestry. Explicit refusals override a trusted parent, and symlinks
+// are checked at their real destination rather than their apparent location.
 func WorkspaceTrusted(configPath, workspace string) bool {
 	canonical, err := CanonicalWorkspace(workspace)
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), "trust", WorkspaceKey(canonical)+".json"))
-	if err != nil {
-		return false
+	trustDir := filepath.Join(filepath.Dir(configPath), "trust")
+	for {
+		data, err := os.ReadFile(filepath.Join(trustDir, WorkspaceKey(canonical)+".json"))
+		if err == nil {
+			var decision struct {
+				Workspace string `json:"workspace"`
+				Trusted   bool   `json:"trusted"`
+			}
+			return json.Unmarshal(data, &decision) == nil && decision.Trusted && decision.Workspace == canonical
+		}
+		if !os.IsNotExist(err) {
+			return false
+		}
+		parent := filepath.Dir(canonical)
+		if parent == canonical {
+			return false
+		}
+		canonical = parent
 	}
-	var decision struct {
-		Workspace string `json:"workspace"`
-		Trusted   bool   `json:"trusted"`
-	}
-	return json.Unmarshal(data, &decision) == nil && decision.Trusted && decision.Workspace == canonical
 }
 
 func TrustWorkspace(configPath, workspace string, trusted bool) error {

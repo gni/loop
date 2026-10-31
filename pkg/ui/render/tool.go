@@ -59,6 +59,8 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 	lang := "plaintext"
 	if isJSON {
 		lang = "json"
+	} else if toolName == "bash" {
+		lang = ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body)
 	} else {
 		if filePath := ExtractToolTarget(toolName, argsJSON); filePath != "" {
 			lang = filePath
@@ -134,6 +136,14 @@ func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
 	if !isError {
+		if toolName == "todo" && bodyWasStreamed {
+			// Task descriptions were already shown during generation. Keep
+			// the verified status counts without printing the full list again.
+			if summary, _, ok := strings.Cut(output, "\n"); ok && strings.TrimSpace(summary) != "" {
+				fmt.Fprintln(w, style.NewStyle().Foreground(theme.Success).Render("⎿  "+summary))
+				return
+			}
+		}
 		// Never suppress the write completion line just because its code was
 		// streamed. Emit only the saved-file summary, not the raw tool output.
 		if toolName == "write" {
@@ -183,6 +193,9 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	body := output
 	isJSON := false
 	if !isError {
+		if toolName == "ask_user" {
+			body = askUserSelectionSummary(body)
+		}
 		trimmedBody := strings.TrimSpace(body)
 		if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) || (strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
 			var temp interface{}
@@ -193,7 +206,9 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 				}
 			}
 		}
-		if (isCodeContentTool(toolName) || isJSON) && !strings.Contains(body, "\x1b[") {
+		if toolName == "grep" && !strings.Contains(body, "\x1b[") {
+			body = highlightGrepBody(body, theme)
+		} else if (isCodeContentTool(toolName) || isJSON || (toolName == "bash" && ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body) != "plaintext")) && !strings.Contains(body, "\x1b[") {
 			body = highlightToolBody(body, toolName, argsJSON, isJSON, bodyWasStreamed, theme)
 		}
 	}
@@ -216,6 +231,27 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	if !isError && IsEditLikeTool(toolName) {
 		renderEditSummary(w, theme, toolName, argsJSON, output)
 	}
+}
+
+// The complete question and answer remain in model history. The question is
+// already visible in the menu or tool heading, so display only the answer here.
+func askUserSelectionSummary(output string) string {
+	rest, ok := strings.CutPrefix(output, "User response to question ")
+	if !ok {
+		return output
+	}
+	question, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return output
+	}
+	answer, ok := strings.CutPrefix(rest[len(question):], ": Selected ")
+	if !ok {
+		return output
+	}
+	if _, err := strconv.Unquote(answer); err != nil {
+		return output
+	}
+	return "⎿  Selected " + answer
 }
 
 func resolveAbsTargetPath(target string) string {

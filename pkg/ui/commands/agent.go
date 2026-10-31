@@ -55,7 +55,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		if kiReader != nil {
 			rl = kiReader.RL
 		}
-		ui.RedrawScreen(w, a, kiReader, rl)
+		ui.RestoreAfterModal(w, a, kiReader, rl)
 		return
 	}
 

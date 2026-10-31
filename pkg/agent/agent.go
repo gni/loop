@@ -292,6 +292,10 @@ func (a *Agent) NewTurnStreamRenderer(w io.Writer, theme style.UITheme, agentNam
 	if presenter, ok := sr.(interface{ SetLiveCollapse(bool) }); ok && a != nil && a.Config != nil {
 		presenter.SetLiveCollapse(a.Config.CollapseResults)
 	}
+	if presenter, ok := sr.(interface{ SetInteractiveQuestions(bool) }); ok {
+		presenter.SetInteractiveQuestions(a != nil && a.UI != nil && a.Inquirer == nil &&
+			(a.Config == nil || a.Config.AskUserMode != "auto_recommended"))
+	}
 	return sr
 }
 

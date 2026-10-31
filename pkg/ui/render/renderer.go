@@ -63,6 +63,7 @@ type StreamRenderer struct {
 	liveVisibleCall      int
 	liveResultGap        bool
 	liveCollapse         bool
+	interactiveQuestions bool
 	// Recorded model-visible fragments for active-turn redraws. A full
 	// history replay uses these instead of the terminal write byte stream.
 	liveReplayEvents       []liveReplayEvent
@@ -711,7 +712,7 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if view := sr.liveCallViews[index]; view != nil && (view.name == "write" || view.name == "edit") && (view.bytes > 0 || view.compactLine != -1) {
+	if view := sr.liveCallViews[index]; view != nil && (view.name == "write" || view.name == "edit" || view.name == "todo") && (view.bytes > 0 || view.compactLine != -1) {
 		return true
 	}
 	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
@@ -734,6 +735,12 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		target := ExtractToolTarget(toolName, toolArgs)
 		if target == "" {
 			target = view.path
+		}
+		if toolName == "ask_user" {
+			// The menu owns the visible question. Keep it for semantic
+			// history without rewriting its generic heading after the menu.
+			view.path = target
+			return
 		}
 		status := ToolStatusSuccess
 		if isError {

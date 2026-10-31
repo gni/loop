@@ -43,6 +43,14 @@ func (sr *StreamRenderer) SetLiveCollapse(collapsed bool) {
 	sr.mu.Unlock()
 }
 
+// SetInteractiveQuestions gives the question menu ownership of question text.
+// Automatic answers still need their question displayed by the live preview.
+func (sr *StreamRenderer) SetInteractiveQuestions(enabled bool) {
+	sr.mu.Lock()
+	sr.interactiveQuestions = enabled
+	sr.mu.Unlock()
+}
+
 // safeLiveLabel strips model-supplied cursor controls and line breaks. A tool
 // argument must never be able to manipulate the terminal outside the body.
 func safeLiveLabel(value string) string {
@@ -70,6 +78,9 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	name = safeLiveLabel(name)
 	if name == "" {
 		return
+	}
+	if name == "ask_user" && sr.interactiveQuestions {
+		path, delta = "", ""
 	}
 	if sr.liveCallViews == nil {
 		sr.liveCallViews = make(map[int]*liveCallView)

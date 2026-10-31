@@ -39,6 +39,13 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 	}
 
 	live := &toolProgressWriter{writer: a.CurrentWriter()}
+	if tc.Function.Name == "bash" {
+		if presenter, ok := sr.(interface {
+			NewShellOutputWriter(io.Writer, string) io.Writer
+		}); ok {
+			live.writer = presenter.NewShellOutputWriter(live.writer, tc.Function.Arguments)
+		}
+	}
 	a.stateMu.Lock()
 	previousWriter := a.liveToolWriter
 	a.liveToolWriter = live
@@ -55,6 +62,10 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 		}
 		if collapsed && a.UI != nil {
 			a.UI.RenderToolOutput(w, live.content.String(), false, true, currentTheme, tc.Function.Name, tc.Function.Arguments, false)
+		} else if presenter, ok := sr.(interface {
+			NewShellOutputWriter(io.Writer, string) io.Writer
+		}); ok && tc.Function.Name == "bash" {
+			_, _ = presenter.NewShellOutputWriter(w, tc.Function.Arguments).Write(live.content.Bytes())
 		} else {
 			_, _ = w.Write(live.content.Bytes())
 		}
