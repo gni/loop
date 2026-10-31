@@ -18,10 +18,11 @@ import (
 
 // AgentUIImpl implements agent.AgentUI and encapsulates the state of the TUI.
 type AgentUIImpl struct {
-	Config    *config.Config
-	Theme     style.UITheme
-	SessionID string
-	PPWriter  *PromptPreservingWriter
+	Config      *config.Config
+	Theme       style.UITheme
+	SessionID   string
+	PPWriter    *PromptPreservingWriter
+	ChatHistory *ChatHistory
 
 	ActiveCancelFunc     context.CancelFunc
 	PasteLinesOffset     int
@@ -35,6 +36,7 @@ type AgentUIImpl struct {
 	ScrollRegionOffset   int
 	CollapseResults      bool
 	LastStatsText        string
+	ActivityStatsText    string
 	LastStatusBarText    string
 	IsInteractive        bool
 	PromptHint           string
@@ -192,6 +194,18 @@ func (ui *AgentUIImpl) UpdatePlanStatus(completed, total int) {
 
 func (ui *AgentUIImpl) DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string) {
 	DrawStaticStatsLine(w, theme, spinnerFrame, statsText)
+}
+
+// DrawActivityStatsLine scopes a temporary activity label independently of the
+// last completed turn. Clearing it restores the saved status on every redraw.
+func (ui *AgentUIImpl) DrawActivityStatsLine(w io.Writer, theme style.UITheme, text string) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	ui.StateMu.Lock()
+	ui.ActivityStatsText = text
+	saved := ui.LastStatsText
+	ui.StateMu.Unlock()
+	DrawStaticStatsLineLocked(w, theme, "", saved)
 }
 
 func (ui *AgentUIImpl) AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {

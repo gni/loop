@@ -19,6 +19,17 @@ import (
 )
 
 func configureREPLCallbacks(kiReader *interceptor.KeyInterceptorReader, theme *style.UITheme) {
+	kiReader.OnQueueChanged = func() {
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
+		ui.GetUI().StateMu.Unlock()
+		ui.DrawStatusBar(kiReader.W, ui.GetConfiguredTheme(kiReader.Agent.Config))
+	}
+	kiReader.OnRedrawTypeAhead = func() {
+		ui.TerminalMu.Lock()
+		defer ui.TerminalMu.Unlock()
+		ui.DrawConsoleStaticControlsLocked(kiReader.W, kiReader.Agent, kiReader, kiReader.RL, true)
+	}
 	kiReader.OnClearPromptHint = func() { ui.GetUI().ClearPromptHint() }
 	kiReader.OnRedrawScreen = func() { ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, kiReader.RL) }
 	kiReader.OnDrawStaticControls = func(targetWriter io.Writer) {
@@ -68,7 +79,7 @@ func startREPLSystemNotifications(a *agent.Agent, kiReader *interceptor.KeyInter
 	go func() {
 		for event := range a.SystemEvents {
 			ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(a.Config))
-			if event != "" && kiReader.IsAtMainPrompt {
+			if event != "" && kiReader.IsAtMainPrompt.Load() {
 				ui.GetUI().SetPromptHint(fmt.Sprintf("[%s]", event), 3*time.Second, nil)
 			}
 		}

@@ -84,6 +84,9 @@ func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, 
 		}
 	}
 	textToDraw := statsText
+	if getUI().ActivityStatsText != "" {
+		textToDraw = getUI().ActivityStatsText
+	}
 	pasteLinesOffset := getUI().PasteLinesOffset
 	getUI().StateMu.Unlock()
 

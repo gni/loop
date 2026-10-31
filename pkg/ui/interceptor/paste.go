@@ -43,51 +43,117 @@ func drainPasteBytes(ch <-chan byte, buf []byte, stop func([]byte) bool) []byte 
 }
 
 func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
-	var isPaste bool
-	var pasteBytes []byte
-
-	if bytes.Contains(p[:n], bracketedPasteStart) || ki.InBracketedPaste {
-		isPaste = true
-		ki.InBracketedPaste = true
-		ki.BracketedBuffer = append(ki.BracketedBuffer, p[:n]...)
-		ki.BracketedBuffer = drainPasteBytes(ki.InputChan, ki.BracketedBuffer, func(b []byte) bool {
-			return bytes.Contains(b, bracketedPasteEnd)
-		})
-
-		if startIdx := bytes.Index(ki.BracketedBuffer, bracketedPasteStart); startIdx >= 0 {
-			ki.BracketedBuffer = ki.BracketedBuffer[startIdx+len(bracketedPasteStart):]
-		}
-		if endIdx := bytes.Index(ki.BracketedBuffer, bracketedPasteEnd); endIdx >= 0 {
-			pasteBytes = ki.BracketedBuffer[:endIdx]
-			remainder := ki.BracketedBuffer[endIdx+len(bracketedPasteEnd):]
-			ki.BracketedBuffer = nil
-			ki.InBracketedPaste = false
-			if len(remainder) > 0 {
-				ki.PasteRemaining = append(ki.PasteRemaining, remainder...)
-			}
+	data := p[:n]
+	if len(ki.PasteStartPending) > 0 {
+		data = append(ki.PasteStartPending, data...)
+		ki.PasteStartPending = nil
+	}
+	var prefix []byte
+	if !ki.InBracketedPaste {
+		if start := bytes.Index(data, bracketedPasteStart); start >= 0 {
+			prefix = append([]byte(nil), data[:start]...)
+			data = data[start+len(bracketedPasteStart):]
+			ki.InBracketedPaste = true
 		} else {
-			pasteBytes = ki.BracketedBuffer
-			ki.BracketedBuffer = nil
-		}
-	} else if n > 1 {
-		trimmed := bytes.TrimRight(p[:n], "\r\n")
-		if len(trimmed) > 0 && bytes.ContainsAny(trimmed, "\r\n") {
-			isPaste = true
-			pasteBytes = append([]byte(nil), p[:n]...)
-			pasteBytes = drainPasteBytes(ki.InputChan, pasteBytes, nil)
+			// A read can stop in the middle of the opening marker too.
+			for size := min(len(data), len(bracketedPasteStart)-1); size > 0; size-- {
+				if size == 1 && len(data) < len(p) {
+					// A standalone Escape has already been disambiguated by
+					// the keyboard reader. Keep it usable for menu dismissal.
+					continue
+				}
+				if bytes.Equal(data[len(data)-size:], bracketedPasteStart[:size]) {
+					ki.PasteStartPending = append([]byte(nil), data[len(data)-size:]...)
+					data = data[:len(data)-size]
+					break
+				}
+			}
+			trimmed := bytes.TrimRight(data, "\r\n")
+			if len(trimmed) > 0 && bytes.ContainsAny(trimmed, "\r\n") {
+				pasted := drainPasteBytes(ki.InputChan, append([]byte(nil), data...), nil)
+				return ki.copyReadData(p, ki.pastedInput(pasted)), true
+			}
+			if len(data) == 0 && len(ki.PasteStartPending) > 0 {
+				return 0, true
+			}
+			return ki.copyReadData(p, NormalizePromptNavigationKeys(data)), false
 		}
 	}
-
-	if isPaste {
-		return ki.formatPastedText(pasteBytes, p)
+	searchFrom := max(0, len(ki.BracketedBuffer)-len(bracketedPasteEnd)+1)
+	ki.BracketedBuffer = append(ki.BracketedBuffer, data...)
+	end := bytes.Index(ki.BracketedBuffer[searchFrom:], bracketedPasteEnd)
+	if end < 0 {
+		// Keep incomplete markers and UTF-8 sequences until the frame is complete.
+		return ki.copyReadData(p, ki.normalizePromptEditKeys(NormalizePromptNavigationKeys(prefix))), true
 	}
-
-	return ki.copyReadData(p, NormalizePromptNavigationKeys(p[:n])), false
+	end += searchFrom
+	input := append(ki.normalizePromptEditKeys(NormalizePromptNavigationKeys(prefix)), ki.pastedInput(ki.BracketedBuffer[:end])...)
+	remaining := ki.BracketedBuffer[end+len(bracketedPasteEnd):]
+	if len(remaining) > 0 {
+		ki.InputRemaining = append(append([]byte(nil), remaining...), ki.InputRemaining...)
+	}
+	ki.BracketedBuffer = nil
+	ki.InBracketedPaste = false
+	return ki.copyReadData(p, input), true
 }
 
-func (ki *KeyInterceptorReader) formatPastedText(pasteBytes []byte, p []byte) (int, bool) {
-	pasteStr := strings.ReplaceAll(strings.ReplaceAll(string(pasteBytes), "\r\n", "\n"), "\r", "\n")
+func NormalizePastedText(data []byte) string {
+	return strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n")
+}
 
+func (ki *KeyInterceptorReader) pastedInput(data []byte) []byte {
+	text := NormalizePastedText(data)
+	if !ki.IsAtMainPrompt.Load() {
+		// Settings fields consume literal text rather than prompt edit keys.
+		return []byte(text)
+	}
+	text = ki.preparePastedText(text)
+	ki.PastedLiterals = append(ki.PastedLiterals, text)
+	return ki.QueuePromptPaste(text)
+}
+
+// PastedInputSource excludes clipboard contents from command/attachment syntax
+// while retaining explicit file references typed around an unchanged paste.
+func PastedInputSource(line string, pastes []string) (string, bool) {
+	if len(pastes) == 0 {
+		return line, false
+	}
+	source := line
+	seen := make(map[string]bool)
+	for _, text := range pastes {
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		if !strings.Contains(source, text) {
+			// Edits can invalidate a paste's original boundaries. Keep the
+			// input literal rather than interpreting examples as file paths.
+			return "", true
+		}
+		source = strings.ReplaceAll(source, text, "[paste]")
+	}
+	return source, true
+}
+
+// QueuePromptPaste inserts one edit rather than replaying every pasted character
+// through x/term's limited single-line input path. Only the editor goroutine
+// queues and consumes these edits.
+func (ki *KeyInterceptorReader) QueuePromptPaste(text string) []byte {
+	ki.PendingPastes = append(ki.PendingPastes, text)
+	return []byte(string(PromptPasteKey))
+}
+
+func (ki *KeyInterceptorReader) TakePromptPaste() string {
+	if len(ki.PendingPastes) == 0 {
+		return ""
+	}
+	text := ki.PendingPastes[0]
+	ki.PendingPastes[0] = ""
+	ki.PendingPastes = ki.PendingPastes[1:]
+	return text
+}
+
+func (ki *KeyInterceptorReader) preparePastedText(pasteStr string) string {
 	lineCount := strings.Count(pasteStr, "\n")
 	if len(pasteStr) > 0 && !strings.HasSuffix(pasteStr, "\n") {
 		lineCount++
@@ -118,9 +184,7 @@ func (ki *KeyInterceptorReader) formatPastedText(pasteBytes []byte, p []byte) (i
 			tagStr = fmt.Sprintf("[Pasted %d %s #%d]", count, unit, ki.PasteCounter)
 		}
 		ki.PastedCodeBlocks[tagStr] = pasteStr
-		return ki.copyReadData(p, []byte(tagStr)), true
+		return tagStr
 	}
-
-	singleLine := strings.ReplaceAll(pasteStr, "\n", " ↵ ")
-	return ki.copyReadData(p, []byte(singleLine)), true
+	return pasteStr
 }

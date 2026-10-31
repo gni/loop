@@ -34,6 +34,7 @@ var baseAutocompleteCandidates = []string{
 }
 
 var configAutocompleteKeys = []string{
+	"prompt_max_lines",
 	"endpoint", "model", "temperature", "guided_mode", "disable_file_observation_guard", "auto_approve", "show_thinking",
 	"collapse_results", "show_tokens", "show_microseconds", "theme", "syntax_theme", "context_limit", "steps",
 	"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
@@ -72,7 +73,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 	}
 
 	prefixToPos := line[:pos]
-	wordStartIdx := strings.LastIndex(prefixToPos, " ") + 1
+	wordStartIdx := strings.LastIndexAny(prefixToPos, " \t\r\n") + 1
 	wordToComplete := prefixToPos[wordStartIdx:]
 
 	var matches []string

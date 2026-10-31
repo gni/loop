@@ -41,6 +41,10 @@ func handleClearCommand(
 			return
 		}
 	}
+	if err := a.SetTodos(nil); err != nil {
+		fmt.Fprintf(w, "cannot clear plan: %v\n", err)
+		return
+	}
 	*messages = freshMessages
 	a.SyncSessionSystemPrompt(messages, "")
 	ui.GetUI().LastStatsText = ""

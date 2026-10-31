@@ -9,6 +9,11 @@ import (
 func FormatDefensiveError(toolName string, err error) string {
 	errStr := err.Error()
 	lowerErr := strings.ToLower(errStr)
+	// Todo diagnostics already describe their schema or plan-state error.
+	// Filesystem and background-task recovery advice does not apply to plans.
+	if toolName == "todo" {
+		return errStr
+	}
 
 	if strings.Contains(errStr, "Recommendation:") {
 		return RuntimeMessagef("alert_plain", "System Alert: Your execution of '%s' failed due to: %s", toolName, errStr)

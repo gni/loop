@@ -8,8 +8,19 @@ package ignore
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// DirectoryNames returns the shared defaults for adapters such as shell scans.
+func DirectoryNames() []string {
+	names := make([]string, 0, len(dirNames))
+	for name := range dirNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // dirNames is the canonical ignored-directory name set. Keep this as the only
 // list; policy decisions belong in the functions below, not in extra lists.

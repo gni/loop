@@ -45,6 +45,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -52,7 +53,6 @@ require (
 	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/text v0.43.0 // indirect
 )
 ```
 
@@ -79,6 +79,10 @@ start a session with a direct objective:
 ./loop "audit the network layer and patch vulnerabilities"
 ```
 
+Source inspection excludes dependency and generated directories such as `.venv`, `venv`, `node_modules`, `vendor`, `build`, `dist`, `target`, and caches. Native file tools reject searches started inside those directories. Common shell scanners (`find`, recursive `grep`, `rg`, `fd`, `tree`, `du`) apply the same directory defaults; when an installed scanner cannot exclude directories, Loop directs the model to native file tools. These are scan defaults, not access restrictions on arbitrary scripts. Builds and package managers can still run installed dependencies.
+
+Foreground scans observe cancellation throughout traversal. Ctrl+C stops their shell process group, discards pending live output, and prevents queued shell commands from starting. Live shell output is capped at the configured `max_output_bytes`; process capture remains bounded separately.
+
 Shell execution is not sandboxed. Workspace file-tool checks do not restrict shell commands, plugins, or child processes. Run untrusted work in an isolated environment.
 
 Debug execution traces are disabled by default because they may include prompts and tool arguments. Set `LOOP_DEBUG_FILE=/private/path/loop.log` or `debug_log_file` to opt in. Newly written trace, config, and session files are private. Review older files when upgrading.
@@ -87,6 +91,49 @@ bypass interactive tool approval prompts (use with caution):
 ```bash
 ./loop --yes
 ```
+
+#### multiline prompt
+
+**Enter sends** and **Alt+Enter inserts a newline**. Alt+Enter supports both legacy `ESC` + `Enter` input and enhanced key reporting. Ctrl+Enter and Shift+Enter also insert a newline when the terminal sends a distinct modified key signal. Loop requests Kitty keyboard reporting and xterm modifyOtherKeys and accepts both encodings. Ctrl+N and Ctrl+J remain newline alternatives. Plain Enter always sends; if a terminal reports a modified Enter as plain `CR`, it will send too because the modifier is absent from the input.
+
+If Shift+Enter sends the message, run `./loop keycheck` and press Enter, then Shift+Enter. This captures the physical terminal input after requesting enhanced key reporting. Identical bytes mean the terminal must supply a distinct Shift+Enter binding, such as `ESC[13;2u`; Loop cannot recover a modifier that was never transmitted. A browser terminal must provide that binding in its frontend. Distinct bytes can be included in a keyboard issue report. Use `./loop keycheck --key ctrl-enter` or `./loop keycheck --key alt-enter` to check those combinations too. This check does not contact a model or save settings.
+
+The prompt grows with line breaks and wrapped text, up to eight visible rows by default. Longer drafts scroll around the cursor; the chat transcript, stats and status bar keep their existing layout. Up/Down move within multiline or wrapped drafts, Home/End move to the start/end of a logical line, and Ctrl+P recalls older prompts. Down at the last row of a recalled prompt returns to newer entries or your saved draft. Pasting multiple lines inserts text without sending it. Large pastes still use the configured collapsed paste preview.
+
+Press Enter to send the complete pasted text, regardless of the visible prompt height. `max_paste_lines` and `max_paste_chars` control the collapsed preview, not how much text is submitted.
+
+Clipboard contents are literal message text. Code decorators, `@...` examples, and slash-command examples inside a paste do not load files or invoke commands. Explicit `@file` references typed outside an unchanged paste remain supported. Input preparation errors appear in chat and the status row.
+
+Choose the visible prompt height in `/config`, or set it directly:
+
+```text
+/config prompt_max_lines 8
+```
+
+Set `prompt_max_lines` to 1 for a one-row viewport, or increase it for a larger editor; the available terminal height always limits it to leave space for the chat. Settings are saved between launches. The same newline/submit bindings apply to drafts typed while a reply is streaming.
+
+#### queued prompts
+
+While a reply is running, Enter queues your prompt. **Ctrl+Z removes the newest waiting prompt**; repeat to remove more. Your current draft and the running reply stay intact. `/queue undo` removes the newest entry and `/queue clear` removes all waiting entries; both commands act immediately during generation. Clipboard text containing these commands stays literal. Use `/queue` to view the list when idle. Prompts already running cannot be removed from the queue.
+
+#### scrolling chat history
+
+Scroll **up with the mouse wheel** or **PageUp** through the chat. Scrolling starts only once output extends above the visible chat area, using the current terminal size. The prompt, stats, and status bar stay pinned. There is no fixed history-line limit in this view.
+
+- PageUp / PageDown move through history.
+- While scrolled up, Home goes to the oldest output and End returns to the latest. Ctrl+Home / Ctrl+End work directly from the prompt.
+- The mouse wheel works immediately, including from the live view. Scrolling down to the bottom resumes live output. Use Shift+drag for terminal text selection while Loop is running.
+- Esc or typing returns to live output and preserves the prompt draft.
+
+The chat is one continuous display document: replies, thinking, tool output and local command listings such as `/skills` stay in their original order. Incoming output keeps updating the document while your reading position stays anchored. Scrolling does not send anything to the model, load session files, or rebuild conversation messages. Rapid wheel events share display frames, and only changed visible rows are repainted. Returning to the bottom resumes following new output.
+
+Original session messages remain available before context compaction and after resuming a saved session. Local command listings are retained for the current run; they are not stored in model session messages. Display scrollback is separate from the model's current context. Clearing or switching conversations resets the display document.
+
+#### saved task progress
+
+Successful `todo` updates are saved immediately with the conversation, including completed, active and pending tasks. Restart with `loop --resume` or `loop --session <id>` to restore the plan and its progress indicator. `/session load <id>` restores it immediately inside the app; `/plan` shows the task list without calling the model.
+
+Older sessions can recover plans from their successful todo calls, including records before context compaction. Branches inherit the plan; `/clear` and new conversations start empty. `--no-session` keeps state in memory only. Restoring a plan does not re-execute tools or automatically continue working.
 
 #### nonstop mode
 

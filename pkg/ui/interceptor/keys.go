@@ -30,6 +30,7 @@ func NormalizePromptNavigationKeys(input []byte) []byte {
 
 func (ki *KeyInterceptorReader) ResetTypeAheadLocked() {
 	ki.TypeAheadBuffer = nil
+	ki.TypeAheadPastes = nil
 	ki.HistoryIndex = -1
 	ki.SavedTypeAhead = nil
 }
@@ -62,6 +63,9 @@ func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 		}
 	}
 
+	if history, ok := ki.Hist.(interface{ GetFull(string) string }); ok {
+		ki.TypeAheadBuffer = []byte(history.GetFull(string(ki.TypeAheadBuffer)))
+	}
 	ki.RedrawTypeAhead()
 }
 
@@ -82,28 +86,35 @@ func (ki *KeyInterceptorReader) HandleCtrlO() {
 		return
 	}
 
+	// Config is also read by the stream renderer. Apply active changes on that
+	// same foreground path, preserving the parity of rapid repeated toggles.
+	if ki.ActiveTurn.Load() {
+		ki.PendingCollapseToggles.Add(1)
+		return
+	}
+	ki.toggleCollapse()
+
+	if ki.OnRedrawScreen != nil {
+		ki.OnRedrawScreen()
+	}
+}
+
+func (ki *KeyInterceptorReader) toggleCollapse() {
 	ki.Agent.Config.CollapseResults = !ki.Agent.Config.CollapseResults
 	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
 	if ki.Agent.UI != nil {
 		ki.Agent.UI.SetCollapseStatus(ki.Agent.Config.CollapseResults)
 	}
-	// A model turn may still have uncommitted text and tool previews. Queue
-	// an active-turn redraw on the stream consumer instead of clearing the
-	// screen from the input goroutine. The stream consumer repaints history
-	// with its current snapshot, even while waiting for the next chunk.
-	if ki.ActiveTurn.Load() {
-		ki.PendingCollapseRedraw.Store(true)
-		if ki.OnRedrawStatusBar != nil {
-			ki.OnRedrawStatusBar()
-		}
-		return
+}
+
+// ApplyPendingCollapse runs on the foreground stream consumer or REPL.
+func (ki *KeyInterceptorReader) ApplyPendingCollapse() bool {
+	presses := ki.PendingCollapseToggles.Swap(0)
+	if presses%2 == 0 {
+		return false
 	}
-	if ki.OnRedrawScreen != nil {
-		ki.OnRedrawScreen()
-	}
-	if fr, ok := ki.Agent.CurrentWriter().(interface{ ForceReposition() }); ok {
-		fr.ForceReposition()
-	}
+	ki.toggleCollapse()
+	return true
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlT() {

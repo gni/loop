@@ -1,11 +1,15 @@
 package tool
 
 import (
+	"context"
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/agent/tool/search"
 )
 
 func init() {
-	filetool.DirectoryTreeLister = ListDirectoryTree
+	filetool.DirectoryTreeLister = func(ctx context.Context, path, root string, depth, entries int) (string, error) {
+		return search.ListDirectoryTreeContext(ctx, path, root, depth, entries, 1)
+	}
 }
 
 // NewReadTool initializes the file reading tool.

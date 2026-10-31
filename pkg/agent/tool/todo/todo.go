@@ -26,7 +26,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 		Type: "function",
 		Function: domaintool.FunctionDefinition{
 			Name:        "todo",
-			Description: domaintool.FormatToolDescription("todo", "Track a task plan. Prefer replacing the complete plan using tasks: [{id, task, status}]. For action=update or remove, always provide task_id. Action=list requires no task_id. Exactly one task may be in_progress."),
+			Description: domaintool.FormatToolDescription("todo", "Track a task plan. Prefer replacing the complete plan using tasks: [{id, task, status}]. For action=update or remove, always provide task_id. Action=list requires no task_id. At most one task may be in_progress."),
 			Parameters: domaintool.JSONSchema{
 				Type: "object",
 				Properties: map[string]domaintool.SchemaProp{
@@ -38,7 +38,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 							Properties: map[string]domaintool.SchemaProp{
 								"id":     domaintool.StringProp(domaintool.FormatParamDescription("todo", "id", "Unique identifier for the task (e.g., 'task-1', 'step-1').")),
 								"task":   domaintool.StringProp(domaintool.FormatParamDescription("todo", "task", "Clear, concrete description of the task.")),
-								"status": {Type: "string", Description: domaintool.FormatParamDescription("todo", "status", "Task status. Exactly one task may be 'in_progress' at any given moment."), Enum: []string{"pending", "in_progress", "completed"}},
+								"status": {Type: "string", Description: domaintool.FormatParamDescription("todo", "status", "Task status: pending, in_progress, or completed. At most one task may be in_progress."), Enum: []string{"pending", "in_progress", "completed"}},
 							},
 							Required: []string{"id", "task", "status"},
 						},
@@ -54,7 +54,7 @@ func (t *todoTool) Definition() domaintool.Tool {
 }
 
 func (t *todoTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement or action-based update; exactly one task in_progress.")
+	return domaintool.FormatToolSnippet(t.Name(), "Manage structured implementation plan. Whole-list replacement or action-based update; at most one task in_progress.")
 }
 
 func (t *todoTool) PromptGuidelines() []string {
@@ -218,7 +218,7 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 
 	case "add":
 		if taskDesc == "" {
-			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_empty_desc", "task description is required to add a task"))
+			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_description", "task description is required to add a task"))
 		}
 		taskID = domaintool.FirstNonEmpty(taskID, fmt.Sprintf("task-%d", len(currentTasks)+1))
 		status = domaintool.FirstNonEmpty(status, "pending")
@@ -281,7 +281,7 @@ func validateTodoItems(items []domaintool.TodoItem) ([]domaintool.TodoItem, erro
 	}
 
 	if inProgressCount > 1 {
-		return nil, errors.New(domaintool.RuntimeMessagef("todo_policy_violation", "policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount))
+		return nil, errors.New(domaintool.RuntimeMessagef("todo_policy_violation", "policy violation: at most 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount))
 	}
 
 	return items, nil
@@ -293,72 +293,17 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	var currentTasks []domaintool.TodoItem
 	if ts, ok := ctx.(domaintool.TodoState); ok {
-		currentTasks = ts.GetTodos()
+		currentTasks = append([]domaintool.TodoItem(nil), ts.GetTodos()...)
 	} else {
 		currentTasks = append([]domaintool.TodoItem(nil), t.items...)
 	}
 
-	trimmed := strings.TrimSpace(arguments)
-	if trimmed == "" || trimmed == "{}" {
-		if len(currentTasks) > 0 {
-			return t.formatSummary(currentTasks), nil
-		}
-		return "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
-	}
-
-	isJSON := strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
-	var items []domaintool.TodoItem
-
-	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
-			return "", fmt.Errorf("parse todo list: %w", err)
-		}
-	} else if strings.HasPrefix(trimmed, "{") {
-		if !json.Valid([]byte(trimmed)) {
-			return "", errors.New(domaintool.RuntimeMessage("todo_invalid_args", "invalid JSON arguments for todo"))
-		}
-		var container struct {
-			Tasks    []domaintool.TodoItem `json:"tasks"`
-			Todos    []domaintool.TodoItem `json:"todos"`
-			Items    []domaintool.TodoItem `json:"items"`
-			Plan     []domaintool.TodoItem `json:"plan"`
-			Content  []domaintool.TodoItem `json:"content"`
-			Data     []domaintool.TodoItem `json:"data"`
-			List     []domaintool.TodoItem `json:"list"`
-			TodoList []domaintool.TodoItem `json:"todo_list"`
-		}
-		_ = json.Unmarshal([]byte(trimmed), &container)
-		items = firstNonEmptyList(container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList)
-
-		if len(items) == 0 {
-			var raw map[string]interface{}
-			if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
-				updated, listOut, isList, actionErr := t.applyActionObject(raw, currentTasks)
-				if actionErr != nil {
-					return "", actionErr
-				}
-				if isList {
-					return listOut, nil
-				}
-				items = updated
-			}
-		}
-	}
-
-	if len(items) == 0 {
-		if isJSON {
-			return "", errors.New(domaintool.RuntimeMessage("todo_invalid_args", "invalid arguments for todo: expected JSON with 'tasks' array or valid action parameters"))
-		}
-		items = domaintool.ParseMarkdownTodoLines(trimmed, "task-")
-	}
-
-	if len(items) == 0 {
-		return "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
-	}
-
-	validated, err := validateTodoItems(items)
+	validated, listOutput, err := t.preparePlan(currentTasks, arguments)
 	if err != nil {
 		return "", err
+	}
+	if validated == nil {
+		return listOutput, nil
 	}
 
 	if ts, ok := ctx.(domaintool.TodoState); ok {
@@ -369,6 +314,95 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	t.items = append([]domaintool.TodoItem(nil), validated...)
 
 	return t.formatSummary(validated), nil
+}
+
+// ReplayPlan applies saved todo arguments to a plan without executing any other
+// tools or touching the filesystem. Failed calls leave the supplied plan intact.
+func ReplayPlan(current []domaintool.TodoItem, arguments string) ([]domaintool.TodoItem, error) {
+	original := append([]domaintool.TodoItem(nil), current...)
+	updated, _, err := (&todoTool{}).preparePlan(append([]domaintool.TodoItem(nil), current...), arguments)
+	if err != nil {
+		return original, err
+	}
+	if updated == nil {
+		return original, nil
+	}
+	return updated, nil
+}
+
+func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments string) ([]domaintool.TodoItem, string, error) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" || trimmed == "{}" {
+		if len(currentTasks) > 0 {
+			return nil, t.formatSummary(currentTasks), nil
+		}
+		return nil, "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
+	}
+
+	isJSON := strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+	var items []domaintool.TodoItem
+
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
+			return nil, "", invalidArguments(err)
+		}
+	} else if strings.HasPrefix(trimmed, "{") {
+		if !json.Valid([]byte(trimmed)) {
+			return nil, "", invalidArguments(errors.New("malformed JSON"))
+		}
+		var container struct {
+			Tasks    []domaintool.TodoItem `json:"tasks"`
+			Todos    []domaintool.TodoItem `json:"todos"`
+			Items    []domaintool.TodoItem `json:"items"`
+			Plan     []domaintool.TodoItem `json:"plan"`
+			Content  []domaintool.TodoItem `json:"content"`
+			Data     []domaintool.TodoItem `json:"data"`
+			List     []domaintool.TodoItem `json:"list"`
+			TodoList []domaintool.TodoItem `json:"todo_list"`
+			Actions  []domaintool.TodoItem `json:"actions"`
+		}
+		decodeErr := json.Unmarshal([]byte(trimmed), &container)
+		items = firstNonEmptyList(container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList, container.Actions)
+		if decodeErr != nil && len(items) == 0 {
+			return nil, "", invalidArguments(decodeErr)
+		}
+
+		if len(items) == 0 {
+			var raw map[string]interface{}
+			if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
+				updated, listOut, isList, actionErr := t.applyActionObject(raw, currentTasks)
+				if actionErr != nil {
+					return nil, "", actionErr
+				}
+				if isList {
+					return nil, listOut, nil
+				}
+				items = updated
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		if isJSON {
+			return nil, "", invalidArguments(errors.New("missing tasks array or valid action parameters"))
+		}
+		items = domaintool.ParseMarkdownTodoLines(trimmed, "task-")
+	}
+
+	if len(items) == 0 {
+		return nil, "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
+	}
+
+	validated, err := validateTodoItems(items)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return validated, "", nil
+}
+
+func invalidArguments(reason error) error {
+	return errors.New(domaintool.RuntimeMessagef("todo_invalid_args", "invalid todo arguments: %v. Use {\"tasks\":[{\"id\":\"1\",\"task\":\"Describe work\",\"status\":\"pending\"}]}.", reason))
 }
 
 func (t *todoTool) formatSummary(items []domaintool.TodoItem) string {

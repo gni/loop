@@ -23,6 +23,9 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	if termW <= 0 {
 		termW = 80
 	}
+	if impl, ok := a.UI.(*AgentUIImpl); ok && impl.PPWriter != nil {
+		impl.PPWriter.ResizeLocked(height)
+	}
 	activeTheme := GetConfiguredTheme(a.Config)
 
 	promptPrefix := GetPromptSymbol(a.Config)
@@ -70,7 +73,12 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	render.DrawConsoleControls(w, render.ConsoleControls{
 		Width: termW, Height: height, Theme: activeTheme,
 		PromptPrefix: promptPrefix, QueueLength: qLen,
-		InputLine: inputLine, InputPosition: posOffset,
+		InputLine: inputLine, InputPosition: posOffset, MaxInputRows: a.Config.PromptRows(),
+		SetCursor: func(row, col int) {
+			if impl, ok := a.UI.(*AgentUIImpl); ok && impl.PPWriter != nil {
+				impl.PPWriter.SetPromptPositionLocked(row, col)
+			}
+		},
 		DrawPrompt: drawPrompt, InApproval: inApproval,
 		OldPasteOffset: oldOffset, Hint: hint,
 		SetPasteOffset: func(offset int) {
@@ -79,6 +87,10 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			getUI().StateMu.Unlock()
 		},
 		OnScroll: func(delta int) {
+			if history := getUI().ChatHistory; history != nil {
+				history.resizeLocked(termW, height)
+				return
+			}
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
 				uiImpl.PPWriter.AdjustPrintLineLocked(delta)
 			} else if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
@@ -91,4 +103,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			DrawStaticStatsLineLocked(dest, activeTheme, "", savedStats)
 		},
 	})
+	if history := getUI().ChatHistory; history != nil && history.needsPaint && !history.captureOnly {
+		history.paintLocked()
+	}
 }

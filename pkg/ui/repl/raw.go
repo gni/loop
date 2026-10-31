@@ -51,6 +51,43 @@ func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterc
 	}
 
 	switch dir {
+	case '2':
+		sequence := []byte{esc, next, dir}
+		for len(sequence) < 8 && sequence[len(sequence)-1] != '~' {
+			b, ok := readNextRawByte(rawChan, 50*time.Millisecond)
+			if !ok {
+				break
+			}
+			sequence = append(sequence, b)
+		}
+		if string(sequence) != "\x1b[200~" {
+			forwardToInputChan(kiReader, sequence...)
+			return
+		}
+		var pasted []byte
+		for b := range rawChan {
+			pasted = append(pasted, b)
+			if strings.HasSuffix(string(pasted[max(0, len(pasted)-6):]), "\x1b[201~") {
+				pasted = pasted[:len(pasted)-6]
+				text := interceptor.NormalizePastedText(pasted)
+				ui.GetUI().StateMu.Lock()
+				active := ui.GetUI().ActiveCancelFunc != nil
+				if active {
+					kiReader.TypeAheadBuffer = append(kiReader.TypeAheadBuffer, text...)
+					kiReader.TypeAheadPastes = append(kiReader.TypeAheadPastes, text)
+				}
+				ui.GetUI().StateMu.Unlock()
+				if active {
+					kiReader.RedrawTypeAhead()
+				} else {
+					// The model may finish before a slow paste completes.
+					forwardToInputChan(kiReader, sequence...)
+					forwardToInputChan(kiReader, pasted...)
+					forwardToInputChan(kiReader, []byte("\x1b[201~")...)
+				}
+				return
+			}
+		}
 	case 'A':
 		kiReader.NavigateHistory(1)
 	case 'B':
@@ -76,6 +113,7 @@ func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterc
 }
 
 func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader) {
+	rawChan = normalizeKeyboardInput(rawChan, kiReader.OnChatHistoryInput)
 	abortOperation := func(cancelFunc func(), clearQueue bool) {
 		if cancelFunc != nil {
 			cancelFunc()
@@ -138,6 +176,9 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		ui.GetUI().StateMu.Unlock()
 
 		if inApproval {
+			if b == 30 {
+				b = 13
+			}
 			if b == 3 || b == 4 {
 				abortOperation(cancelFunc, false)
 				kiReader.ApprovalChan <- b
@@ -177,8 +218,8 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				})
 			case b == 16:
 				kiReader.NavigateHistory(1)
-			case b == 14:
-				kiReader.NavigateHistory(-1)
+			case b == 26:
+				kiReader.ControlQueue("undo")
 			case handleShortcutKey(b):
 			case b == 127 || b == 8:
 				ui.GetUI().StateMu.Lock()
@@ -194,14 +235,31 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				if len(rawChan) == 0 {
 					kiReader.RedrawTypeAhead()
 				}
-			case b == 10 || b == 13:
+			case b == 14 || b == 30 || b == 10:
+				ui.GetUI().StateMu.Lock()
+				kiReader.TypeAheadBuffer = append(kiReader.TypeAheadBuffer, '\n')
+				ui.GetUI().StateMu.Unlock()
+				kiReader.RedrawTypeAhead()
+			case b == 13:
 				ui.GetUI().StateMu.Lock()
 				typed := string(kiReader.TypeAheadBuffer)
+				pastes := append([]string(nil), kiReader.TypeAheadPastes...)
 				kiReader.ResetTypeAheadLocked()
 				ui.GetUI().StateMu.Unlock()
 
+				// Queue controls act immediately while generation continues.
+				// Clipboard text remains literal, including pasted slash examples.
+				source, pasted := interceptor.PastedInputSource(typed, pastes)
+				parts := strings.Fields(source)
+				if !pasted && len(parts) == 2 && (parts[0] == "/queue" || parts[0] == "/queues") {
+					if _, handled := kiReader.ControlQueue(parts[1]); handled {
+						kiReader.RedrawTypeAhead()
+						continue
+					}
+				}
+
 				if trimmed := strings.TrimSpace(typed); trimmed != "" {
-					count := kiReader.EnqueuePrompt(trimmed)
+					count := kiReader.EnqueuePrompt(trimmed, pastes)
 					ui.GetUI().StateMu.Lock()
 					ui.GetUI().State.QueuedPromptsCount = count
 					ui.GetUI().StateMu.Unlock()

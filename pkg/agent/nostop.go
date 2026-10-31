@@ -96,7 +96,16 @@ func (a *Agent) pauseNostop(ctx context.Context, w io.Writer, loader *turnLoader
 	}
 	a.emit(Event{Type: "nostop_wait", SessionID: sessionID, Output: label, Data: map[string]any{"mode": a.Config.Nostop.Mode, "seconds": delay.Seconds(), "recovering": failures > 0}})
 	if a.UI != nil {
-		a.UI.DrawStatsLine(UnwrapWriter(w), theme, "", label)
+		if activity, ok := a.UI.(interface {
+			DrawActivityStatsLine(io.Writer, style.UITheme, string)
+		}); ok {
+			activity.DrawActivityStatsLine(UnwrapWriter(w), theme, label)
+			defer activity.DrawActivityStatsLine(UnwrapWriter(w), theme, "")
+		} else {
+			// A nonempty activity frame keeps the label out of saved stats.
+			a.UI.DrawStatsLine(UnwrapWriter(w), theme, "↻", strings.TrimPrefix(label, "↻ "))
+			defer a.UI.DrawStatsLine(UnwrapWriter(w), theme, "", "")
+		}
 	} else {
 		fmt.Fprintln(w, label)
 	}

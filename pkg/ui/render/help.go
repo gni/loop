@@ -39,7 +39,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/reload", "hot-reload plugins and extensions"},
 		{"/agent [list|spawn|remove]", "manage multi-agent swarm threads"},
 		{"/task [list|view|stream|kill|clear]", "manage background tasks (shorthand: /stop, /kill, /status, /ps)"},
-		{"/queue [list|clear]", "view or clear queued prompts"},
+		{"/queue [list|undo|clear]", "view, undo newest, or clear queued prompts"},
 		{"/compress", "compress history to reclaim context tokens"},
 		{"/context [auto|off|<limit>]", "view or configure adaptive context window scaling"},
 		{"/tokens", "display token utilization and cost stats across swarm"},
@@ -58,16 +58,25 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 	fmt.Fprintln(w)
 
 	shortcuts := [][]string{
-		{"Enter", "submit prompt to agent"},
+		{"Enter", "send prompt"},
+		{"PageUp / PageDown", "scroll chat output when it exceeds the visible area"},
+		{"Home / End (browsing)", "oldest output / latest output"},
+		{"Mouse wheel", "scroll replies and command output; Shift+drag selects text"},
+		{"Esc or typing (browsing)", "return to live output with your draft preserved"},
+		{"Alt+Enter", "insert a newline"},
+		{"Ctrl+Enter / Shift+Enter", "insert a newline when the terminal reports the modifier"},
+		{"Ctrl+N / Ctrl+J", "newline alternatives"},
 		{"Ctrl+G", "toggle guided mode on/off"},
 		{"Ctrl+C", "interrupt generation / cancel turn"},
+		{"Ctrl+Z", "remove newest queued prompt; keep the running turn and draft"},
 		{"Ctrl+D", "exit loop cleanly"},
 		{"Ctrl+L", "clear screen buffer and redraw"},
 		{"Ctrl+O", "toggle collapsible tool outputs"},
 		{"Ctrl+R", "cycle reasoning effort (off/low/medium/high/max)"},
 		{"Ctrl+T", "toggle streaming thought visibility"},
 		{"Tab", "autocomplete slash commands and tool names"},
-		{"Up / Down", "navigate prompt history"},
+		{"Up / Down", "move between prompt rows; recall history in a single-line draft"},
+		{"Ctrl+P", "recall older prompts; Down at the last row recalls newer prompts"},
 	}
 
 	for _, sc := range shortcuts {

@@ -16,6 +16,11 @@ import (
 // Persistence is deliberately performed once by handleConfigCommand.
 func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.Writer) bool {
 	switch key {
+	case "prompt_max_lines":
+		if !parseConfigPositiveInt(w, "prompt max lines", val, &a.Config.PromptMaxLines) {
+			return false
+		}
+
 	case "endpoint", "url":
 		a.Config.Endpoint = val
 		a.Config.UpdateActiveProvider()

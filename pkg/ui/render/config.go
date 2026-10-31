@@ -84,6 +84,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	}
 
 	pairs := []kvPair{
+		{"prompt max lines:", valStyle.Render(fmt.Sprint(cfg.PromptRows()))},
 		{"active provider:", valStyle.Render(cfg.ActiveProvider)},
 		{"temperature:", valStyle.Render(fmt.Sprintf("%.2f", cfg.Temperature))},
 		{"guided mode:", guidedVal},

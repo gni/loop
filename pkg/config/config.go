@@ -97,6 +97,7 @@ func (c *Config) NormalizeSafety() {
 }
 
 type Config struct {
+	PromptMaxLines           int                        `json:"prompt_max_lines,omitempty"`
 	Nostop                   NostopConfig               `json:"nostop,omitempty"`
 	Sources                  map[string]string          `json:"-"`
 	ProjectPath              string                     `json:"-"`
@@ -257,6 +258,7 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
+		PromptMaxLines:           8,
 		Endpoint:                 endpoint,
 		ApiKey:                   apiKey,
 		Model:                    model,
@@ -305,6 +307,9 @@ func (cfg *Config) defaultProviderProfile(name string) ProviderConfig {
 }
 
 func (cfg *Config) applyDefaults() {
+	if cfg.PromptMaxLines <= 0 {
+		cfg.PromptMaxLines = 8
+	}
 	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
 		cfg.SystemInstruction = DefaultSystemInstruction
 	}
@@ -490,6 +495,9 @@ func LoadConfig(path string) (*Config, error) {
 func SaveConfig(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
+	}
+	if err := cfg.ValidatePrompt(); err != nil {
+		return err
 	}
 	if err := cfg.Nostop.Validate(); err != nil {
 		return err

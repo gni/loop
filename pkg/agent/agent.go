@@ -73,6 +73,7 @@ type Agent struct {
 	CancelLifetime   context.CancelFunc
 	TransformContext func(context.Context, []db.Message) ([]db.Message, error)
 	RunSession       func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
+	SyncSessionState func([]db.Message, []string, string, bool) error
 	Ephemeral        bool
 	ToolSelection    []string
 	Timing           *TimingRecorder
@@ -397,19 +398,24 @@ func (a *Agent) SetTodos(todos []tool.TodoItem) error {
 	a.TodosMu.Lock()
 	a.Todos = make([]tool.TodoItem, len(todos))
 	copy(a.Todos, todos)
+	a.TodosMu.Unlock()
+	a.RefreshPlanStatus()
+	return nil
+}
+
+// RefreshPlanStatus synchronizes a newly attached UI with restored task state.
+func (a *Agent) RefreshPlanStatus() {
+	if a == nil || a.UI == nil {
+		return
+	}
+	todos := a.GetTodos()
 	completed := 0
-	for _, t := range todos {
-		if t.Status == "completed" {
+	for _, item := range todos {
+		if item.Status == "completed" {
 			completed++
 		}
 	}
-	total := len(todos)
-	a.TodosMu.Unlock()
-
-	if a.UI != nil {
-		a.UI.UpdatePlanStatus(completed, total)
-	}
-	return nil
+	a.UI.UpdatePlanStatus(completed, len(todos))
 }
 
 func (a *Agent) ApplyConfig(cfg *config.Config) {

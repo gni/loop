@@ -84,6 +84,13 @@ func PrintSessionHistory(
 	w = spacing
 
 	var lastRole, lastUserPrompt string
+	responses := make(map[string]int)
+	for i, msg := range messages {
+		if msg.Role == "tool" {
+			responses[msg.ToolCallID] = i
+		}
+	}
+	calls := make(map[string]db.ToolCall)
 	for i, msg := range messages {
 		if msg.Role == "system" {
 			if strings.HasPrefix(msg.Content, "[System: Below is a summary of the earlier conversation history:") {
@@ -138,6 +145,9 @@ func PrintSessionHistory(
 			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
 
 		case "assistant":
+			for _, tc := range msg.ToolCalls {
+				calls[tc.ID] = tc
+			}
 			if lastRole == "tool" {
 				for line := 0; line < style.ActivityGapLines; line++ {
 					fmt.Fprintln(w)
@@ -185,14 +195,7 @@ func PrintSessionHistory(
 			}
 			printedUnrespondedToolCount := 0
 			for _, tc := range msg.ToolCalls {
-				hasResponse := false
-				for j := i + 1; j < len(messages); j++ {
-					if messages[j].Role == "tool" && messages[j].ToolCallID == tc.ID {
-						hasResponse = true
-						break
-					}
-				}
-				if hasResponse {
+				if responses[tc.ID] > i {
 					continue
 				}
 
@@ -220,19 +223,9 @@ func PrintSessionHistory(
 
 		case "tool":
 			var toolName, argsJSON string
-			for j := i - 1; j >= 0; j-- {
-				if messages[j].Role == "assistant" {
-					for _, tc := range messages[j].ToolCalls {
-						if tc.ID == msg.ToolCallID {
-							toolName = tc.Function.Name
-							argsJSON = tc.Function.Arguments
-							break
-						}
-					}
-				}
-				if toolName != "" {
-					break
-				}
+			if tc, ok := calls[msg.ToolCallID]; ok {
+				toolName = tc.Function.Name
+				argsJSON = tc.Function.Arguments
 			}
 			if toolName == "" {
 				toolName = msg.Name

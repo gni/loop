@@ -36,6 +36,7 @@ func (t *bashTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
 		"For background processes and long-running services, set 'background': true.",
+		"Use native file tools for inspection; dependency and generated folders are excluded from recursive shell scans by default. Do not bypass exclusions using recursive scripts or child shells.",
 	})
 }
 
@@ -80,6 +81,9 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := ctx.Context().Err(); err != nil {
+		return "", fmt.Errorf("command cancelled before execution: %w", err)
+	}
 
 	persistentBash := true
 	if cp, ok := ctx.(interface{ IsPersistentBashEnabled() bool }); ok {
@@ -145,7 +149,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
 	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\nprintf '\n%s%%s\n' \"$(pwd -P)\"\nexit $__LOOP_RET", args.Command, pwdMarker)
-	cmd := exec.Command("bash", "-c", wrappedCmd)
+	cmd := exec.Command("bash", "-c", WithScanDefaults(wrappedCmd, workspaceRoot))
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -162,6 +166,14 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
+
+	if err := timeoutCtx.Err(); err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
+		return "", fmt.Errorf("command cancelled before execution: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdoutReader.Close()
@@ -231,6 +243,9 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 
 	case res := <-done:
+		if pgid > 0 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
 		select {
 		case <-outDone:
 		case <-time.After(50 * time.Millisecond):
@@ -256,6 +271,10 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if finishStdout != nil {
 		finishStdout()
 		live.Finish()
+	}
+
+	if timeoutCtx.Err() == context.Canceled {
+		return "", fmt.Errorf("command cancelled by user: %w", context.Canceled)
 	}
 
 	output := strings.ToValidUTF8(stdout.String(), "\uFFFD")
@@ -301,6 +320,9 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			combined = fmt.Sprintf("%s (no output on stdout or stderr)", exitDesc)
 		} else if !strings.Contains(combined, "exit status") && !strings.Contains(combined, "exit code") {
 			combined = fmt.Sprintf("%s\n\n(%s)", strings.TrimRight(combined, "\r\n"), exitDesc)
+		}
+		if timeoutCtx.Err() != nil {
+			return combined, fmt.Errorf("%s: %w", exitDesc, timeoutCtx.Err())
 		}
 		return combined, fmt.Errorf("%s", exitDesc)
 	}

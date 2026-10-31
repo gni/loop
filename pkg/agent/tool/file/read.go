@@ -1,12 +1,14 @@
 package file
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/domain/ignore"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -14,7 +16,7 @@ import (
 const readDefaultLimit = 200
 
 var (
-	DirectoryTreeLister func(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
+	DirectoryTreeLister func(ctx context.Context, dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
 
 	fallbackFileExts = [...]string{".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".json", ".md", ".yaml", ".yml"}
 	fallbackDirExts  = [...]string{".py", ".ts", ".js", ".tsx", ".jsx", ".go"}
@@ -93,6 +95,9 @@ func resolveDirEntrypoint(safePath, targetPath, workspaceRoot string) (string, o
 }
 
 func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	var args struct {
 		Path   string  `json:"path"`
 		Offset float64 `json:"offset"`
@@ -125,7 +130,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	if HasIgnoredComponent(targetPath) {
+	if ignore.HasComponent(safePath, ctx.GetWorkspaceRoot(), false) {
 		return "", fmt.Errorf("cannot read: path '%s' is inside a dependency or ignored folder (venv, node_modules, etc.)", targetPath)
 	}
 
@@ -146,7 +151,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		resolvedPath, resolvedInfo, header, foundEntry := resolveDirEntrypoint(safePath, targetPath, workspaceRoot)
 		if !foundEntry {
 			if DirectoryTreeLister != nil {
-				tree, treeErr := DirectoryTreeLister(safePath, workspaceRoot, 2, 150)
+				tree, treeErr := DirectoryTreeLister(ctx.Context(), safePath, workspaceRoot, 2, 150)
 				if treeErr != nil {
 					return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, treeErr)
 				}
@@ -166,7 +171,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 	safePath = validatedPath
-	if HasIgnoredComponent(safePath) {
+	if ignore.HasComponent(safePath, workspaceRoot, false) {
 		return "", fmt.Errorf("cannot read ignored path %s", targetPath)
 	}
 	unlock := LockPath(safePath)
@@ -177,6 +182,9 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("file size (%d bytes) is too large; maximum allowed size is %d bytes", info.Size(), maxReadBytes)
 	}
 
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(safePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)

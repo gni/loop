@@ -86,7 +86,7 @@ func CompressToolDefinition(t Tool) Tool {
 			props["updates"] = prop
 		}
 	case "todo":
-		compressed.Function.Description = "Track multi-step plan. Exactly one task in_progress at a time."
+		compressed.Function.Description = "Plan via tasks:[{id,task,status}] or action=add/update/remove/list. At most one in_progress."
 		setPropDesc(props, "tasks", "Full task list")
 		setPropDesc(props, "action", "update, add, remove, or list")
 		setPropDesc(props, "task_id", "Task ID")

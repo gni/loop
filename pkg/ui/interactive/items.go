@@ -14,6 +14,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 	reasoningOptions := []string{"off", "low", "medium", "high", "max"}
 
 	return []*settingItem{
+		intConfigItem("prompt_max_lines", "prompt max lines", "Maximum visible prompt rows; grows with text and scrolls beyond this limit (default 8)", &cloned.PromptMaxLines),
 		{
 			id:          "temperature",
 			name:        "temperature",

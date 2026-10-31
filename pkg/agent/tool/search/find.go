@@ -45,6 +45,9 @@ func (t *findTool) Definition() domaintool.Tool {
 }
 
 func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	var args struct {
 		Pattern string  `json:"pattern"`
 		Glob    string  `json:"glob"`
@@ -66,6 +69,10 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	searchPath := domaintool.FirstNonEmpty(args.Path, args.Dir, ".")
 	safePath, err := ctx.SafePath(searchPath)
 	if err != nil {
+		return "", err
+	}
+
+	if err := validateSearchPath(safePath, ctx.GetWorkspaceRoot()); err != nil {
 		return "", err
 	}
 
@@ -108,6 +115,9 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	} else {
 		err = filepath.WalkDir(safePath, func(path string, d fs.DirEntry, err error) error {
+			if cancelErr := ctx.Context().Err(); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				return nil
 			}

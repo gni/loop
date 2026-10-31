@@ -24,9 +24,11 @@ import (
 //   - height:   status bar content
 type PromptPreservingWriter struct {
 	inner                 io.Writer
+	raw                   io.Writer
 	height                int
 	printLine             int // current row inside the scroll region
 	printCol              int // current column on printLine (1-based)
+	promptCursorOffset    int
 	promptCol             int // current column on promptLine for cursor restore (1-based)
 	ansiState             int // 0: normal, 1: saw ESC, 2: saw ESC [, 3: saw ESC ]
 	cursorHidden          bool
@@ -39,14 +41,6 @@ type PromptPreservingWriter struct {
 	pendingLineFeed       bool
 	trailingNewlines      int
 	needsSyntaxRefresh    bool // A live code line could not be recolored safely.
-}
-
-func (p *PromptPreservingWriter) getOffsetRow(offset int) int {
-	row := p.height - offset - getUI().PasteLinesOffset
-	if row < 1 {
-		return 1
-	}
-	return row
 }
 
 func (p *PromptPreservingWriter) getScrollBottom() int {
@@ -62,6 +56,7 @@ func (p *PromptPreservingWriter) GetScrollBottom() int {
 func NewPromptPreservingWriter(w io.Writer, height int) *PromptPreservingWriter {
 	p := &PromptPreservingWriter{
 		inner:                 w,
+		raw:                   w,
 		height:                height,
 		printCol:              1,
 		promptCol:             3,
@@ -76,7 +71,7 @@ func NewPromptPreservingWriter(w io.Writer, height int) *PromptPreservingWriter 
 }
 
 func (p *PromptPreservingWriter) getPromptRow() int {
-	return p.getOffsetRow(2)
+	return max(1, p.height-2-p.promptCursorOffset)
 }
 
 func (p *PromptPreservingWriter) moveCursorToPromptLocked(suffix string) {
@@ -109,6 +104,30 @@ func (p *PromptPreservingWriter) SetPromptCol(col int) {
 	TerminalMu.Lock()
 	p.promptCol = col
 	TerminalMu.Unlock()
+}
+
+// SetPromptPositionLocked is called by the prompt renderer under TerminalMu.
+// The cursor can be on any visible input row, independently of its top row.
+func (p *PromptPreservingWriter) SetPromptPositionLocked(row, col int) {
+	p.promptCursorOffset = max(0, p.height-2-row)
+	p.promptCol = max(1, col)
+}
+
+// ResizeLocked synchronizes cursor bookkeeping before drawing a resized input.
+func (p *PromptPreservingWriter) ResizeLocked(height int) {
+	if h := getUI().ChatHistory; h != nil && h.writer == p && height > 0 {
+		width, _ := GetTerminalSize()
+		h.resizeLocked(width, height)
+		p.height = height
+		return
+	}
+	if height <= 0 || height == p.height {
+		return
+	}
+	delta := height - p.height
+	p.height = height
+	p.AdjustPrintLineLocked(delta)
+	p.needsReposition = true
 }
 
 func (p *PromptPreservingWriter) AdjustPrintLineLocked(delta int) {
@@ -154,14 +173,7 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
-	if h := getRealTerminalHeight(); h > 0 && h != p.height {
-		diff := h - p.height
-		p.height = h
-		p.AdjustPrintLineLocked(diff)
-		if diff != 0 {
-			p.needsReposition = true
-		}
-	}
+	p.ResizeLocked(getRealTerminalHeight())
 
 	var buf bytes.Buffer
 	buf.WriteString("\x1b[?2026h")
@@ -342,7 +354,7 @@ func (p *PromptPreservingWriter) Height() int {
 }
 
 func (p *PromptPreservingWriter) Unwrap() io.Writer {
-	return p.inner
+	return p.raw
 }
 
 func (p *PromptPreservingWriter) GetPrintLine() int {
@@ -383,9 +395,7 @@ func (p *PromptPreservingWriter) BeginScrollEntry() {
 	p.EnsureNewline()
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	if height := getRealTerminalHeight(); height > 0 {
-		p.height = height
-	}
+	p.ResizeLocked(getRealTerminalHeight())
 	p.printLine = p.getScrollBottom()
 	p.printCol = 1
 	p.ansiState = 0
@@ -484,10 +494,7 @@ func (p *PromptPreservingWriter) RepaintActiveScrollLine(content string) bool {
 	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	if height := getRealTerminalHeight(); height > 0 && height != p.height {
-		p.AdjustPrintLineLocked(height - p.height)
-		p.height = height
-	}
+	p.ResizeLocked(getRealTerminalHeight())
 	if p.pendingLineFeed || p.autoWrapPending || p.printCol <= 1 ||
 		p.printLine < 1 || p.printLine > p.getScrollBottom() {
 		return false
@@ -530,11 +537,7 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
-	if height := getRealTerminalHeight(); height > 0 && height != p.height {
-		delta := height - p.height
-		p.height = height
-		p.AdjustPrintLineLocked(delta)
-	}
+	p.ResizeLocked(getRealTerminalHeight())
 	if linesBack < 0 || len(lines) == 0 {
 		return false
 	}

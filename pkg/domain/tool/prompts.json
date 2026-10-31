@@ -44,7 +44,8 @@
       "description": "Execute terminal shell commands (builds, tests, package managers, git, process management). Working directory persists across commands.",
       "snippet": "Execute shell commands (builds, tests, git, background processes)",
       "guidelines": [
-        "Working directory persists across commands. For background services, set 'background': true."
+        "Working directory persists across commands. For background services, set 'background': true.",
+        "Use the native find, grep, list and read tools for source inspection. Dependency and generated directories (.venv, venv, node_modules, vendor, build, dist, target and caches) are excluded by default. Do not bypass these exclusions with child shells, absolute scanner paths or recursive scripts. Build tools and package managers may execute installed dependencies."
       ],
       "param_descriptions": {
         "background": "Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks).",
@@ -182,14 +183,14 @@
     },
     "todo": {
       "name": "todo",
-      "description": "Manage and track progress on multi-step tasks. Call this tool to initialize, update, or track your implementation plan. Send the entire updated list on every call. Exactly one task may be 'in_progress' at a time.",
-      "snippet": "Manage structured implementation plan. Whole-list replacement; exactly one task in_progress.",
+      "description": "Track a multi-step plan. Replace using {\"tasks\":[{\"id\":\"1\",\"task\":\"Describe work\",\"status\":\"in_progress\"}]}. Or use action=add/update/remove/list (update/remove need task_id). At most one in_progress; all completed when finished.",
+      "snippet": "Manage structured implementation plan. Whole-list replacement or action update; at most one task in_progress.",
       "guidelines": [
         "Task Planning: For complex multi-step objectives, use the 'todo' tool to initialize and update your plan. Mark the active task 'in_progress' and check off tasks as 'completed'."
       ],
       "param_descriptions": {
         "id": "Unique identifier for the task (e.g., 'task-1', 'step-1').",
-        "status": "Task status. Exactly one task may be 'in_progress' at any given moment.",
+        "status": "Task status: pending, in_progress, or completed. At most one task may be in_progress.",
         "task": "Clear, concrete description of the task.",
         "tasks": "The complete updated list of tasks representing the active plan."
       }
@@ -314,12 +315,12 @@
     "limit_text_find": "Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue.",
     "limit_text_list": "Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
     "limit_text_bash": "Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count.",
-    "todo_invalid_args": "invalid arguments for todo: %v. Expected JSON with {\"tasks\": [...]}",
+    "todo_invalid_args": "invalid todo arguments: %v. Use {\"tasks\":[{\"id\":\"1\",\"task\":\"Describe work\",\"status\":\"pending\"}]}.",
     "todo_empty_list": "empty task list: please provide at least one task in 'tasks'",
     "todo_duplicate_id": "duplicate task id: '%s' appears more than once",
     "todo_empty_desc": "task at index %d has empty description",
     "todo_invalid_status": "task '%s' has invalid status '%s'. Must be 'pending', 'in_progress', or 'completed'",
-    "todo_policy_violation": "policy violation: exactly 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next",
+    "todo_policy_violation": "policy violation: at most 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next",
     "todo_state_store_failed": "failed to store todo state: %w",
     "todo_summary_line": "Updated todo plan: %d pending, %d in progress, %d completed.\n\n",
     "todo_item_line": "%s %s: %s\n",

@@ -20,46 +20,54 @@ import (
 )
 
 type KeyInterceptorReader struct {
-	R                io.Reader
-	Agent            *agent.Agent
-	Theme            style.UITheme
-	W                io.Writer
-	RL               *term.Terminal
-	CurrentInputLine string
-	CurrentInputPos  int
-	Messages         *[]db.Message
-	PasteRemaining   []byte
-	PastedText       string
-	CtrlCInterrupted bool
-	MAM              *swarm.MultiAgentManager
-	AllowedTools     []string
-	InputChan        chan byte
-	ApprovalChan     chan byte
-	ApprovalReader   *ApprovalByteReader
-	InjectChan       chan byte
-	TypeAheadBuffer  []byte
-	HistoryIndex     int
-	SavedTypeAhead   []byte
-	Hist             term.History
-	InBracketedPaste bool
-	BracketedBuffer  []byte
-	IsAtMainPrompt   bool
-	LastCtrlDTime    time.Time
-	PastedCodeBlocks map[string]string
-	PromptQueue      []string
-	PromptQueueMu    sync.Mutex
-	PasteLinesOffset int
-	PasteCounter     int
+	R                 io.Reader
+	Agent             *agent.Agent
+	Theme             style.UITheme
+	W                 io.Writer
+	RL                *term.Terminal
+	CurrentInputLine  string
+	CurrentInputPos   int
+	Messages          *[]db.Message
+	PasteRemaining    []byte
+	InputRemaining    []byte // Unprocessed input after a completed paste frame.
+	PasteStartPending []byte
+	PastedText        string
+	CtrlCInterrupted  bool
+	MAM               *swarm.MultiAgentManager
+	AllowedTools      []string
+	InputChan         chan byte
+	ApprovalChan      chan byte
+	ApprovalReader    *ApprovalByteReader
+	InjectChan        chan byte
+	TypeAheadBuffer   []byte
+	TypeAheadPastes   []string
+	HistoryIndex      int
+	SavedTypeAhead    []byte
+	Hist              term.History
+	InBracketedPaste  bool
+	BracketedBuffer   []byte
+	IsAtMainPrompt    atomic.Bool
+	LastCtrlDTime     time.Time
+	PastedCodeBlocks  map[string]string
+	PendingPastes     []string // Bulk edits consumed by the foreground prompt editor.
+	PastedLiterals    []string // Clipboard text or previews in the current prompt.
+	PromptQueue       []PromptInput
+	PromptQueueMu     sync.Mutex
+	PasteLinesOffset  int
+	PasteCounter      int
 
 	OnClearPromptHint       func()
 	OnRedrawScreen          func()
 	OnDrawStaticControls    func(w io.Writer)
 	OnRedrawPromptSeparator func()
 	OnRedrawStatusBar       func()
+	OnRedrawTypeAhead       func()
 	OnClearCancelFunc       func()
+	OnChatHistoryInput      func([]byte) []byte
+	OnQueueChanged          func()
 
-	ActiveTurn            atomic.Bool // A foreground turn is still streaming.
-	PendingCollapseRedraw atomic.Bool // Repaint history and the active turn after Ctrl+O.
+	ActiveTurn             atomic.Bool   // A foreground turn is still streaming.
+	PendingCollapseToggles atomic.Uint64 // Apply active Ctrl+O presses on the foreground renderer.
 }
 
 func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
@@ -86,6 +94,13 @@ func drainByteChannel(ch <-chan byte) {
 func (ki *KeyInterceptorReader) Drain() {
 	drainByteChannel(ki.InputChan)
 	drainByteChannel(ki.InjectChan)
+	ki.PendingPastes = nil
+	ki.PastedLiterals = nil
+	ki.PasteRemaining = nil
+	ki.InputRemaining = nil
+	ki.PasteStartPending = nil
+	ki.BracketedBuffer = nil
+	ki.InBracketedPaste = false
 }
 
 func (ki *KeyInterceptorReader) resolveTargetWriter(fallback io.Writer) io.Writer {
@@ -137,7 +152,7 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	if ki.IsAtMainPrompt && ki.RL != nil {
+	if ki.IsAtMainPrompt.Load() && ki.RL != nil {
 		if ki.OnDrawStaticControls != nil {
 			ki.OnDrawStaticControls(ki.resolveTargetWriter(os.Stderr))
 		}
@@ -255,6 +270,7 @@ readInputChannel:
 }
 
 func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
+readInput:
 	if len(ki.PasteRemaining) > 0 {
 		n := copy(p, ki.PasteRemaining)
 		ki.PasteRemaining = ki.PasteRemaining[n:]
@@ -263,7 +279,10 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 
 	var n int
 	var err error
-	if ki.InputChan == nil {
+	if len(ki.InputRemaining) > 0 {
+		n = copy(p, ki.InputRemaining)
+		ki.InputRemaining = ki.InputRemaining[n:]
+	} else if ki.InputChan == nil {
 		if ki.R == nil {
 			return 0, io.EOF
 		}
@@ -275,7 +294,13 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 		return n, err
 	}
 
-	n, _ = ki.handlePasteData(p, n)
+	n, pasted := ki.handlePasteData(p, n)
+	if pasted && n == 0 {
+		goto readInput
+	}
+	if !pasted {
+		n = ki.copyReadData(p, ki.normalizePromptEditKeys(p[:n]))
+	}
 
 	writeIdx := 0
 	for i := 0; i < n; i++ {
@@ -293,7 +318,7 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 						dest = chatWriter
 					}
 					fmt.Fprintf(dest, "\n[stopped streaming %s]\n", streamingID)
-					if ki.IsAtMainPrompt {
+					if ki.IsAtMainPrompt.Load() {
 						ki.CtrlCInterrupted = true
 						p[writeIdx] = '\n'
 						writeIdx++
@@ -302,7 +327,7 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 				}
 				ki.Agent.TasksMu.Unlock()
 			}
-			if ki.IsAtMainPrompt {
+			if ki.IsAtMainPrompt.Load() {
 				ki.CtrlCInterrupted = true
 				p[writeIdx] = '\n'
 			} else {
@@ -317,6 +342,8 @@ func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 			ki.HandleCtrlR()
 		case 20:
 			ki.HandleCtrlT()
+		case 26:
+			ki.ControlQueue("undo")
 		default:
 			p[writeIdx] = b
 			writeIdx++

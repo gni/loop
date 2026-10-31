@@ -27,9 +27,13 @@ func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools 
 	if err != nil {
 		return nil, err
 	}
-	var todos []tool.TodoItem
+	path := session.LeafPath(entries, "")
+	todos, err := restorePlan(path)
+	if err != nil {
+		return nil, err
+	}
 	restoreTools := *tools == nil
-	for _, entry := range session.LeafPath(entries, "") {
+	for _, entry := range path {
 		if entry.Type != "settings" {
 			continue
 		}
@@ -52,12 +56,13 @@ func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools 
 		if restoreTools {
 			*tools = saved.Tools
 		}
-		todos = saved.Todos
 	}
 	return todos, nil
 }
 
-func (s *Session) persistSettings() error {
+func (s *Session) persistSettings() error { return s.persistSettingsFor(s.ID) }
+
+func (s *Session) persistSettingsFor(id string) error {
 	if s.Store == nil {
 		return nil
 	}
@@ -66,7 +71,7 @@ func (s *Session) persistSettings() error {
 	if err != nil {
 		return err
 	}
-	return s.Store.AppendEntry(s.ID, session.Record{Type: "settings", Data: data})
+	return s.Store.AppendEntry(id, session.Record{Type: "settings", Data: data})
 }
 
 func (s *Session) Configuration() (*config.Config, error) {

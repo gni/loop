@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,15 +40,16 @@ type Options struct {
 }
 
 type State struct {
-	ID        string       `json:"id"`
-	Workspace string       `json:"workspace"`
-	Running   bool         `json:"running"`
-	Closed    bool         `json:"closed"`
-	Model     string       `json:"model"`
-	Provider  string       `json:"provider"`
-	Messages  []db.Message `json:"messages"`
-	Steering  []string     `json:"steering"`
-	FollowUp  []string     `json:"follow_up"`
+	ID        string          `json:"id"`
+	Workspace string          `json:"workspace"`
+	Running   bool            `json:"running"`
+	Closed    bool            `json:"closed"`
+	Model     string          `json:"model"`
+	Provider  string          `json:"provider"`
+	Messages  []db.Message    `json:"messages"`
+	Steering  []string        `json:"steering"`
+	FollowUp  []string        `json:"follow_up"`
+	Todos     []tool.TodoItem `json:"todos"`
 }
 
 type Session struct {
@@ -107,6 +109,9 @@ func New(options Options) (*Session, error) {
 	if err := applyResources(cfg, resources.PackageResources{}, loaded); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidatePrompt(); err != nil {
+		return nil, err
+	}
 	if err := cfg.Nostop.Validate(); err != nil {
 		return nil, err
 	}
@@ -164,6 +169,7 @@ func New(options Options) (*Session, error) {
 	s.Agent.ToolSelection = options.Tools
 	s.Agent.Ephemeral = options.NoSession
 	s.Agent.RunSession = s.RunInteractive
+	s.Agent.SyncSessionState = s.SyncInteractive
 	s.Agent.Bus = agent.NewEventBus()
 	s.Agent.Bus.On(s.permissionHook)
 	s.Agent.EventSink = s.event
@@ -224,6 +230,12 @@ func (s *Session) storageID() string {
 }
 
 func (s *Session) event(event agent.Event) error {
+	// A plan update must survive interruption before the model turn ends.
+	if event.Type == "tool_execution_end" && event.ToolCall != nil && event.ToolCall.Function.Name == "todo" && !event.IsError {
+		if err := s.persistSettings(); err != nil {
+			return err
+		}
+	}
 	event.Version = 1
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
@@ -341,6 +353,7 @@ func (s *Session) adoptInteractive(messages []db.Message, tools []string, id str
 	}
 	s.messages = message.CloneAll(messages)
 	s.options.Tools = tools
+	s.Agent.ToolSelection = tools
 	return nil
 }
 
@@ -378,19 +391,32 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		}
 	}
 	for {
+		attachmentSource, literal := resources.AttachmentSource(ctx, prompt)
 		transformed, err := s.transformInput(ctx, prompt)
 		if err != nil {
 			result.Status = agent.RunBlocked
 			result.Error = err.Error()
 			return result, err
 		}
-		expanded, err := resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, !s.Agent.Config.DisableProjectPlugins, s.Agent.Config.PromptDirectories))
+		expanded := transformed
+		if !literal || strings.HasPrefix(strings.TrimSpace(attachmentSource), "/") {
+			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, !s.Agent.Config.DisableProjectPlugins, s.Agent.Config.PromptDirectories))
+			if err != nil {
+				return result, err
+			}
+		}
+		attachmentInput := expanded
+		if literal {
+			attachmentInput = attachmentSource
+		}
+		attached, blocks, err := resources.Attachments(attachmentInput, s.Workspace)
 		if err != nil {
 			return result, err
 		}
-		expanded, blocks, err := resources.Attachments(expanded, s.Workspace)
-		if err != nil {
-			return result, err
+		if literal {
+			expanded += strings.TrimPrefix(attached, attachmentInput)
+		} else {
+			expanded = attached
 		}
 		s.Agent.InputBlocks = blocks
 		s.Agent.ToolSelection = s.options.Tools
@@ -450,7 +476,7 @@ func (s *Session) takeSteering() []db.Message {
 func (s *Session) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed, Model: s.Agent.Config.Model, Provider: s.Agent.Config.ActiveProvider, Messages: message.CloneAll(s.view), Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...)}
+	return State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed, Model: s.Agent.Config.Model, Provider: s.Agent.Config.ActiveProvider, Messages: message.CloneAll(s.view), Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...), Todos: s.Agent.GetTodos()}
 }
 
 func (s *Session) ClearQueue() {
@@ -494,5 +520,8 @@ func (s *Session) Close(ctx context.Context) error {
 	if err := s.Abort(ctx); err != nil {
 		return err
 	}
-	return errors.Join(s.event(agent.Event{Type: "session_end", SessionID: s.ID}), s.Agent.Dispose(ctx))
+	s.runMu.Lock()
+	settingsErr := s.persistSettings()
+	s.runMu.Unlock()
+	return errors.Join(settingsErr, s.event(agent.Event{Type: "session_end", SessionID: s.ID}), s.Agent.Dispose(ctx))
 }

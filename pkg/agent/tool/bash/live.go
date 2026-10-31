@@ -2,9 +2,12 @@ package bash
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"sync"
 
+	"loop/pkg/domain/limits"
 	"loop/pkg/domain/output"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -13,6 +16,8 @@ import (
 // Captured tool output remains separate and authoritative for model history.
 type liveShellOutput struct {
 	mu       sync.Mutex
+	ctx      context.Context
+	limit    int
 	writer   io.Writer
 	context  domaintool.LiveOutputWriter
 	lastByte byte
@@ -28,7 +33,7 @@ func newLiveShellOutput(ctx domaintool.AgentContext) *liveShellOutput {
 	if w == nil {
 		return nil
 	}
-	return &liveShellOutput{writer: w, context: stream}
+	return &liveShellOutput{writer: w, context: stream, ctx: ctx.Context(), limit: limits.For(ctx).MaxOutputBytes}
 }
 
 func (s *liveShellOutput) Write(p []byte) (int, error) {
@@ -37,13 +42,31 @@ func (s *liveShellOutput) Write(p []byte) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n, err := s.writer.Write(p)
-	if n > 0 {
-		s.written = true
-		s.lastByte = p[n-1]
-		s.context.SetLiveBodyStreamed(true)
+	if s.ctx.Err() != nil {
+		return len(p), nil
 	}
-	return n, err
+	// Keep terminal writes small so cancellation is observed between chunks.
+	written := 0
+	for written < len(p) {
+		if s.ctx.Err() != nil {
+			return len(p), nil
+		}
+		end := min(len(p), written+4096)
+		n, err := s.writer.Write(p[written:end])
+		if n > 0 {
+			s.written = true
+			s.lastByte = p[written+n-1]
+			s.context.SetLiveBodyStreamed(true)
+		}
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			return written, io.ErrShortWrite
+		}
+	}
+	return written, nil
 }
 
 func (s *liveShellOutput) Finish() {
@@ -52,7 +75,7 @@ func (s *liveShellOutput) Finish() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.written {
+	if s.written && s.ctx.Err() == nil {
 		_, _ = io.WriteString(s.writer, "\x1b[0m")
 		if s.lastByte != '\n' {
 			_, _ = io.WriteString(s.writer, "\n")
@@ -115,6 +138,7 @@ type limitedLiveWriter struct {
 	w         io.Writer
 	remaining int
 	notified  bool
+	limit     int
 }
 
 func (l *limitedLiveWriter) Write(p []byte) (int, error) {
@@ -141,7 +165,7 @@ func (l *limitedLiveWriter) notice() {
 		return
 	}
 	l.notified = true
-	_, _ = io.WriteString(l.w, "\n[live output truncated after 8 MiB]\n")
+	_, _ = fmt.Fprintf(l.w, "\n[live output truncated after %d bytes]\n", l.limit)
 }
 
 // bestEffortLiveWriter must not stop draining a child process if terminal output fails.
@@ -153,8 +177,8 @@ func (w bestEffortLiveWriter) Write(p []byte) (int, error) {
 }
 
 func (s *liveShellOutput) Streams(marker string) (io.Writer, io.Writer, func()) {
-	const liveLimit = 8 << 20
-	stdout := newMarkerFilter(output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit}), marker)
-	stderr := output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit})
+	liveLimit := s.limit
+	stdout := newMarkerFilter(output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}), marker)
+	stderr := output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit})
 	return stdout, stderr, stdout.Finish
 }

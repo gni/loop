@@ -131,14 +131,11 @@ func HandleSlashCommand(
 			fmt.Fprintln(w, "queue is not available.")
 			return true, false
 		}
-		if len(parts) > 1 && parts[1] == "clear" {
-			n := kiReader.ClearQueue()
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().State.QueuedPromptsCount = 0
-			ui.GetUI().StateMu.Unlock()
-			ui.DrawStatusBar(os.Stderr, *theme)
-			fmt.Fprintf(w, "cleared %d queued prompt(s).\n", n)
-			return true, false
+		if len(parts) > 1 {
+			if notice, handled := kiReader.ControlQueue(parts[1]); handled {
+				fmt.Fprintln(w, notice)
+				return true, false
+			}
 		}
 		prompts := kiReader.GetQueuedPrompts()
 		if len(prompts) == 0 {
@@ -147,7 +144,7 @@ func HandleSlashCommand(
 		}
 		fmt.Fprintf(w, "prompt queue (%d item(s)):\n", len(prompts))
 		for i, p := range prompts {
-			fmt.Fprintf(w, "  %d. %s\n", i+1, p)
+			fmt.Fprintf(w, "  %d. %s\n", i+1, p.Text)
 		}
 		return true, false
 	case "/task", "/tasks":

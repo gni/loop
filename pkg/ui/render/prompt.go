@@ -2,45 +2,101 @@ package render
 
 import (
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/width"
 )
 
-func NormalizeHistoryInput(input string, pos int) (string, int) {
-	if !strings.Contains(input, "↵") {
-		return input, pos
+// PromptRow retains source rune positions so navigation and drawing agree.
+type PromptRow struct {
+	Text       string
+	Start, End int
+}
+
+type PromptLayout struct {
+	Rows                    []PromptRow
+	CursorRow, CursorColumn int
+}
+
+func promptRuneWidth(r rune) int {
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == '\u200d' {
+		return 0
 	}
+	switch width.LookupRune(r).Kind() {
+	case width.EastAsianWide, width.EastAsianFullwidth:
+		return 2
+	}
+	return 1
+}
 
-	runes := []rune(input)
-	var newRunes []rune
-	newPos := pos
-
-	i := 0
-	for i < len(runes) {
-		if runes[i] == '↵' {
-			if len(newRunes) > 0 && newRunes[len(newRunes)-1] == ' ' {
-				newRunes = newRunes[:len(newRunes)-1]
-				if i < pos {
-					newPos--
-				}
-			}
-			newRunes = append(newRunes, '\n')
-			if i+1 < len(runes) && runes[i+1] == ' ' {
-				i++
-				if i < pos {
-					newPos--
-				}
-			}
-		} else {
-			newRunes = append(newRunes, runes[i])
+func LayoutPrompt(text string, position, columns int) PromptLayout {
+	columns = max(1, columns)
+	runes := []rune(text)
+	position = min(max(0, position), len(runes))
+	layout := PromptLayout{}
+	var content strings.Builder
+	start, col := 0, 0
+	finish := func(end int) {
+		layout.Rows = append(layout.Rows, PromptRow{Text: content.String(), Start: start, End: end})
+		content.Reset()
+		col = 0
+	}
+	for i, r := range runes {
+		cells := promptRuneWidth(r)
+		if r == '\t' {
+			cells = min(4-col%4, columns)
 		}
-		i++
+		if r != '\n' && col > 0 && col+cells > columns {
+			finish(i)
+			start = i
+		}
+		if i == position {
+			layout.CursorRow = len(layout.Rows)
+			layout.CursorColumn = col
+		}
+		if r == '\n' {
+			finish(i)
+			start = i + 1
+			continue
+		}
+		switch {
+		case r == '\t':
+			content.WriteString(strings.Repeat(" ", cells))
+			col += cells
+		case unicode.IsControl(r):
+		default:
+			content.WriteRune(r)
+			col += cells
+		}
 	}
+	if position == len(runes) {
+		layout.CursorRow = len(layout.Rows)
+		layout.CursorColumn = col
+	}
+	finish(len(runes))
+	return layout
+}
 
-	if newPos < 0 {
-		newPos = 0
+// MovePromptVertical moves within the same visual rows used for wrapping.
+func MovePromptVertical(text string, position, columns, direction int) (int, bool) {
+	layout := LayoutPrompt(text, position, columns)
+	target := layout.CursorRow + direction
+	if target < 0 || target >= len(layout.Rows) {
+		return position, false
 	}
-	if newPos > len(newRunes) {
-		newPos = len(newRunes)
+	row := layout.Rows[target]
+	runes := []rune(text)
+	col, pos := 0, row.Start
+	for pos < row.End {
+		cells := promptRuneWidth(runes[pos])
+		if runes[pos] == '\t' {
+			cells = min(4-col%4, max(1, columns))
+		}
+		if col+cells > layout.CursorColumn {
+			break
+		}
+		col += cells
+		pos++
 	}
-
-	return string(newRunes), newPos
+	return pos, true
 }

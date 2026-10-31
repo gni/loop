@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -16,6 +18,9 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 	defer s.runMu.Unlock()
 	copy, err := config.Clone(cfg)
 	if err != nil {
+		return err
+	}
+	if err := copy.ValidatePrompt(); err != nil {
 		return err
 	}
 	if err := copy.Nostop.Validate(); err != nil {
@@ -65,4 +70,32 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.view = append(s.view[:0], s.messages...)
 	s.mu.Unlock()
 	return nil
+}
+
+// SyncInteractive makes local session changes effective immediately, including
+// when the user switches sessions and exits without sending another prompt.
+func (s *Session) SyncInteractive(messages []db.Message, tools []string, id string, inheritPlan bool) error {
+	if !s.runMu.TryLock() {
+		return ErrBusy
+	}
+	defer s.runMu.Unlock()
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return fmt.Errorf("session is closed")
+	}
+	if inheritPlan && id != "" && id != s.ID {
+		if err := s.persistSettingsFor(id); err != nil {
+			return err
+		}
+	}
+	if err := s.adoptInteractive(messages, tools, id); err != nil {
+		return err
+	}
+	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
+	s.mu.Lock()
+	s.view = message.CloneAll(s.messages)
+	s.mu.Unlock()
+	return s.persistSettings()
 }

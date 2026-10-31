@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,20 @@ import (
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 )
+
+type attachmentSourceKey struct{}
+type attachmentSource struct{ prompt, source string }
+
+// WithAttachmentSource separates explicit input syntax from clipboard text.
+// Its scope is one prompt, not subsequent steering or followups.
+func WithAttachmentSource(ctx context.Context, prompt, source string) context.Context {
+	return context.WithValue(ctx, attachmentSourceKey{}, attachmentSource{prompt, source})
+}
+
+func AttachmentSource(ctx context.Context, prompt string) (string, bool) {
+	input, ok := ctx.Value(attachmentSourceKey{}).(attachmentSource)
+	return input.source, ok && input.prompt == prompt
+}
 
 func PromptDirectories(agentDir, workspace string, trusted bool, additional []string) []string {
 	directories := []string{filepath.Join(agentDir, "prompts")}

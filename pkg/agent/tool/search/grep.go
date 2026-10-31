@@ -83,6 +83,9 @@ func sortedIntKeys(m map[int]bool) []int {
 }
 
 func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	var args struct {
 		Pattern         string  `json:"pattern"`
 		Query           string  `json:"query"`
@@ -138,6 +141,10 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
+	if err := validateSearchPath(safePath, ctx.GetWorkspaceRoot()); err != nil {
+		return "", err
+	}
+
 	info, err := os.Stat(safePath)
 	if err != nil {
 		return "", fmt.Errorf("cannot access path '%s': %w", searchPath, err)
@@ -169,7 +176,11 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return selectErr
 		}
 
-		fInfo, err := os.Stat(filePath)
+		validated, err := ctx.SafePath(filePath)
+		if err != nil || validateSearchPath(validated, workspaceRoot) != nil {
+			return nil
+		}
+		fInfo, err := os.Stat(validated)
 		if err != nil || fInfo.IsDir() || fInfo.Size() == 0 || fInfo.Size() > maxFileBytes {
 			return nil
 		}
@@ -191,7 +202,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(validated)
 		if err != nil || IsBinary(data) {
 			return nil
 		}
@@ -201,6 +212,11 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 		matchedIndices := make(map[int]bool)
 		for idx, line := range fileLines {
+			if idx%256 == 0 {
+				if err := ctx.Context().Err(); err != nil {
+					return err
+				}
+			}
 			if matchFunc(line) {
 				totalMatches++
 				if totalMatches >= offset && totalMatches < offset+limit {
@@ -270,6 +286,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	} else {
 		walkErr := filepath.WalkDir(safePath, func(path string, d fs.DirEntry, err error) error {
+			if cancelErr := ctx.Context().Err(); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				return nil
 			}

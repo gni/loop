@@ -20,6 +20,7 @@ type turnLoader struct {
 	showMicroseconds bool
 
 	mu         sync.Mutex
+	renderMu   sync.Mutex
 	hasDots    bool
 	paused     bool
 	frameIndex int
@@ -52,6 +53,8 @@ func (tl *turnLoader) currentFrame() string {
 }
 
 func (tl *turnLoader) renderFrame(frame string) {
+	tl.renderMu.Lock()
+	defer tl.renderMu.Unlock()
 	select {
 	case <-tl.done:
 		return
@@ -163,6 +166,8 @@ func (tl *turnLoader) Stop() {
 	}
 	tl.stopOnce.Do(func() {
 		close(tl.done)
+		tl.renderMu.Lock()
+		defer tl.renderMu.Unlock()
 		tl.agent.UI.DrawStatsLine(tl.w, tl.theme, "", "")
 	})
 }

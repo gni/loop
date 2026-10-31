@@ -110,6 +110,9 @@ func normalizeToolArguments(name, arguments string, value any) any {
 	case "bash":
 		copyAlias("command", "cmd", "arguments")
 		copyAlias("dir", "cwd")
+	case "todo":
+		copyAlias("tasks", "actions")
+		delete(object, "actions")
 	case "task_status", "task_kill":
 		copyAlias("task_id", "id", "task", "taskId")
 	case "load_skill":

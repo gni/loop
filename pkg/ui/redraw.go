@@ -73,14 +73,21 @@ func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorRead
 
 func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, notice string) {
 	TerminalMu.Lock()
+	if history := getUI().ChatHistory; history != nil && history.RedrawLocked() {
+		history.notice = notice
+		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, rl, true)
+		TerminalMu.Unlock()
+		if notice != "" {
+			noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(a.Config).Success).Italic(true)
+			history.writer.EnsureNewline()
+			fmt.Fprintln(history.writer, noticeStyle.Render(notice))
+		}
+		return
+	}
 	defer TerminalMu.Unlock()
 
 	SetCollapseStatus(a.Config.CollapseResults)
 	activeTheme := GetConfiguredTheme(a.Config)
-
-	if rl != nil {
-		rl.SetPrompt("")
-	}
 
 	getUI().LastH = 0
 
@@ -89,13 +96,6 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 
 	if len(a.McpStartErrors) > 0 {
 		render.RenderMCPStartupErrors(cwBuf, a.McpStartErrors, activeTheme)
-	}
-
-	PrintBanner(cwBuf, a)
-	if notice != "" {
-		noticeStyle := style.NewStyle().Foreground(activeTheme.Success).Italic(true)
-		fmt.Fprintln(cwBuf, noticeStyle.Render(notice))
-		fmt.Fprintln(cwBuf)
 	}
 
 	var activeMessages []db.Message
@@ -114,6 +114,12 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		}
 	}
 
+	PrintBanner(cwBuf, a)
+	if notice != "" {
+		noticeStyle := style.NewStyle().Foreground(activeTheme.Success).Italic(true)
+		fmt.Fprintln(cwBuf, noticeStyle.Render(notice))
+		fmt.Fprintln(cwBuf)
+	}
 	if len(activeMessages) > 0 {
 		PrintSessionHistory(cwBuf, activeMessages, activeTheme, a.Config)
 	}
@@ -135,13 +141,11 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		// empty rows for history's line ending and a second redraw newline.
 		buf.Truncate(len(bytes.TrimRight(buf.Bytes(), "\r\n")))
 	}
-
 	_, height := GetTerminalSize()
 	scrollBottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
 	var finalBuf bytes.Buffer
 	cwFinal := crnlWriter{W: &finalBuf}
 	fmt.Fprintf(cwFinal, "\x1b[?2026h\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", scrollBottom)
-	// buf already contains CRLFs; do not convert its newlines a second time.
 	finalBuf.Write(buf.Bytes())
 
 	var mam *swarm.MultiAgentManager

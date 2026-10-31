@@ -3,6 +3,7 @@ package search
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -25,6 +26,9 @@ func RelSlashPath(workspaceRoot, targetPath string) string {
 func ShouldSkipWalkEntry(path string, d fs.DirEntry, workspaceRoot string, gitIgnorePatterns []string) (bool, error) {
 	name := d.Name()
 	if d.IsDir() {
+		if filepath.Clean(path) == filepath.Clean(workspaceRoot) {
+			return true, nil
+		}
 		if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
 			return true, filepath.SkipDir
 		}
@@ -34,6 +38,15 @@ func ShouldSkipWalkEntry(path string, d fs.DirEntry, workspaceRoot string, gitIg
 		return true, nil
 	}
 	return false, nil
+}
+
+// validateSearchPath also checks explicitly supplied roots and files. A caller
+// must not bypass pruning by starting a search inside a dependency directory.
+func validateSearchPath(path, root string) error {
+	if ignore.HasComponent(path, root, false) {
+		return fmt.Errorf("cannot search dependency or generated directory: %s; inspect project source instead", RelSlashPath(root, path))
+	}
+	return nil
 }
 
 // IsIgnoredDirName checks if directory name belongs to common build, cache, or VCS

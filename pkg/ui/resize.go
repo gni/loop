@@ -22,6 +22,10 @@ func SetNonCanonical(fd int) (func(), error) {
 	oldTermios := *termios
 
 	termios.Lflag &^= unix.ICANON | unix.ECHO
+	// Preserve CR for Enter and LF for Ctrl+J while a reply streams.
+	termios.Iflag &^= unix.IXON | unix.IXOFF | unix.ICRNL | unix.INLCR | unix.IGNCR
+	// Ctrl+Z undoes a queued prompt instead of suspending Loop mid-turn.
+	termios.Cc[unix.VSUSP] = 0
 	termios.Cc[unix.VMIN] = 1
 	termios.Cc[unix.VTIME] = 0
 
@@ -57,6 +61,9 @@ func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 
 	cw := crnlWriter{W: w}
 	DrawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
+	if history := getUI().ChatHistory; history != nil {
+		history.paintLocked()
+	}
 
 	if !activeOp && a.CurrentWriter() != nil {
 		if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {

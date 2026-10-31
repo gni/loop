@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	bashtool "loop/pkg/agent/tool/bash"
 )
 
 type Task struct {
@@ -145,7 +147,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	task.mu.Lock()
 	a.TasksMu.Unlock()
 
-	cmd := exec.Command("bash", "-c", command)
+	cmd := exec.Command("bash", "-c", bashtool.WithScanDefaults(command, a.WorkspaceRoot))
 	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
