@@ -4,10 +4,25 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 )
+
+// NewCommand requests unbuffered child output where available. Programs that
+// manage their own buffering still need to emit bytes before Loop can show them.
+func NewCommand(command string) *exec.Cmd {
+	executable, args := "bash", []string{"-c", command}
+	if stdbuf, err := exec.LookPath("stdbuf"); err == nil {
+		executable = stdbuf
+		args = []string{"-o0", "-e0", "bash", "-c", command}
+	}
+	cmd := exec.Command(executable, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8", "PYTHONUNBUFFERED=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
 
 // ShellQuote protects paths with spaces, quotes, or shell metacharacters.
 func ShellQuote(value string) string {

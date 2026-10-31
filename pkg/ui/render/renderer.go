@@ -60,6 +60,7 @@ type StreamRenderer struct {
 	livePreviewSnapshot  string
 	liveCallViews        map[int]*liveCallView
 	liveActiveCall       int
+	liveVisibleCall      int
 	liveResultGap        bool
 	liveCollapse         bool
 	// Recorded model-visible fragments for active-turn redraws. A full
@@ -710,7 +711,7 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if view := sr.liveCallViews[index]; view != nil && (view.bytes > 0 || view.compactLine != -1) {
+	if view := sr.liveCallViews[index]; view != nil && (view.name == "write" || view.name == "edit") && (view.bytes > 0 || view.compactLine != -1) {
 		return true
 	}
 	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
@@ -727,7 +728,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 			return
 		}
 	}
-	if view := sr.liveCallViews[index]; view != nil && view.headerShown && (toolName == "write" || toolName == "edit") {
+	if view := sr.liveCallViews[index]; view != nil && view.headerShown {
 		view.completed = true
 		view.failed = isError
 		target := ExtractToolTarget(toolName, toolArgs)
@@ -738,7 +739,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		if isError {
 			status = ToolStatusError
 		}
-		if target != "" && view.titleLine >= 0 {
+		if target != "" && view.titleLine >= 0 && toolName != "bash" {
 			ReplaceTrackedStreamLine(sr.w, view.titleLine, FormatToolTitle(RenderToolSymbol(toolName, status, sr.theme), toolName, safeLiveLabel(target), sr.theme))
 		}
 		return

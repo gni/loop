@@ -249,7 +249,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 		// Stream each tool call in index order while keeping interleaved
 		// argument fragments from different files separate.
-		toolStream := newToolStreamSequencer(sr, a.Config.StreamWrites)
+		toolStream := newToolStreamSequencer(sr, true)
 		batch := NewToolBatch(func(update ToolLifecycleEvent) {
 			if presenter, ok := sr.(interface{ ObserveToolLifecycle(ToolLifecycleEvent) }); ok {
 				presenter.ObserveToolLifecycle(update)
@@ -257,10 +257,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			a.emit(Event{Type: "tool_lifecycle", SessionID: sessionID, Data: update})
 		})
 		toolStream.SetBatch(batch)
-		// The display follows model order in both execution modes. A parallel
-		// worker pool may finish out of order, but its headings and results
-		// are published together after the batch completes.
-		sequentialDisplay := a.Config.StreamWrites
+		// Previews follow model order in both execution modes. Execution
+		// results remain paired with their call even when workers finish
+		// out of order. The execution policy is unchanged.
+		sequentialDisplay := true
 		if sequentialDisplay {
 			toolStream.DeferFollowingCalls()
 			if presenter, ok := sr.(interface{ SetSequentialToolResults(bool) }); ok {
@@ -273,53 +273,54 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		var earlyCalls []db.ToolCall
 		var earlyMessages []db.Message
 		earlyStopped := false
-		if a.Config.StreamWrites {
-			if presenter, ok := sr.(interface {
-				ShowLiveToolContent(int, string, string, string)
-				EndLiveToolContent()
-			}); ok {
-				toolStream.PreviewOnly()
-				toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
-					// Ctrl+O may change this setting while the provider is streaming.
-					// Apply it before every chunk, including the first of a new file.
-					if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
-						view.SetLiveCollapse(a.Config.CollapseResults)
-					}
-					presenter.ShowLiveToolContent(index, name, path, delta)
+		if presenter, ok := sr.(interface {
+			ShowLiveToolContent(int, string, string, string)
+			EndLiveToolContent()
+		}); ok {
+			toolStream.PreviewOnly()
+			toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
+				// Ctrl+O may change this setting while the provider is streaming.
+				// Apply it before every chunk, including the first of a new file.
+				if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
+					view.SetLiveCollapse(a.Config.CollapseResults)
+				}
+				if (name == "write" || name == "edit") && !a.Config.StreamWrites {
+					delta = ""
+				}
+				presenter.ShowLiveToolContent(index, name, path, delta)
+			})
+			toolStream.SetEditDiffPreview(func(name, arguments string) string {
+				return PreviewToolDiff(a, name, arguments)
+			})
+			toolStream.SetOnReady(func(index int, name, arguments string) {
+				// Only commit a contiguous series of completed write/edit
+				// calls. Interleaved, unfinished or unsupported calls continue
+				// through the standard post-inference execution engine.
+				if !a.Config.StreamWrites || earlyStopped || ctx.Err() != nil || index != len(earlyCalls) ||
+					(name != "write" && name != "edit") || a.IsGuidedMode() ||
+					engine.needsInteractiveApproval(name) {
+					return
+				}
+				call := db.ToolCall{ID: "call_early_" + db.NewUUID(), Type: "function", Function: db.ToolFunction{Name: name, Arguments: arguments}}
+				presenter.EndLiveToolContent()
+				engine.SetToolBatch(batch)
+				engine.SetInlineEarlyResults(true)
+				staged := &deferredHistorySink{}
+				halted, aborted := engine.ExecuteToolCallAt(ctx, index, call, []db.ToolCall{call}, "", staged, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
+					a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
 				})
-				toolStream.SetEditDiffPreview(func(name, arguments string) string {
-					return PreviewToolDiff(a, name, arguments)
-				})
-				toolStream.SetOnReady(func(index int, name, arguments string) {
-					// Only commit a contiguous series of completed write/edit
-					// calls. Interleaved, unfinished or unsupported calls continue
-					// through the standard post-inference execution engine.
-					if earlyStopped || ctx.Err() != nil || index != len(earlyCalls) ||
-						(name != "write" && name != "edit") || a.IsGuidedMode() ||
-						engine.needsInteractiveApproval(name) {
-						return
-					}
-					call := db.ToolCall{ID: "call_early_" + db.NewUUID(), Type: "function", Function: db.ToolFunction{Name: name, Arguments: arguments}}
-					presenter.EndLiveToolContent()
-					engine.SetToolBatch(batch)
-					engine.SetInlineEarlyResults(true)
-					staged := &deferredHistorySink{}
-					halted, aborted := engine.ExecuteToolCallAt(ctx, index, call, []db.ToolCall{call}, "", staged, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
-						a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
-					})
-					engine.SetInlineEarlyResults(false)
-					earlyCalls = append(earlyCalls, call)
-					earlyMessages = append(earlyMessages, staged.messages...)
-					if halted || aborted {
-						earlyStopped = true
-						cancel()
-					}
-				})
-			} else {
-				// Keep the original stream mode if the renderer has no live view.
-				toolStream = newToolStreamSequencer(sr, true)
-				toolStream.SetBatch(batch)
-			}
+				engine.SetInlineEarlyResults(false)
+				earlyCalls = append(earlyCalls, call)
+				earlyMessages = append(earlyMessages, staged.messages...)
+				if halted || aborted {
+					earlyStopped = true
+					cancel()
+				}
+			})
+		} else {
+			// Keep the original stream mode if the renderer has no live view.
+			toolStream = newToolStreamSequencer(sr, true)
+			toolStream.SetBatch(batch)
 		}
 		a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream)
 		timer.Time("llm", "end")

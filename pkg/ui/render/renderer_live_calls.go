@@ -10,7 +10,7 @@ import (
 )
 
 // liveCallView records what the terminal has already displayed for a call.
-// Write and edit arguments can be previewed during generation. Execution
+// Tool arguments can be previewed during generation. Execution
 // results for all tools are published by the engine, never by this preview.
 type liveCallView struct {
 	name             string
@@ -62,12 +62,13 @@ func safeLiveLabel(value string) string {
 
 // ShowLiveToolContent is called in model-stream order. It never writes a file
 // and never runs a tool. It appends actual decoded text deltas, rather than
-// rewriting an arbitrarily sized block of terminal rows. This works even when
-// path is delivered after content, and does not reserve blank terminal rows.
+// rewriting an arbitrarily sized block of terminal rows. File content received
+// before its path waits until a heading can identify it above the body.
 func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	if name != "write" && name != "edit" {
+	name = safeLiveLabel(name)
+	if name == "" {
 		return
 	}
 	if sr.liveCallViews == nil {
@@ -82,19 +83,24 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	if path != "" {
 		view.path = path
 	}
-	// An edit needs its target before displaying a contextual diff.
-	if name == "edit" && view.path == "" && !view.headerShown {
-		return
-	}
-	// Do not print a write header just because the name arrived. Wait for
-	// a destination or actual content so the title is not a fleeting stub.
-	if name == "write" && view.path == "" && delta == "" && !view.headerShown {
-		return
-	}
 	// A call whose preview was closed by early execution or a later call
 	// must not reopen when the provider sends trailing argument fragments.
 	if view.headerShown && sr.liveActiveCall != index {
 		return
+	}
+	if name == "bash" && delta == "" && path != "" && view.fullContent.Len() == 0 {
+		delta = path
+	}
+	view.receivedBytes += len(delta)
+	view.fullContent.WriteString(delta)
+	if !view.headerShown && (name == "write" || name == "edit") {
+		if view.path == "" {
+			return
+		}
+		// Reuse the semantic content buffer rather than keeping another
+		// copy. A late filename must not require a second heading below
+		// the body or a rewrite of terminal rows that scrolled away.
+		delta = view.fullContent.String()
 	}
 	if !view.headerShown {
 		sr.endThinking()
@@ -123,22 +129,23 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 		sr.liveResultGap = false
 		title := sr.liveToolTitle(name, view.path)
 		view.titleLine = GetNewlineCount(sr.w)
-		fmt.Fprintln(sr.w, title)
+		if name == "bash" {
+			fmt.Fprint(sr.w, title)
+		} else {
+			fmt.Fprintln(sr.w, title)
+		}
 		view.headerShown = true
 		sr.liveReplayEvents = append(sr.liveReplayEvents, liveReplayEvent{kind: "tool", index: index})
 		view.lastRenderedPath = view.path
-		view.endsWithNewline = true
+		view.endsWithNewline = name != "bash"
 		sr.liveActiveCall = index
-	} else if view.path != "" && view.path != view.lastRenderedPath && view.titleLine >= 0 {
-		// Updating an existing heading is best effort. If it has scrolled
-		// away, leave the original title rather than corrupting another row.
+		sr.liveVisibleCall = index
+	} else if view.path != "" && view.path != view.lastRenderedPath {
 		if ReplaceTrackedStreamLine(sr.w, view.titleLine, sr.liveToolTitle(name, view.path)) {
 			view.lastRenderedPath = view.path
 		}
 	}
-	view.receivedBytes += len(delta)
-	view.fullContent.WriteString(delta)
-	if sr.liveCollapse {
+	if sr.liveCollapse && (name == "write" || name == "edit") {
 		// Keep only a bounded excerpt for the compact progress row.
 		for _, r := range delta {
 			view.compactTail = append(view.compactTail, r)
@@ -355,11 +362,32 @@ func (sr *StreamRenderer) requestLiveSyntaxRefreshLocked() {
 // liveToolTitle matches the final tool title's path formatting so previews
 // do not alternate between absolute and relative paths during execution.
 func (sr *StreamRenderer) liveToolTitle(name, path string) string {
-	if path == "" {
-		path = "…"
-	}
 	symbol := RenderToolSymbol(name, ToolStatusPending, sr.theme)
+	if name == "bash" {
+		return FormatBashCommandLine(symbol, "", sr.theme) + " "
+	}
 	return FormatToolTitle(symbol, name, path, sr.theme)
+}
+
+// BeginToolExecution repeats a heading only if another call's preview now
+// occupies the output tail. Execution output stays attached to its own call.
+func (sr *StreamRenderer) BeginToolExecution(index int, name, arguments string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	view := sr.liveCallViews[index]
+	if view == nil || !view.headerShown || name == "write" || name == "edit" || sr.liveVisibleCall == index {
+		return
+	}
+	sr.finishLiveTextLocked()
+	target := ExtractToolTarget(name, arguments)
+	view.titleLine = GetNewlineCount(sr.w)
+	symbol := RenderToolSymbol(name, ToolStatusPending, sr.theme)
+	if name == "bash" {
+		fmt.Fprintln(sr.w, FormatBashCommandLine(symbol, target, sr.theme))
+	} else {
+		fmt.Fprintln(sr.w, FormatToolTitle(symbol, name, safeLiveLabel(target), sr.theme))
+	}
+	sr.liveVisibleCall = index
 }
 
 func (sr *StreamRenderer) EndLiveToolContent() {
@@ -378,7 +406,7 @@ func (sr *StreamRenderer) EndLiveToolContent() {
 // or edit. The engine replaces this row with a verified summary, not a second
 // copy of the edit diff. Failed operations still show their full error.
 func (sr *StreamRenderer) endLiveCallLocked(index int, view *liveCallView) {
-	if view.compactLine != -1 {
+	if view.compactLine != -1 && (view.name == "write" || view.name == "edit") {
 		// The compact progress row becomes this call's verified result.
 		// Reusing it avoids a spare row between progress and completion,
 		// and lets the engine skip its normal inter-tool spacing here.

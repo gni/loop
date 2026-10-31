@@ -123,12 +123,27 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 			if path == "" {
 				path = "…"
 			}
-			fmt.Fprintln(w, FormatToolTitle(RenderToolSymbol(call.name, status, theme), call.name, path, theme))
+			if call.name == "bash" {
+				// Command text was displayed inline after the shell prompt.
+				command := call.content
+				if command == "" && call.arguments != "" {
+					command = ExtractToolTarget(call.name, call.arguments)
+				}
+				fmt.Fprint(w, FormatBashCommandLine(RenderToolSymbol(call.name, status, theme), command, theme))
+				if !last || ev.index != activeCall || call.completed {
+					fmt.Fprintln(w)
+				}
+			} else {
+				fmt.Fprintln(w, FormatToolTitle(RenderToolSymbol(call.name, status, theme), call.name, path, theme))
+			}
 			if call.resultRecorded {
 				RenderToolOutput(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false)
 				continue
 			}
-			if collapsed && !call.failed {
+			if call.name == "bash" {
+				continue
+			}
+			if collapsed && !call.failed && (call.name == "write" || call.name == "edit") {
 				// Match the compact live progress format; never emit source.
 				tail := []rune(safeLiveLabel(strings.Join(strings.Fields(call.content), " ")))
 				maxExcerpt := 72

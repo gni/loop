@@ -81,7 +81,7 @@ start a session with a direct objective:
 
 Source inspection excludes dependency and generated directories such as `.venv`, `venv`, `node_modules`, `vendor`, `build`, `dist`, `target`, and caches. Native file tools reject searches started inside those directories. Common shell scanners (`find`, recursive `grep`, `rg`, `fd`, `tree`, `du`) apply the same directory defaults; when an installed scanner cannot exclude directories, Loop directs the model to native file tools. These are scan defaults, not access restrictions on arbitrary scripts. Builds and package managers can still run installed dependencies.
 
-Foreground scans observe cancellation throughout traversal. Ctrl+C stops their shell process group, discards pending live output, and prevents queued shell commands from starting. Live shell output is capped at the configured `max_output_bytes`; process capture remains bounded separately.
+Foreground scans observe cancellation throughout traversal. Ctrl+C stops their shell process group, discards pending live output, and prevents queued shell commands from starting. Live shell output shows the configured `max_output_bytes` in full, then continues with recent samples at a limited rate; process capture remains bounded separately.
 
 Shell execution is not sandboxed. Workspace file-tool checks do not restrict shell commands, plugins, or child processes. Run untrusted work in an isolated environment.
 
@@ -111,6 +111,12 @@ Choose the visible prompt height in `/config`, or set it directly:
 ```
 
 Set `prompt_max_lines` to 1 for a one-row viewport, or increase it for a larger editor; the available terminal height always limits it to leave space for the chat. Settings are saved between launches. The same newline/submit bindings apply to drafts typed while a reply is streaming.
+
+#### live tool output
+
+Tool names and readable arguments appear as the model generates them, including shell commands, todo descriptions and file targets. Interleaved calls stay in order. Once a tool is awaiting its result, following calls keep their headings beside their own results instead of printing an empty stack of titles. File write and edit bodies can continue streaming during generation. File headings precede their bodies; content generated before its filename waits until that filename arrives. Previews do not bypass argument validation or approvals; shell commands and todo changes wait for the completed model response before execution.
+
+Shell stdout and stderr appear as bytes arrive, including partial lines. Python output is unbuffered, and Loop uses `stdbuf` when installed. Collapse mode can hide completed results, but does not hold back running shell output or todo descriptions. After the initial display budget, noisy commands continue showing recent output at a limited rate. Tools that return a single structured result show it when ready. Streaming is local and adds no model requests.
 
 #### queued prompts
 

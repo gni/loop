@@ -150,6 +150,16 @@ func ExtractWrappedFloats(rawJSON string, keys ...string) map[string]float64 {
 	return out
 }
 
+// IsFilePathKey recognizes the same filename aliases used by file execution.
+func IsFilePathKey(key string) bool {
+	for _, candidate := range pathMapKeys {
+		if strings.EqualFold(key, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func ExtractFilePath(rawJSON string, candidatePaths ...string) string {
 	for _, p := range candidatePaths {
 		if trimmed := strings.TrimSpace(p); trimmed != "" {

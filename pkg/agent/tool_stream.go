@@ -2,8 +2,12 @@ package agent
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 )
 
@@ -37,31 +41,36 @@ type toolStreamState struct {
 	escaped       bool
 	complete      bool
 	rawTarget     bool
+	payloadKnown  bool
 	editDiffShown bool
 	readyNotified bool
 	draft         streamedDraft
 }
 
-// streamedDraft extracts a small, printable tail of a JSON content value.
+// streamedDraft decodes readable argument values and keeps bounded excerpts.
 // It does not require the filename to be known and never stores whole files.
 type streamedDraft struct {
-	inString    bool
-	escaped     bool
-	readingKey  bool
-	readingBody bool
-	valueNext   bool
-	key         strings.Builder
-	lastKey     string
-	readingPath bool
-	pathBuf     strings.Builder
-	path        string
-	edit        bool
-	linePrefix  string
-	lineStart   bool
-	tail        []rune
-	liveTail    []rune
-	liveHead    int
-	pending     strings.Builder
+	toolName         string
+	unicodeDigits    string
+	unicodeRemaining int
+	highSurrogate    rune
+	inString         bool
+	escaped          bool
+	readingKey       bool
+	readingBody      bool
+	valueNext        bool
+	key              strings.Builder
+	lastKey          string
+	readingPath      bool
+	pathBuf          strings.Builder
+	path             string
+	edit             bool
+	linePrefix       string
+	lineStart        bool
+	tail             []rune
+	liveTail         []rune
+	liveHead         int
+	pending          strings.Builder
 }
 
 func (d *streamedDraft) appendVisible(r rune) {
@@ -105,18 +114,37 @@ func (d *streamedDraft) appendPlain(r rune) {
 func (d *streamedDraft) appendJSON(fragment string) {
 	for _, r := range fragment {
 		if d.inString {
-			if d.escaped {
-				d.escaped = false
-				if d.readingBody {
-					switch r {
-					case 'n':
-						d.appendVisible('\n')
-					case 't', 'r':
-						d.appendVisible(' ')
-					case '"', '\\', '/':
-						d.appendVisible(r)
+			if d.unicodeRemaining > 0 {
+				d.unicodeDigits += string(r)
+				d.unicodeRemaining--
+				if d.unicodeRemaining == 0 {
+					value, err := strconv.ParseUint(d.unicodeDigits, 16, 16)
+					if err == nil {
+						d.appendUnicode(rune(value))
 					}
 				}
+				continue
+			}
+			if d.escaped {
+				d.escaped = false
+				if r != 'u' && d.highSurrogate != 0 {
+					d.appendDecoded(utf8.RuneError)
+					d.highSurrogate = 0
+				}
+				switch r {
+				case 'u':
+					d.unicodeRemaining = 4
+					d.unicodeDigits = ""
+				case 'n':
+					d.appendDecoded('\n')
+				case 't':
+					d.appendDecoded('\t')
+				case 'r':
+					d.appendDecoded('\r')
+				case '"', '\\', '/':
+					d.appendDecoded(r)
+				}
+
 				continue
 			}
 			if r == '\\' {
@@ -124,6 +152,13 @@ func (d *streamedDraft) appendJSON(fragment string) {
 				continue
 			}
 			if r == '"' {
+				if d.highSurrogate != 0 {
+					d.appendDecoded(utf8.RuneError)
+					d.highSurrogate = 0
+				}
+				if d.toolName == "todo" && d.readingBody {
+					d.appendPlain('\n')
+				}
 				if d.edit && d.readingBody && !d.lineStart {
 					d.appendPlain('\n')
 					d.lineStart = true
@@ -143,19 +178,33 @@ func (d *streamedDraft) appendJSON(fragment string) {
 				d.valueNext = false
 				continue
 			}
+			if d.highSurrogate != 0 {
+				d.appendDecoded(utf8.RuneError)
+				d.highSurrogate = 0
+			}
 			if d.readingKey {
 				d.key.WriteRune(r)
-			} else if d.readingBody {
-				d.appendVisible(r)
-			} else if d.readingPath && d.pathBuf.Len() < 512 {
-				d.pathBuf.WriteRune(r)
+			} else {
+				d.appendDecoded(r)
 			}
 			continue
 		}
 		switch r {
 		case '"':
 			d.inString = true
-			d.readingBody = d.valueNext && (d.lastKey == "content" || d.lastKey == "body" || d.lastKey == "text")
+			key := strings.ToLower(d.lastKey)
+			d.readingBody = d.valueNext && (key == "content" || key == "body" || key == "text" || key == "question" || key == "prompt")
+			if d.toolName == "bash" {
+				d.readingBody = d.valueNext && (key == "command" || key == "cmd" || key == "arguments")
+			}
+			if d.toolName == "todo" {
+				d.readingBody = d.valueNext && (key == "task" || key == "description" || key == "title" || key == "content" || key == "desc" || key == "summary")
+				if d.readingBody {
+					for _, prefix := range "  • " {
+						d.appendPlain(prefix)
+					}
+				}
+			}
 			if d.edit && d.valueNext {
 				switch d.lastKey {
 				case "oldText", "old_text", "old_string", "oldString":
@@ -168,7 +217,10 @@ func (d *streamedDraft) appendJSON(fragment string) {
 					d.lineStart = true
 				}
 			}
-			d.readingPath = d.valueNext && (d.lastKey == "path" || d.lastKey == "file_path" || d.lastKey == "filename")
+			d.readingPath = d.valueNext && d.toolName != "todo" && (key == "path" || key == "file_path" || key == "filename" || key == "pattern" || key == "query" || key == "url" || key == "name" || key == "task_id")
+			if d.toolName == "write" || d.toolName == "edit" {
+				d.readingPath = d.valueNext && filetool.IsFilePathKey(key)
+			}
 			d.readingKey = !d.valueNext
 		case ':':
 			d.valueNext = true
@@ -182,6 +234,40 @@ func (d *streamedDraft) appendJSON(fragment string) {
 			d.valueNext = false
 			d.lastKey = ""
 		}
+	}
+}
+
+func (d *streamedDraft) appendUnicode(r rune) {
+	if d.highSurrogate != 0 {
+		high := d.highSurrogate
+		d.highSurrogate = 0
+		if r >= 0xdc00 && r <= 0xdfff {
+			d.appendDecoded(utf16.DecodeRune(high, r))
+			return
+		}
+		d.appendDecoded(utf8.RuneError)
+	}
+	if r >= 0xd800 && r <= 0xdbff {
+		d.highSurrogate = r
+		return
+	}
+	if r >= 0xdc00 && r <= 0xdfff {
+		r = utf8.RuneError
+	}
+	d.appendDecoded(r)
+}
+
+func (d *streamedDraft) appendDecoded(r rune) {
+	if d.readingKey {
+		d.key.WriteRune(r)
+		return
+	}
+	if d.readingBody {
+		d.appendVisible(r)
+	}
+	if d.readingPath && d.pathBuf.Len() < 512 {
+		d.pathBuf.WriteRune(r)
+		d.path = d.pathBuf.String()
 	}
 }
 
@@ -211,6 +297,12 @@ func (d *streamedDraft) takeDelta() string {
 // Track JSON completion in linear time. Validating the entire accumulated
 // argument string on every token would make large write previews quadratic.
 func (s *toolStreamState) appendArguments(fragment string) {
+	if !s.payloadKnown && !s.rawTarget {
+		if first := strings.TrimSpace(fragment); first != "" {
+			s.payloadKnown = true
+			s.rawTarget = first[0] != '{' && first[0] != '['
+		}
+	}
 	s.arguments.WriteString(fragment)
 	if s.rawTarget {
 		for _, r := range fragment {
@@ -313,7 +405,7 @@ func (s *toolStreamSequencer) progress(index int, state *toolStreamState) {
 		return
 	}
 	preview := ""
-	if state.name == "write" || state.name == "" {
+	if state.name != "edit" {
 		preview = state.draft.livePreview()
 	}
 	name := state.name
@@ -387,6 +479,7 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 	}
 	if chunk.Type == "tool_name" {
 		state.name = chunk.Content
+		state.draft.toolName = chunk.Content
 		state.draft.edit = chunk.Content == "edit"
 		// Fallback text calls have no JSON completion marker. Seeing the
 		// next opening tag means the previous raw call has ended.
@@ -400,42 +493,10 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 		state.appendArguments(chunk.Content)
 	}
 	if s.livePreview {
-		// Write and edit previews are already printed live; replaying their
-		// argument chunks during execution would duplicate the transcript.
-		// Read, bash, and other tools still use execution-time rendering.
-		if (state.name != "write" && state.name != "edit") || s.onLiveContent == nil {
-			state.events = append(state.events, chunk)
-		}
-		if s.onLiveContent != nil {
-			// Edits need their target before rendering a contextual diff.
-			// Writes can display content before the path is available.
-			if state.name == "edit" && state.draft.path == "" {
-				s.progress(index, state)
-				s.notifyReady(index, state)
-				return
-			}
-			delta := state.draft.takeDelta()
-			if state.name == "edit" && s.editDiffPreview != nil {
-				// An oldText/newText fragment has no reliable line numbers:
-				// the target may not be known yet, and argument key order is
-				// arbitrary. Show the heading immediately, then the proper
-				// contextual diff once the JSON is complete. Writes keep
-				// streaming their contents token by token.
-				s.onLiveContent(index, state.name, state.draft.path, "")
-				if state.complete && !state.editDiffShown {
-					state.editDiffShown = true
-					if diff := s.editDiffPreview(state.name, state.arguments.String()); diff != "" {
-						s.onLiveContent(index, state.name, state.draft.path, diff)
-					}
-				}
-			} else {
-				s.onLiveContent(index, state.name, state.draft.path, delta)
-			}
-		}
-		s.progress(index, state)
-		s.notifyReady(index, state)
+		s.presentLive(false)
 		return
 	}
+
 	if s.onProgress != nil && s.deferFollowing && index > 0 && s.calls[0] != nil && s.calls[0].complete {
 		preview := ""
 		if state.name == "write" {
@@ -453,8 +514,62 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 	s.notifyReady(index, state)
 }
 
+// Present calls in model order even when argument deltas are interleaved.
+// File bodies can follow each other during generation. Other tools keep the
+// output tail until execution, so later headings do not precede their results.
+func (s *toolStreamSequencer) presentLive(force bool) {
+	if s.onLiveContent == nil {
+		return
+	}
+	if s.active < 0 {
+		s.active = 0
+	}
+	for {
+		state := s.calls[s.active]
+		if state == nil || state.name == "" {
+			return
+		}
+		s.presentLiveCall(s.active, state)
+		s.notifyReady(s.active, state)
+		if !state.complete && !force {
+			return
+		}
+		if s.deferFollowing && state.name != "write" && state.name != "edit" {
+			return
+		}
+		next := s.calls[s.active+1]
+		if next == nil || next.name == "" {
+			return
+		}
+		s.active++
+	}
+}
+
+// presentLiveCall only displays arguments. Replaying a deferred preview at
+// execution time must not invoke the early-write scheduling callback.
+func (s *toolStreamSequencer) presentLiveCall(index int, state *toolStreamState) {
+	delta := state.draft.takeDelta()
+	path := state.draft.path
+	if (state.name == "write" || state.name == "edit") && state.draft.readingPath {
+		// Wait for the complete filename instead of rewriting a split path.
+		path = ""
+	}
+	if state.name == "edit" && s.editDiffPreview != nil {
+		s.onLiveContent(index, state.name, path, "")
+		if state.complete && !state.editDiffShown {
+			state.editDiffShown = true
+			if diff := s.editDiffPreview(state.name, state.arguments.String()); diff != "" {
+				s.onLiveContent(index, state.name, path, diff)
+			}
+		}
+	} else {
+		s.onLiveContent(index, state.name, path, delta)
+	}
+	s.progress(index, state)
+}
+
 func (s *toolStreamSequencer) notifyReady(index int, state *toolStreamState) {
-	if s.onReady == nil || state == nil || state.readyNotified || !state.complete || state.name == "" {
+	if s.onReady == nil || state == nil || state.readyNotified || !state.complete || state.rawTarget || state.name == "" {
 		return
 	}
 	state.readyNotified = true
@@ -499,6 +614,10 @@ func (s *toolStreamSequencer) advance(force bool) {
 // Finish displays buffered calls in the legacy streaming mode. In sequential
 // display mode, remaining previews are replayed beside their execution result.
 func (s *toolStreamSequencer) Finish() {
+	if s.livePreview {
+		s.presentLive(!s.deferFollowing)
+		return
+	}
 	if s.enabled && !s.livePreview {
 		s.advance(true)
 	}
@@ -512,6 +631,11 @@ func (s *toolStreamSequencer) ReplayCall(index int, call db.ToolCall) {
 		return
 	}
 	s.Replay(index)
+	if s.livePreview {
+		if presenter, ok := s.renderer.(interface{ BeginToolExecution(int, string, string) }); ok {
+			presenter.BeginToolExecution(index, call.Function.Name, call.Function.Arguments)
+		}
+	}
 }
 
 // Replay displays a later call only when the engine is about to execute it.
@@ -523,7 +647,14 @@ func (s *toolStreamSequencer) Replay(index int) {
 		return
 	}
 	if s.livePreview {
-		if state := s.calls[index]; s.onLiveContent != nil && state != nil && (state.name == "write" || state.name == "edit") {
+		if state := s.calls[index]; s.onLiveContent != nil && state != nil {
+			if index > s.active {
+				s.active = index
+				s.presentLiveCall(index, state)
+				if presenter, ok := s.renderer.(interface{ EndLiveToolContent() }); ok {
+					presenter.EndLiveToolContent()
+				}
+			}
 			return
 		}
 	} else if !s.deferFollowing || index < 1 {

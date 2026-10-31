@@ -15,18 +15,14 @@ import (
 // section. The foreground renderer can replay an unfinished line without losing
 // bytes arriving from the child process during the screen rebuild.
 type toolProgressWriter struct {
-	mu        sync.Mutex
-	writer    io.Writer
-	content   bytes.Buffer
-	collapsed bool
+	mu      sync.Mutex
+	writer  io.Writer
+	content bytes.Buffer
 }
 
 func (w *toolProgressWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.collapsed {
-		return w.content.Write(p)
-	}
 	n, err := w.writer.Write(p)
 	_, _ = w.content.Write(p[:n])
 	return n, err
@@ -42,7 +38,7 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 		return tool.ExecutePreparedResult(ctx, executor, tc.Function.Arguments)
 	}
 
-	live := &toolProgressWriter{writer: a.CurrentWriter(), collapsed: a.Config.CollapseResults}
+	live := &toolProgressWriter{writer: a.CurrentWriter()}
 	a.stateMu.Lock()
 	previousWriter := a.liveToolWriter
 	a.liveToolWriter = live
@@ -87,15 +83,9 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 	for {
 		select {
 		case result := <-done:
-			// Suppressed bytes were captured, but were never displayed. Let
-			// the normal result renderer show diagnostics in full on failure.
-			if live.collapsed {
-				a.SetLiveBodyStreamed(false)
-			}
 			return result.rich, result.err
 		case <-refresh.C:
 			live.mu.Lock()
-			live.collapsed = a.Config.CollapseResults
 			a.refreshStreamPresentation(sr)
 			live.mu.Unlock()
 		}

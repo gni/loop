@@ -147,10 +147,8 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	task.mu.Lock()
 	a.TasksMu.Unlock()
 
-	cmd := exec.Command("bash", "-c", bashtool.WithScanDefaults(command, a.WorkspaceRoot))
+	cmd := bashtool.NewCommand(bashtool.WithScanDefaults(command, a.WorkspaceRoot))
 	cmd.Dir = a.WorkspaceRoot
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	task.Cmd = cmd
 	cmd.Stdout = &taskWriter{task: task, agent: a, w: w, isStderr: false}

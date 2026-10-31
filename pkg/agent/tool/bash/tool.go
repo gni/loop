@@ -149,10 +149,8 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
 	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\nprintf '\n%s%%s\n' \"$(pwd -P)\"\nexit $__LOOP_RET", args.Command, pwdMarker)
-	cmd := exec.Command("bash", "-c", WithScanDefaults(wrappedCmd, workspaceRoot))
+	cmd := NewCommand(WithScanDefaults(wrappedCmd, workspaceRoot))
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {

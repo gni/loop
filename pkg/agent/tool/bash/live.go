@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/output"
@@ -132,40 +134,60 @@ func (f *markerFilter) Finish() {
 	f.pending = nil
 }
 
-// limitedLiveWriter bounds terminal output independently of the captured result.
-// After reaching the limit, pipe reads continue so the child cannot block.
+// limitedLiveWriter shows the initial budget in full, then samples recent
+// output at a bounded rate. Long commands remain visible without flooding the
+// terminal or retaining an unbounded queue of pending output.
 type limitedLiveWriter struct {
-	w         io.Writer
-	remaining int
-	notified  bool
-	limit     int
+	w          io.Writer
+	remaining  int
+	notified   bool
+	limit      int
+	pending    []byte
+	nextSample time.Time
 }
 
 func (l *limitedLiveWriter) Write(p []byte) (int, error) {
 	original := len(p)
-	if l.remaining <= 0 {
-		if original > 0 {
-			l.notice()
+	if l.remaining > 0 {
+		show := min(original, l.remaining)
+		if _, err := l.w.Write(p[:show]); err != nil {
+			return 0, err
 		}
+		l.remaining -= show
+		p = p[show:]
+	}
+	if len(p) == 0 {
 		return original, nil
 	}
-	show := min(original, l.remaining)
-	if _, err := l.w.Write(p[:show]); err != nil {
-		return 0, err
+	if !l.notified {
+		l.notified = true
+		_, _ = fmt.Fprintf(l.w, "\n[live output sampled after %d bytes; showing recent output]\n", l.limit)
 	}
-	l.remaining -= show
-	if show < original {
-		l.notice()
+	const sampleBytes = 4096
+	if len(p) >= sampleBytes {
+		l.pending = append(l.pending[:0], p[len(p)-sampleBytes:]...)
+	} else {
+		l.pending = append(l.pending, p...)
+		if len(l.pending) > sampleBytes {
+			l.pending = append(l.pending[:0], l.pending[len(l.pending)-sampleBytes:]...)
+		}
+	}
+	if time.Now().After(l.nextSample) {
+		l.flushSample()
+		l.nextSample = time.Now().Add(250 * time.Millisecond)
 	}
 	return original, nil
 }
 
-func (l *limitedLiveWriter) notice() {
-	if l.notified {
-		return
+func (l *limitedLiveWriter) flushSample() {
+	data := l.pending
+	for len(data) > 0 && !utf8.RuneStart(data[0]) {
+		data = data[1:]
 	}
-	l.notified = true
-	_, _ = fmt.Fprintf(l.w, "\n[live output truncated after %d bytes]\n", l.limit)
+	if len(data) > 0 {
+		_, _ = l.w.Write(data)
+	}
+	l.pending = l.pending[:0]
 }
 
 // bestEffortLiveWriter must not stop draining a child process if terminal output fails.
@@ -178,7 +200,9 @@ func (w bestEffortLiveWriter) Write(p []byte) (int, error) {
 
 func (s *liveShellOutput) Streams(marker string) (io.Writer, io.Writer, func()) {
 	liveLimit := s.limit
-	stdout := newMarkerFilter(output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}), marker)
-	stderr := output.NewSafeShellOutputWriter(&limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit})
-	return stdout, stderr, stdout.Finish
+	outLimit := &limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}
+	errLimit := &limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}
+	stdout := newMarkerFilter(output.NewSafeShellOutputWriter(outLimit), marker)
+	stderr := output.NewSafeShellOutputWriter(errLimit)
+	return stdout, stderr, func() { stdout.Finish(); outLimit.flushSample(); errLimit.flushSample() }
 }
