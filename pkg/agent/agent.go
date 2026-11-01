@@ -841,6 +841,10 @@ func (a *Agent) IsPersistentBashEnabled() bool {
 	return a.Config.PersistentBash
 }
 
+func (a *Agent) IsShellScanDefaultsEnabled() bool {
+	return a != nil && a.Config != nil && a.Config.ShellScanDefaults
+}
+
 func (a *Agent) IsAtomicWritesEnabled() bool {
 	if a.Config == nil {
 		return true

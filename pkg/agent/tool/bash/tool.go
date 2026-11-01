@@ -36,7 +36,7 @@ func (t *bashTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
 		"For background processes and long-running services, set 'background': true.",
-		"Use native file tools for inspection; dependency and generated folders are excluded from recursive shell scans by default. Do not bypass exclusions using recursive scripts or child shells.",
+		"Prefer native file tools for inspection. Shell dependency exclusions apply only when shell_scan_defaults is enabled.",
 	})
 }
 
@@ -149,7 +149,10 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
 	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\nprintf '\n%s%%s\n' \"$(pwd -P)\"\nexit $__LOOP_RET", args.Command, pwdMarker)
-	cmd := NewCommand(WithScanDefaults(wrappedCmd, workspaceRoot))
+	if settings, ok := ctx.(interface{ IsShellScanDefaultsEnabled() bool }); ok && settings.IsShellScanDefaultsEnabled() {
+		wrappedCmd = WithScanDefaults(wrappedCmd, workspaceRoot)
+	}
+	cmd := NewCommand(wrappedCmd)
 	cmd.Dir = workDir
 
 	stdoutReader, stdoutWriter, err := os.Pipe()

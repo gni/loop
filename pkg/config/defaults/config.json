@@ -33,6 +33,7 @@
   ],
   "repeat_guard_limit": 10,
   "persistent_bash": true,
+  "shell_scan_defaults": false,
   "atomic_writes": true,
   "ask_user_mode": "interactive",
   "approval_always_answer": false,

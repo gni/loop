@@ -109,6 +109,7 @@ type Config struct {
 	SkillDirectories         []string                   `json:"skill_directories,omitempty"`
 	NoContextFiles           bool                       `json:"no_context_files,omitempty"`
 	ShellTimeout             int                        `json:"shell_timeout,omitempty"`
+	ShellScanDefaults        bool                       `json:"shell_scan_defaults"`
 	ExtensionTimeout         int                        `json:"extension_timeout,omitempty"`
 	Endpoint                 string                     `json:"endpoint,omitempty"`
 	ApiKey                   string                     `json:"api_key,omitempty"`

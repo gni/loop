@@ -146,6 +146,8 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		}
 	case "persistent_bash", "persistent_shell":
 		a.Config.PersistentBash = config.ParseBool(val)
+	case "shell_scan_defaults":
+		a.Config.ShellScanDefaults = config.ParseBool(val)
 	case "atomic_writes", "atomic_write":
 		a.Config.AtomicWrites = config.ParseBool(val)
 	case "disable_file_observation_guard", "file_guard_off":

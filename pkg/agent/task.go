@@ -147,7 +147,11 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	task.mu.Lock()
 	a.TasksMu.Unlock()
 
-	cmd := bashtool.NewCommand(bashtool.WithScanDefaults(command, a.WorkspaceRoot))
+	shellCommand := command
+	if a.IsShellScanDefaultsEnabled() {
+		shellCommand = bashtool.WithScanDefaults(command, a.WorkspaceRoot)
+	}
+	cmd := bashtool.NewCommand(shellCommand)
 	cmd.Dir = a.WorkspaceRoot
 
 	task.Cmd = cmd

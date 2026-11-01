@@ -90,6 +90,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		{"guided mode:", guidedVal},
 		{"nostop pacing:", valStyle.Render(nostopVal)},
 		{"file guard disabled:", valStyle.Render(fmt.Sprintf("%v", cfg.DisableObservationGuard))},
+		{"shell scan defaults:", valStyle.Render(fmt.Sprint(cfg.ShellScanDefaults))},
 		{"auto-approve:", approveVal},
 		{"show thinking:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowThinking))},
 		{"markdown render:", valStyle.Render(fmt.Sprintf("%v", cfg.MarkdownRender))},

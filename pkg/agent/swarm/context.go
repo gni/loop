@@ -18,6 +18,11 @@ func (mac *multiAgentContext) IsShellExecutionAllowed() bool {
 	return ok && gate.IsShellExecutionAllowed()
 }
 
+func (mac *multiAgentContext) IsShellScanDefaultsEnabled() bool {
+	settings, ok := mac.AgentContext.(interface{ IsShellScanDefaultsEnabled() bool })
+	return ok && settings.IsShellScanDefaultsEnabled()
+}
+
 func (mac *multiAgentContext) Context() context.Context {
 	if ctx, _, _, ok := mac.ma.activeTurn(); ok {
 		return ctx

@@ -42,7 +42,7 @@
       "description": "Execute terminal shell commands (builds, tests, package managers, git, process management). Working directory persists across commands.",
       "snippet": "Execute shell commands (builds, tests, git, background processes)",
       "guidelines": [
-        "Do not bypass dependency/build exclusions with scripts or child shells. Builds may execute dependencies."
+        "Prefer native file tools for inspection. Shell dependency exclusions apply only when shell_scan_defaults is enabled."
       ],
       "param_descriptions": {
         "background": "Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks).",
