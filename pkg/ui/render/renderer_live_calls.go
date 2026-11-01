@@ -70,8 +70,8 @@ func safeLiveLabel(value string) string {
 
 // ShowLiveToolContent is called in model-stream order. It never writes a file
 // and never runs a tool. It appends actual decoded text deltas, rather than
-// rewriting an arbitrarily sized block of terminal rows. File content received
-// before its path waits until a heading can identify it above the body.
+// rewriting an arbitrarily sized block of terminal rows. Writes stream even
+// before their filename arrives; edits retain their target-based diff preview.
 func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -105,12 +105,12 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	view.receivedBytes += len(delta)
 	view.fullContent.WriteString(delta)
 	if !view.headerShown && (name == "write" || name == "edit") {
-		if view.path == "" {
+		if view.path == "" && (name == "edit" || view.fullContent.Len() == 0) {
 			return
 		}
-		// Reuse the semantic content buffer rather than keeping another
-		// copy. A late filename must not require a second heading below
-		// the body or a rewrite of terminal rows that scrolled away.
+		// A write can start with an unnamed heading as soon as content
+		// arrives. Keep its eventual filename in this same call instead of
+		// appending a second heading below the source.
 		delta = view.fullContent.String()
 	}
 	if !view.headerShown {
