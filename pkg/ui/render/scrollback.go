@@ -18,10 +18,14 @@ type scrollRow struct {
 	cells       []scrollCell
 	text        string
 	dirty, soft bool
+	archive     *scrollArchive
+	offset      int64
+	size        int
 }
 
 func (r *scrollRow) String() string {
 	if !r.dirty {
+		r.load()
 		return r.text
 	}
 	var out strings.Builder
@@ -44,10 +48,16 @@ func (r *scrollRow) String() string {
 	}
 	out.WriteString("\x1b[0m")
 	r.text, r.dirty = out.String(), false
+	r.size = 0
 	return r.text
 }
 
-func (r *scrollRow) freeze() { _ = r.String(); r.cells = nil }
+func (r *scrollRow) freeze() {
+	if r.cells != nil {
+		_ = r.String()
+		r.cells = nil
+	}
+}
 
 // Scrollback records the chat region's actual output, including local commands
 // and in-place syntax updates. Archived rows retain compact styled strings;
@@ -61,10 +71,14 @@ type Scrollback struct {
 	sgr, savedSGR  string
 	wrap           bool
 	pending        []byte
+	archive        *scrollArchive
+	archiveOwned   bool
+	pageStart      int
+	pageEnd        int
 }
 
 func NewScrollback(width, height int) *Scrollback {
-	b := &Scrollback{Width: max(1, width), Height: max(1, height)}
+	b := &Scrollback{Width: max(1, width), Height: max(1, height), pageStart: -1}
 	for range b.Height {
 		b.rows = append(b.rows, &scrollRow{})
 	}
@@ -76,6 +90,7 @@ func (b *Scrollback) Dropped() int { return b.dropped }
 func (b *Scrollback) Base() int { return b.base }
 
 func (b *Scrollback) View(top int) []string {
+	b.loadPage(top)
 	lines := make([]string, b.Height)
 	for i := range lines {
 		if n := top + i; n >= 0 && n < len(b.rows) {
@@ -95,6 +110,7 @@ func (b *Scrollback) up() {
 	b.rows[b.base].freeze()
 	b.base++
 	b.rows = append(b.rows, &scrollRow{})
+	b.evictRow(len(b.rows) - HistoryPageSize - 1)
 }
 
 func (b *Scrollback) lf() {
@@ -292,7 +308,8 @@ func (b *Scrollback) csi(sequence string) {
 	b.wrap = false
 }
 
-func (b *Scrollback) Write(data []byte) {
+func (b *Scrollback) Write(data []byte) (int, error) {
+	written := len(data)
 	if len(b.pending) > 0 {
 		data = append(b.pending, data...)
 		b.pending = nil
@@ -311,7 +328,7 @@ func (b *Scrollback) Write(data []byte) {
 				}
 				if end == len(data) {
 					b.pending = append(b.pending, data[i:]...)
-					return
+					return written, b.Err()
 				}
 				end++
 				b.csi(string(data[i:end]))
@@ -321,7 +338,7 @@ func (b *Scrollback) Write(data []byte) {
 				}
 				if end == len(data) || (data[end] == 27 && end+1 == len(data)) {
 					b.pending = append(b.pending, data[i:]...)
-					return
+					return written, b.Err()
 				}
 				if data[end] == 27 {
 					end++
@@ -333,7 +350,7 @@ func (b *Scrollback) Write(data []byte) {
 				}
 				if end == len(data) {
 					b.pending = append(b.pending, data[i:]...)
-					return
+					return written, b.Err()
 				}
 				end++
 			case '7':
@@ -377,6 +394,7 @@ func (b *Scrollback) Write(data []byte) {
 			}
 		}
 	}
+	return written, b.Err()
 }
 
 // Resize reflows soft-wrapped rows once and maps the output cursor and reader's
@@ -386,6 +404,7 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 	oldAnchor := b.base + max(0, outputRow-1)
 	anchor, col := oldAnchor, max(0, outputCol-1)
 	if width != b.Width {
+		b.releasePage()
 		oldRows := b.rows
 		mapping := make([]int, len(oldRows)+1)
 		var rows []*scrollRow
@@ -412,6 +431,9 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 					cursorPrefix = style.StripAnsi(group.String()) + prefix.String() + strings.Repeat(" ", max(0, col-cells))
 				}
 				group.WriteString(line.String())
+				if b.archive != nil {
+					b.archive.evict(line)
+				}
 				i++
 				if !line.soft || i == len(oldRows) {
 					break
@@ -430,6 +452,9 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 			wrapped := ChatHistoryRows(group.String(), width)
 			for j, text := range wrapped {
 				rows = append(rows, &scrollRow{text: text, soft: j < len(wrapped)-1})
+				if b.archive != nil && len(rows) > HistoryPageSize {
+					b.archive.evict(rows[len(rows)-HistoryPageSize-1])
+				}
 			}
 		}
 		mapping[len(oldRows)] = len(rows)
@@ -488,6 +513,7 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 	for i := 0; i < b.base; i++ {
 		b.rows[i].freeze()
 	}
+	b.trimMemory()
 	return min(height, max(1, anchor-b.base+1)), min(width+1, max(1, col+1)), max(0, top)
 }
 
@@ -496,7 +522,9 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 func (b *Scrollback) ReplaceRange(start, end int, text string) (delta, padding int) {
 	start = min(max(0, start), len(b.rows))
 	end = min(max(start, end), len(b.rows))
+	b.releasePage()
 	replacement := NewScrollback(b.Width, 1)
+	replacement.archive = b.archive
 	replacement.Write([]byte(text))
 	delta = len(replacement.rows) - (end - start)
 	rows := append([]*scrollRow(nil), b.rows[:start]...)
@@ -515,5 +543,6 @@ func (b *Scrollback) ReplaceRange(start, end int, text string) (delta, padding i
 	for i := 0; i < b.base; i++ {
 		b.rows[i].freeze()
 	}
+	b.trimMemory()
 	return delta, padding
 }

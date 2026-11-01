@@ -27,10 +27,11 @@ func NewUUID() string {
 }
 
 type JSONLStore struct {
-	dir       string
-	mu        sync.RWMutex
-	Workspace string
-	cache     map[string]cachedEntries
+	dir        string
+	mu         sync.RWMutex
+	Workspace  string
+	cache      map[string]cachedEntries
+	cacheClock uint64
 }
 
 var _ session.Store = (*JSONLStore)(nil)
@@ -169,19 +170,15 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 		return err
 	}
 	defer release()
-	entries, err := s.entries(sessionID)
+	cached, err := s.appendState(sessionID)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if len(entries) > 0 {
-		last := entries[len(entries)-1]
-		if last.Type != "session" {
-			record.ParentID = last.ID
-			if record.ParentID == "" {
-				record.ParentID = fmt.Sprintf("legacy-%d", len(entries)-1)
-			}
-		}
+	if cached.count > 0 && cached.lastType != "session" {
+		record.ParentID = cached.lastID
 	}
+	// An interrupted append must never leave a reusable stale cache entry.
+	delete(s.cache, sessionID)
 	record.ID = session.NewUUID()
 	record.Timestamp = nowTimestamp()
 	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -189,12 +186,15 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 		return err
 	}
 	defer f.Close()
-	if len(entries) == 0 {
+	if cached.count == 0 {
 		header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: sessionID, Cwd: s.Workspace, Timestamp: nowTimestamp()}
 		if err := writeJSONLine(f, header); err != nil {
 			return err
 		}
-		entries = append(entries, header)
+		cached.count++
+		if cached.complete {
+			cached.entries = append(cached.entries, header)
+		}
 	}
 	if err := writeJSONLine(f, record); err != nil {
 		return err
@@ -210,7 +210,13 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 	if err != nil {
 		return err
 	}
-	s.cache[sessionID] = cachedEntries{size: info.Size(), modified: info.ModTime(), entries: append(entries, record)}
+	cached.size, cached.modified = info.Size(), info.ModTime()
+	cached.count++
+	cached.lastID, cached.lastType = record.ID, record.Type
+	if cached.complete {
+		cached.entries = append(cached.entries, cloneRecord(record))
+	}
+	s.cacheEntries(sessionID, cached)
 	return nil
 }
 

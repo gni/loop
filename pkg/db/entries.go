@@ -9,16 +9,9 @@ import (
 	"os"
 	"time"
 
-	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
 	"loop/pkg/storage"
 )
-
-type cachedEntries struct {
-	size     int64
-	modified time.Time
-	entries  []session.Record
-}
 
 func (s *JSONLStore) lock(exclusive bool) (func(), error) {
 	return storage.Lock(s.dir+"/.store.lock", exclusive)
@@ -27,16 +20,19 @@ func (s *JSONLStore) lock(exclusive bool) (func(), error) {
 func (s *JSONLStore) entries(id string) ([]session.Record, error) {
 	info, err := os.Stat(s.sessionPath(id))
 	if err != nil {
+		delete(s.cache, id)
 		return nil, err
 	}
-	if cached, ok := s.cache[id]; ok && cached.size == info.Size() && cached.modified.Equal(info.ModTime()) {
+	if cached, ok := s.cached(id, info); ok && cached.complete {
 		return cached.entries, nil
 	}
 	entries, err := readEntries(s.sessionPath(id))
 	if err != nil {
+		delete(s.cache, id)
 		return nil, err
 	}
-	s.cache[id] = cachedEntries{size: info.Size(), modified: info.ModTime(), entries: entries}
+	cached := cacheForEntries(info, entries)
+	s.cacheEntries(id, cached)
 	return entries, nil
 }
 
@@ -55,12 +51,14 @@ func (s *JSONLStore) Entries(id string) ([]session.Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cached, ok := s.cache[id]; !ok || !cached.complete {
+		// Large reads are freshly decoded and unshared. Transfer ownership
+		// instead of allocating a second copy of the entire saved history.
+		return entries, nil
+	}
 	copy := make([]session.Record, len(entries))
 	for i, entry := range entries {
-		copy[i] = entry
-		copy[i].Data = append(entry.Data[:0:0], entry.Data...)
-		copy[i].Message = message.Clone(entry.Message)
-		copy[i].Messages = message.CloneAll(entry.Messages)
+		copy[i] = cloneRecord(entry)
 	}
 	return copy, nil
 }

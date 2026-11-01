@@ -2,24 +2,27 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	"loop/pkg/domain/session"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
 // ChatHistory owns the rendered chat document. TerminalMu protects the buffer,
-// viewport and writer positions. Navigation never reloads or formats messages.
+// viewport and writer positions. Older session turns and rendered row pages
+// are loaded only as needed.
 type ChatHistory struct {
 	previousSink                                    func(agent.Event) error
 	sessionID                                       string
@@ -31,7 +34,16 @@ type ChatHistory struct {
 	buffer                                          *render.Scrollback
 	top                                             int
 	browsing, paintPending, captureOnly, needsPaint bool
-	initial                                         []db.Message
+	source                                          displayHistorySource
+	pageJob                                         *historyPageJob
+	readyPage                                       *preparedHistoryPage
+	pendingUp                                       int
+	pendingHome                                     bool
+	turnMu                                          sync.Mutex
+	historyStart                                    int
+	turnFile                                        *os.File
+	turnOffset                                      int64
+	historyErr                                      error
 	turns                                           []*displayTurn
 	active                                          *displayTurn
 	appearance                                      string
@@ -42,14 +54,24 @@ type ChatHistory struct {
 type displayTurn struct {
 	start, end int
 	messages   []db.Message
+	offset     int64
+	size       int
+	appearance string
 }
 
 func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *PromptPreservingWriter, id string, initial []db.Message) (*ChatHistory, error) {
 	width, height := GetTerminalSize()
 	h := &ChatHistory{a: a, reader: reader, writer: writer, captureOnly: true,
 		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))}
+	paged, pageErr := render.NewPagedScrollback(width, h.buffer.Height)
+	if pageErr == nil {
+		h.buffer = paged
+	}
+	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
+	h.turnFile = turnFile
 	var err error
-	h.initial, err = h.loadMessages(id, initial)
+	h.source, err = h.openHistory(id, initial)
+	err = errors.Join(err, pageErr, turnErr)
 	h.sessionID = id
 	h.previousSink = a.EventSink
 	a.EventSink = func(event agent.Event) error {
@@ -72,76 +94,71 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 	return h, err
 }
 
-func (h *ChatHistory) loadMessages(id string, initial []db.Message) ([]db.Message, error) {
-	messages := message.CloneAll(initial)
-	if h.a.Ephemeral || id == "" {
-		return messages, nil
-	}
-	store, ok := h.a.Store.(interface {
-		Entries(string) ([]session.Record, error)
-	})
-	if !ok {
-		if defaultStore, err := db.DefaultStore(); err == nil {
-			store = defaultStore
-		}
-	}
-	if store == nil {
-		return messages, nil
-	}
-	entries, err := store.Entries(id)
-	if err != nil {
-		return messages, err
-	}
-	var full []db.Message
-	for _, record := range session.LeafPath(entries, "") {
-		switch record.Type {
-		case "", "message":
-			if record.Message.Role != "" {
-				full = append(full, record.Message)
-			}
-		case "context":
-			if len(full) == 0 {
-				full = append(full, record.Messages...)
-			}
-		}
-	}
-	if len(full) > 0 {
-		messages = full
-	}
-	return messages, nil
-}
-
-// PrintInitialHistory renders saved messages once, including pre-compaction
-// records. Subsequent scrolls use their captured display rows.
+// PrintInitialHistory loads the newest display page. Earlier turns stay on disk
+// until navigation reaches the beginning of the loaded document.
 func (h *ChatHistory) PrintInitialHistory() {
-	var transcript bytes.Buffer
-	PrintSessionHistory(&transcript, h.initial, GetConfiguredTheme(h.a.Config), h.a.Config)
-	if transcript.Len() > 0 {
-		h.BeginTurn()
-		_, _ = h.writer.Write(transcript.Bytes())
-		h.FinishTurn(h.initial)
-	}
-	h.initial = nil
 	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	h.historyStart = h.buffer.Base() + h.writer.printLine - 1
+	if h.writer.pendingLineFeed {
+		h.historyStart++
+	}
+	added := h.loadOlderLocked()
+	if added > 0 {
+		end := h.historyStart + added
+		dropped := h.buffer.FinishRestore(end)
+		h.historyStart -= dropped
+		h.top = max(0, h.top-dropped)
+		for _, turn := range h.turns {
+			turn.start -= dropped
+			turn.end -= dropped
+		}
+		end -= dropped
+		transcript := []byte(strings.Join(h.buffer.View(h.buffer.Base()), "\r\n"))
+		if end <= h.buffer.Height {
+			transcript = []byte(strings.Join(h.buffer.View(0)[:end], "\r\n"))
+		}
+		h.writer.ResetAfterReplayLocked(h.writer.height, transcript)
+	}
 	h.captureOnly = false
 	h.paintLocked()
-	TerminalMu.Unlock()
+	h.prefetchOlderLocked()
 }
 
 func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
-	messages, err := h.loadMessages(id, initial)
-	TerminalMu.Lock()
+	source, err := h.openHistory(id, initial)
 	width, height := GetTerminalSize()
-	h.drawn = nil
-	h.buffer = render.NewScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))
-	h.top = 0
+	buffer, pageErr := render.NewPagedScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))
+	if pageErr != nil {
+		if source != nil {
+			_ = source.Close()
+		}
+		return errors.Join(err, pageErr)
+	}
+	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
+	if turnErr != nil {
+		_ = buffer.Close()
+		if source != nil {
+			_ = source.Close()
+		}
+		return errors.Join(err, turnErr)
+	}
+	TerminalMu.Lock()
+	h.closePagesLocked()
+	h.drawn, h.drawnHint = nil, ""
+	h.buffer = buffer
+	h.source, h.historyErr = source, nil
+	h.turnMu.Lock()
+	h.turnFile, h.turnOffset = turnFile, 0
+	h.turnMu.Unlock()
+	h.top, h.historyStart = 0, 0
 	h.browsing = false
 	h.captureOnly = true
 	h.turns = nil
 	h.active = nil
 	h.writer.ResetAfterRedrawLocked(height)
-	h.initial = messages
 	h.sessionID = id
+	h.appearance = h.appearanceKey()
 	notice := h.notice
 	h.notice = ""
 	TerminalMu.Unlock()
@@ -167,7 +184,7 @@ func (h *ChatHistory) BeginTurn() {
 	if h.writer.pendingLineFeed {
 		start++
 	}
-	turn := &displayTurn{start: start, end: start}
+	turn := &displayTurn{start: start, end: start, appearance: h.appearanceKey()}
 	h.turns = append(h.turns, turn)
 	h.active = turn
 }
@@ -180,6 +197,10 @@ func (h *ChatHistory) FinishTurn(messages []db.Message) {
 			h.active.messages = message.CloneAll(messages)
 		}
 		h.active.end = h.buffer.Base() + h.writer.printLine
+		h.active.appearance = h.appearanceKey()
+		if err := h.archiveTurn(h.active); err != nil {
+			h.historyErr = err
+		}
 		h.active = nil
 	}
 }
@@ -189,7 +210,7 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 	if width == h.buffer.Width && bottom == h.buffer.Height {
 		return
 	}
-	var anchors []*int
+	anchors := []*int{&h.historyStart}
 	for _, turn := range h.turns {
 		anchors = append(anchors, &turn.start, &turn.end)
 	}
@@ -208,6 +229,7 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 func (h *ChatHistory) paintLocked() {
 	width, height := GetTerminalSize()
 	h.resizeLocked(width, height)
+	h.repaintTurnsLocked()
 	if !h.browsing {
 		h.top = h.buffer.Base()
 	}
@@ -217,8 +239,15 @@ func (h *ChatHistory) paintLocked() {
 	hint := ""
 	if h.browsing {
 		total := h.buffer.Base() + h.buffer.Height
-		text := fmt.Sprintf("history %d–%d / %d · End: latest · Shift+drag: select", h.top+1, min(h.top+len(rows), total), total)
+		suffix := ""
+		if h.hasOlderLocked() {
+			suffix = "+"
+		}
+		text := fmt.Sprintf("history %d–%d / %d%s · End: latest · Shift+drag: select", h.top+1, min(h.top+len(rows), total), total, suffix)
 		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateRunes(text, max(1, width-1)))
+	}
+	if err := errors.Join(h.historyErr, h.buffer.Err()); err != nil {
+		hint = style.TruncateRunes("history: "+err.Error(), max(1, width-1))
 	}
 	render.DrawChatViewport(h.reader.W, rows, h.drawn, hint, h.drawnHint)
 	h.drawn = rows
@@ -235,10 +264,13 @@ func (h *ChatHistory) queuePaintLocked() {
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
 		h.paintPending = false
+		if h.closed.Load() {
+			return
+		}
 		getUI().StateMu.Lock()
 		modal := getUI().InApprovalPrompt
 		getUI().StateMu.Unlock()
-		if !h.closed.Load() && !modal && (h.browsing || h.needsPaint) {
+		if !modal && (h.browsing || h.needsPaint) {
 			h.paintLocked()
 		}
 	})
@@ -249,7 +281,9 @@ func (h *ChatHistory) queuePaintLocked() {
 func (h *ChatHistory) RepaintTurns() {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	h.repaintTurnsLocked()
+	if len(h.turns) > 0 {
+		h.turns[len(h.turns)-1].appearance = ""
+	}
 	h.paintLocked()
 }
 
@@ -263,8 +297,23 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		h.a.CurrentStreamMu.Unlock()
 	}
 
+	changed := false
 	for i, turn := range h.turns {
-		messages := turn.messages
+		viewTop := h.top
+		if !h.browsing {
+			viewTop = h.buffer.Base()
+		}
+		if turn != h.active && (turn.end <= viewTop || turn.start >= viewTop+h.buffer.Height) {
+			continue
+		}
+		if turn.appearance == h.appearanceKey() {
+			continue
+		}
+		messages, err := h.turnMessages(turn)
+		if err != nil {
+			h.historyErr = fmt.Errorf("load display turn: %w", err)
+			continue
+		}
 		if len(messages) == 0 {
 			continue
 		}
@@ -276,10 +325,12 @@ func (h *ChatHistory) repaintTurnsLocked() {
 			}
 			replay(&out, h.a.Config.CollapseResults, theme)
 		}
+		changed = true
 		start, end := turn.start, turn.end
 		delta, padding := h.buffer.ReplaceRange(start, end, strings.TrimRight(out.String(), "\r\n"))
 		turn.start += padding
 		turn.end = end + delta + padding
+		turn.appearance = h.appearanceKey()
 		for _, earlier := range h.turns[:i] {
 			earlier.start += padding
 			earlier.end += padding
@@ -291,10 +342,14 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		if h.top >= end {
 			h.top += delta + padding
 		} else if h.top >= start {
-			h.top = start + padding
+			h.top = start + padding + min(h.top-start, max(0, turn.end-turn.start-h.buffer.Height))
 		} else {
 			h.top += padding
 		}
+	}
+	if !changed {
+		h.appearance = h.appearanceKey()
+		return
 	}
 	// The stream continues at the end of its block. Local output after a finished
 	// block stays in place and remains the writer's current tail.
@@ -391,15 +446,44 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		h.top = h.buffer.Base()
 	}
 	oldTop := h.top
+	advanced := false
+	if delta > 0 || action == "latest" || !navigation {
+		h.pendingUp = 0
+		h.pendingHome = false
+	}
+	if action == "top" || delta < 0 {
+		if h.readyPage != nil && (action == "top" || h.top+delta <= h.historyStart+h.prefetchMarginLocked()) {
+			added := h.applyOlderPageLocked()
+			oldTop += added
+			advanced = added > 0
+		}
+		if h.hasOlderLocked() && (action == "top" || h.top+delta <= h.historyStart+h.prefetchMarginLocked()) {
+			h.prefetchOlderLocked()
+		}
+	}
+	minimum := 0
+	if h.hasOlderLocked() {
+		minimum = h.historyStart
+	}
 	switch {
 	case action == "latest":
 		h.top = h.buffer.Base()
 	case action == "top":
-		h.top = 0
+		h.top = minimum
+		h.pendingUp = 0
+		h.pendingHome = h.hasOlderLocked() && !advanced
 	case delta != 0:
-		h.top = min(h.buffer.Base(), max(0, h.top+delta))
+		if delta < 0 && h.hasOlderLocked() {
+			h.pendingUp += max(0, minimum-(h.top+delta))
+		}
+		h.top = min(h.buffer.Base(), max(minimum, h.top+delta))
 	case !navigation:
 		h.top = h.buffer.Base()
+	}
+	if delta != 0 {
+		h.buffer.Prefetch(h.top, delta)
+	} else if action == "top" {
+		h.buffer.Prefetch(h.top, -1)
 	}
 	h.browsing = h.top < h.buffer.Base()
 	if h.top != oldTop {
@@ -420,6 +504,7 @@ func (h *ChatHistory) Close() {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1006l")
+	h.closePagesLocked()
 	h.a.EventSink = h.previousSink
 	if output, ok := h.writer.inner.(*historyOutput); ok && output.history == h {
 		h.writer.inner = output.destination
@@ -438,8 +523,12 @@ func (w *historyOutput) Write(data []byte) (int, error) {
 	h := w.history
 	dropped := h.buffer.Dropped()
 	h.buffer.Write(data)
+	if err := h.buffer.Err(); err != nil {
+		h.historyErr = err
+	}
 	if delta := h.buffer.Dropped() - dropped; delta > 0 {
 		h.top = max(0, h.top-delta)
+		h.historyStart = max(0, h.historyStart-delta)
 		for _, turn := range h.turns {
 			turn.start = max(0, turn.start-delta)
 			turn.end = max(0, turn.end-delta)

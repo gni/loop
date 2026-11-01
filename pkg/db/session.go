@@ -28,6 +28,7 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 	if err := os.Remove(s.sessionPath(sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete session file: %w", err)
 	}
+	delete(s.cache, sessionID)
 	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == sessionID {
 		if err := os.Remove(latestPath); err != nil && !os.IsNotExist(err) {
@@ -71,6 +72,7 @@ func (s *JSONLStore) ClearHistory() error {
 	if err := os.Remove(s.latestSessionPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove latest-session pointer: %w", err)
 	}
+	clear(s.cache)
 	return nil
 }
 
@@ -317,6 +319,8 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
 
+	delete(s.cache, oldID)
+	delete(s.cache, newID)
 	latestPath := s.latestSessionPath()
 	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == oldID {
 		if err := s.writeLatestID(newID); err != nil {
