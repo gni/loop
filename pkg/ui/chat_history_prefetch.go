@@ -16,10 +16,11 @@ type historyPageJob struct {
 }
 
 type preparedHistoryPage struct {
-	rows  *render.Scrollback
-	turns []*displayTurn
-	more  bool
-	err   error
+	rows       *render.Scrollback
+	appearance string
+	turns      []*displayTurn
+	more       bool
+	err        error
 }
 
 type historyPageWriter struct {
@@ -64,39 +65,12 @@ func (h *ChatHistory) prefetchOlderLocked() {
 		prepared := h.prepareOlderPage(job, source, page, cfg, theme, appearance)
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
-		if h.closed.Load() || h.pageJob != job {
-			if prepared.more {
-				_ = source.Close()
-			}
-			_ = page.Close()
-			return
-		}
-		h.pageJob = nil
-		if !prepared.more {
-			h.source = nil
-		}
-		if prepared.err != nil {
-			h.historyErr = prepared.err
-		}
-		if len(prepared.turns) == 0 {
-			_ = page.Close()
-		} else {
-			h.readyPage = prepared
-		}
-		applied := false
-		if h.readyPage != nil && h.browsing && (h.pendingHome || h.top <= h.historyStart+h.prefetchMarginLocked()) {
-			h.applyOlderPageLocked()
-			applied = true
-		}
-		if applied || prepared.err != nil || (!prepared.more && h.browsing) {
-			h.needsPaint = true
-			h.queuePaintLocked()
-		}
+		h.finishPreparedPageLocked(job, source, prepared)
 	}()
 }
 
 func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string) *preparedHistoryPage {
-	p := &preparedHistoryPage{rows: page, more: true}
+	p := &preparedHistoryPage{rows: page, more: true, appearance: appearance}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
@@ -186,6 +160,10 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 func (h *ChatHistory) applyOlderPageLocked() int {
 	p := h.readyPage
 	if p == nil {
+		return 0
+	}
+	if p.err == nil && p.appearance != h.appearanceKey() {
+		h.refreshStalePageLocked()
 		return 0
 	}
 	h.readyPage = nil

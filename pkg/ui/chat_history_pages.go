@@ -174,6 +174,7 @@ func (h *ChatHistory) closePagesLocked() {
 	}
 	h.pendingUp = 0
 	h.pendingHome = false
+	h.scrollDirection = 0
 	if h.source != nil {
 		_ = h.source.Close()
 		h.source = nil

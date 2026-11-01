@@ -39,6 +39,7 @@ type ChatHistory struct {
 	readyPage                                       *preparedHistoryPage
 	pendingUp                                       int
 	pendingHome                                     bool
+	scrollDirection                                 int
 	turnMu                                          sync.Mutex
 	historyStart                                    int
 	turnFile                                        *os.File
@@ -230,6 +231,7 @@ func (h *ChatHistory) paintLocked() {
 	width, height := GetTerminalSize()
 	h.resizeLocked(width, height)
 	h.repaintTurnsLocked()
+	h.refreshStalePageLocked()
 	if !h.browsing {
 		h.top = h.buffer.Base()
 	}
@@ -239,11 +241,11 @@ func (h *ChatHistory) paintLocked() {
 	hint := ""
 	if h.browsing {
 		total := h.buffer.Base() + h.buffer.Height
-		suffix := ""
+		text := fmt.Sprintf("History · lines %d–%d of %d loaded", h.top+1, min(h.top+len(rows), total), total)
 		if h.hasOlderLocked() {
-			suffix = "+"
+			text += " · more above"
 		}
-		text := fmt.Sprintf("history %d–%d / %d%s · End: latest · Shift+drag: select", h.top+1, min(h.top+len(rows), total), total, suffix)
+		text += " · End: latest · Shift+drag: select"
 		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateRunes(text, max(1, width-1)))
 	}
 	if err := errors.Join(h.historyErr, h.buffer.Err()); err != nil {
@@ -298,17 +300,26 @@ func (h *ChatHistory) repaintTurnsLocked() {
 	}
 
 	changed := false
-	for i, turn := range h.turns {
+	key := h.appearanceKey()
+	attempted := make(map[*displayTurn]bool)
+	for {
 		viewTop := h.top
 		if !h.browsing {
 			viewTop = h.buffer.Base()
 		}
-		if turn != h.active && (turn.end <= viewTop || turn.start >= viewTop+h.buffer.Height) {
-			continue
+		i := -1
+		for candidate, turn := range h.turns {
+			visible := turn == h.active || (turn.end > viewTop && turn.start < viewTop+h.buffer.Height)
+			if visible && turn.appearance != key && !attempted[turn] {
+				i = candidate
+				break
+			}
 		}
-		if turn.appearance == h.appearanceKey() {
-			continue
+		if i < 0 {
+			break
 		}
+		turn := h.turns[i]
+		attempted[turn] = true
 		messages, err := h.turnMessages(turn)
 		if err != nil {
 			h.historyErr = fmt.Errorf("load display turn: %w", err)
@@ -330,7 +341,7 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		delta, padding := h.buffer.ReplaceRange(start, end, strings.TrimRight(out.String(), "\r\n"))
 		turn.start += padding
 		turn.end = end + delta + padding
-		turn.appearance = h.appearanceKey()
+		turn.appearance = key
 		for _, earlier := range h.turns[:i] {
 			earlier.start += padding
 			earlier.end += padding
@@ -342,7 +353,12 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		if h.top >= end {
 			h.top += delta + padding
 		} else if h.top >= start {
-			h.top = start + padding + min(h.top-start, max(0, turn.end-turn.start-h.buffer.Height))
+			if h.browsing && h.scrollDirection < 0 && delta > 0 && h.top > start {
+				// Entering from below must reveal the tail of the expanded block.
+				h.top = turn.end - (end - h.top)
+			} else {
+				h.top = start + padding + min(h.top-start, max(0, turn.end-turn.start-h.buffer.Height))
+			}
 		} else {
 			h.top += padding
 		}
@@ -444,6 +460,13 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	}
 	if !h.browsing {
 		h.top = h.buffer.Base()
+	}
+	if delta < 0 {
+		h.scrollDirection = -1
+	} else if delta > 0 {
+		h.scrollDirection = 1
+	} else if action == "top" || action == "latest" || !navigation {
+		h.scrollDirection = 0
 	}
 	oldTop := h.top
 	advanced := false
