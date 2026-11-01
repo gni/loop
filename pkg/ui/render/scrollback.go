@@ -127,6 +127,9 @@ func (b *Scrollback) row() *scrollRow {
 		return nil
 	}
 	r := b.rows[b.base+b.y]
+	if r.cells == nil {
+		r.load()
+	}
 	if r.cells == nil && r.text != "" {
 		// Thaw a resized archived row only when it becomes writable again.
 		line := NewScrollback(b.Width, 1)

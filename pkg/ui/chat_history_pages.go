@@ -163,6 +163,20 @@ func (h *ChatHistory) loadOlderLocked() int {
 }
 
 func (h *ChatHistory) closePagesLocked() {
+	if h.layoutJob != nil {
+		if !h.layoutJob.cancelled {
+			close(h.layoutJob.stop)
+		}
+		h.layoutJob = nil
+	}
+	h.layoutScroll = 0
+	for _, turn := range h.turns {
+		if turn.alternate != nil {
+			_ = turn.alternate.rows.Close()
+			turn.alternate = nil
+		}
+	}
+
 	if h.pageJob != nil {
 		close(h.pageJob.stop)
 		h.pageJob = nil

@@ -140,6 +140,71 @@ func (b *Scrollback) NewHistoryPage() *Scrollback {
 	return page
 }
 
+// SnapshotHistory copies mutable row state; its owner can archive it without
+// touching the live document or a layout being restored on the terminal thread.
+func (b *Scrollback) SnapshotHistory() *Scrollback {
+	p := b.NewHistoryPage()
+	p.rows = make([]*scrollRow, len(b.rows))
+	for i, r := range b.rows {
+		copy := *r
+		copy.cells = append([]scrollCell(nil), r.cells...)
+		p.rows[i] = &copy
+	}
+	p.base = max(0, len(p.rows)-1)
+	return p
+}
+
+func (b *Scrollback) ArchiveHistory(stop <-chan struct{}) error {
+	for _, row := range b.rows {
+		select {
+		case <-stop:
+			return io.ErrClosedPipe
+		default:
+		}
+		if b.archive != nil {
+			b.archive.evict(row)
+		} else {
+			row.freeze()
+		}
+	}
+	return b.Err()
+}
+
+func (b *Scrollback) FinishTurnLayout() {
+	b.FinishHistoryPage()
+	if len(b.rows) > 1 && strings.TrimSpace(style.StripAnsi(b.rows[len(b.rows)-1].String())) == "" {
+		b.rows = b.rows[:len(b.rows)-1]
+	}
+	b.base = max(0, len(b.rows)-1)
+}
+
+// SwapHistoryRange detaches the previous rows as an alternate layout. Both
+// layouts share the append-only disk cache; no formatting happens here.
+func (b *Scrollback) SwapHistoryRange(start, end int, page *Scrollback) (old *Scrollback, delta, padding int) {
+	start = min(max(0, start), len(b.rows))
+	end = min(max(start, end), len(b.rows))
+	b.releasePage()
+	old = b.NewHistoryPage()
+	old.rows = append([]*scrollRow(nil), b.rows[start:end]...)
+	old.base = max(0, len(old.rows)-1)
+	delta = len(page.rows) - (end - start)
+	rows := make([]*scrollRow, 0, len(b.rows)+delta)
+	rows = append(rows, b.rows[:start]...)
+	rows = append(rows, page.rows...)
+	rows = append(rows, b.rows[end:]...)
+	padding = max(0, b.Height-len(rows))
+	if padding > 0 {
+		blank := make([]*scrollRow, padding)
+		for i := range blank {
+			blank[i] = &scrollRow{}
+		}
+		rows = append(blank, rows...)
+	}
+	b.rows = rows
+	b.base = max(0, len(rows)-b.Height)
+	return old, delta, padding
+}
+
 // InsertPrepared only splices already formatted rows. No message formatting or
 // disk reads happen while committing a prefetched page to the live document.
 func (b *Scrollback) InsertPrepared(at int, page *Scrollback) int {

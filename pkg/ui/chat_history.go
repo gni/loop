@@ -40,6 +40,8 @@ type ChatHistory struct {
 	pendingUp                                       int
 	pendingHome                                     bool
 	scrollDirection                                 int
+	layoutJob                                       *turnLayoutJob
+	layoutScroll                                    int
 	turnMu                                          sync.Mutex
 	historyStart                                    int
 	turnFile                                        *os.File
@@ -53,11 +55,13 @@ type ChatHistory struct {
 }
 
 type displayTurn struct {
-	start, end int
-	messages   []db.Message
-	offset     int64
-	size       int
-	appearance string
+	start, end   int
+	messages     []db.Message
+	offset       int64
+	size         int
+	appearance   string
+	alternate    *cachedTurnLayout
+	failedLayout string
 }
 
 func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *PromptPreservingWriter, id string, initial []db.Message) (*ChatHistory, error) {
@@ -211,6 +215,14 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 	if width == h.buffer.Width && bottom == h.buffer.Height {
 		return
 	}
+	if width != h.buffer.Width {
+		for _, turn := range h.turns {
+			if turn.alternate != nil {
+				_ = turn.alternate.rows.Close()
+				turn.alternate = nil
+			}
+		}
+	}
 	anchors := []*int{&h.historyStart}
 	for _, turn := range h.turns {
 		anchors = append(anchors, &turn.start, &turn.end)
@@ -255,6 +267,7 @@ func (h *ChatHistory) paintLocked() {
 	h.drawn = rows
 	h.drawnHint = hint
 	h.needsPaint = false
+	h.scheduleLayoutsLocked()
 }
 
 func (h *ChatHistory) queuePaintLocked() {
@@ -285,6 +298,7 @@ func (h *ChatHistory) RepaintTurns() {
 	defer TerminalMu.Unlock()
 	if len(h.turns) > 0 {
 		h.turns[len(h.turns)-1].appearance = ""
+		h.turns[len(h.turns)-1].failedLayout = ""
 	}
 	h.paintLocked()
 }
@@ -300,6 +314,7 @@ func (h *ChatHistory) repaintTurnsLocked() {
 	}
 
 	changed := false
+	replayedActive := false
 	key := h.appearanceKey()
 	attempted := make(map[*displayTurn]bool)
 	for {
@@ -320,6 +335,14 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		}
 		turn := h.turns[i]
 		attempted[turn] = true
+		if turn != h.active {
+			if cached := turn.alternate; cached != nil && cached.key == key && cached.rows.Width == h.buffer.Width {
+				h.restoreTurnLayoutLocked(i, cached.rows, key)
+				changed = true
+			}
+			continue
+		}
+		replayedActive = true
 		messages, err := h.turnMessages(turn)
 		if err != nil {
 			h.historyErr = fmt.Errorf("load display turn: %w", err)
@@ -365,6 +388,10 @@ func (h *ChatHistory) repaintTurnsLocked() {
 	}
 	if !changed {
 		h.appearance = h.appearanceKey()
+		return
+	}
+	if h.active != nil && !replayedActive {
+		h.appearance = key
 		return
 	}
 	// The stream continues at the end of its block. Local output after a finished
@@ -468,6 +495,9 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	} else if action == "top" || action == "latest" || !navigation {
 		h.scrollDirection = 0
 	}
+	if (delta > 0 && h.layoutScroll < 0) || (delta < 0 && h.layoutScroll > 0) {
+		h.layoutScroll = 0
+	}
 	oldTop := h.top
 	advanced := false
 	if delta > 0 || action == "latest" || !navigation {
@@ -502,6 +532,11 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		h.top = min(h.buffer.Base(), max(minimum, h.top+delta))
 	case !navigation:
 		h.top = h.buffer.Base()
+	}
+	if delta != 0 {
+		h.top = h.limitLayoutScrollLocked(oldTop, h.top)
+	} else if action == "top" || action == "latest" || !navigation {
+		h.layoutScroll = 0
 	}
 	if delta != 0 {
 		h.buffer.Prefetch(h.top, delta)
