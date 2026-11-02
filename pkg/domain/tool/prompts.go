@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 )
 
@@ -73,6 +75,7 @@ type PromptCatalog struct {
 var embeddedPromptCatalog []byte
 
 var (
+	catalogMu             sync.RWMutex
 	MasterSystemPrompts   SystemPrompts
 	MasterToolPrompts     map[string]ToolPrompt
 	MasterTemplates       PromptTemplates
@@ -85,6 +88,37 @@ func init() {
 	_ = LoadPromptCatalog("")
 }
 
+func SystemPromptsSnapshot() SystemPrompts {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	sp := MasterSystemPrompts
+	if sp.CoreRules != nil {
+		sp.CoreRules = append([]string(nil), sp.CoreRules...)
+	}
+	return sp
+}
+
+func TemplatesSnapshot() PromptTemplates {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	return MasterTemplates
+}
+
+func AgentTemplatesSnapshot() AgentToolTemplates {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	return MasterAgentTemplates
+}
+
+func ToolGuidelines(name string) []string {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	if p, ok := MasterToolPrompts[name]; ok && p.Guidelines != nil {
+		return append([]string(nil), p.Guidelines...)
+	}
+	return nil
+}
+
 func LoadPromptCatalog(path string) error {
 	customTools := make(map[string]bool)
 	catalog, err := decodeCatalog(embeddedPromptCatalog)
@@ -95,8 +129,10 @@ func LoadPromptCatalog(path string) error {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
-				applyCatalog(catalog)
+				catalogMu.Lock()
+				applyCatalogLocked(catalog)
 				customToolPrompts = customTools
+				catalogMu.Unlock()
 				return nil
 			}
 			return fmt.Errorf("failed to read prompt catalog: %w", err)
@@ -112,28 +148,30 @@ func LoadPromptCatalog(path string) error {
 		}
 		mergeCatalog(&catalog, user)
 	}
-	applyCatalog(catalog)
+	catalogMu.Lock()
+	applyCatalogLocked(catalog)
 	customToolPrompts = customTools
+	catalogMu.Unlock()
 	return nil
 }
 
 // hasToolPromptOverride protects explicit catalog instructions from compaction.
-func hasToolPromptOverride(name string) bool { return customToolPrompts[name] }
+func hasToolPromptOverride(name string) bool {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
+	return customToolPrompts[name]
+}
 
-func applyCatalog(catalog PromptCatalog) {
+func applyCatalogLocked(catalog PromptCatalog) {
 	MasterSystemPrompts = catalog.SystemPrompts
 	MasterTemplates = catalog.Templates
 	MasterAgentTemplates = catalog.AgentToolTemplates
 	MasterRuntimeMessages = catalog.RuntimeMessages
-	if MasterToolPrompts == nil {
-		MasterToolPrompts = map[string]ToolPrompt{}
-	}
-	for k := range MasterToolPrompts {
-		delete(MasterToolPrompts, k)
-	}
+	nextTools := make(map[string]ToolPrompt, len(catalog.ToolPrompts))
 	for k, v := range catalog.ToolPrompts {
-		MasterToolPrompts[k] = v
+		nextTools[k] = v
 	}
+	MasterToolPrompts = nextTools
 }
 
 func decodeCatalog(data []byte) (PromptCatalog, error) {
@@ -211,14 +249,19 @@ func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
 }
 
 func RuntimeMessage(key, fallback string) string {
-	if v := MasterRuntimeMessages[key]; v != "" {
+	catalogMu.RLock()
+	v := MasterRuntimeMessages[key]
+	catalogMu.RUnlock()
+	if v != "" {
 		return v
 	}
 	return fallback
 }
 
 func RuntimeMessagef(key, fallback string, args ...any) string {
+	catalogMu.RLock()
 	tplStr := MasterRuntimeMessages[key]
+	catalogMu.RUnlock()
 	if tplStr == "" {
 		tplStr = fallback
 	}
@@ -245,6 +288,8 @@ func DefaultPromptCatalogPath() string {
 }
 
 func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok {
 		if desc, found := p.ParamDescriptions[paramName]; found && desc != "" {
 			return desc
@@ -254,6 +299,8 @@ func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
 }
 
 func FormatToolDescription(toolName, fallbackDesc string) string {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Description != "" {
 		return p.Description
 	}
@@ -261,6 +308,8 @@ func FormatToolDescription(toolName, fallbackDesc string) string {
 }
 
 func FormatToolSnippet(toolName, fallbackSnippet string) string {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Snippet != "" {
 		return p.Snippet
 	}
@@ -268,15 +317,20 @@ func FormatToolSnippet(toolName, fallbackSnippet string) string {
 }
 
 func FormatToolGuidelines(toolName string, fallbackGuidelines []string) []string {
+	catalogMu.RLock()
+	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && len(p.Guidelines) > 0 {
-		return p.Guidelines
+		return append([]string(nil), p.Guidelines...)
 	}
 	return fallbackGuidelines
 }
 
 func FormatCoreRules(workspaceRoot string) []string {
-	rules := make([]string, 0, len(MasterSystemPrompts.CoreRules))
-	for _, r := range MasterSystemPrompts.CoreRules {
+	catalogMu.RLock()
+	coreRules := append([]string(nil), MasterSystemPrompts.CoreRules...)
+	catalogMu.RUnlock()
+	rules := make([]string, 0, len(coreRules))
+	for _, r := range coreRules {
 		if strings.Contains(r, "%s") {
 			rules = append(rules, fmt.Sprintf(r, workspaceRoot))
 		} else {
@@ -367,25 +421,96 @@ func SubstituteArgs(content string, args []string) string {
 	})
 }
 
+type cachedTemplateFile struct {
+	modTime  time.Time
+	size     int64
+	template PromptTemplate
+}
+
+type cachedTemplateDir struct {
+	dirModTime time.Time
+	checkedAt  time.Time
+	files      map[string]cachedTemplateFile
+	templates  []PromptTemplate
+}
+
+var (
+	templateCacheMu sync.Mutex
+	templateCache   = make(map[string]*cachedTemplateDir)
+)
+
 func LoadPromptTemplates(dir string) []PromptTemplate {
-	entries, err := os.ReadDir(dir)
+	if dir == "" {
+		return nil
+	}
+	cleanDir := filepath.Clean(dir)
+	now := time.Now()
+
+	templateCacheMu.Lock()
+	cached := templateCache[cleanDir]
+	if cached != nil && now.Sub(cached.checkedAt) < 500*time.Millisecond {
+		out := append([]PromptTemplate(nil), cached.templates...)
+		templateCacheMu.Unlock()
+		return out
+	}
+	templateCacheMu.Unlock()
+
+	dirInfo, err := os.Stat(cleanDir)
+	if err != nil || !dirInfo.IsDir() {
+		templateCacheMu.Lock()
+		delete(templateCache, cleanDir)
+		templateCacheMu.Unlock()
+		return nil
+	}
+
+	entries, err := os.ReadDir(cleanDir)
 	if err != nil {
 		return nil
 	}
+
+	templateCacheMu.Lock()
+	var prevFiles map[string]cachedTemplateFile
+	if existing := templateCache[cleanDir]; existing != nil {
+		prevFiles = existing.files
+	}
+	templateCacheMu.Unlock()
+
+	nextFiles := make(map[string]cachedTemplateFile, len(entries))
 	var out []PromptTemplate
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
+		path := filepath.Join(cleanDir, e.Name())
+		info, infoErr := e.Info()
+		if infoErr == nil && prevFiles != nil {
+			if prev, ok := prevFiles[e.Name()]; ok && prev.modTime.Equal(info.ModTime()) && prev.size == info.Size() {
+				nextFiles[e.Name()] = prev
+				out = append(out, prev.template)
+				continue
+			}
+		}
 		raw, err := storage.ReadFile(path, 512<<10)
 		if err != nil {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".md")
 		desc, body := parseTemplateFrontmatter(string(raw))
-		out = append(out, PromptTemplate{Name: name, Description: desc, Content: body, FilePath: path})
+		tpl := PromptTemplate{Name: name, Description: desc, Content: body, FilePath: path}
+		if infoErr == nil {
+			nextFiles[e.Name()] = cachedTemplateFile{modTime: info.ModTime(), size: info.Size(), template: tpl}
+		}
+		out = append(out, tpl)
 	}
+
+	templateCacheMu.Lock()
+	templateCache[cleanDir] = &cachedTemplateDir{
+		dirModTime: dirInfo.ModTime(),
+		checkedAt:  now,
+		files:      nextFiles,
+		templates:  append([]PromptTemplate(nil), out...),
+	}
+	templateCacheMu.Unlock()
 	return out
 }
 

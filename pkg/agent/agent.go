@@ -74,6 +74,8 @@ type Agent struct {
 	TransformContext func(context.Context, []db.Message) ([]db.Message, error)
 	RunSession       func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
 	SyncSessionState func([]db.Message, []string, string, bool) error
+	SessionMessages  func() []db.Message
+	MessagesMu       sync.RWMutex
 	Ephemeral        bool
 	ToolSelection    []string
 	Timing           *TimingRecorder
@@ -134,6 +136,7 @@ type Agent struct {
 	liveBodyStreamed       bool
 	droppedChunks          int64
 	lastTurnDropped        int64
+	emittedMemoryErrors    map[string]bool
 
 	TurnStartTime time.Time
 	CurrentLoader TurnLoader
@@ -253,10 +256,13 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 	a.ForceSystemPromptUpdate = false
 	a.stateMu.Unlock()
 
+	a.MessagesMu.Lock()
 	if len(*messages) == 0 {
 		*messages = []db.Message{{Role: "system", Content: currentSysPrompt}}
-		if sessionID != "" {
-			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: (*messages)[0]}); err != nil {
+		sysMsg := (*messages)[0]
+		a.MessagesMu.Unlock()
+		if sessionID != "" && a.HasMessages(sessionID) {
+			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: sysMsg}); err != nil {
 				a.recordPersistenceError(err)
 			}
 		}
@@ -264,12 +270,16 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 	}
 	if (*messages)[0].Role == "system" && ((*messages)[0].Content != currentSysPrompt || forceUpdate) {
 		(*messages)[0].Content = currentSysPrompt
-		if sessionID != "" {
-			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: (*messages)[0]}); err != nil {
+		sysMsg := (*messages)[0]
+		a.MessagesMu.Unlock()
+		if sessionID != "" && a.HasMessages(sessionID) {
+			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: sysMsg}); err != nil {
 				a.recordPersistenceError(err)
 			}
 		}
+		return
 	}
+	a.MessagesMu.Unlock()
 }
 
 func (a *Agent) ShouldShowThinking() bool {
@@ -441,10 +451,17 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 	}
 	a.syncOpenAIProviderLocked(cfg, true)
 
-	if a.DebugLogger != nil {
-		a.DebugLogger.Close()
+	desiredDebugPath := ResolveDebugTarget(cfg.DebugLogFile)
+	if a.GetDebugLogPath() != desiredDebugPath {
+		if a.DebugLogger != nil {
+			a.DebugLogger.Close()
+		}
+		a.DebugLogger = NewDebugLogger(a.WorkspaceRoot, cfg.DebugLogFile)
 	}
-	a.DebugLogger = NewDebugLogger(a.WorkspaceRoot, cfg.DebugLogFile)
+
+	a.stateMu.Lock()
+	a.emittedMemoryErrors = nil
+	a.stateMu.Unlock()
 
 	a.syncToolAvailability()
 	a.markSystemPromptDirty()
@@ -718,6 +735,59 @@ func (a *Agent) GetActiveSkills() []tool.Skill {
 	return out
 }
 
+func (a *Agent) HasLoadedSkills() bool {
+	if a == nil {
+		return false
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.ActiveSkills != nil
+}
+
+func (a *Agent) SetActiveSkills(skills []tool.Skill) {
+	if a == nil {
+		return
+	}
+	cloned := make([]tool.Skill, len(skills))
+	copy(cloned, skills)
+	a.stateMu.Lock()
+	a.ActiveSkills = cloned
+	a.ForceSystemPromptUpdate = true
+	a.stateMu.Unlock()
+}
+
+func (a *Agent) SessionMessagesSnapshot() ([]db.Message, bool) {
+	if a == nil || a.SessionMessages == nil {
+		return nil, false
+	}
+	return a.SessionMessages(), true
+}
+
+func (a *Agent) ConfiguredSkillDirs() []string {
+	if a == nil || a.Config == nil {
+		return nil
+	}
+	trusted := !a.Config.DisableProjectPlugins
+	dirs := SkillSearchDirsForWorkspace(a.Config.SkillsDir, a.WorkspaceRoot, trusted)
+	seen := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		seen[filepath.Clean(d)] = true
+	}
+	for _, raw := range a.Config.SkillDirectories {
+		resolved := resolveSkillDir(raw)
+		if resolved == "" {
+			continue
+		}
+		clean := filepath.Clean(resolved)
+		if seen[clean] || !a.ProjectResourceAllowed(clean) {
+			continue
+		}
+		seen[clean] = true
+		dirs = append(dirs, clean)
+	}
+	return dirs
+}
+
 func (a *Agent) ReloadSkills() []tool.Skill {
 	skills, _ := a.ReloadSkillsChecked()
 	return skills
@@ -727,20 +797,17 @@ func (a *Agent) ReloadSkillsChecked() ([]tool.Skill, error) {
 	if a == nil || a.Config == nil {
 		return a.GetActiveSkills(), nil
 	}
-	dirs := append(SkillSearchDirs(a.Config.SkillsDir, a.WorkspaceRoot), a.Config.SkillDirectories...)
+	dirs := a.ConfiguredSkillDirs()
 	if len(dirs) == 0 {
-		return a.GetActiveSkills(), nil
+		a.SetActiveSkills(nil)
+		return nil, nil
 	}
 	skills, err := LoadSkillsFromDirs(dirs...)
 	if err != nil {
 		return a.GetActiveSkills(), err
 	}
-	a.stateMu.Lock()
-	a.ActiveSkills = skills
-	a.ForceSystemPromptUpdate = true
-	out := append([]tool.Skill(nil), a.ActiveSkills...)
-	a.stateMu.Unlock()
-	return out, nil
+	a.SetActiveSkills(skills)
+	return a.GetActiveSkills(), nil
 }
 
 func (a *Agent) GetLiveWriter() io.Writer {

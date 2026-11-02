@@ -1,18 +1,13 @@
 package db
 
 import (
-	"encoding/json"
 	"os"
 	"sort"
-	"strings"
-
-	"loop/pkg/domain/message"
-	"loop/pkg/domain/session"
 )
 
-type sessionWithStart struct {
-	filePath  string
+type sessionHistoryItem struct {
 	startTime string
+	prompts   []string
 }
 
 func (s *JSONLStore) GetUserHistory() ([]string, error) {
@@ -20,10 +15,15 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
+	release, err := s.lock(false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
-	entries, err := os.ReadDir(s.dir)
+	entries, err := os.ReadDir(s.core.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -31,66 +31,35 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 		return nil, err
 	}
 
-	var files []sessionWithStart
-
+	items := make([]sessionHistoryItem, 0, len(entries))
 	for _, entry := range entries {
 		sessionID, ok := validSessionEntry(entry)
 		if !ok {
 			continue
 		}
-
-		filePath := s.sessionPath(sessionID)
-		startTime := ""
-
-		if f, err := os.Open(filePath); err == nil {
-			scanner := newJSONLScanner(f)
-			if scanner.Scan() {
-				var record session.Record
-				if json.Unmarshal(scanner.Bytes(), &record) == nil {
-					startTime = record.Timestamp
-				}
-			}
-			f.Close()
+		sum, ok := s.summarizeSessionLocked(sessionID, entry)
+		if !ok || len(sum.prompts) == 0 {
+			continue
 		}
-
-		if startTime == "" {
-			startTime = entryModTimeOrNow(entry)
-		}
-
-		files = append(files, sessionWithStart{
-			filePath:  filePath,
-			startTime: startTime,
+		items = append(items, sessionHistoryItem{
+			startTime: sum.startTime,
+			prompts:   sum.prompts,
 		})
 	}
 
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].startTime < files[j].startTime
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].startTime < items[j].startTime
 	})
 
 	var history []string
 	var lastContent string
-
-	for _, item := range files {
-		f, err := os.Open(item.filePath)
-		if err != nil {
-			continue
-		}
-
-		scanner := newJSONLScanner(f)
-		for scanner.Scan() {
-			var record session.Record
-			if err := json.Unmarshal(scanner.Bytes(), &record); err == nil {
-				msg := record.Message
-				if msg.Role == message.RoleUser && !strings.HasPrefix(strings.ToLower(msg.Content), "[user manually executed") {
-					content := strings.TrimSpace(msg.Content)
-					if content != "" && content != lastContent {
-						history = append(history, content)
-						lastContent = content
-					}
-				}
+	for _, item := range items {
+		for _, content := range item.prompts {
+			if content != "" && content != lastContent {
+				history = append(history, content)
+				lastContent = content
 			}
 		}
-		f.Close()
 	}
 
 	return history, nil

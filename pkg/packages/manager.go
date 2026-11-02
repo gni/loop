@@ -257,11 +257,17 @@ func ReadManifest(directory string) (Manifest, error) {
 	if manifest.Name == "" {
 		return manifest, fmt.Errorf("package manifest needs a name")
 	}
-	for _, paths := range [][]string{manifest.Skills, manifest.Prompts, manifest.Plugins, manifest.Extensions} {
-		for _, path := range paths {
-			if _, err := ResourcePath(directory, path); err != nil {
+	base, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return manifest, err
+	}
+	for _, group := range []*[]string{&manifest.Skills, &manifest.Prompts, &manifest.Plugins, &manifest.Extensions} {
+		for i, path := range *group {
+			resolved, err := resourcePathWithBase(base, directory, path)
+			if err != nil {
 				return manifest, err
 			}
+			(*group)[i] = resolved
 		}
 	}
 	for event := range manifest.Hooks {
@@ -271,23 +277,41 @@ func ReadManifest(directory string) (Manifest, error) {
 			return manifest, fmt.Errorf("unsupported extension event %q", event)
 		}
 	}
-	for _, path := range manifest.Hooks {
-		if _, err := ResourcePath(directory, path); err != nil {
+	for event, path := range manifest.Hooks {
+		resolved, err := resourcePathWithBase(base, directory, path)
+		if err != nil {
 			return manifest, err
 		}
+		manifest.Hooks[event] = resolved
 	}
 	return manifest, nil
 }
 
 func ResourcePath(directory, relative string) (string, error) {
-	if filepath.IsAbs(relative) {
-		return "", fmt.Errorf("package resource path must be relative")
-	}
-	path, err := filepath.EvalSymlinks(filepath.Join(directory, relative))
+	base, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return "", err
 	}
-	base, err := filepath.EvalSymlinks(directory)
+	return resourcePathWithBase(base, directory, relative)
+}
+
+func resourcePathWithBase(base, directory, relative string) (string, error) {
+	if filepath.IsAbs(relative) {
+		rel, err := filepath.Rel(base, relative)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			path, evalErr := filepath.EvalSymlinks(relative)
+			if evalErr != nil {
+				return "", evalErr
+			}
+			relResolved, relErr := filepath.Rel(base, path)
+			if relErr != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+				return "", fmt.Errorf("package resource escapes package directory")
+			}
+			return path, nil
+		}
+		return "", fmt.Errorf("package resource path must be relative")
+	}
+	path, err := filepath.EvalSymlinks(filepath.Join(directory, relative))
 	if err != nil {
 		return "", err
 	}

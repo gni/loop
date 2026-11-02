@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"loop/pkg/agent/tool"
@@ -12,7 +13,10 @@ import (
 
 type contextKey string
 
-const contextKeyGenerationDuration = contextKey("generation_duration_callback")
+const (
+	contextKeyGenerationDuration = contextKey("generation_duration_callback")
+	contextKeyChunkDropObserver  = contextKey("chunk_drop_observer")
+)
 
 type Tool = tool.Tool
 type FunctionDefinition = tool.FunctionDefinition
@@ -83,12 +87,27 @@ func (a *Agent) syncOpenAIProviderLocked(cfg *config.Config, forceReset bool) {
 		if httpClient == nil {
 			httpClient = a.HttpClient
 		}
-		a.LLMProvider = &OpenAICompatibleProvider{
+		next := &OpenAICompatibleProvider{
 			Config:            cfg,
 			HttpClient:        httpClient,
 			ChunkDropObserver: a.recordDroppedChunk,
 			ResolveCredential: a.resolveCredential,
 		}
+		if provider.Config != nil && cfg != nil &&
+			provider.Config.Endpoint == cfg.Endpoint &&
+			provider.Config.ActiveProvider == cfg.ActiveProvider &&
+			provider.Config.Model == cfg.Model {
+			provider.thinkingMu.Lock()
+			next.ThinkingSupported = provider.ThinkingSupported
+			next.ThinkingSupportChecked = provider.ThinkingSupportChecked
+			provider.thinkingMu.Unlock()
+
+			provider.ContextLimitMu.RLock()
+			next.DetectedContextLimit = provider.DetectedContextLimit
+			next.ContextLimitChecked = provider.ContextLimitChecked
+			provider.ContextLimitMu.RUnlock()
+		}
+		a.LLMProvider = next
 	}
 }
 
@@ -140,6 +159,41 @@ func (a *Agent) StreamChatCompletions(
 	msg, err := provider.StreamChatCompletions(ctxWithCallback, messages, tools, chunkChan)
 	a.SetLastGenerationDuration(generationDuration)
 	return msg, err
+}
+
+// StreamChatCompletionsIsolated executes a streaming completion with isolated
+// generation-duration and dropped-chunk accounting so concurrent subagents do
+// not overwrite the primary agent's turn metrics.
+func (a *Agent) StreamChatCompletionsIsolated(
+	ctx context.Context,
+	messages []db.Message,
+	allowlist []string,
+	chunkChan chan<- StreamChunk,
+) (*db.Message, time.Duration, int64, error) {
+	if a.TransformContext != nil {
+		transformed, err := a.TransformContext(ctx, message.CloneAll(messages))
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		messages = transformed
+	}
+	provider := a.currentLLMProvider()
+
+	var generationDuration time.Duration
+	var droppedChunks atomic.Int64
+	ctxWithCallbacks := context.WithValue(ctx, contextKeyGenerationDuration, func(d time.Duration) {
+		generationDuration = d
+	})
+	ctxWithCallbacks = context.WithValue(ctxWithCallbacks, contextKeyChunkDropObserver, ChunkDropObserver(func() {
+		droppedChunks.Add(1)
+	}))
+
+	var tools []tool.Tool
+	if a.Registry != nil && (allowlist == nil || len(allowlist) > 0) {
+		tools = a.Registry.GetAvailableTools(allowlist)
+	}
+	msg, err := provider.StreamChatCompletions(ctxWithCallbacks, messages, tools, chunkChan)
+	return msg, generationDuration, droppedChunks.Load(), err
 }
 
 func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {

@@ -38,6 +38,32 @@ type MultiAgent struct {
 
 	StreamBuffer   *bytes.Buffer
 	StreamBufferMu sync.Mutex
+
+	BashTool tool.ToolExecutor
+	TaskIDs  []string
+	TasksMu  sync.Mutex
+}
+
+func (ma *MultiAgent) RecordTask(id string) {
+	if ma == nil || id == "" {
+		return
+	}
+	ma.TasksMu.Lock()
+	ma.TaskIDs = append(ma.TaskIDs, id)
+	ma.TasksMu.Unlock()
+}
+
+func (ma *MultiAgent) KillTasks() {
+	if ma == nil || ma.BaseAgent == nil {
+		return
+	}
+	ma.TasksMu.Lock()
+	ids := append([]string(nil), ma.TaskIDs...)
+	ma.TaskIDs = nil
+	ma.TasksMu.Unlock()
+	for _, id := range ids {
+		_ = ma.BaseAgent.KillTask(id)
+	}
 }
 
 func (ma *MultiAgent) GetSystemPrompt() string {
@@ -104,6 +130,7 @@ func newMultiAgentWithSkills(
 		Subagents:    make(map[string]*MultiAgent),
 		Context:      ctx,
 		Cancel:       cancel,
+		BashTool:     tool.NewBashTool(),
 	}
 
 	sysPrompt := ma.GetSystemPrompt()

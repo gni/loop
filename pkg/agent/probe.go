@@ -17,13 +17,25 @@ func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
 }
 
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
+	p.probeMu.Lock()
+	defer p.probeMu.Unlock()
+	supported, detected := p.probeServerCapabilitiesHTTP(ctx)
 	p.thinkingMu.Lock()
-	defer p.thinkingMu.Unlock()
-	return p.checkThinkingSupportLocked(ctx)
+	p.ThinkingSupported = supported
+	p.ThinkingSupportChecked = true
+	p.thinkingMu.Unlock()
+	if detected > 0 {
+		p.ContextLimitMu.Lock()
+		p.DetectedContextLimit = detected
+		p.ContextLimitChecked = true
+		p.ContextLimitMu.Unlock()
+	}
+	return supported
 }
 
-// checkThinkingSupportLocked performs the probe assuming thinkingMu is already held.
-func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Context) bool {
+// probeServerCapabilitiesHTTP performs the /props HTTP probe without holding
+// thinkingMu or ContextLimitMu so status readers never stall on network I/O.
+func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) (bool, int) {
 	timeout := 5 * time.Second
 	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
 		timeout = time.Duration(p.Config.Timeout) * time.Second
@@ -32,11 +44,11 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 	defer cancel()
 
 	if p.Config == nil || p.Config.Endpoint == "" {
-		return false
+		return false, 0
 	}
 	base, err := url.Parse(p.Config.Endpoint)
 	if err != nil || base.Scheme == "" || base.Host == "" {
-		return false
+		return false, 0
 	}
 	// llama.cpp exposes /props at the server root, even when chat uses /v1.
 	base.Path = "/props"
@@ -47,11 +59,11 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 	base.Fragment = ""
 	req, err := http.NewRequestWithContext(checkCtx, "GET", base.String(), nil)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	req.Header.Set("loop", "v1.0.0")
-	if p.Config.ApiKey != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.Config.ApiKey))
+	if key := p.requestKey(ctx); key != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	}
 	client := p.HttpClient
 	if client == nil {
@@ -59,7 +71,7 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	defer resp.Body.Close()
 
@@ -99,28 +111,31 @@ func (p *OpenAICompatibleProvider) checkThinkingSupportLocked(ctx context.Contex
 				if detected <= 0 {
 					detected = props.DefaultGenerationSettings.MaxContext
 				}
-				if detected > 0 {
-					p.ContextLimitMu.Lock()
-					p.DetectedContextLimit = detected
-					p.ContextLimitChecked = true
-					p.ContextLimitMu.Unlock()
-				}
-				return supported
+				return supported, detected
 			}
 		}
-		return false
+		return false, 0
 	}
-	return false
+	return false, 0
 }
 
 // ProbeServerCapabilities reads explicit reasoning metadata, if present, and
 // discovers the active context window. HTTP 200 alone proves neither capability.
 func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) {
+	p.probeMu.Lock()
+	defer p.probeMu.Unlock()
+	if p.ThinkingProbeChecked() {
+		return
+	}
+	supported, detected := p.probeServerCapabilitiesHTTP(ctx)
 	p.thinkingMu.Lock()
-	p.ThinkingSupported = p.checkThinkingSupportLocked(ctx)
+	p.ThinkingSupported = supported
 	p.ThinkingSupportChecked = true
 	p.thinkingMu.Unlock()
 	p.ContextLimitMu.Lock()
+	if detected > 0 {
+		p.DetectedContextLimit = detected
+	}
 	p.ContextLimitChecked = true
 	p.ContextLimitMu.Unlock()
 }

@@ -150,6 +150,11 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 		}
 	}
 
+	activeSkills := mam.BaseAgent.GetActiveSkills()
+	if !mam.BaseAgent.HasLoadedSkills() {
+		activeSkills = mam.BaseAgent.ReloadSkills()
+	}
+
 	spawned := make(map[string]bool, len(defs))
 	spawning := make(map[string]bool, len(defs))
 
@@ -178,13 +183,15 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 		if def.InheritAllSkills != nil {
 			inheritAllSkills = *def.InheritAllSkills
 		}
-		if err := mam.spawnAgent(
+		if err := mam.spawnAgentWithSkills(
 			name,
 			def.SystemPrompt,
 			def.ParentName,
 			def.SkillNames,
 			def.LocalSkills,
 			inheritAllSkills,
+			activeSkills,
+			false,
 		); err != nil {
 			return err
 		}
@@ -219,6 +226,7 @@ func (mam *MultiAgentManager) ClearAllAgents() {
 		if ma.Cancel != nil {
 			ma.Cancel()
 		}
+		ma.KillTasks()
 	}
 	mam.Agents = make(map[string]*MultiAgent)
 	mam.ActiveAgent = nil

@@ -14,7 +14,7 @@ import (
 // sessions retain only their append cursor, avoiding a full reread per save.
 const (
 	maxCachedSessions   = 8
-	maxCachedRecords    = 500
+	maxCachedRecords    = 4096
 	maxCachedFileBytes  = 4 << 20
 	maxCachedTotalBytes = 8 << 20
 )
@@ -49,17 +49,17 @@ func cacheForEntries(info os.FileInfo, entries []session.Record) cachedEntries {
 }
 
 func (s *JSONLStore) cached(id string, info os.FileInfo) (cachedEntries, bool) {
-	c, ok := s.cache[id]
+	c, ok := s.core.cache[id]
 	if !ok {
 		return c, false
 	}
 	if c.size != info.Size() || !c.modified.Equal(info.ModTime()) {
-		delete(s.cache, id)
+		delete(s.core.cache, id)
 		return cachedEntries{}, false
 	}
-	s.cacheClock++
-	c.used = s.cacheClock
-	s.cache[id] = c
+	s.core.cacheClock++
+	c.used = s.core.cacheClock
+	s.core.cache[id] = c
 	return c, true
 }
 
@@ -68,14 +68,14 @@ func (s *JSONLStore) cacheEntries(id string, c cachedEntries) {
 		c.entries = nil
 		c.complete = false
 	}
-	s.cacheClock++
-	c.used = s.cacheClock
-	s.cache[id] = c
+	s.core.cacheClock++
+	c.used = s.core.cacheClock
+	s.core.cache[id] = c
 	for {
 		var bytes int64
 		oldest := ""
 		var used uint64
-		for key, entry := range s.cache {
+		for key, entry := range s.core.cache {
 			if entry.complete {
 				bytes += entry.size
 			}
@@ -83,10 +83,10 @@ func (s *JSONLStore) cacheEntries(id string, c cachedEntries) {
 				oldest, used = key, entry.used
 			}
 		}
-		if len(s.cache) <= maxCachedSessions && bytes <= maxCachedTotalBytes {
+		if len(s.core.cache) <= maxCachedSessions && bytes <= maxCachedTotalBytes {
 			return
 		}
-		delete(s.cache, oldest)
+		delete(s.core.cache, oldest)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
+	"loop/pkg/terminal"
 	"loop/pkg/ui"
 	"loop/pkg/ui/commands"
 	"loop/pkg/ui/interceptor"
@@ -113,16 +114,18 @@ func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader
 					default:
 					}
 					ui.GetUI().StateMu.Lock()
-					inModal := ui.GetUI().InApprovalPrompt
+					inModal := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
 					idle := ui.GetUI().ActiveCancelFunc == nil
 					ui.GetUI().StateMu.Unlock()
 					if inModal {
 						return
 					}
 					if w, h, err := term.GetSize(fd); err == nil {
-						rl.SetSize(w, h)
+						_ = rl.SetSize(w, h)
 						if idle {
-							ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+							if kiReader.IsAtMainPrompt.Load() {
+								ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+							}
 						} else {
 							ui.HandleResize(os.Stderr, a, kiReader, rl)
 							kiReader.RedrawTypeAhead()
@@ -139,23 +142,23 @@ func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader
 
 }
 
-func dispatchREPLSlashCommand(a *agent.Agent, line string, messages *[]db.Message, allowedTools []string, theme *style.UITheme, ppWriter *ui.PromptPreservingWriter, currentSessionID *string, rl *term.Terminal, mam *swarm.MultiAgentManager, kiReader *interceptor.KeyInterceptorReader) (string, bool, bool) {
+func dispatchREPLSlashCommand(a *agent.Agent, line string, messages *[]db.Message, allowedTools []string, theme *style.UITheme, ppWriter *ui.PromptPreservingWriter, currentSessionID *string, rl *term.Terminal, mam *swarm.MultiAgentManager, kiReader *interceptor.KeyInterceptorReader) (string, bool, bool, bool) {
 	trimmedLine := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmedLine, "/") || commands.IsHelpCommand(trimmedLine) {
 		parts := strings.Fields(trimmedLine)
 		if len(parts) > 0 {
-			if expanded, isTpl := commands.ExpandPromptTemplate(parts[0], strings.TrimSpace(strings.TrimPrefix(trimmedLine, parts[0]))); isTpl {
+			if expanded, isTpl := commands.ExpandPromptTemplate(a, parts[0], strings.TrimSpace(strings.TrimPrefix(trimmedLine, parts[0]))); isTpl {
 				line = expanded
-				return line, false, false
+				return line, true, false, false
 			}
 		}
 		ppWriter.BeginScrollEntry()
 		handled, quit := commands.HandleSlashCommand(a, line, messages, allowedTools, theme, ppWriter, currentSessionID, rl.History, mam, kiReader)
 		kiReader.Drain()
 		if handled {
-			return line, true, quit
+			return line, false, true, quit
 		}
 	}
 
-	return line, false, false
+	return line, false, false, false
 }

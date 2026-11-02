@@ -276,12 +276,12 @@ sequenceDiagram
 loop is extensible at runtime without recompiling the core binary.
 
 #### tools
-drop any executable script into `~/.loop/plugins/` or `<workspace>/plugins/`.
-if called with `--info`, it must return a JSON schema describing its parameters. if called normally via stdin, it executes the operation. the agent instantly gains this capability.
+drop an executable file alongside a `<name>.json` sidecar descriptor into `~/.loop/plugins/`, `<workspace>/.loop/plugins/`, or `<workspace>/plugins/`.
+the sidecar JSON file defines the tool `name`, `description`, and `parameters` JSON schema (`plugin__` is prefixed automatically when omitted). at runtime inside a trusted workspace, loop pipes the JSON tool arguments to `stdin` and captures `stdout` (10s timeout).
 
 #### slash commands
-drop any executable script into `~/.loop/extensions/`.
-when you type `/your-script` in the REPL, the script executes. loop pipes the entire conversation history into its `stdin` for custom telemetry, analytics, or state injection.
+drop an executable script into `~/.loop/extensions/`, `<workspace>/.loop/extensions/`, or `<workspace>/extensions/`.
+when you type `/your-script` in the REPL, loop pipes a JSON payload (`command`, `args`, `workspace`, and `session` history) into `stdin` and prints `stdout`. project-local extensions require workspace trust; global `~/.loop/extensions/` remain available across workspaces.
 
 ---
 

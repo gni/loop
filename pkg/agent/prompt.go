@@ -10,7 +10,7 @@ import (
 )
 
 func tpl() domaintool.PromptTemplates {
-	return domaintool.MasterTemplates
+	return domaintool.TemplatesSnapshot()
 }
 
 type SystemPromptConfig struct {
@@ -74,7 +74,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
 	userGuidelines = tool.FirstNonEmpty(userGuidelines, cfg.UserGuidelines)
-	baseInstruction = tool.FirstNonEmpty(baseInstruction, MasterSystemPrompts.DefaultIdentity)
+	baseInstruction = tool.FirstNonEmpty(baseInstruction, domaintool.SystemPromptsSnapshot().DefaultIdentity)
 
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
@@ -113,8 +113,9 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
 		}
 	}
+	agentTpl := domaintool.AgentTemplatesSnapshot()
 	for _, name := range cfg.ActiveAgents {
-		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(domaintool.MasterAgentTemplates.SubagentPrompt, name)))
+		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(agentTpl.SubagentPrompt, name)))
 	}
 	if toolLines.Len() > 0 {
 		sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))

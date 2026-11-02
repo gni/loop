@@ -54,6 +54,13 @@ func (t *bashTool) Definition() domaintool.Tool {
 }
 
 func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	if provider, ok := ctx.(interface {
+		DedicatedBashTool() domaintool.ToolExecutor
+	}); ok {
+		if dedicated := provider.DedicatedBashTool(); dedicated != nil && dedicated != t {
+			return dedicated.Execute(ctx, arguments)
+		}
+	}
 	var args struct {
 		Command    string `json:"command"`
 		Cmd        string `json:"cmd"`
@@ -140,7 +147,8 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'task_status') or stop with /stop (or 'task_kill'). Toggle live stream via Ctrl+O.", id, bgCmd), nil
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), shellTimeout(ctx))
+	timeout := shellTimeout(ctx)
+	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), timeout)
 	defer cancel()
 
 	var markerBytes [16]byte
@@ -238,7 +246,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 
 		if timeoutCtx.Err() == context.DeadlineExceeded {
-			err = fmt.Errorf("command timed out after 120 seconds. If this is a server or long-running process, use 'background: true'")
+			err = fmt.Errorf("command timed out after %d seconds. If this is a server or long-running process, use 'background: true'", max(1, int(timeout.Seconds())))
 		} else {
 			err = fmt.Errorf("command cancelled by user")
 		}
@@ -316,7 +324,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if err != nil {
-		exitDesc := FormatExitError(err, timeoutCtx)
+		exitDesc := FormatExitErrorWithTimeout(err, timeoutCtx, timeout)
 		if strings.TrimSpace(combined) == "" {
 			combined = fmt.Sprintf("%s (no output on stdout or stderr)", exitDesc)
 		} else if !strings.Contains(combined, "exit status") && !strings.Contains(combined, "exit code") {

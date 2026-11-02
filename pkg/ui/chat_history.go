@@ -15,6 +15,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -73,6 +74,9 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 		h.buffer = paged
 	}
 	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
+	if turnErr == nil && turnFile != nil {
+		_ = os.Remove(turnFile.Name())
+	}
 	h.turnFile = turnFile
 	var err error
 	h.source, err = h.openHistory(id, initial)
@@ -148,6 +152,7 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 		}
 		return errors.Join(err, turnErr)
 	}
+	_ = os.Remove(turnFile.Name())
 	TerminalMu.Lock()
 	h.closePagesLocked()
 	h.drawn, h.drawnHint = nil, ""
@@ -169,10 +174,23 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	TerminalMu.Unlock()
 	PrintBanner(h.writer, h.a)
 	if notice != "" {
-		fmt.Fprintln(h.writer, notice)
+		noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Success).Italic(true)
+		fmt.Fprintln(h.writer, noticeStyle.Render(notice))
 	}
 	h.PrintInitialHistory()
 	return err
+}
+
+func (h *ChatHistory) SetNotice(notice string) {
+	TerminalMu.Lock()
+	h.notice = notice
+	TerminalMu.Unlock()
+}
+
+func (h *ChatHistory) SetSessionID(id string) {
+	TerminalMu.Lock()
+	h.sessionID = id
+	TerminalMu.Unlock()
 }
 
 func (h *ChatHistory) appearanceKey() string {
@@ -283,7 +301,7 @@ func (h *ChatHistory) queuePaintLocked() {
 			return
 		}
 		getUI().StateMu.Lock()
-		modal := getUI().InApprovalPrompt
+		modal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 		getUI().StateMu.Unlock()
 		if !modal && (h.browsing || h.needsPaint) {
 			h.paintLocked()
@@ -424,7 +442,7 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	action := string(key)
 	mouse := strings.HasPrefix(action, "\x1b[<") || strings.HasPrefix(action, "\x1b[M")
 	getUI().StateMu.Lock()
-	modal := getUI().InApprovalPrompt
+	modal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 	getUI().StateMu.Unlock()
 	if modal || (!h.reader.ActiveTurn.Load() && !h.reader.IsAtMainPrompt.Load()) {
 		if mouse {
@@ -558,7 +576,9 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 }
 
 func (h *ChatHistory) Close() {
-	h.closed.Store(true)
+	if !h.closed.CompareAndSwap(false, true) {
+		return
+	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1006l")

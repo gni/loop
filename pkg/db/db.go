@@ -26,18 +26,55 @@ func NewUUID() string {
 	return session.NewUUID()
 }
 
+type cachedSummary struct {
+	size       int64
+	modified   time.Time
+	hasVisible bool
+	info       session.SessionInfo
+	startTime  string
+	prompts    []string
+}
+
+type storeCore struct {
+	dir          string
+	mu           sync.RWMutex
+	cache        map[string]cachedEntries
+	summaryCache map[string]cachedSummary
+	cacheClock   uint64
+}
+
+var (
+	coresMu    sync.Mutex
+	coresByDir = make(map[string]*storeCore)
+)
+
+func getOrCreateCore(cleanDir string) *storeCore {
+	coresMu.Lock()
+	defer coresMu.Unlock()
+	if existing, ok := coresByDir[cleanDir]; ok {
+		return existing
+	}
+	core := &storeCore{
+		dir:          cleanDir,
+		cache:        make(map[string]cachedEntries),
+		summaryCache: make(map[string]cachedSummary),
+	}
+	coresByDir[cleanDir] = core
+	return core
+}
+
 type JSONLStore struct {
-	dir        string
-	mu         sync.RWMutex
-	Workspace  string
-	cache      map[string]cachedEntries
-	cacheClock uint64
+	core      *storeCore
+	Workspace string
 }
 
 var _ session.Store = (*JSONLStore)(nil)
 
 func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	clean := filepath.Clean(dirPath)
+	if abs, err := filepath.Abs(clean); err == nil {
+		clean = abs
+	}
 	if err := os.MkdirAll(clean, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
@@ -48,7 +85,7 @@ func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
 		cwd = resolved
 	}
-	return &JSONLStore{dir: clean, Workspace: cwd, cache: make(map[string]cachedEntries)}, nil
+	return &JSONLStore{core: getOrCreateCore(clean), Workspace: cwd}, nil
 }
 
 func newJSONLScanner(r io.Reader) *bufio.Scanner {
@@ -65,11 +102,11 @@ func isSkippedSlashRecord(msg message.Message) bool {
 }
 
 func (s *JSONLStore) sessionPath(sessionID string) string {
-	return filepath.Join(s.dir, sessionID+".jsonl")
+	return filepath.Join(s.core.dir, sessionID+".jsonl")
 }
 
 func (s *JSONLStore) latestSessionPath() string {
-	return filepath.Join(s.dir, ".latest_session")
+	return filepath.Join(s.core.dir, ".latest_session")
 }
 
 func nowTimestamp() string {
@@ -105,7 +142,7 @@ func (s *JSONLStore) checkReady(sessionID string) error {
 			return err
 		}
 	}
-	if s == nil || s.dir == "" {
+	if s == nil || s.core == nil || s.core.dir == "" {
 		return fmt.Errorf("sessions directory not initialized")
 	}
 	return nil
@@ -147,10 +184,7 @@ func (s *JSONLStore) HasMessages(sessionID string) bool {
 	if s.checkReady(sessionID) != nil {
 		return false
 	}
-	s.mu.RLock()
 	filePath := s.sessionPath(sessionID)
-	s.mu.RUnlock()
-
 	info, err := os.Stat(filePath)
 	return err == nil && info.Size() > 0
 }
@@ -163,8 +197,8 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 	if err := s.checkReady(sessionID); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
 	release, err := s.lock(true)
 	if err != nil {
 		return err
@@ -178,7 +212,8 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 		record.ParentID = cached.lastID
 	}
 	// An interrupted append must never leave a reusable stale cache entry.
-	delete(s.cache, sessionID)
+	delete(s.core.cache, sessionID)
+	delete(s.core.summaryCache, sessionID)
 	record.ID = session.NewUUID()
 	record.Timestamp = nowTimestamp()
 	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -200,7 +235,7 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		delete(s.cache, sessionID)
+		delete(s.core.cache, sessionID)
 		return err
 	}
 	if err := s.setLatestSessionIDUnlocked(sessionID); err != nil {
@@ -229,14 +264,21 @@ var (
 	storeMu      sync.RWMutex
 )
 
+func SetDefaultStore(store *JSONLStore) {
+	if store == nil {
+		return
+	}
+	storeMu.Lock()
+	defaultStore = store
+	storeMu.Unlock()
+}
+
 func InitDB(dirPath string) error {
 	store, err := NewJSONLStore(dirPath)
 	if err != nil {
 		return err
 	}
-	storeMu.Lock()
-	defaultStore = store
-	storeMu.Unlock()
+	SetDefaultStore(store)
 	return nil
 }
 
@@ -280,5 +322,5 @@ func HasMessages(sessionID string) bool {
 }
 
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {
-	return &JSONLStore{dir: s.dir, Workspace: workspace, cache: make(map[string]cachedEntries)}
+	return &JSONLStore{core: s.core, Workspace: workspace}
 }

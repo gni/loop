@@ -148,6 +148,16 @@ func (c *mcpClient) startSSE() error {
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	c.applyHeaders(req, "")
+	if c.resolveCredential != nil {
+		key, err := c.resolveCredential(ctx)
+		if err != nil {
+			cancel()
+			return err
+		}
+		if key != "" && req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
 
 	sseClient := *c.client
 	sseClient.Timeout = 0
@@ -264,6 +274,7 @@ func (c *mcpClient) close() {
 			case <-c.processDone:
 			case <-time.After(300 * time.Millisecond):
 				_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
+				_ = c.cmd.Process.Kill()
 			}
 		}
 		if c.cancel != nil {

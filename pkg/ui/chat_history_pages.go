@@ -104,13 +104,43 @@ func (h *ChatHistory) archiveTurnTo(turn *displayTurn, file *os.File) error {
 	return nil
 }
 
+func (h *ChatHistory) readTurnMessagesFromFile(file *os.File, offset int64, size int) ([]db.Message, error) {
+	if size <= 0 {
+		return nil, nil
+	}
+	data := make([]byte, size)
+	for start := 0; start < size; {
+		end := min(size, start+64*1024)
+		h.turnMu.Lock()
+		if file == nil || h.turnFile != file {
+			h.turnMu.Unlock()
+			return nil, os.ErrClosed
+		}
+		n, err := file.ReadAt(data[start:end], offset+int64(start))
+		h.turnMu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if n != end-start {
+			return nil, io.ErrUnexpectedEOF
+		}
+		start = end
+	}
+	var messages []db.Message
+	if err := json.Unmarshal(data, &messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
 func (h *ChatHistory) turnMessages(turn *displayTurn) ([]db.Message, error) {
 	if turn.messages != nil || turn.size == 0 {
 		return turn.messages, nil
 	}
-	var messages []db.Message
-	err := json.NewDecoder(io.NewSectionReader(h.turnFile, turn.offset, int64(turn.size))).Decode(&messages)
-	return messages, err
+	h.turnMu.Lock()
+	file := h.turnFile
+	h.turnMu.Unlock()
+	return h.readTurnMessagesFromFile(file, turn.offset, turn.size)
 }
 
 // Read whole turns for correct tool/result pairing, but page their rendered

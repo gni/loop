@@ -25,6 +25,7 @@ type KeyInterceptorReader struct {
 	Theme             style.UITheme
 	W                 io.Writer
 	RL                *term.Terminal
+	DraftMu           sync.Mutex
 	CurrentInputLine  string
 	CurrentInputPos   int
 	Messages          *[]db.Message
@@ -76,6 +77,25 @@ func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
 		ki.PasteRemaining = append([]byte(nil), data[n:]...)
 	}
 	return n
+}
+
+func (ki *KeyInterceptorReader) SetPromptDraft(line string, runePos int) {
+	ki.DraftMu.Lock()
+	ki.CurrentInputLine = line
+	ki.CurrentInputPos = runePos
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) GetPromptDraft() (string, int) {
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.CurrentInputLine, ki.CurrentInputPos
+}
+
+func (ki *KeyInterceptorReader) HasPromptDraft() bool {
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.CurrentInputLine != ""
 }
 
 func drainByteChannel(ch <-chan byte) {

@@ -60,6 +60,19 @@ func (mam *MultiAgentManager) spawnAgent(
 	localSkills []tool.Skill,
 	inheritAllSkills bool,
 ) error {
+	return mam.spawnAgentWithSkills(name, systemPrompt, parentName, skillNames, localSkills, inheritAllSkills, nil, true)
+}
+
+func (mam *MultiAgentManager) spawnAgentWithSkills(
+	name string,
+	systemPrompt string,
+	parentName string,
+	skillNames []string,
+	localSkills []tool.Skill,
+	inheritAllSkills bool,
+	preloadedSkills []tool.Skill,
+	persistDef bool,
+) error {
 	mam.mu.Lock()
 	defer mam.mu.Unlock()
 
@@ -101,7 +114,10 @@ func (mam *MultiAgentManager) spawnAgent(
 		parent = p
 	}
 
-	activeSkills := mam.BaseAgent.ReloadSkills()
+	activeSkills := preloadedSkills
+	if activeSkills == nil {
+		activeSkills = mam.BaseAgent.ReloadSkills()
+	}
 
 	referenceSkills := make([]tool.Skill, 0, len(skillNames))
 	assignedNames := make(map[string]struct{})
@@ -172,8 +188,10 @@ func (mam *MultiAgentManager) spawnAgent(
 	if err := mam.LoadAgentState(ma); err != nil {
 		return fmt.Errorf("load saved state for agent '%s': %w", name, err)
 	}
-	if err := mam.saveAgentDef(ma); err != nil {
-		return fmt.Errorf("persist agent '%s': %w", name, err)
+	if persistDef {
+		if err := mam.saveAgentDef(ma); err != nil {
+			return fmt.Errorf("persist agent '%s': %w", name, err)
+		}
 	}
 
 	mam.Agents[name] = ma
@@ -192,16 +210,17 @@ func (mam *MultiAgentManager) spawnAgent(
 		parent.SubagentsMu.Unlock()
 	}
 
+	tpl := tool.AgentTemplatesSnapshot()
 	toolName := fmt.Sprintf("subagent__%s", name)
 	toolDef := tool.Tool{
 		Type: "function",
 		Function: tool.FunctionDefinition{
 			Name:        toolName,
-			Description: fmt.Sprintf(tool.MasterAgentTemplates.SubagentPrompt, name),
+			Description: fmt.Sprintf(tpl.SubagentPrompt, name),
 			Parameters: tool.JSONSchema{
 				Type: "object",
 				Properties: map[string]tool.SchemaProp{
-					"prompt": tool.StringProp(tool.MasterAgentTemplates.SubagentParamPrompt),
+					"prompt": tool.StringProp(tpl.SubagentParamPrompt),
 				},
 				Required: []string{"prompt"},
 			},
@@ -269,6 +288,7 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 	if ma.Cancel != nil {
 		ma.Cancel()
 	}
+	ma.KillTasks()
 	delete(mam.Agents, name)
 
 	if mam.BaseAgent != nil {

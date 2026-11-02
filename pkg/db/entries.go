@@ -14,13 +14,13 @@ import (
 )
 
 func (s *JSONLStore) lock(exclusive bool) (func(), error) {
-	return storage.Lock(s.dir+"/.store.lock", exclusive)
+	return storage.Lock(s.core.dir+"/.store.lock", exclusive)
 }
 
 func (s *JSONLStore) entries(id string) ([]session.Record, error) {
 	info, err := os.Stat(s.sessionPath(id))
 	if err != nil {
-		delete(s.cache, id)
+		delete(s.core.cache, id)
 		return nil, err
 	}
 	if cached, ok := s.cached(id, info); ok && cached.complete {
@@ -28,7 +28,7 @@ func (s *JSONLStore) entries(id string) ([]session.Record, error) {
 	}
 	entries, err := readEntries(s.sessionPath(id))
 	if err != nil {
-		delete(s.cache, id)
+		delete(s.core.cache, id)
 		return nil, err
 	}
 	cached := cacheForEntries(info, entries)
@@ -40,8 +40,8 @@ func (s *JSONLStore) Entries(id string) ([]session.Record, error) {
 	if err := s.checkReady(id); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
 	release, err := s.lock(false)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (s *JSONLStore) Entries(id string) ([]session.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cached, ok := s.cache[id]; !ok || !cached.complete {
+	if cached, ok := s.core.cache[id]; !ok || !cached.complete {
 		// Large reads are freshly decoded and unshared. Transfer ownership
 		// instead of allocating a second copy of the entire saved history.
 		return entries, nil
@@ -113,7 +113,7 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 	if len(data) > 64<<20 {
 		return "", fmt.Errorf("session import exceeds 64 MiB")
 	}
-	f, err := os.CreateTemp(s.dir, ".import-*")
+	f, err := os.CreateTemp(s.core.dir, ".import-*")
 	if err != nil {
 		return "", err
 	}
@@ -137,7 +137,8 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 	cwd := s.Workspace
 	if entries[0].Type == "session" {
 		original = entries[0].ID
-		cwd = entries[0].Cwd
+		// Anchor imported sessions to the active local workspace so external
+		// JSONL payloads cannot spoof or hijack another workspace's resume target.
 		entries = entries[1:]
 	}
 	header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: id, Cwd: cwd, ParentSession: original, Timestamp: nowTimestamp()}
@@ -151,8 +152,8 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 			return "", err
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
 	release, err := s.lock(true)
 	if err != nil {
 		return "", err
@@ -178,8 +179,8 @@ func (s *JSONLStore) RepairTail(id string) error {
 	if err := s.checkReady(id); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
 	release, err := s.lock(true)
 	if err != nil {
 		return err
@@ -197,7 +198,7 @@ func (s *JSONLStore) RepairTail(id string) error {
 	if end < 0 {
 		return fmt.Errorf("no valid records before damaged tail")
 	}
-	temp, err := os.CreateTemp(s.dir, ".repair-*")
+	temp, err := os.CreateTemp(s.core.dir, ".repair-*")
 	if err != nil {
 		return err
 	}
@@ -216,7 +217,8 @@ func (s *JSONLStore) RepairTail(id string) error {
 	if err := os.Rename(temp.Name(), path); err != nil {
 		return err
 	}
-	delete(s.cache, id)
+	delete(s.core.cache, id)
+	delete(s.core.summaryCache, id)
 	return nil
 }
 

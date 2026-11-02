@@ -78,15 +78,15 @@ func TrustWorkspace(configPath, workspace string, trusted bool) error {
 }
 
 func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) {
-	cfg, err := LoadConfig(path)
+	cfg, rawGlobal, err := loadConfigWithRaw(path)
 	if err != nil {
 		return nil, err
 	}
 	resolveConfigPaths(cfg, filepath.Dir(path))
 	cfg.Sources = make(map[string]string)
-	if data, readErr := os.ReadFile(path); readErr == nil {
+	if len(rawGlobal) > 0 {
 		var values map[string]any
-		if json.Unmarshal(data, &values) == nil {
+		if json.Unmarshal(rawGlobal, &values) == nil {
 			for key := range values {
 				cfg.Sources[key] = path
 			}
@@ -106,6 +106,14 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	if err != nil {
 		return nil, fmt.Errorf("read project settings: %w", err)
 	}
+	var project map[string]any
+	if err := json.Unmarshal(data, &project); err != nil {
+		return nil, fmt.Errorf("project settings: %w", err)
+	}
+	resolveProjectPaths(project, filepath.Dir(projectPath))
+	for key := range project {
+		cfg.Sources[key] = projectPath
+	}
 	baseConfig, err := Clone(cfg)
 	if err != nil {
 		return nil, err
@@ -114,16 +122,9 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	if err != nil {
 		return nil, err
 	}
-	var merged, project map[string]any
+	var merged map[string]any
 	if err := json.Unmarshal(base, &merged); err != nil {
 		return nil, err
-	}
-	if err := json.Unmarshal(data, &project); err != nil {
-		return nil, fmt.Errorf("project settings: %w", err)
-	}
-	resolveProjectPaths(project, filepath.Dir(projectPath))
-	for key := range project {
-		cfg.Sources[key] = projectPath
 	}
 	mergeObjects(merged, project)
 	encoded, err := json.Marshal(merged)
@@ -140,12 +141,23 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	if err := cfg.ActivateProvider(cfg.ActiveProvider); err != nil {
 		return nil, err
 	}
-	projectData, err := json.Marshal(project)
-	if err != nil {
-		return nil, err
+	// Preserve explicit top-level scalar overrides in .loop/config.json without
+	// clobbering deep-merged Providers or MCPServers maps.
+	if v, ok := project["endpoint"].(string); ok && strings.TrimSpace(v) != "" {
+		cfg.Endpoint = v
 	}
-	if err := json.Unmarshal(projectData, cfg); err != nil {
-		return nil, err
+	if v, ok := project["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+		if envVar, isEnv := parseEnvVarKey(v); isEnv {
+			cfg.ApiKey = os.Getenv(envVar)
+		} else {
+			cfg.ApiKey = v
+		}
+	}
+	if v, ok := project["model"].(string); ok && strings.TrimSpace(v) != "" {
+		cfg.Model = v
+	}
+	if v, ok := project["timeout"].(float64); ok && int(v) > 0 {
+		cfg.Timeout = int(v)
 	}
 	cfg.applyDefaults()
 	applyEnvironment(cfg)
@@ -168,19 +180,41 @@ func Clone(cfg *Config) (*Config, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("configuration is unavailable")
 	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
+	cloned := *cfg
+	if cfg.Nostop.IntervalSeconds != nil {
+		sec := *cfg.Nostop.IntervalSeconds
+		cloned.Nostop.IntervalSeconds = &sec
 	}
-	var cloned Config
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		return nil, err
+	cloned.Sources = cloneStringMap(cfg.Sources)
+	if cloned.Sources == nil {
+		cloned.Sources = make(map[string]string)
 	}
-	cloned.ProjectPath = cfg.ProjectPath
-	cloned.ProjectBase = cfg.ProjectBase
-	cloned.Sources = make(map[string]string, len(cfg.Sources))
-	for key, source := range cfg.Sources {
-		cloned.Sources[key] = source
+	if cfg.PluginDirectories != nil {
+		cloned.PluginDirectories = append([]string(nil), cfg.PluginDirectories...)
+	}
+	if cfg.ExtensionDirectories != nil {
+		cloned.ExtensionDirectories = append([]string(nil), cfg.ExtensionDirectories...)
+	}
+	if cfg.PromptDirectories != nil {
+		cloned.PromptDirectories = append([]string(nil), cfg.PromptDirectories...)
+	}
+	if cfg.SkillDirectories != nil {
+		cloned.SkillDirectories = append([]string(nil), cfg.SkillDirectories...)
+	}
+	if cfg.DisabledTools != nil {
+		cloned.DisabledTools = append([]string(nil), cfg.DisabledTools...)
+	}
+	if cfg.RepeatReminderThresholds != nil {
+		cloned.RepeatReminderThresholds = append([]int(nil), cfg.RepeatReminderThresholds...)
+	}
+	cloned.MCPServers = CopyMCPServers(cfg.MCPServers)
+	cloned.Providers = CopyProviders(cfg.Providers)
+	if cfg.Limits.ReasoningTokenBudgets != nil {
+		budgets := make(map[string]int, len(cfg.Limits.ReasoningTokenBudgets))
+		for k, v := range cfg.Limits.ReasoningTokenBudgets {
+			budgets[k] = v
+		}
+		cloned.Limits.ReasoningTokenBudgets = budgets
 	}
 	return &cloned, nil
 }
@@ -259,7 +293,16 @@ func saveProjectConfig(cfg *Config) error {
 	if cfg.ProjectBase == nil {
 		return fmt.Errorf("project configuration has no base settings")
 	}
-	currentData, err := json.Marshal(cfg)
+	sanitized, err := Clone(cfg)
+	if err != nil {
+		return err
+	}
+	if profile, ok := sanitized.Providers[sanitized.ActiveProvider]; ok {
+		if _, isEnv := parseEnvVarKey(profile.ApiKey); isEnv {
+			sanitized.ApiKey = profile.ApiKey
+		}
+	}
+	currentData, err := json.Marshal(sanitized)
 	if err != nil {
 		return err
 	}
@@ -276,12 +319,28 @@ func saveProjectConfig(cfg *Config) error {
 	}
 	patch := make(map[string]any)
 	for key, value := range current {
-		if !reflect.DeepEqual(value, base[key]) && key != "disable_project_plugins" {
+		if key == "disable_project_plugins" {
+			continue
+		}
+		if (key == "api_key" || key == "providers" || key == "mcp_servers") && cfg.Sources[key] != cfg.ProjectPath {
+			continue
+		}
+		if key == "api_key" {
+			if str, ok := value.(string); ok && str != "" {
+				if _, isEnv := parseEnvVarKey(str); !isEnv {
+					continue
+				}
+			}
+		}
+		if !reflect.DeepEqual(value, base[key]) {
 			patch[key] = value
 		}
 	}
 	for key := range base {
-		if _, exists := current[key]; !exists && key != "disable_project_plugins" {
+		if key == "disable_project_plugins" || key == "api_key" || key == "providers" || key == "mcp_servers" {
+			continue
+		}
+		if _, exists := current[key]; !exists {
 			patch[key] = nil
 		}
 	}

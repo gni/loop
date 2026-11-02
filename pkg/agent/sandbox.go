@@ -5,7 +5,100 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"loop/pkg/resources"
 )
+
+func resolveExistingAncestorSymlinks(cleanTarget, inputPath string) (string, error) {
+	ancestor := cleanTarget
+	for {
+		realAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
+		if resolveErr == nil {
+			rel, relErr := filepath.Rel(ancestor, cleanTarget)
+			if relErr != nil {
+				return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
+			}
+			return filepath.Clean(filepath.Join(realAncestor, rel)), nil
+		}
+		if !os.IsNotExist(resolveErr) {
+			return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, resolveErr)
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", fmt.Errorf("cannot resolve existing ancestor of '%s'", inputPath)
+		}
+		ancestor = parent
+	}
+}
+
+func (a *Agent) isProtectedRuntimePath(candidate string) error {
+	if a.ConfigPath != "" {
+		if absConfig, err := filepath.Abs(a.ConfigPath); err == nil {
+			cleanConfig := filepath.Clean(absConfig)
+			if evalCfg, evalErr := resolveExistingAncestorSymlinks(cleanConfig, cleanConfig); evalErr == nil {
+				if candidate == evalCfg || candidate == evalCfg+".lock" {
+					return fmt.Errorf("security violation: modifying the active configuration file is not allowed")
+				}
+			}
+			if candidate == cleanConfig || candidate == cleanConfig+".lock" {
+				return fmt.Errorf("security violation: modifying the active configuration file is not allowed")
+			}
+		}
+	}
+
+	var agentDirs []string
+	agentDir := resources.AgentDirectory(a.ConfigPath)
+	if agentDir != "" {
+		if absDir, err := filepath.Abs(agentDir); err == nil {
+			agentDirs = append(agentDirs, filepath.Clean(absDir))
+			if evalDir, evalErr := filepath.EvalSymlinks(absDir); evalErr == nil {
+				agentDirs = append(agentDirs, filepath.Clean(evalDir))
+			}
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		homeLoop := filepath.Clean(filepath.Join(home, ".loop"))
+		agentDirs = append(agentDirs, homeLoop)
+		if evalHomeLoop, evalErr := filepath.EvalSymlinks(homeLoop); evalErr == nil {
+			agentDirs = append(agentDirs, filepath.Clean(evalHomeLoop))
+		}
+	}
+
+	for _, dir := range agentDirs {
+		if !withinRoot(dir, candidate) {
+			continue
+		}
+		rel, err := filepath.Rel(dir, candidate)
+		if err != nil {
+			return fmt.Errorf("security violation: access to runtime state directory is not allowed")
+		}
+		top := strings.Split(filepath.ToSlash(rel), "/")[0]
+		switch top {
+		case "sessions":
+			return fmt.Errorf("security violation: modifying session database files is not allowed")
+		case "agents", "trust":
+			return fmt.Errorf("security violation: accessing runtime security or agent state is not allowed")
+		case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json":
+			return fmt.Errorf("security violation: accessing runtime credentials or configuration is not allowed")
+		}
+		if strings.HasSuffix(top, ".lock") {
+			return fmt.Errorf("security violation: accessing runtime lock files is not allowed")
+		}
+	}
+
+	parentBase := filepath.Base(filepath.Dir(candidate))
+	base := filepath.Base(candidate)
+	if parentBase == ".loop" {
+		switch base {
+		case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json":
+			return fmt.Errorf("security violation: accessing protected .loop configuration is not allowed")
+		}
+		if strings.HasSuffix(base, ".lock") {
+			return fmt.Errorf("security violation: accessing .loop lock files is not allowed")
+		}
+	}
+	return nil
+}
 
 // SafePath canonicalizes paths and enforces workspace sandbox boundary containment.
 func (a *Agent) SafePath(inputPath string) (string, error) {
@@ -39,33 +132,33 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		return cleanTarget, nil
 	}
 
-	// Surgical security checks: block modifying active configuration file or session databases
-	if a.ConfigPath != "" {
-		absConfig, errConfig := filepath.Abs(a.ConfigPath)
-		if errConfig == nil {
-			cleanConfig := filepath.Clean(absConfig)
-			if cleanTarget == cleanConfig {
-				return "", fmt.Errorf("security violation: modifying the active configuration file is not allowed")
-			}
-			cleanSessionsDir := filepath.Clean(filepath.Join(filepath.Dir(absConfig), "sessions"))
-			if cleanTarget == cleanSessionsDir || strings.HasPrefix(cleanTarget, cleanSessionsDir+string(filepath.Separator)) {
-				return "", fmt.Errorf("security violation: modifying session database files is not allowed")
-			}
-		}
+	evalTarget, err := resolveExistingAncestorSymlinks(cleanTarget, inputPath)
+	if err != nil {
+		return "", err
 	}
 
-	// Surgical allowlist: allow writing to global memory files
-	home, err := os.UserHomeDir()
-	if err == nil {
-		globalLoop := filepath.Clean(filepath.Join(home, ".loop", "LOOP.md"))
+	if err := a.isProtectedRuntimePath(cleanTarget); err != nil {
+		return "", err
+	}
+	if err := a.isProtectedRuntimePath(evalTarget); err != nil {
+		return "", err
+	}
+
+	// Surgical allowlist: allow writing to global LOOP.md only when its resolved
+	// target genuinely stays at ~/.loop/LOOP.md (never via escaping symlinks).
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+		globalLoopDir := filepath.Clean(filepath.Join(home, ".loop"))
+		globalLoop := filepath.Join(globalLoopDir, "LOOP.md")
 		if cleanTarget == globalLoop {
+			evalLoopDir := globalLoopDir
+			if resolvedDir, evalErr := resolveExistingAncestorSymlinks(globalLoopDir, globalLoopDir); evalErr == nil {
+				evalLoopDir = resolvedDir
+			}
+			if evalTarget != filepath.Join(evalLoopDir, "LOOP.md") {
+				return "", fmt.Errorf("security violation: global LOOP.md resolves via symlink outside %s", globalLoopDir)
+			}
 			return cleanTarget, nil
 		}
-	}
-
-	prefix := cleanRoot
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
 	}
 
 	if !withinRoot(cleanRoot, cleanTarget) {
@@ -75,32 +168,9 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		return "", fmt.Errorf("security violation: path '%s' escapes workspace root '%s'", inputPath, a.WorkspaceRoot)
 	}
 
-	// Resolve the closest existing ancestor, including when several parents do not
-	// exist yet. Checking only the immediate parent misses escaping symlinks.
 	evalRoot, err := filepath.EvalSymlinks(cleanRoot)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve workspace root: %w", err)
-	}
-	ancestor := cleanTarget
-	var evalTarget string
-	for {
-		realAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
-		if resolveErr == nil {
-			rel, relErr := filepath.Rel(ancestor, cleanTarget)
-			if relErr != nil {
-				return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
-			}
-			evalTarget = filepath.Clean(filepath.Join(realAncestor, rel))
-			break
-		}
-		if !os.IsNotExist(resolveErr) {
-			return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, resolveErr)
-		}
-		parent := filepath.Dir(ancestor)
-		if parent == ancestor {
-			return "", fmt.Errorf("cannot resolve existing ancestor of '%s'", inputPath)
-		}
-		ancestor = parent
 	}
 	if !withinRoot(evalRoot, evalTarget) {
 		return "", fmt.Errorf("security violation: path '%s' resolves via symlink outside workspace root '%s'", inputPath, a.WorkspaceRoot)

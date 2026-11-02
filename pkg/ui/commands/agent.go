@@ -116,6 +116,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		prompt := line[promptStart:]
 		var parentName, skillName string
 
+		activeSkills := a.GetActiveSkills()
 		for {
 			lastSpace := strings.LastIndex(prompt, " ")
 			if lastSpace == -1 {
@@ -124,7 +125,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			lastWord := strings.TrimSpace(prompt[lastSpace+1:])
 
 			isSkill := false
-			for _, s := range a.ActiveSkills {
+			for _, s := range activeSkills {
 				if s.Name == lastWord {
 					isSkill = true
 					break
@@ -267,7 +268,7 @@ func handlePluginsCommand(a *agent.Agent, theme *style.UITheme, w io.Writer) {
 }
 
 func handleExtensionsCommand(a *agent.Agent, theme *style.UITheme, w io.Writer) {
-	exts := ui.ListExtensions(a.GetWorkspaceRoot())
+	exts := ui.ListAgentExtensions(a)
 	if len(exts) == 0 {
 		fmt.Fprintln(w, "no custom slash command extensions found.")
 		return

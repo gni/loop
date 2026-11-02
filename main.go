@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	termpkg "golang.org/x/term"
 	"loop/pkg/cmd"
@@ -16,7 +17,11 @@ func main() {
 		term.RestoreCursor()
 	}
 
-	exitCode := 0
+	var (
+		exitMu    sync.Mutex
+		exitCode  int
+		shutdowns int
+	)
 
 	// Registered first so it runs last, after the terminal cleanup defers. The default
 	// lifecycle exit function calls os.Exit inside the signal path, which skips every
@@ -27,8 +32,11 @@ func main() {
 		if r := recover(); r != nil {
 			panic(r)
 		}
-		if exitCode != 0 {
-			os.Exit(exitCode)
+		exitMu.Lock()
+		code := exitCode
+		exitMu.Unlock()
+		if code != 0 {
+			os.Exit(code)
 		}
 	}()
 
@@ -44,13 +52,15 @@ func main() {
 
 	// The first shutdown only records the code so main's deferred cleanup can run. A
 	// repeated shutdown (double interrupt) still terminates the process immediately.
-	shutdowns := 0
 	supervisor.SetExitFunc(func(code int) {
+		exitMu.Lock()
 		shutdowns++
-		if shutdowns > 1 {
+		forceNow := shutdowns > 1
+		exitCode = code
+		exitMu.Unlock()
+		if forceNow {
 			os.Exit(code)
 		}
-		exitCode = code
 	})
 
 	supervisor.Start()
@@ -58,8 +68,10 @@ func main() {
 
 	if err := cmd.ExecuteContext(supervisor.Context()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		exitMu.Lock()
 		if exitCode == 0 {
 			exitCode = 1
 		}
+		exitMu.Unlock()
 	}
 }

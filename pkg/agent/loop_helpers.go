@@ -12,22 +12,30 @@ import (
 func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string) {
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
-	*messages = append(*messages, db.Message{Role: "user", Content: prompt, ContentBlocks: a.InputBlocks})
+	userMsg := db.Message{Role: "user", Content: prompt, ContentBlocks: a.InputBlocks}
+	a.MessagesMu.Lock()
+	*messages = append(*messages, userMsg)
+	var firstSys *db.Message
+	if len(*messages) > 1 && (*messages)[0].Role == "system" {
+		sysCopy := (*messages)[0]
+		firstSys = &sysCopy
+	}
+	a.MessagesMu.Unlock()
+
 	if sessionID != "" {
-		if !a.HasMessages(sessionID) && len(*messages) > 1 && (*messages)[0].Role == "system" {
-			if err := a.SaveMessage(sessionID, (*messages)[0]); err != nil {
+		if !a.HasMessages(sessionID) && firstSys != nil {
+			if err := a.SaveMessage(sessionID, *firstSys); err != nil {
 				a.recordPersistenceError(err)
 			}
 		}
-		if err := a.SaveMessage(sessionID, (*messages)[len(*messages)-1]); err != nil {
+		if err := a.SaveMessage(sessionID, userMsg); err != nil {
 			a.recordPersistenceError(err)
 		}
 	}
 
-	a.emit(Event{Type: "message_end", SessionID: sessionID, Message: &(*messages)[len(*messages)-1]})
+	a.emit(Event{Type: "message_end", SessionID: sessionID, Message: &userMsg})
 	a.InputBlocks = nil
 	a.DebugLogUserCommand(sessionID, prompt)
-
 }
 
 func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, allowlist []string, sessionID string, iter int, previousTrailingNewlines int, engine *TurnEngine, sink HistorySink, timer *TimingRecorder, w io.Writer, theme style.UITheme) (globalPromptTokensEst, effectiveLimit int, err error) {

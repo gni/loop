@@ -10,7 +10,6 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/domain/document"
 	"loop/pkg/resources"
-	"loop/pkg/storage"
 )
 
 type Skill = tool.Skill
@@ -82,13 +81,16 @@ func loadSkillsFromDirs(warnings io.Writer, dirs ...string) ([]Skill, error) {
 				fmt.Fprintf(warnings, "Warning: skipping skill %q: exceeds 512 KiB\n", path)
 				return nil
 			}
-			data, err := storage.ReadFile(path, 512<<10)
+			content, exists, err := resources.ReadCachedTextFile(path, 512<<10)
 			if err != nil {
 				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
 				return nil
 			}
+			if !exists {
+				return nil
+			}
 
-			fm, body, err := document.Frontmatter(string(data))
+			fm, body, err := document.Frontmatter(content)
 			if err != nil {
 				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
 				return nil
@@ -143,30 +145,47 @@ func loadSkillsFromDirs(warnings io.Writer, dirs ...string) ([]Skill, error) {
 }
 
 func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
+	return SkillSearchDirsForWorkspace(skillsDir, workspaceRoot, true)
+}
+
+func SkillSearchDirsForWorkspace(skillsDir, workspaceRoot string, trusted bool) []string {
 	var dirs []string
 	seen := make(map[string]bool)
-	add := func(dir string) {
-		resolved := resolveSkillDir(dir)
-		if resolved != "" && !seen[resolved] {
-			seen[resolved] = true
-			dirs = append(dirs, resolved)
+	var cleanWorkspace string
+	if workspaceRoot != "" {
+		if absWs, err := filepath.Abs(workspaceRoot); err == nil {
+			cleanWorkspace = filepath.Clean(absWs)
 		}
+	}
+	add := func(dir string, projectLocal bool) {
+		if projectLocal && !trusted {
+			return
+		}
+		resolved := resolveSkillDir(dir)
+		if resolved == "" || seen[resolved] {
+			return
+		}
+		if !trusted && cleanWorkspace != "" && withinRoot(cleanWorkspace, filepath.Clean(resolved)) {
+			return
+		}
+		seen[resolved] = true
+		dirs = append(dirs, resolved)
 	}
 
-	add(skillsDir)
-	for _, root := range []string{workspaceRoot} {
-		if root == "" {
-			continue
-		}
-		add(filepath.Join(root, "skills"))
-		add(filepath.Join(root, ".agents", "skills"))
+	if skillsDir != "" {
+		isRel := !filepath.IsAbs(skillsDir) && !strings.HasPrefix(strings.TrimSpace(skillsDir), "~/")
+		add(skillsDir, isRel)
 	}
-	for _, root := range resources.Ancestors(workspaceRoot) {
-		add(filepath.Join(root, ".agents", "skills"))
-		add(filepath.Join(root, ".loop", "skills"))
+	if trusted && workspaceRoot != "" {
+		add(filepath.Join(workspaceRoot, "skills"), true)
+		add(filepath.Join(workspaceRoot, ".agents", "skills"), true)
+		for _, root := range resources.Ancestors(workspaceRoot) {
+			add(filepath.Join(root, ".agents", "skills"), true)
+			add(filepath.Join(root, ".loop", "skills"), true)
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".agents", "skills"))
+		add(filepath.Join(home, ".agents", "skills"), false)
 	}
 	return dirs
 }

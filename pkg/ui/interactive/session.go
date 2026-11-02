@@ -3,25 +3,46 @@ package interactive
 import (
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
 
 func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
+	SetInInteractiveMenu(true)
+	defer SetInInteractiveMenu(false)
+
+	fd := int(os.Stdin.Fd())
+	if f, ok := rlInput.(*os.File); ok {
+		fd = int(f.Fd())
+	} else if f, ok := rlOutput.(*os.File); ok {
+		fd = int(f.Fd())
+	}
+	if term.IsTerminal(fd) {
+		if oldState, err := term.MakeRaw(fd); err == nil {
+			defer term.Restore(fd, oldState)
+		}
+	}
+
+	sr := NewSessionReader(rlInput)
+	defer sr.Close()
+
 	for {
 		sessions, err := db.GetSessions()
 		if err != nil {
 			return "", false, err
 		}
 
-		fmt.Fprintln(rlOutput, "\n==================================================")
-		fmt.Fprintln(rlOutput, "                 loop sessions                   ")
-		fmt.Fprintln(rlOutput, "==================================================")
+		fmt.Fprint(rlOutput, "\r\n==================================================\r\n")
+		fmt.Fprint(rlOutput, "                 loop sessions                   \r\n")
+		fmt.Fprint(rlOutput, "==================================================\r\n")
 		if len(sessions) == 0 {
-			fmt.Fprintln(rlOutput, "no past sessions found.")
+			fmt.Fprint(rlOutput, "no past sessions found.\r\n")
 		} else {
 			for i, s := range sessions {
 				preview := s.Preview
@@ -32,18 +53,18 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 				if len(timestamp) > 16 {
 					timestamp = timestamp[:16]
 				}
-				fmt.Fprintf(rlOutput, "  [%d] %s (%d messages) - %s\n", i+1, timestamp, s.MsgCount, preview)
+				fmt.Fprintf(rlOutput, "  [%d] %s (%d messages) - %s\r\n", i+1, timestamp, s.MsgCount, preview)
 			}
 		}
-		fmt.Fprintln(rlOutput, "--------------------------------------------------")
-		fmt.Fprintln(rlOutput, "options:")
-		fmt.Fprintln(rlOutput, "  <number>     : load session")
-		fmt.Fprintln(rlOutput, "  d <number>   : delete session")
-		fmt.Fprintln(rlOutput, "  n            : start a new session")
-		fmt.Fprintln(rlOutput, "  q            : cancel and return")
-		fmt.Fprint(rlOutput, "\nchoose option: ")
+		fmt.Fprint(rlOutput, "--------------------------------------------------\r\n")
+		fmt.Fprint(rlOutput, "options:\r\n")
+		fmt.Fprint(rlOutput, "  <number>     : load session\r\n")
+		fmt.Fprint(rlOutput, "  d <number>   : delete session\r\n")
+		fmt.Fprint(rlOutput, "  n            : start a new session\r\n")
+		fmt.Fprint(rlOutput, "  q            : cancel and return\r\n")
+		fmt.Fprint(rlOutput, "\r\nchoose option: ")
 
-		inputStr, err := ReadInputRaw(rlInput, rlOutput)
+		inputStr, err := ReadInputRaw(sr, rlOutput)
 		if err != nil {
 			return "", false, err
 		}
@@ -63,15 +84,15 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 			numStr := strings.TrimSpace(strings.TrimPrefix(inputStr, "d "))
 			num, err := strconv.Atoi(numStr)
 			if err != nil || num < 1 || num > len(sessions) {
-				fmt.Fprintln(rlOutput, "invalid session number to delete.")
+				fmt.Fprint(rlOutput, "invalid session number to delete.\r\n")
 				continue
 			}
 			sessionID := sessions[num-1].SessionID
 			err = db.ClearSession(sessionID)
 			if err != nil {
-				fmt.Fprintf(rlOutput, "failed to delete session: %v\n", err)
+				fmt.Fprintf(rlOutput, "failed to delete session: %v\r\n", err)
 			} else {
-				fmt.Fprintf(rlOutput, "deleted session %s successfully.\n", sessionID)
+				fmt.Fprintf(rlOutput, "deleted session %s successfully.\r\n", sessionID)
 			}
 			continue
 		}
@@ -81,6 +102,6 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 			return sessions[num-1].SessionID, false, nil
 		}
 
-		fmt.Fprintln(rlOutput, "invalid choice. please try again.")
+		fmt.Fprint(rlOutput, "invalid choice. please try again.\r\n")
 	}
 }

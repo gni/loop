@@ -51,7 +51,7 @@ func (s *CreateSubagentTool) activeSkillNames() []string {
 func (s *CreateSubagentTool) Definition() tool.Tool {
 	availableSkillNames := s.activeSkillNames()
 
-	tpl := tool.MasterAgentTemplates
+	tpl := tool.AgentTemplatesSnapshot()
 	skillNamesDescription := tpl.SkillNamesBase
 	if len(availableSkillNames) == 0 {
 		skillNamesDescription += tpl.SkillNamesNone
@@ -203,13 +203,15 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		})
 	}
 
-	err := s.mam.spawnAgent(
+	err := s.mam.spawnAgentWithSkills(
 		args.Name,
 		args.SystemPrompt,
 		parentName,
 		referenceSkillNames,
 		localSkills,
 		len(referenceSkillNames) == 0 && len(localSkills) == 0,
+		reloadedSkills,
+		true,
 	)
 	if err != nil {
 		return "", err

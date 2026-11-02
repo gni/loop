@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // NewCommand requests unbuffered child output where available. Programs that
@@ -76,8 +77,14 @@ func CleanBackgroundCommand(cmd string) string {
 
 // FormatExitError formats an execution failure with signal and status details.
 func FormatExitError(err error, timeoutCtx context.Context) string {
+	return FormatExitErrorWithTimeout(err, timeoutCtx, 120*time.Second)
+}
+
+// FormatExitErrorWithTimeout formats an execution failure using the configured timeout.
+func FormatExitErrorWithTimeout(err error, timeoutCtx context.Context, timeout time.Duration) string {
 	if timeoutCtx.Err() == context.DeadlineExceeded {
-		return "command timed out after 120 seconds. If this is a server or long-running process, use 'background: true'"
+		secs := max(1, int(timeout.Seconds()))
+		return fmt.Sprintf("command timed out after %d seconds. If this is a server or long-running process, use 'background: true'", secs)
 	} else if timeoutCtx.Err() == context.Canceled {
 		return "command cancelled by user"
 	}

@@ -28,6 +28,7 @@ var FormatToolDescription = domaintool.FormatToolDescription
 var FormatParamDescription = domaintool.FormatParamDescription
 
 var MasterAgentTemplates = domaintool.MasterAgentTemplates
+var AgentTemplatesSnapshot = domaintool.AgentTemplatesSnapshot
 var StringProp = domaintool.StringProp
 var NumberProp = domaintool.NumberProp
 

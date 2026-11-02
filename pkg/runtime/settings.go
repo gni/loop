@@ -62,6 +62,16 @@ func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools 
 
 func (s *Session) persistSettings() error { return s.persistSettingsFor(s.ID) }
 
+func (s *Session) persistSettingsIfActive() error {
+	if s.Store == nil {
+		return nil
+	}
+	if !s.Store.HasMessages(s.ID) && len(s.Agent.GetTodos()) == 0 {
+		return nil
+	}
+	return s.persistSettingsFor(s.ID)
+}
+
 func (s *Session) persistSettingsFor(id string) error {
 	if s.Store == nil {
 		return nil

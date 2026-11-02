@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 )
 
@@ -15,7 +16,7 @@ func GetPromptSymbol(_ *config.Config) string {
 	return "> "
 }
 
-func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, drawPrompt bool) {
+func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, _ *term.Terminal, drawPrompt bool) {
 	termW, height := GetTerminalSize()
 	if height <= 3 {
 		return
@@ -41,7 +42,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	}
 
 	getUI().StateMu.Lock()
-	inApproval := getUI().InApprovalPrompt
+	inApproval := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 	activeOp := getUI().ActiveCancelFunc != nil
 	getUI().StateMu.Unlock()
 
@@ -53,11 +54,8 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			inputLine = string(kiReader.TypeAheadBuffer)
 			posOffset = len([]rune(inputLine))
 			getUI().StateMu.Unlock()
-		} else if rl != nil {
-			inputLine, posOffset = getTerminalLine(rl)
 		} else if kiReader != nil {
-			inputLine = kiReader.CurrentInputLine
-			posOffset = kiReader.CurrentInputPos
+			inputLine, posOffset = kiReader.GetPromptDraft()
 		}
 		if kiReader != nil && kiReader.PastedText != "" {
 			inputLine += kiReader.PastedText

@@ -15,12 +15,19 @@ func CloneProviderConfig(cfg *config.Config) *config.Config {
 	if cfg == nil {
 		return nil
 	}
-	cloned := *cfg
-	cloned.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
-	for name, provider := range cfg.Providers {
-		cloned.Providers[name] = provider
+	cloned, err := config.Clone(cfg)
+	if err != nil || cloned == nil {
+		fallback := *cfg
+		fallback.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
+		for name, provider := range cfg.Providers {
+			fallback.Providers[name] = provider
+		}
+		return &fallback
 	}
-	return &cloned
+	if cloned.Providers == nil {
+		cloned.Providers = make(map[string]config.ProviderConfig)
+	}
+	return cloned
 }
 
 func RunInteractiveProviderConfig(
@@ -40,6 +47,9 @@ func RunInteractiveProviderConfig(
 	}
 
 	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
+		sr := NewSessionReader(rlInput)
+		defer sr.Close()
+
 		itemsProvider := func() []*settingItem {
 			var items []*settingItem
 			var pNames []string
@@ -173,7 +183,7 @@ func RunInteractiveProviderConfig(
 				onToggle: func() {
 					fmt.Fprint(rlOutput, "\r\n\r\n  === Add New Endpoint Provider ===\r\n")
 					fmt.Fprint(rlOutput, "  Provider name (e.g. brain, ollama, groq): ")
-					pName, err := ReadInputRaw(rlInput, rlOutput)
+					pName, err := ReadInputRaw(sr, rlOutput)
 					if err != nil {
 						return
 					}
@@ -182,7 +192,7 @@ func RunInteractiveProviderConfig(
 						return
 					}
 					fmt.Fprint(rlOutput, "  Base endpoint URL: ")
-					pURL, err := ReadInputRaw(rlInput, rlOutput)
+					pURL, err := ReadInputRaw(sr, rlOutput)
 					if err != nil {
 						return
 					}
@@ -191,11 +201,11 @@ func RunInteractiveProviderConfig(
 						return
 					}
 					fmt.Fprint(rlOutput, "  Model identifier (optional): ")
-					pModel, _ := ReadInputRaw(rlInput, rlOutput)
+					pModel, _ := ReadInputRaw(sr, rlOutput)
 					pModel = strings.TrimSpace(pModel)
 
 					fmt.Fprint(rlOutput, "  API key or $ENV_VAR (optional): ")
-					pKey, _ := ReadInputRaw(rlInput, rlOutput)
+					pKey, _ := ReadInputRaw(sr, rlOutput)
 					pKey = strings.TrimSpace(pKey)
 
 					if cloned.Providers == nil {
@@ -254,7 +264,7 @@ func RunInteractiveProviderConfig(
 			}
 		}
 
-		return runSettingsMenuLoop(rlInput, rlOutput, theme, "endpoint providers config", itemsProvider, extraRender)
+		return runSettingsMenuLoop(sr, rlOutput, theme, "endpoint providers config", itemsProvider, extraRender)
 	})
 	if !isTTY {
 		return cfg, nil

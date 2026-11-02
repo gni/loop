@@ -55,9 +55,10 @@ type ChoiceMenuOption struct {
 }
 
 var (
-	activeReaderMu         sync.RWMutex
-	activeReaderProvider   func() io.Reader
-	onApprovalPromptChange func(bool)
+	activeReaderMu          sync.RWMutex
+	activeReaderProvider    func() io.Reader
+	onApprovalPromptChange  func(bool)
+	onInteractiveMenuChange func(bool)
 )
 
 func SetActiveReaderProvider(provider func() io.Reader) {
@@ -79,6 +80,21 @@ func OnApprovalPromptChange(fn func(bool)) {
 	activeReaderMu.Lock()
 	defer activeReaderMu.Unlock()
 	onApprovalPromptChange = fn
+}
+
+func SetInInteractiveMenu(in bool) {
+	activeReaderMu.Lock()
+	notify := onInteractiveMenuChange
+	activeReaderMu.Unlock()
+	if notify != nil {
+		notify(in)
+	}
+}
+
+func OnInteractiveMenuChange(fn func(bool)) {
+	activeReaderMu.Lock()
+	defer activeReaderMu.Unlock()
+	onInteractiveMenuChange = fn
 }
 
 func runChoiceMenu(input io.Reader, output io.Writer, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool) {

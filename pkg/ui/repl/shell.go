@@ -16,12 +16,49 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
+
+const maxManualCommandCaptureBytes = 512 << 10
+
+type limitedCaptureBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedCaptureBuffer) Write(p []byte) (int, error) {
+	total := len(p)
+	if b.truncated || b.limit <= 0 {
+		b.truncated = true
+		return total, nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return total, nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return total, nil
+	}
+	_, _ = b.buf.Write(p)
+	return total, nil
+}
+
+func (b *limitedCaptureBuffer) SanitizedString() string {
+	out := tool.SanitizeUTF8(b.buf.Bytes())
+	if b.truncated {
+		out += "\n...[output truncated]..."
+	}
+	return out
+}
 
 func parseManualCommand(line string, enabled bool) (bool, string) {
 	line = strings.TrimSpace(line)
@@ -79,14 +116,29 @@ func executeManualShellCommand(
 
 		if err := os.Chdir(target); err != nil {
 			fmt.Fprintf(ppWriter, "cd: %v\n", err)
-		} else {
-			pwd, _ := os.Getwd()
-			a.WorkspaceRoot = pwd
-			fmt.Fprintf(ppWriter, "changed directory to: %s\n", pwd)
+			return
 		}
-		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", target)
-		*messages = append(*messages, db.Message{Role: "user", Content: contextMsg})
-		_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
+		pwd, err := os.Getwd()
+		if err != nil {
+			pwd = target
+		}
+		if resolved, evalErr := filepath.EvalSymlinks(pwd); evalErr == nil && resolved != "" {
+			pwd = resolved
+		}
+		a.WorkspaceRoot = pwd
+		if a.Config != nil {
+			trusted := config.WorkspaceTrusted(a.ConfigPath, pwd)
+			a.Config.DisableProjectPlugins = !trusted
+		}
+		fmt.Fprintf(ppWriter, "changed directory to: %s\n", pwd)
+		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", pwd)
+		msg := db.Message{Role: "user", Content: contextMsg}
+		a.MessagesMu.Lock()
+		*messages = append(*messages, msg)
+		a.MessagesMu.Unlock()
+		if !a.Ephemeral && currentSessionID != "" {
+			_ = db.SaveMessage(currentSessionID, msg)
+		}
 		return
 	}
 
@@ -130,11 +182,12 @@ func executeManualShellCommand(
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
-	var stdout, stderr bytes.Buffer
+	stdout := &limitedCaptureBuffer{limit: maxManualCommandCaptureBytes}
+	stderr := &limitedCaptureBuffer{limit: maxManualCommandCaptureBytes}
 	cw := interceptor.CRNLWriter{W: ppWriter}
 	console := render.NewShellOutputWriter(cw, cmdStr, theme)
-	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), &stdout)
-	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), &stderr)
+	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), stdout)
+	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), stderr)
 	stopIndicator := startManualCommandIndicator(theme, a.Config != nil && a.Config.ShowMicroseconds)
 	err := cmd.Run()
 	stopIndicator()
@@ -143,8 +196,8 @@ func executeManualShellCommand(
 		a.FileObservations.ForgetAll()
 	}
 
-	output := tool.SanitizeUTF8(stdout.Bytes())
-	errOutput := tool.SanitizeUTF8(stderr.Bytes())
+	output := stdout.SanitizedString()
+	errOutput := stderr.SanitizedString()
 
 	if err != nil {
 		fmt.Fprintf(ppWriter, "command failed: %v\n", err)
@@ -165,8 +218,13 @@ func executeManualShellCommand(
 	}
 
 	contextMsg := fmt.Sprintf("[user manually executed local shell command: `%s`]\n%s", cmdStr, combined)
-	*messages = append(*messages, db.Message{Role: "user", Content: contextMsg})
-	_ = db.SaveMessage(currentSessionID, (*messages)[len(*messages)-1])
+	msg := db.Message{Role: "user", Content: contextMsg}
+	a.MessagesMu.Lock()
+	*messages = append(*messages, msg)
+	a.MessagesMu.Unlock()
+	if !a.Ephemeral && currentSessionID != "" {
+		_ = db.SaveMessage(currentSessionID, msg)
+	}
 
 	ppWriter.EnsureNewline()
 }

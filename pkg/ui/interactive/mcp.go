@@ -17,12 +17,19 @@ func RunInteractiveMCPConfig(
 	rlOutput io.Writer,
 	configPath string,
 ) (*config.Config, error) {
-	cloned := *cfg
+	clonedPtr, cloneErr := config.Clone(cfg)
+	if cloneErr != nil || clonedPtr == nil {
+		return nil, fmt.Errorf("mcp configuration is unavailable")
+	}
+	cloned := *clonedPtr
 	if cloned.MCPServers == nil {
 		cloned.MCPServers = make(map[string]config.MCPServerConfig)
 	}
 
 	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
+		sr := NewSessionReader(rlInput)
+		defer sr.Close()
+
 		getFirstServer := func() string {
 			if len(cloned.MCPServers) == 0 {
 				return ""
@@ -144,14 +151,14 @@ func RunInteractiveMCPConfig(
 						onToggle: func() {
 							fmt.Fprint(rlOutput, "\r\n\r\n  === Add Header ===\r\n")
 							fmt.Fprint(rlOutput, "  Enter header name (e.g. Authorization, X-Api-Key): ")
-							hName, err := ReadInputRaw(rlInput, rlOutput)
+							hName, err := ReadInputRaw(sr, rlOutput)
 							if err != nil {
 								return
 							}
 							hName = strings.TrimSpace(hName)
 							if hName != "" {
 								fmt.Fprintf(rlOutput, "  Enter value for '%s': ", hName)
-								hVal, err := ReadInputRaw(rlInput, rlOutput)
+								hVal, err := ReadInputRaw(sr, rlOutput)
 								if err != nil {
 									return
 								}
@@ -185,14 +192,14 @@ func RunInteractiveMCPConfig(
 				onToggle: func() {
 					fmt.Fprint(rlOutput, "\r\n\r\n  === Add New MCP Server ===\r\n")
 					fmt.Fprint(rlOutput, "  Enter server name: ")
-					sName, err := ReadInputRaw(rlInput, rlOutput)
+					sName, err := ReadInputRaw(sr, rlOutput)
 					if err != nil {
 						return
 					}
 					sName = strings.TrimSpace(sName)
 					if sName != "" {
 						fmt.Fprint(rlOutput, "  Enter SSE endpoint URL: ")
-						sURL, err := ReadInputRaw(rlInput, rlOutput)
+						sURL, err := ReadInputRaw(sr, rlOutput)
 						if err != nil {
 							return
 						}
@@ -214,7 +221,7 @@ func RunInteractiveMCPConfig(
 			return items
 		}
 
-		return runSettingsMenuLoop(rlInput, rlOutput, theme, "mcp servers settings setup", itemsProvider, nil)
+		return runSettingsMenuLoop(sr, rlOutput, theme, "mcp servers settings setup", itemsProvider, nil)
 	})
 	if !isTTY {
 		return cfg, nil

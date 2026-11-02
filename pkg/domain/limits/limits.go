@@ -7,7 +7,10 @@
 // minimum.
 package limits
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Safety ceilings. These are NOT configurable: they bound whatever a config file
 // is allowed to request, so a misconfigured or hostile config cannot disable a
@@ -316,38 +319,144 @@ func clampDuration(d, min, max time.Duration) time.Duration {
 	return d
 }
 
-// Master is the live, resolved set. It starts at the compiled defaults and is
-// replaced once at startup by the config loader, mirroring the prompt catalog
-// pattern so call sites need no config plumbing.
-var Master = Defaults()
+var (
+	limitsMu sync.RWMutex
+	Master   = Defaults()
+)
+
+func cloneLimits(l Limits) Limits {
+	if l.ReasoningTokenBudgets != nil {
+		budgets := make(map[string]int, len(l.ReasoningTokenBudgets))
+		for k, v := range l.ReasoningTokenBudgets {
+			budgets[k] = v
+		}
+		l.ReasoningTokenBudgets = budgets
+	}
+	return l
+}
+
+// Current returns a thread-safe snapshot of the live resolved limits.
+func Current() Limits {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return cloneLimits(Master)
+}
 
 // Set installs a resolved set as the live limits.
-func Set(l Limits) { Master = Resolve(l) }
+func Set(l Limits) {
+	resolved := Resolve(l)
+	limitsMu.Lock()
+	Master = resolved
+	limitsMu.Unlock()
+}
 
-func GrepMaxLineLength() int { return Master.GrepMaxLineLength }
+func GrepMaxLineLength() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.GrepMaxLineLength
+}
 
-func WindowsPerTarget() int { return Master.WindowsPerTarget }
+func WindowsPerTarget() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.WindowsPerTarget
+}
 
-func MaxSupervisedTasks() int           { return Master.MaxSupervisedTasks }
-func TaskRetentionGrace() time.Duration { return Master.TaskRetentionGrace }
-func AuditTruncationChars() int         { return Master.AuditTruncationChars }
-func NameMaxLength() int                { return Master.NameMaxLength }
-func SkillDescMaxBytes() int            { return Master.SkillDescMaxBytes }
-func SkillContentMaxBytes() int         { return Master.SkillContentMaxBytes }
+func MaxSupervisedTasks() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.MaxSupervisedTasks
+}
 
-func SubagentDepth() int    { return Master.MaxSubagentDepth }
-func ConsecutiveLimit() int { return Master.ConsecutiveLimit }
-func MaxOutputLines() int   { return Master.MaxOutputLines }
-func MaxOutputBytes() int   { return Master.MaxOutputBytes }
+func TaskRetentionGrace() time.Duration {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.TaskRetentionGrace
+}
 
-func ListMaxEntries() int { return Master.ListMaxEntries }
-func ListMaxDepth() int   { return Master.ListMaxDepth }
+func AuditTruncationChars() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.AuditTruncationChars
+}
 
-func CompactionReserveTokens() int    { return Master.CompactionReserveTokens }
-func CompactionKeepRecentTokens() int { return Master.CompactionKeepRecentTokens }
+func NameMaxLength() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.NameMaxLength
+}
 
-func MCPRequestTimeout() time.Duration    { return Master.MCPRequestTimeout }
-func EscapeDisambiguation() time.Duration { return Master.EscapeDisambiguation }
+func SkillDescMaxBytes() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.SkillDescMaxBytes
+}
+
+func SkillContentMaxBytes() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.SkillContentMaxBytes
+}
+
+func SubagentDepth() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.MaxSubagentDepth
+}
+
+func ConsecutiveLimit() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.ConsecutiveLimit
+}
+
+func MaxOutputLines() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.MaxOutputLines
+}
+
+func MaxOutputBytes() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.MaxOutputBytes
+}
+
+func ListMaxEntries() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.ListMaxEntries
+}
+
+func ListMaxDepth() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.ListMaxDepth
+}
+
+func CompactionReserveTokens() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.CompactionReserveTokens
+}
+
+func CompactionKeepRecentTokens() int {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.CompactionKeepRecentTokens
+}
+
+func MCPRequestTimeout() time.Duration {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.MCPRequestTimeout
+}
+
+func EscapeDisambiguation() time.Duration {
+	limitsMu.RLock()
+	defer limitsMu.RUnlock()
+	return Master.EscapeDisambiguation
+}
 
 // ConsecutiveLimitClamped applies the guard safety bounds to a raw value, so a
 // caller that still reads a top-level config field cannot disable the guard.
@@ -361,7 +470,10 @@ func ConsecutiveLimitClamped(v int) int {
 // ReasoningBudget returns the thinking token budget for an effort level. -1
 // means unbounded. Unknown levels fall back to the low default.
 func ReasoningBudget(effort string) int {
-	if v, ok := Master.ReasoningTokenBudgets[effort]; ok && v != 0 {
+	limitsMu.RLock()
+	v, ok := Master.ReasoningTokenBudgets[effort]
+	limitsMu.RUnlock()
+	if ok && v != 0 {
 		return v
 	}
 	return DefaultReasoningBudgets()["low"]

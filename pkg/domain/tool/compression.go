@@ -48,7 +48,7 @@ var compactParameterHints = map[string]map[string]string{
 // CompactToolGuidelines omits only builtin rules already in native schemas.
 // Explicit catalog and executor guidelines remain verbatim.
 func CompactToolGuidelines(name string, guidelines []string) []string {
-	if hasToolPromptOverride(name) || !slices.Equal(guidelines, MasterToolPrompts[name].Guidelines) {
+	if hasToolPromptOverride(name) || !slices.Equal(guidelines, ToolGuidelines(name)) {
 		return guidelines
 	}
 	switch name {

@@ -28,6 +28,17 @@ func init() {
 			ui.StateMu.Unlock()
 		}
 	})
+	interactive.OnInteractiveMenuChange(func(in bool) {
+		ui := getUI()
+		if ui != nil {
+			ui.StateMu.Lock()
+			ui.InInteractiveMenu = in
+			if !in {
+				ui.LastStatusBarText = ""
+			}
+			ui.StateMu.Unlock()
+		}
+	})
 }
 
 func getInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {

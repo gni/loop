@@ -13,6 +13,21 @@ type multiAgentContext struct {
 	ma *MultiAgent
 }
 
+func (mac *multiAgentContext) DedicatedBashTool() tool.ToolExecutor {
+	if mac == nil || mac.ma == nil {
+		return nil
+	}
+	return mac.ma.BashTool
+}
+
+func (mac *multiAgentContext) SpawnTask(command string, w io.Writer) (string, error) {
+	id, err := mac.AgentContext.SpawnTask(command, w)
+	if err == nil && mac.ma != nil {
+		mac.ma.RecordTask(id)
+	}
+	return id, err
+}
+
 func (mac *multiAgentContext) IsShellExecutionAllowed() bool {
 	gate, ok := mac.AgentContext.(interface{ IsShellExecutionAllowed() bool })
 	return ok && gate.IsShellExecutionAllowed()

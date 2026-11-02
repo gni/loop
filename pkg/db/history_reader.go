@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
@@ -33,16 +34,18 @@ func (p *historyMessagesPresent) UnmarshalJSON(data []byte) error {
 // bodies. Previous reads one conversational turn from disk, newest turn first.
 // It is independent of the store's model-context projection and cache.
 type HistoryReader struct {
-	file *os.File
-	path []historySpan
+	mu    sync.Mutex
+	store *JSONLStore
+	file  *os.File
+	path  []historySpan
 }
 
 func (s *JSONLStore) OpenHistory(id string) (*HistoryReader, error) {
 	if err := s.checkReady(id); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.core.mu.RLock()
+	defer s.core.mu.RUnlock()
 	release, err := s.lock(false)
 	if err != nil {
 		return nil, err
@@ -52,7 +55,7 @@ func (s *JSONLStore) OpenHistory(id string) (*HistoryReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &HistoryReader{file: f}
+	r := &HistoryReader{store: s, file: f}
 	if err := r.index(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -125,7 +128,7 @@ func (r *HistoryReader) index() error {
 			}
 		}
 		ids[m.ID] = len(nodes)
-		nodes = append(nodes, node{m, historySpan{start, len(data), m.Message.Role, m.Type == "context"}})
+		nodes = append(nodes, node{m, historySpan{start, len(data), m.Message.Role, m.Type == "context" || m.Type == "compaction"}})
 		if m.Type != "branch" {
 			prev = m.ID
 		}
@@ -159,7 +162,7 @@ func (r *HistoryReader) index() error {
 				r.path = append(r.path, n.span)
 				hasMessages = true
 			}
-		case "context":
+		case "context", "compaction":
 			if !hasMessages {
 				r.path = append(r.path, n.span)
 				hasMessages = bool(n.Messages)
@@ -170,8 +173,17 @@ func (r *HistoryReader) index() error {
 }
 
 func (r *HistoryReader) Previous() ([]message.Message, error) {
-	if len(r.path) == 0 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.file == nil || len(r.path) == 0 {
 		return nil, io.EOF
+	}
+	if r.store != nil {
+		release, err := r.store.lock(false)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	end := len(r.path)
 	start := end - 1
@@ -198,6 +210,20 @@ func (r *HistoryReader) Previous() ([]message.Message, error) {
 	return messages, nil
 }
 
-func (r *HistoryReader) Close() error { return r.file.Close() }
+func (r *HistoryReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.file == nil {
+		return nil
+	}
+	err := r.file.Close()
+	r.file = nil
+	r.path = nil
+	return err
+}
 
-func (r *HistoryReader) HasMore() bool { return len(r.path) > 0 }
+func (r *HistoryReader) HasMore() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.file != nil && len(r.path) > 0
+}

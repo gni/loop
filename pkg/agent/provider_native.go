@@ -102,14 +102,23 @@ func (p *OpenAICompatibleProvider) api() string {
 func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []tool.Tool) (string, map[string]any, error) {
 	api := p.api()
 	base := strings.TrimRight(p.Config.Endpoint, "/")
-	tools = prepareToolDefinitions(tools, p.Config.CompactPrompt)
+	if p.Config == nil || p.Config.AutoAdaptContext {
+		messages = CompactHistoricalToolOutputs(messages)
+	}
+	messages, _ = sanitizeRequestMessages(messages)
+	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
+		tools = nil
+	} else {
+		tools = prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
+	}
 	clean, maxTokens, err := p.budgetRequest(messages, tools)
 	if err != nil {
 		return "", nil, err
 	}
 	messages = clean
 
-	payload := map[string]any{"model": p.Config.Model, "stream": true}
+	modelName := p.Config.ResolveModelAlias(p.Config.Model)
+	payload := map[string]any{"model": modelName, "stream": true}
 	var system []string
 	var turns []map[string]any
 	for _, msg := range nativeHistory(EnforceToolPairingInvariance(messages)) {
@@ -174,9 +183,9 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 					}
 				}
 				for _, call := range msg.ToolCalls {
-					var arguments any
-					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
-						return "", nil, err
+					var arguments map[string]any
+					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
+						arguments = map[string]any{"_raw_arguments": call.Function.Arguments}
 					}
 					content = append(content, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Function.Name, "input": arguments})
 				}
@@ -207,9 +216,9 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 					}
 				}
 				for _, call := range msg.ToolCalls {
-					var arguments any
-					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
-						return "", nil, err
+					var arguments map[string]any
+					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
+						arguments = map[string]any{"_raw_arguments": call.Function.Arguments}
 					}
 					part := map[string]any{"functionCall": map[string]any{"id": call.ID, "name": call.Function.Name, "args": arguments}}
 					for _, block := range msg.ContentBlocks {
@@ -320,7 +329,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 		if !strings.HasSuffix(base, "/v1beta") && !strings.HasSuffix(base, "/v1") {
 			base += "/v1beta"
 		}
-		return base + "/models/" + url.PathEscape(strings.TrimPrefix(p.Config.Model, "models/")) + ":streamGenerateContent?alt=sse", payload, nil
+		return base + "/models/" + url.PathEscape(strings.TrimPrefix(modelName, "models/")) + ":streamGenerateContent?alt=sse", payload, nil
 	}
 }
 
@@ -388,15 +397,23 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		result.CacheReadTokens = max(result.CacheReadTokens, max(usage.CacheRead, usage.Details.Cached))
 		result.CacheWriteTokens = max(result.CacheWriteTokens, usage.CacheWrite)
 	}
+	observer := p.chunkDropObserver(ctx)
+	var generationStart time.Time
 	emit := func(kind, delta string) {
+		if delta != "" && generationStart.IsZero() {
+			generationStart = time.Now()
+		}
 		if kind == "reasoning" {
 			reasoning.WriteString(delta)
 		} else {
 			text.WriteString(delta)
 		}
-		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: kind, Content: delta}, p.ChunkDropObserver)
+		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: kind, Content: delta}, observer)
 	}
 	setCall := func(index int, item nativeItem) {
+		if generationStart.IsZero() {
+			generationStart = time.Now()
+		}
 		id := item.CallID
 		if id == "" {
 			id = item.ID
@@ -407,9 +424,12 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		if item.Arguments == "" && len(item.Input) > 0 && string(item.Input) != "{}" {
 			item.Arguments = string(item.Input)
 		}
-		calls[index] = &db.ToolCall{ID: id, Type: "function", Function: db.ToolFunction{Name: item.Name, Arguments: item.Arguments}}
-		itemIndexes[item.ID] = index
-		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_name", Content: item.Name, ToolCallIndex: index}, p.ChunkDropObserver)
+		normName := tool.NormalizeName(item.Name)
+		calls[index] = &db.ToolCall{ID: id, Type: "function", Function: db.ToolFunction{Name: normName, Arguments: item.Arguments}}
+		if item.ID != "" {
+			itemIndexes[item.ID] = index
+		}
+		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: index}, observer)
 	}
 	defer func() { result.Content = text.String(); result.ReasoningContent = reasoning.String() }()
 	reader := sse.NewReader(response.Body)
@@ -483,7 +503,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 				case "input_json_delta":
 					if call := calls[event.Index]; call != nil {
 						call.Function.Arguments += delta.JSON
-						emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta.JSON, ToolCallIndex: event.Index}, p.ChunkDropObserver)
+						emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta.JSON, ToolCallIndex: event.Index}, observer)
 					}
 				}
 			case "message_delta":
@@ -512,7 +532,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					return result, fmt.Errorf("arguments for unknown tool call")
 				}
 				calls[index].Function.Arguments += delta
-				emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta, ToolCallIndex: index}, p.ChunkDropObserver)
+				emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta, ToolCallIndex: index}, observer)
 			case "response.function_call_arguments.done":
 				if index, ok := itemIndexes[event.ItemID]; ok {
 					calls[index].Function.Arguments = event.Arguments
@@ -559,14 +579,20 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 			}
 		}
 	}
-	result.Content = text.String()
+	rawText := text.String()
+	result.Content = rawText
 	result.ReasoningContent = reasoning.String()
 	for _, call := range calls {
 		if call.Function.Arguments == "" {
 			call.Function.Arguments = "{}"
 		}
 	}
-	result.ToolCalls = assembleToolCalls(calls, "", "")
+	if len(calls) > 0 {
+		result.ToolCalls = assembleToolCalls(calls, "", "")
+	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
+		result.ToolCalls = assembleToolCalls(nil, rawText, "")
+		result.Content = StripFallbackToolMarkup(rawText)
+	}
 	result.StopReason = finish
 	indexes := make([]int, 0, len(thinking))
 	for index := range thinking {
@@ -593,6 +619,13 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	if !hasUsableAssistantResponse(result) {
 		return result, ErrEmptyResponse
+	}
+	var duration time.Duration
+	if !generationStart.IsZero() {
+		duration = time.Since(generationStart)
+	}
+	if callback, ok := ctx.Value(contextKeyGenerationDuration).(func(time.Duration)); ok {
+		callback(duration)
 	}
 	return result, nil
 }

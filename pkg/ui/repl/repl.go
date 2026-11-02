@@ -14,6 +14,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
+	"loop/pkg/terminal"
 	"loop/pkg/ui"
 	"loop/pkg/ui/commands"
 	"loop/pkg/ui/interceptor"
@@ -35,10 +36,14 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	}
 
 	var messages []db.Message
-	if dbHistory, err := a.LoadSessionMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
-		messages = dbHistory
+	if snap, ok := a.SessionMessagesSnapshot(); ok && len(snap) > 0 {
+		messages = snap
+	} else {
+		if dbHistory, err := a.LoadSessionMessages(currentSessionID); err == nil && len(dbHistory) > 0 {
+			messages = dbHistory
+		}
+		a.SyncSessionSystemPrompt(&messages, currentSessionID)
 	}
-	a.SyncSessionSystemPrompt(&messages, currentSessionID)
 
 	activeTasks := a.CountActiveTasks()
 
@@ -70,14 +75,16 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		hist.Add(hLine)
 	}
 
-	mam, _ := a.MultiAgentManager.(*swarm.MultiAgentManager)
+	mam, hadMAM := a.MultiAgentManager.(*swarm.MultiAgentManager)
 	if mam == nil {
 		mam = swarm.NewMultiAgentManager(a, ppWriter, theme)
 	}
 	mam.SetOutput(ppWriter, theme)
 	a.MultiAgentManager = mam
 	a.ClearAgentsFunc = func() { mam.ClearAllAgents() }
-	_ = mam.LoadSavedAgents()
+	if !hadMAM {
+		_ = mam.LoadSavedAgents()
+	}
 
 	kiReader := &interceptor.KeyInterceptorReader{
 		R:            os.Stdin,
@@ -118,12 +125,19 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			t.SetSize(w, h)
 		}
 		t.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
-			kiReader.CurrentInputLine = line
-			kiReader.CurrentInputPos = pos
+			pos = min(max(0, pos), len(line))
+			kiReader.SetPromptDraft(line, utf8.RuneCountInString(line[:pos]))
 			if newLine, newPos, handled := handlePromptEditKey(line, pos, key, a, hist, kiReader); handled {
+				newPos = min(max(0, newPos), len(newLine))
+				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
 				return newLine, newPos, true
 			}
-			return autoCompleteCallback(line, pos, key, a)
+			newLine, newPos, completed := autoCompleteCallback(line, pos, key, a)
+			if completed {
+				newPos = min(max(0, newPos), len(newLine))
+				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
+			}
+			return newLine, newPos, completed
 		}
 		return t
 	}
@@ -181,6 +195,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			// A draft already belongs to the editor, not to paste detection.
 			// Feed it before live keys without blocking on the injection channel
 			// or turning a following Enter into part of a multiline paste.
+			kiReader.SetPromptDraft("", 0)
 			if len(uncommitted) > 0 {
 				kiReader.PastedLiterals = pastes
 				kiReader.PasteRemaining = append(kiReader.QueuePromptPaste(string(uncommitted)), kiReader.PasteRemaining...)
@@ -205,6 +220,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			kiReader.IsAtMainPrompt.Store(true)
 			line, err = rl.ReadLine()
 			kiReader.IsAtMainPrompt.Store(false)
+			kiReader.SetPromptDraft("", 0)
 			fmt.Fprint(os.Stderr, "\x1b[?2004l")
 			term.Restore(fd, oldState)
 		}
@@ -251,7 +267,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			if kiReader.CtrlCInterrupted {
 				ui.GetUI().ClearPromptHint()
 				kiReader.CtrlCInterrupted = false
-				kiReader.CurrentInputLine = ""
+				kiReader.SetPromptDraft("", 0)
 				kiReader.PastedText = ""
 				kiReader.PastedCodeBlocks = nil
 				ui.GetUI().StateMu.Lock()
@@ -282,7 +298,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 
 		ui.GetUI().ClearPromptHint()
-		kiReader.CurrentInputLine = ""
+		kiReader.SetPromptDraft("", 0)
 		line = hist.GetFull(line)
 		commandLine := line
 		if source, pasted := interceptor.PastedInputSource(line, kiReader.PastedLiterals); pasted {
@@ -320,41 +336,37 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			continue
 		}
 
-		handled, quit := false, false
+		preExpanded, handled, quit := false, false, false
+		prevSessionID := currentSessionID
+		_ = ui.ConsumeSessionReloaded()
 		if attachmentSource == nil || strings.HasPrefix(strings.TrimSpace(commandLine), "/") || commands.IsHelpCommand(commandLine) {
-			line, handled, quit = dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl, mam, kiReader)
+			line, preExpanded, handled, quit = dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl, mam, kiReader)
 		}
 		if handled {
 			if quit {
 				break
 			}
-			command := strings.Fields(strings.TrimSpace(line))
-			if len(command) > 0 {
-				resetHistory := false
-				switch command[0] {
-				case "/clear", "/clean", "/reset", "/rewind":
-					resetHistory = true
-				case "/session", "/sessions":
-					if len(command) > 1 {
-						switch command[1] {
-						case "new", "load", "branch", "clear":
-							resetHistory = true
-						}
+			if ui.ConsumeSessionReloaded() {
+				if a.SyncSessionState != nil {
+					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, false); err != nil {
+						fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
 					}
+					theme = ui.GetConfiguredTheme(a.Config)
+					kiReader.Theme = theme
 				}
-				if resetHistory {
-					if a.SyncSessionState != nil {
-						inherit := len(command) > 1 && (command[0] == "/session" || command[0] == "/sessions") && command[1] == "branch"
-						if err := a.SyncSessionState(messages, allowedTools, currentSessionID, inherit); err != nil {
-							fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
-						}
-						theme = ui.GetConfiguredTheme(a.Config)
-						kiReader.Theme = theme
-					}
-					if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
-						fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
-					}
+				if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
+					fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
 				}
+				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
+			} else if currentSessionID != prevSessionID {
+				if a.SyncSessionState != nil {
+					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, true); err != nil {
+						fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
+					}
+					theme = ui.GetConfiguredTheme(a.Config)
+					kiReader.Theme = theme
+				}
+				chatHistory.SetSessionID(currentSessionID)
 			}
 			continue
 		}
@@ -365,7 +377,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		// history and the current inference form one consistent frame.
 		a.OnStreamProgress = func() bool {
 			ui.GetUI().StateMu.Lock()
-			inModal := ui.GetUI().InApprovalPrompt
+			inModal := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
 			ui.GetUI().StateMu.Unlock()
 			if inModal {
 				return false
@@ -387,7 +399,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 		}
 		chatHistory.BeginTurn()
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
-		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader, attachmentSource, fromQueue)
+		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader, attachmentSource, preExpanded, fromQueue)
 		a.OnStreamProgress = nil
 		kiReader.ActiveTurn.Store(false)
 		chatHistory.FinishTurn(nil)

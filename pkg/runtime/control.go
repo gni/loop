@@ -97,5 +97,5 @@ func (s *Session) SyncInteractive(messages []db.Message, tools []string, id stri
 	s.mu.Lock()
 	s.view = message.CloneAll(s.messages)
 	s.mu.Unlock()
-	return s.persistSettings()
+	return s.persistSettingsIfActive()
 }

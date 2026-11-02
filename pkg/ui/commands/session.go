@@ -45,9 +45,13 @@ func handleClearCommand(
 		fmt.Fprintf(w, "cannot clear plan: %v\n", err)
 		return
 	}
+	a.MessagesMu.Lock()
 	*messages = freshMessages
+	a.MessagesMu.Unlock()
 	a.SyncSessionSystemPrompt(messages, "")
+	ui.GetUI().StateMu.Lock()
 	ui.GetUI().LastStatsText = ""
+	ui.GetUI().StateMu.Unlock()
 	a.ClearTasks()
 	resetSessionSnapshots(a)
 	if ch, ok := rlHistory.(interface{ Clear() }); ok {
@@ -69,7 +73,13 @@ func handleClearCommand(
 	a.CurrentStreamBuffer = nil
 	a.CurrentStreamMu.Unlock()
 
-	ui.RedrawScreenWithNotice(w, a, kiReader, terminalFromReader(kiReader), "conversation cleared and started a new one.")
+	const clearNotice = "conversation cleared and started a new one."
+	if history := ui.GetUI().ChatHistory; history != nil {
+		history.SetNotice(clearNotice)
+		ui.MarkSessionReloaded()
+		return
+	}
+	ui.RedrawScreenWithNotice(w, a, kiReader, terminalFromReader(kiReader), clearNotice)
 }
 
 func handleSessionCommand(
@@ -85,10 +95,15 @@ func handleSessionCommand(
 	if a.Ephemeral && len(parts) > 1 {
 		switch parts[1] {
 		case "new", "clear":
+			a.MessagesMu.Lock()
 			*messages = nil
+			a.MessagesMu.Unlock()
 			*currentSessionID = ""
 			a.SyncSessionSystemPrompt(messages, "")
 			_ = a.SetTodos(nil)
+			if ui.GetUI().ChatHistory != nil {
+				ui.MarkSessionReloaded()
+			}
 		default:
 			fmt.Fprintln(w, "this conversation is ephemeral; persistent session operations require a saved session")
 		}
@@ -101,15 +116,23 @@ func handleSessionCommand(
 		if err := db.SetLatestSessionID(nextID); err != nil {
 			return fmt.Errorf("activate new session: %w", err)
 		}
+		ui.GetUI().StateMu.Lock()
 		ui.GetUI().LastStatsText = ""
+		ui.GetUI().StateMu.Unlock()
 		resetSessionSnapshots(a)
 		*currentSessionID = nextID
+		a.MessagesMu.Lock()
 		*messages = nil
+		a.MessagesMu.Unlock()
 		a.SyncSessionSystemPrompt(messages, "")
 		return nil
 	}
 
 	refreshSessionUI := func() {
+		if ui.GetUI().ChatHistory != nil {
+			ui.MarkSessionReloaded()
+			return
+		}
 		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
 	}
 
@@ -206,19 +229,27 @@ func handleSessionCommand(
 				fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, err)
 				return
 			}
-			ui.RedrawScreen(w, a, kiReader, rl)
+			if ui.GetUI().ChatHistory != nil {
+				ui.MarkSessionReloaded()
+			} else {
+				ui.RedrawScreen(w, a, kiReader, rl)
+			}
 			return
 		}
 
 		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
 		defer cleanup()
 
+		ui.ShutdownStatusBar(os.Stderr)
 		selected, startNew, err := interactive.RunSessionExplorer(*theme, input, output)
 		ui.InitStatusBar(os.Stderr)
+		sessionChanged := false
 		if err == nil {
 			if startNew {
 				if newErr := resetToFreshSession(); newErr != nil {
 					fmt.Fprintf(w, "cannot create session: %v\n", newErr)
+				} else {
+					sessionChanged = true
 				}
 			} else if selected != "" {
 				dbHistory, loadErr := db.LoadMessages(selected)
@@ -230,11 +261,21 @@ func handleSessionCommand(
 				default:
 					if activateErr := applyLoadedSession(selected, dbHistory, currentSessionID, messages, a); activateErr != nil {
 						fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, activateErr)
+					} else {
+						sessionChanged = true
 					}
 				}
 			}
 		}
-		ui.RedrawScreen(w, a, kiReader, rl)
+		if sessionChanged {
+			if ui.GetUI().ChatHistory != nil {
+				ui.MarkSessionReloaded()
+			} else {
+				ui.RedrawScreen(w, a, kiReader, rl)
+			}
+		} else {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+		}
 
 	case "clear":
 		if err := db.ClearHistory(); err != nil {
@@ -273,10 +314,14 @@ func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionI
 	if err := db.SetLatestSessionID(selected); err != nil {
 		return err
 	}
+	ui.GetUI().StateMu.Lock()
 	ui.GetUI().LastStatsText = ""
+	ui.GetUI().StateMu.Unlock()
 	resetSessionSnapshots(a)
 	*currentSessionID = selected
+	a.MessagesMu.Lock()
 	*messages = dbHistory
+	a.MessagesMu.Unlock()
 	a.SyncSessionSystemPrompt(messages, selected)
 	return nil
 }

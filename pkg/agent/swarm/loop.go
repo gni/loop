@@ -233,16 +233,17 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 
 		chunkChan := make(chan agent.StreamChunk, 100)
 		type completionResult struct {
-			msg *db.Message
-			err error
+			msg      *db.Message
+			duration time.Duration
+			dropped  int64
+			err      error
 		}
 		resChan := make(chan completionResult, 1)
-		dropsBefore := ma.BaseAgent.DroppedChunks()
 
 		go func() {
-			msg, err := ma.BaseAgent.StreamChatCompletions(ctx, historyCopy, allowlist, chunkChan)
+			msg, dur, dropped, err := ma.BaseAgent.StreamChatCompletionsIsolated(ctx, historyCopy, allowlist, chunkChan)
 			close(chunkChan)
-			resChan <- completionResult{msg: msg, err: err}
+			resChan <- completionResult{msg: msg, duration: dur, dropped: dropped, err: err}
 		}()
 
 		ma.StreamBufferMu.Lock()
@@ -280,7 +281,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 
 		updateSubagentStatus := func(generating bool, tps float64, tokens int) {
-			if ma.Parent == nil && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
+			activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.Parent == nil && ma.Manager.CurrentActiveAgent() == nil)
+			if activeSelected && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
 				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
 				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 			}
@@ -324,9 +326,11 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 		}
 
-		if dropped := ma.BaseAgent.DroppedChunks() - dropsBefore; dropped > 0 && ma.BaseAgent.UI != nil {
+		completion := <-resChan
+
+		if completion.dropped > 0 && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
 			fmt.Fprintf(ncw, "\n[%s] output truncated: %d stream chunk(s) could not be delivered\n",
-				style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), dropped)
+				style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), completion.dropped)
 		}
 
 		if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
@@ -335,7 +339,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		sr.Flush()
 
-		completion := <-resChan
 		assistantMsg := completion.msg
 		if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
 			subagentCompletionTokens = assistantMsg.CompletionTokens
@@ -361,13 +364,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		}
 		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 
-		sink.Append(*assistantMsg)
-
 		if ma.BaseAgent != nil {
-			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, ma.BaseAgent.LastGenerationDuration())
+			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, completion.duration)
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			// Start() persists final "idle" state immediately after executeLoop returns.
+			sink.AppendInMemory(*assistantMsg)
 			if !responseHeaderStarted {
 				fmt.Fprintf(ncw, "\n[%s] response: %s\n", renderedAgentName, assistantMsg.Content)
 			} else {
@@ -376,12 +379,15 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return *assistantMsg, nil
 		}
 
+		sink.BeginBatch()
+		sink.Append(*assistantMsg)
 		ncw.EnsureNewline()
 		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma, theme), func(tc db.ToolCall, output string, toolErr error) {
 			if ma.BaseAgent != nil {
 				ma.BaseAgent.DebugLogToolExecution("subagent:"+ma.Name, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
 			}
 		})
+		sink.EndBatch(!halted)
 		if halted || aborted {
 			haltMsg := engine.HaltNotice()
 			if last := sink.Messages(); len(last) > 0 && last[len(last)-1].Role == "assistant" {

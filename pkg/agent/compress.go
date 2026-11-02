@@ -241,7 +241,7 @@ func (a *Agent) CompressHistory(
 	readFiles := sortedMapKeys(readFilesMap)
 	modifiedFiles := sortedMapKeys(modifiedFilesMap)
 
-	summaryPrompt := fmt.Sprintf(MasterSystemPrompts.CompressionPrompt, transcriptBuilder.String())
+	summaryPrompt := fmt.Sprintf(domaintool.SystemPromptsSnapshot().CompressionPrompt, transcriptBuilder.String())
 	summaryMsgs := []db.Message{{Role: "user", Content: summaryPrompt}}
 
 	infoStyle := style.NewStyle().Foreground(theme.Primary).Italic(true)
@@ -310,7 +310,13 @@ func (a *Agent) CompressHistory(
 			return err
 		}
 	}
+	if a != nil {
+		a.MessagesMu.Lock()
+	}
 	*messages = newMessages
+	if a != nil {
+		a.MessagesMu.Unlock()
+	}
 
 	compressedStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
 	fmt.Fprintln(w)

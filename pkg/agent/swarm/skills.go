@@ -31,9 +31,10 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 	}
 
 	var targetSkill *tool.Skill
-	for _, s := range mam.BaseAgent.ActiveSkills {
+	for _, s := range mam.BaseAgent.GetActiveSkills() {
 		if s.Name == skillName {
-			targetSkill = &s
+			skillCopy := s
+			targetSkill = &skillCopy
 			break
 		}
 	}

@@ -332,8 +332,14 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient {
 	connectTimeout := a.GetLimits().MCPConnectTimeout
 
-	transport := &http.Transport{ResponseHeaderTimeout: connectTimeout}
-	if a.Config != nil && (a.Config.CertFile != "" || a.Config.SkipVerify) {
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
+		transport = base.Clone()
+	} else {
+		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	transport.ResponseHeaderTimeout = connectTimeout
+	if a.Config != nil && (a.Config.CAFile != "" || a.Config.CertFile != "" || a.Config.KeyFile != "" || a.Config.SkipVerify) {
 		if tlsConfig, err := config.GetTLSConfig(a.Config); err == nil && tlsConfig != nil {
 			transport.TLSClientConfig = tlsConfig
 		}

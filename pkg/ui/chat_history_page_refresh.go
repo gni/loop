@@ -1,11 +1,9 @@
 package ui
 
 import (
-	"encoding/json"
 	"io"
 
 	"loop/pkg/config"
-	"loop/pkg/db"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -28,7 +26,7 @@ func (h *ChatHistory) refreshStalePageLocked() {
 	rows := h.buffer.NewHistoryPage()
 	key, theme := h.appearanceKey(), GetConfiguredTheme(cfg)
 	go func() {
-		prepared := refreshHistoryPage(job, p, rows, cfg, theme, key)
+		prepared := h.refreshHistoryPage(job, p, rows, cfg, theme, key)
 		_ = p.rows.Close()
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
@@ -36,7 +34,7 @@ func (h *ChatHistory) refreshStalePageLocked() {
 	}()
 }
 
-func refreshHistoryPage(job *historyPageJob, old *preparedHistoryPage, rows *render.Scrollback, cfg *config.Config, theme style.UITheme, key string) *preparedHistoryPage {
+func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHistoryPage, rows *render.Scrollback, cfg *config.Config, theme style.UITheme, key string) *preparedHistoryPage {
 	p := &preparedHistoryPage{rows: rows, more: old.more, appearance: key}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
@@ -54,9 +52,9 @@ func refreshHistoryPage(job *historyPageJob, old *preparedHistoryPage, rows *ren
 		previous := old.turns[i]
 		messages := previous.messages
 		if messages == nil && previous.size > 0 {
-			var decoded []db.Message
-			p.err = json.NewDecoder(io.NewSectionReader(job.file, previous.offset, int64(previous.size))).Decode(&decoded)
-			if p.err != nil {
+			decoded, readErr := h.readTurnMessagesFromFile(job.file, previous.offset, previous.size)
+			if readErr != nil {
+				p.err = readErr
 				break
 			}
 			messages = decoded

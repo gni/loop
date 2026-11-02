@@ -61,6 +61,7 @@ func executeREPLTurn(
 	fd int,
 	kiReader *interceptor.KeyInterceptorReader,
 	attachmentSource *string,
+	preExpanded bool,
 	fromQueue bool,
 ) {
 	ui.GetUI().StateMu.Lock()
@@ -92,6 +93,9 @@ func executeREPLTurn(
 	ctx, cancel := context.WithCancel(context.Background())
 	if attachmentSource != nil {
 		ctx = resources.WithAttachmentSource(ctx, line, *attachmentSource)
+	}
+	if preExpanded {
+		ctx = resources.WithPreExpandedPrompt(ctx, line)
 	}
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().ActiveCancelFunc = cancel

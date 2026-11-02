@@ -15,5 +15,6 @@ func (mam *MultiAgentManager) Close() {
 		if child.Cancel != nil {
 			child.Cancel()
 		}
+		child.KillTasks()
 	}
 }

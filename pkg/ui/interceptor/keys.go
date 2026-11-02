@@ -73,7 +73,9 @@ func (ki *KeyInterceptorReader) HandleCtrlO() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
+	ki.Agent.TasksMu.Lock()
 	targetTaskId := ki.Agent.StreamingTask
+	ki.Agent.TasksMu.Unlock()
 	if targetTaskId == "" {
 		targetTaskId = ki.Agent.GetLastRunningTaskId()
 	}
@@ -99,11 +101,27 @@ func (ki *KeyInterceptorReader) HandleCtrlO() {
 	}
 }
 
+func (ki *KeyInterceptorReader) saveAgentConfigSnapshot() {
+	if ki.Agent == nil || ki.Agent.Config == nil {
+		return
+	}
+	ki.Agent.LLMProviderMu.Lock()
+	snapshot, err := config.Clone(ki.Agent.Config)
+	configPath := ki.Agent.ConfigPath
+	ki.Agent.LLMProviderMu.Unlock()
+	if err == nil && snapshot != nil {
+		_ = config.SaveConfig(configPath, snapshot)
+	}
+}
+
 func (ki *KeyInterceptorReader) toggleCollapse() {
-	ki.Agent.Config.CollapseResults = !ki.Agent.Config.CollapseResults
-	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	ki.Agent.LLMProviderMu.Lock()
+	collapsed := !ki.Agent.Config.CollapseResults
+	ki.Agent.Config.CollapseResults = collapsed
+	ki.Agent.LLMProviderMu.Unlock()
+	ki.saveAgentConfigSnapshot()
 	if ki.Agent.UI != nil {
-		ki.Agent.UI.SetCollapseStatus(ki.Agent.Config.CollapseResults)
+		ki.Agent.UI.SetCollapseStatus(collapsed)
 	}
 }
 
@@ -121,8 +139,10 @@ func (ki *KeyInterceptorReader) HandleCtrlT() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
+	ki.Agent.LLMProviderMu.Lock()
 	ki.Agent.Config.ShowThinking = !ki.Agent.Config.ShowThinking
-	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	ki.Agent.LLMProviderMu.Unlock()
+	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
 }
 
@@ -130,8 +150,10 @@ func (ki *KeyInterceptorReader) HandleCtrlG() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
+	ki.Agent.LLMProviderMu.Lock()
 	ki.Agent.SetGuidedMode(!ki.Agent.IsGuidedMode())
-	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	ki.Agent.LLMProviderMu.Unlock()
+	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
 }
 
@@ -139,6 +161,7 @@ func (ki *KeyInterceptorReader) HandleCtrlR() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
+	ki.Agent.LLMProviderMu.Lock()
 	switch strings.ToLower(strings.TrimSpace(ki.Agent.Config.ReasoningEffort)) {
 	case "low":
 		ki.Agent.Config.ReasoningEffort = "medium"
@@ -151,8 +174,9 @@ func (ki *KeyInterceptorReader) HandleCtrlR() {
 	default:
 		ki.Agent.Config.ReasoningEffort = "low"
 	}
+	ki.Agent.LLMProviderMu.Unlock()
 
-	_ = config.SaveConfig(ki.Agent.ConfigPath, ki.Agent.Config)
+	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
 }
 
@@ -162,8 +186,14 @@ func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback() {
 	} else if ki.OnRedrawScreen != nil {
 		ki.OnRedrawScreen()
 	} else if ki.W != nil {
-		theme := style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
+		ki.Agent.LLMProviderMu.Lock()
+		themeName := ki.Agent.Config.Theme
+		syntaxTheme := ki.Agent.Config.SyntaxTheme
+		showThinking := ki.Agent.Config.ShowThinking
+		effort := ki.Agent.Config.ReasoningEffort
+		ki.Agent.LLMProviderMu.Unlock()
+		theme := style.ResolveConfiguredTheme(themeName, syntaxTheme)
 		width, _ := terminal.GetDimensions()
-		fmt.Fprint(ki.W, render.FormatPromptSeparator(ki.Agent.Config.ShowThinking, ki.Agent.Config.ReasoningEffort, theme, width))
+		fmt.Fprint(ki.W, render.FormatPromptSeparator(showThinking, effort, theme, width))
 	}
 }

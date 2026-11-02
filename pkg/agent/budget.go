@@ -7,10 +7,14 @@ import (
 	"loop/pkg/domain/limits"
 )
 
+func messageTokenChars(msg db.Message) int {
+	return messageChars(msg) + len(msg.Role) + len(msg.Name) + len(msg.ToolCallID) + 12
+}
+
 func requestTokens(messages []db.Message) int {
 	chars := 0
 	for _, msg := range messages {
-		chars += messageChars(msg) + len(msg.Role) + len(msg.Name) + len(msg.ToolCallID) + 12
+		chars += messageTokenChars(msg)
 	}
 	return TokensFromChars(chars)
 }

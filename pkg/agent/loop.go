@@ -136,7 +136,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	// turn returns. Live redraws need this slice, including completed tool
 	// steps from the current turn, plus the renderer's uncommitted inference.
 	a.CurrentStreamMu.Lock()
-	a.CurrentHistorySnapshot = func() []db.Message { return message.CloneAll(*messages) }
+	a.CurrentHistorySnapshot = func() []db.Message {
+		a.MessagesMu.RLock()
+		defer a.MessagesMu.RUnlock()
+		return message.CloneAll(*messages)
+	}
 	a.CurrentStreamMu.Unlock()
 	defer func() {
 		a.CurrentStreamMu.Lock()
@@ -219,11 +223,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			resChan <- streamResult{msg: msg, err: err}
 		}()
 
+		streamBuf := new(bytes.Buffer)
 		a.CurrentStreamMu.Lock()
-		a.CurrentStreamBuffer = new(bytes.Buffer)
+		a.CurrentStreamBuffer = streamBuf
 		a.CurrentStreamMu.Unlock()
 
-		teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: a.CurrentStreamBuffer}
+		teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: &lockedStreamBuffer{mu: &a.CurrentStreamMu, buf: streamBuf}}
 		ncw := &NewlineCounterWriter{Writer: teeWriter}
 		a.SetCurrentWriter(ncw)
 		sr := a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)

@@ -61,11 +61,10 @@ func shellSyntaxWords(command string) []string {
 	return words
 }
 
-// ShellOutputLanguage favors the source filenames of common read commands.
-// Unrelated commands retain plain logs, while recognizable JSON is highlighted.
-func ShellOutputLanguage(command, source string) string {
-	language := ""
-	reading, readCommand, commandNext, redirect := false, false, true, false
+// shellCommandSyntaxHint parses the shell command once to determine any explicit
+// filename-based syntax language and whether a file-reading command is present.
+func shellCommandSyntaxHint(command string) (fileLang string, readCommand bool) {
+	reading, commandNext, redirect := false, true, false
 	for _, word := range shellSyntaxWords(command) {
 		if len(word) == 1 && strings.ContainsAny(word, "\n|&;()") {
 			reading, commandNext, redirect = false, true, false
@@ -103,11 +102,18 @@ func ShellOutputLanguage(command, source string) string {
 		if candidate == "plaintext" {
 			continue
 		}
-		if language != "" && language != candidate {
-			return "plaintext"
+		if fileLang != "" && fileLang != candidate {
+			return "plaintext", readCommand
 		}
-		language = candidate
+		fileLang = candidate
 	}
+	return fileLang, readCommand
+}
+
+// ShellOutputLanguage favors the source filenames of common read commands.
+// Unrelated commands retain plain logs, while recognizable JSON is highlighted.
+func ShellOutputLanguage(command, source string) string {
+	language, readCommand := shellCommandSyntaxHint(command)
 	if language != "" {
 		return language
 	}
@@ -174,13 +180,23 @@ type shellSyntaxWriter struct {
 	mu                           sync.Mutex
 	writer                       io.Writer
 	command, chromaStyle, prefix string
+	resolvedLang                 string
+	readCommand                  bool
+	sampledBytes                 int
 	nativeColor                  bool
 }
 
 // NewShellOutputWriter colors source printed by read commands while preserving
 // partial lines, original program colors, and concurrent stdout/stderr writes.
 func NewShellOutputWriter(w io.Writer, command string, theme style.UITheme) io.Writer {
-	return &shellSyntaxWriter{writer: w, command: command, chromaStyle: theme.ChromaStyle}
+	fileLang, readCmd := shellCommandSyntaxHint(command)
+	return &shellSyntaxWriter{
+		writer:       w,
+		command:      command,
+		chromaStyle:  theme.ChromaStyle,
+		resolvedLang: fileLang,
+		readCommand:  readCmd,
+	}
 }
 
 func (w *shellSyntaxWriter) Write(p []byte) (int, error) {
@@ -201,6 +217,46 @@ func (w *shellSyntaxWriter) Write(p []byte) (int, error) {
 	return written, nil
 }
 
+func (w *shellSyntaxWriter) resolveStreamLanguage(sample string) string {
+	if w.resolvedLang != "" {
+		return w.resolvedLang
+	}
+	trimmed := strings.TrimSpace(sample)
+	if trimmed == "" {
+		return "plaintext"
+	}
+	if !w.readCommand {
+		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+			w.resolvedLang = "plaintext"
+			return "plaintext"
+		}
+		if json.Valid([]byte(sample)) {
+			w.resolvedLang = "json"
+			return "json"
+		}
+		if w.sampledBytes >= 4096 {
+			w.resolvedLang = "plaintext"
+		}
+		return "plaintext"
+	}
+	if json.Valid([]byte(sample)) && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+		w.resolvedLang = "json"
+		return "json"
+	}
+	lang := ResolveSyntaxLanguage("", sample)
+	if lang != "" && lang != "plaintext" && (w.sampledBytes >= 256 || strings.Contains(sample, "\n")) {
+		w.resolvedLang = lang
+		return lang
+	}
+	if w.sampledBytes >= 1024 {
+		if lang == "" {
+			lang = "plaintext"
+		}
+		w.resolvedLang = lang
+	}
+	return lang
+}
+
 func (w *shellSyntaxWriter) writeFragment(p []byte) (int, error) {
 	if bytes.ContainsRune(p, '\x1b') {
 		w.nativeColor = true
@@ -209,8 +265,13 @@ func (w *shellSyntaxWriter) writeFragment(p []byte) (int, error) {
 		w.prefix = ""
 		return w.writer.Write(p)
 	}
+	if w.resolvedLang == "plaintext" {
+		return w.writer.Write(p)
+	}
 	source := string(p)
-	language := ShellOutputLanguage(w.command, w.prefix+source)
+	w.sampledBytes += len(p)
+	combined := w.prefix + source
+	language := w.resolveStreamLanguage(combined)
 	colored := highlightSyntaxFragment(w.prefix, source, language, w.chromaStyle)
 	n, err := io.WriteString(w.writer, colored)
 	if err != nil {
@@ -219,7 +280,11 @@ func (w *shellSyntaxWriter) writeFragment(p []byte) (int, error) {
 	if n != len(colored) {
 		return 0, io.ErrShortWrite
 	}
-	w.prefix = syntaxContextTail(w.prefix + source)
+	if w.resolvedLang == "plaintext" {
+		w.prefix = ""
+	} else {
+		w.prefix = syntaxContextTail(combined)
+	}
 	return len(p), nil
 }
 

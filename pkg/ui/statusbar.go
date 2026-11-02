@@ -3,6 +3,7 @@ package ui
 import (
 	"io"
 
+	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -63,7 +64,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	ui.StateMu.Lock()
 	defer ui.StateMu.Unlock()
 
-	if !ui.Enabled || ui.InApprovalPrompt {
+	if !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || terminal.Default().InAltScreen() {
 		return
 	}
 

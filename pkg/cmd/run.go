@@ -14,6 +14,8 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/resources"
 	"loop/pkg/runtime"
 	"loop/pkg/ui"
 	"loop/pkg/ui/repl"
@@ -35,12 +37,14 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	noninteractive := printOnce || len(args) > 0 || outputMode != "text" || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
 	trusted := config.WorkspaceTrusted(configPath, workspace)
 	if cmd.Flags().Changed("trust") {
 		trusted = trustProject
-	}
-	if ignoreProject {
+	} else if ignoreProject {
 		trusted = false
+	} else if !noninteractive {
+		trusted = promptWorkspaceTrust(workspace)
 	}
 	cfg, err := config.LoadWorkspaceConfig(configPath, workspace, trusted)
 	if err != nil {
@@ -65,17 +69,6 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 	if noTools {
 		allowed = []string{}
-	}
-	noninteractive := printOnce || len(args) > 0 || outputMode != "text" || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
-	if !noninteractive && !cmd.Flags().Changed("trust") && !ignoreProject {
-		ensureWorkspaceTrust(workspace, cfg, false)
-		if !cfg.DisableProjectPlugins && !trusted {
-			cfg, err = config.LoadWorkspaceConfig(configPath, workspace, true)
-			if err != nil {
-				return err
-			}
-			applyFlagOverrides(cmd, cfg)
-		}
 	}
 	options := runtime.Options{Config: cfg, ConfigPath: configPath, Workspace: workspace, SessionID: sessionIDFlag, Resume: resumeSession, NoSession: noSession, Tools: allowed, KeepSelection: cmd.Flags().Changed("model") || cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("reasoning")}
 	if outputMode == "text" && cfg.Nostop.Enabled() {
@@ -107,7 +100,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !noninteractive {
-		if err := initSessionStore(); err != nil {
+		if s.Store != nil {
+			db.SetDefaultStore(s.Store)
+		} else if err := initSessionStore(); err != nil {
 			return err
 		}
 		theme := ui.GetConfiguredTheme(cfg)
@@ -115,7 +110,8 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		repl.RunREPL(s.Agent, allowed, theme, s.ID)
 		return nil
 	}
-	var input string
+	var pipedInput string
+	hasPipedStdin := false
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), (16<<20)+1))
 		if err != nil {
@@ -124,18 +120,25 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		if len(data) > 16<<20 {
 			return fmt.Errorf("stdin exceeds 16 MiB")
 		}
-		input = string(data)
+		pipedInput = string(data)
+		hasPipedStdin = true
 	}
-	if len(args) > 0 {
+	explicitArgs := strings.Join(args, " ")
+	input := pipedInput
+	if explicitArgs != "" {
 		if input != "" {
 			input += "\n\n"
 		}
-		input += strings.Join(args, " ")
+		input += explicitArgs
 	}
 	if strings.TrimSpace(input) == "" {
 		return fmt.Errorf("provide a prompt or pipe input")
 	}
-	result, err := s.Run(cmd.Context(), input)
+	runCtx := cmd.Context()
+	if hasPipedStdin {
+		runCtx = resources.WithAttachmentSource(runCtx, input, explicitArgs)
+	}
+	result, err := s.Run(runCtx, input)
 	if err != nil {
 		return err
 	}

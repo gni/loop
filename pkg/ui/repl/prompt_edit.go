@@ -29,6 +29,72 @@ func handlePromptEditKey(line string, pos int, key rune, a *agent.Agent, history
 			return line, pos + end, true
 		}
 		return line, len(line), true
+	case interceptor.PromptLeftKey:
+		if pos > 0 {
+			_, size := utf8.DecodeLastRuneInString(line[:pos])
+			return line, pos - size, true
+		}
+		return line, 0, true
+	case interceptor.PromptRightKey:
+		if pos < len(line) {
+			_, size := utf8.DecodeRuneInString(line[pos:])
+			return line, pos + size, true
+		}
+		return line, len(line), true
+	case interceptor.PromptBackspaceKey:
+		if pos > 0 {
+			_, size := utf8.DecodeLastRuneInString(line[:pos])
+			reader.HistoryIndex = -1
+			return line[:pos-size] + line[pos:], pos - size, true
+		}
+		return line, 0, true
+	case interceptor.PromptDeleteKey:
+		if pos < len(line) {
+			_, size := utf8.DecodeRuneInString(line[pos:])
+			reader.HistoryIndex = -1
+			return line[:pos] + line[pos+size:], pos, true
+		}
+		return line, pos, true
+	case interceptor.PromptDeleteWordKey:
+		if pos == 0 {
+			return line, 0, true
+		}
+		runes := []rune(line)
+		index := utf8.RuneCountInString(line[:pos])
+		start := index
+		for start > 0 && unicode.IsSpace(runes[start-1]) && runes[start-1] != '\n' {
+			start--
+		}
+		for start > 0 && !unicode.IsSpace(runes[start-1]) {
+			start--
+		}
+		if start == index && start > 0 {
+			start--
+		}
+		newPrefix := string(runes[:start])
+		reader.HistoryIndex = -1
+		return newPrefix + string(runes[index:]), len(newPrefix), true
+	case interceptor.PromptKillToEndKey:
+		if pos >= len(line) {
+			return line, pos, true
+		}
+		reader.HistoryIndex = -1
+		if end := strings.IndexByte(line[pos:], '\n'); end > 0 {
+			return line[:pos] + line[pos+end:], pos, true
+		} else if end == 0 {
+			return line[:pos] + line[pos+1:], pos, true
+		}
+		return line[:pos], pos, true
+	case interceptor.PromptKillToStartKey:
+		if pos == 0 {
+			return line, 0, true
+		}
+		reader.HistoryIndex = -1
+		start := strings.LastIndex(line[:pos], "\n") + 1
+		if start < pos {
+			return line[:start] + line[pos:], start, true
+		}
+		return line[:pos-1] + line[pos:], pos - 1, true
 	case interceptor.PromptWordLeftKey, interceptor.PromptWordRightKey:
 		runes := []rune(line)
 		index := utf8.RuneCountInString(line[:pos])
@@ -93,10 +159,11 @@ func handlePromptEditKey(line string, pos int, key rune, a *agent.Agent, history
 		}
 		return line, pos, true
 	}
-	// x/term stops accepting printable keys at 4096 runes. Large drafts use
-	// the same bulk-edit path so users can keep editing after a large paste.
-	if unicode.IsPrint(key) && utf8.RuneCountInString(line) >= 4096 {
+	// Handle all printable input here so prompt draft state stays synchronized
+	// without reading unexported x/term fields, including beyond 4096 runes.
+	if unicode.IsPrint(key) && (key < interceptor.PromptNewlineKey || key >= interceptor.PromptSentinelKey) {
 		text := string(key)
+		reader.HistoryIndex = -1
 		return line[:pos] + text + line[pos:], pos + len(text), true
 	}
 	return line, pos, false

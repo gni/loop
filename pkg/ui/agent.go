@@ -29,6 +29,8 @@ type AgentUIImpl struct {
 	PasteCounter         int
 	ActiveInputReader    io.Reader
 	InApprovalPrompt     bool
+	InInteractiveMenu    bool
+	SessionReloaded      bool
 	State                StatusBarState
 	LastH                int
 	LastPasteLinesOffset int
@@ -64,6 +66,9 @@ func NewAgentUI(cfg *config.Config, theme style.UITheme) *AgentUIImpl {
 		return false
 	})
 	lifecycle.Default().OnShutdown(func() {
+		if uiImpl.ChatHistory != nil {
+			uiImpl.ChatHistory.Close()
+		}
 		uiImpl.ShutdownStatusBar(os.Stderr)
 	})
 

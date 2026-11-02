@@ -27,7 +27,14 @@ func (s *Session) Reload() error {
 	if err := applyResources(cfg, s.loaded, loaded); err != nil {
 		return err
 	}
-	skills, err := agent.LoadSkillsFromDirs(append(agent.SkillSearchDirs(cfg.SkillsDir, s.Workspace), cfg.SkillDirectories...)...)
+	trusted := !cfg.DisableProjectPlugins
+	skillDirs := agent.SkillSearchDirsForWorkspace(cfg.SkillsDir, s.Workspace, trusted)
+	for _, extraDir := range cfg.SkillDirectories {
+		if s.Agent.ProjectResourceAllowed(extraDir) {
+			skillDirs = append(skillDirs, extraDir)
+		}
+	}
+	skills, err := agent.LoadSkillsFromDirs(skillDirs...)
 	if err != nil {
 		return err
 	}
@@ -49,7 +56,7 @@ func (s *Session) Reload() error {
 	s.Agent.ApplyConfig(cfg)
 	s.mu.Unlock()
 	s.Agent.Registry.ReplacePrefix("plugin__", plugins.GetAllExecutors())
-	s.Agent.ActiveSkills = skills
+	s.Agent.SetActiveSkills(skills)
 	s.mu.Lock()
 	s.hooks = loaded.Hooks
 	s.loaded = loaded

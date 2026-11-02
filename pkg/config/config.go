@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"loop/pkg/domain/limits"
+	"loop/pkg/domain/model"
 )
 
 type MCPServerConfig struct {
@@ -246,14 +247,18 @@ func writePrivateConfigFile(path string, data []byte) error {
 }
 
 func DefaultConfig() *Config {
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	rawEnvKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := ""
+	if rawEnvKey != "" {
+		apiKey = "env:OPENAI_API_KEY"
+	}
 	endpoint := os.Getenv("OPENAI_API_BASE")
 	if endpoint == "" {
 		endpoint = "http://localhost:8080"
 	}
 
 	model := "llama-3-instruct"
-	if apiKey != "" && os.Getenv("OPENAI_API_BASE") == "" {
+	if rawEnvKey != "" && os.Getenv("OPENAI_API_BASE") == "" {
 		endpoint = "http://openai-compatible.local"
 		model = "gpt-4-turbo"
 	}
@@ -372,6 +377,11 @@ func populateProviderNames(providers map[string]ProviderConfig) {
 }
 
 func LoadConfig(path string) (*Config, error) {
+	cfg, _, err := loadConfigWithRaw(path)
+	return cfg, err
+}
+
+func loadConfigWithRaw(path string) (*Config, []byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		conf := DefaultConfig()
 		if len(embeddedDefaultConfig) > 0 {
@@ -417,19 +427,19 @@ func LoadConfig(path string) (*Config, error) {
 		conf.ensureDefaultProvider()
 		conf.SyncActiveProvider()
 		if err := SaveConfig(path, conf); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return conf, nil
+		return conf, nil, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 	cfg.applyDefaults()
 
@@ -442,7 +452,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	} else if len(cfg.MCPServers) > 0 {
 		if err := saveMCPFile(dir, cfg.MCPServers); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -468,7 +478,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	} else if len(cfg.Providers) > 0 {
 		if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else if cfg.Endpoint != "" {
 		providerName := cfg.ActiveProvider
@@ -478,7 +488,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		cfg.Providers[providerName] = cfg.defaultProviderProfile(providerName)
 		if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -490,7 +500,7 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	return cfg, nil
+	return cfg, data, nil
 }
 
 func SaveConfig(path string, cfg *Config) error {
@@ -504,7 +514,7 @@ func SaveConfig(path string, cfg *Config) error {
 		return err
 	}
 	cfg.NormalizeSafety()
-	if cfg.ProjectPath != "" {
+	if cfg.ProjectPath != "" && (path == "" || filepath.Clean(path) == filepath.Clean(cfg.ProjectPath)) {
 		return saveProjectConfig(cfg)
 	}
 	copy, err := Clone(cfg)
@@ -614,6 +624,17 @@ func stringMapsEqual(a, b map[string]string) bool {
 	return true
 }
 
+func cloneOAuthConfig(oauth *OAuthConfig) *OAuthConfig {
+	if oauth == nil {
+		return nil
+	}
+	copied := *oauth
+	if oauth.Scopes != nil {
+		copied.Scopes = append([]string(nil), oauth.Scopes...)
+	}
+	return &copied
+}
+
 func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConfig {
 	if servers == nil {
 		return nil
@@ -621,11 +642,51 @@ func CopyMCPServers(servers map[string]MCPServerConfig) map[string]MCPServerConf
 	out := make(map[string]MCPServerConfig, len(servers))
 	for name, cfg := range servers {
 		copied := cfg
+		copied.OAuth = cloneOAuthConfig(cfg.OAuth)
 		if cfg.Args != nil {
 			copied.Args = append([]string(nil), cfg.Args...)
 		}
 		copied.Env = cloneStringMap(cfg.Env)
 		copied.Headers = cloneStringMap(cfg.Headers)
+		out[name] = copied
+	}
+	return out
+}
+
+func CopyProviders(providers map[string]ProviderConfig) map[string]ProviderConfig {
+	if providers == nil {
+		return nil
+	}
+	out := make(map[string]ProviderConfig, len(providers))
+	for name, p := range providers {
+		copied := p
+		copied.OAuth = cloneOAuthConfig(p.OAuth)
+		copied.Headers = cloneStringMap(p.Headers)
+		if p.Models != nil {
+			copied.Models = make([]model.Model, len(p.Models))
+			for i, m := range p.Models {
+				cm := m
+				if m.Input != nil {
+					cm.Input = append([]string(nil), m.Input...)
+				}
+				if m.Reasoning != nil {
+					cm.Reasoning = append([]string(nil), m.Reasoning...)
+				}
+				if m.Pricing != nil {
+					pr := *m.Pricing
+					if m.Pricing.CacheRead != nil {
+						cr := *m.Pricing.CacheRead
+						pr.CacheRead = &cr
+					}
+					if m.Pricing.CacheWrite != nil {
+						cw := *m.Pricing.CacheWrite
+						pr.CacheWrite = &cw
+					}
+					cm.Pricing = &pr
+				}
+				copied.Models[i] = cm
+			}
+		}
 		out[name] = copied
 	}
 	return out

@@ -1,11 +1,29 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"sync"
 
 	"loop/pkg/ui/style"
 )
+
+type lockedStreamBuffer struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (l *lockedStreamBuffer) Write(p []byte) (int, error) {
+	if l == nil || l.buf == nil {
+		return len(p), nil
+	}
+	if l.mu != nil {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+	}
+	return l.buf.Write(p)
+}
 
 type NewlineCounterWriter struct {
 	io.Writer

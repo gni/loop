@@ -158,11 +158,19 @@ func New(options Options) (*Session, error) {
 		if err != nil {
 			return nil, err
 		}
-		client = &http.Client{Transport: &http.Transport{TLSClientConfig: tls}}
+		var transport *http.Transport
+		if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
+			transport = base.Clone()
+		} else {
+			transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		}
+		transport.TLSClientConfig = tls
+		client = &http.Client{Transport: transport}
 	}
 	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
 	close(s.idle)
 	s.Agent = agent.NewAgentAt(cfg, options.ConfigPath, client, workspace)
+	s.Agent.SessionMessages = s.MessagesSnapshot
 	if store != nil {
 		s.Agent.Store = store
 	}
@@ -205,10 +213,11 @@ func New(options Options) (*Session, error) {
 			return nil, err
 		}
 	}
-	s.Agent.ActiveSkills, err = agent.LoadSkillsFromDirs(append(agent.SkillSearchDirs(cfg.SkillsDir, workspace), cfg.SkillDirectories...)...)
+	skills, err := agent.LoadSkillsFromDirs(s.Agent.ConfiguredSkillDirs()...)
 	if err != nil {
 		return nil, err
 	}
+	s.Agent.SetActiveSkills(skills)
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
 	if err := s.Agent.PersistenceError(); err != nil {
 		return nil, err
@@ -234,6 +243,12 @@ func (s *Session) storageID() string {
 		return ""
 	}
 	return s.ID
+}
+
+func (s *Session) MessagesSnapshot() []db.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return message.CloneAll(s.messages)
 }
 
 func (s *Session) event(event agent.Event) error {
@@ -370,7 +385,7 @@ func (s *Session) runWith(ctx context.Context, prompt string, w io.Writer, theme
 
 func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, theme style.UITheme, noninteractive bool, setup func() error) (result agent.RunResult, runErr error) {
 	defer func() {
-		if err := s.persistSettings(); err != nil {
+		if err := s.persistSettingsIfActive(); err != nil {
 			runErr = errors.Join(runErr, err)
 			result.Status = agent.RunFailed
 			result.Error = runErr.Error()
@@ -380,17 +395,19 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 			result.Error = runErr.Error()
 		}
 		s.mu.Lock()
-		s.cancel()
+		if s.cancel != nil {
+			s.cancel()
+		}
 		s.running = false
 		s.cancel = nil
 		s.view = append([]db.Message(nil), s.messages...)
 		idle := s.idle
 		s.mu.Unlock()
+		s.runMu.Unlock()
+		close(idle)
 		if err := s.event(agent.Event{Type: "agent_settled", SessionID: s.ID, Result: &result}); err != nil {
 			runErr = errors.Join(runErr, err)
 		}
-		s.runMu.Unlock()
-		close(idle)
 	}()
 	if setup != nil {
 		if err := setup(); err != nil {
@@ -399,6 +416,13 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 	}
 	for {
 		attachmentSource, literal := resources.AttachmentSource(ctx, prompt)
+		preExpanded := resources.IsPreExpandedPrompt(ctx, prompt)
+		attached, blocks, err := resources.Attachments(attachmentSource, s.Workspace)
+		if err != nil {
+			return result, err
+		}
+		attachmentSuffix := strings.TrimPrefix(attached, attachmentSource)
+
 		transformed, err := s.transformInput(ctx, prompt)
 		if err != nil {
 			result.Status = agent.RunBlocked
@@ -406,25 +430,13 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 			return result, err
 		}
 		expanded := transformed
-		if !literal || strings.HasPrefix(strings.TrimSpace(attachmentSource), "/") {
+		if !preExpanded && (!literal || strings.HasPrefix(strings.TrimSpace(attachmentSource), "/")) {
 			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, !s.Agent.Config.DisableProjectPlugins, s.Agent.Config.PromptDirectories))
 			if err != nil {
 				return result, err
 			}
 		}
-		attachmentInput := expanded
-		if literal {
-			attachmentInput = attachmentSource
-		}
-		attached, blocks, err := resources.Attachments(attachmentInput, s.Workspace)
-		if err != nil {
-			return result, err
-		}
-		if literal {
-			expanded += strings.TrimPrefix(attached, attachmentInput)
-		} else {
-			expanded = attached
-		}
+		expanded += attachmentSuffix
 		s.Agent.InputBlocks = blocks
 		s.Agent.ToolSelection = s.options.Tools
 		result, err = s.Agent.RunAgentLoop(ctx, w, &s.messages, expanded, s.options.Tools, theme, noninteractive, s.storageID())
@@ -528,7 +540,7 @@ func (s *Session) Close(ctx context.Context) error {
 		return err
 	}
 	s.runMu.Lock()
-	settingsErr := s.persistSettings()
+	settingsErr := s.persistSettingsIfActive()
 	s.runMu.Unlock()
 	return errors.Join(settingsErr, s.event(agent.Event{Type: "session_end", SessionID: s.ID}), s.Agent.Dispose(ctx))
 }

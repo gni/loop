@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -43,12 +45,11 @@ func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 	}
 	defer term.Restore(fd, oldState)
 
-	fmt.Fprint(rlOutput, terminal.EnterAlternateScreen)
-	fmt.Fprint(rlOutput, "\x1b[?25l")
-	defer func() {
-		fmt.Fprint(rlOutput, "\x1b[?25h")
-		fmt.Fprint(rlOutput, terminal.ExitAlternateScreen)
-	}()
+	SetInInteractiveMenu(true)
+	defer SetInInteractiveMenu(false)
+
+	terminal.Default().EnterAltScreen(rlOutput)
+	defer terminal.Default().ExitAltScreen(rlOutput)
 
 	return true, fn()
 }
@@ -156,6 +157,14 @@ func padAnsiCell(cell string, width int) string {
 func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITheme, title string, itemsProvider func() []*settingItem, extraRender func(buf *strings.Builder)) error {
 	searchQuery := ""
 	selectedIdx := 0
+
+	var sigChan chan os.Signal
+	sr, hasSessionReader := rlInput.(*SessionReader)
+	if hasSessionReader {
+		sigChan = make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGWINCH)
+		defer signal.Stop(sigChan)
+	}
 
 	for {
 		items := itemsProvider()
@@ -337,9 +346,22 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		_, _ = rlOutput.Write([]byte(outputStr))
 
 		var readBuf [16]byte
-		n, err := rlInput.Read(readBuf[:])
-		if err != nil {
-			return err
+		var n int
+		var err error
+		if hasSessionReader {
+			keyData, resized, readErr := sr.ReadKeyOrResize(sigChan)
+			if readErr != nil {
+				return readErr
+			}
+			if resized {
+				continue
+			}
+			n = copy(readBuf[:], keyData)
+		} else {
+			n, err = rlInput.Read(readBuf[:])
+			if err != nil {
+				return err
+			}
 		}
 		if n == 0 {
 			continue

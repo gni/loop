@@ -11,6 +11,8 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -23,7 +25,7 @@ func RefreshConsoleAfterTurn(w io.Writer, a *agent.Agent, kiReader *keyIntercept
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	getUI().StateMu.Lock()
-	inModal := getUI().InApprovalPrompt
+	inModal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 	getUI().StateMu.Unlock()
 	if inModal {
 		return
@@ -73,6 +75,13 @@ func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorRead
 
 func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, notice string) {
 	TerminalMu.Lock()
+	getUI().StateMu.Lock()
+	inModal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
+	getUI().StateMu.Unlock()
+	if inModal {
+		TerminalMu.Unlock()
+		return
+	}
 	if history := getUI().ChatHistory; history != nil && history.RedrawLocked() {
 		history.notice = notice
 		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, rl, true)
@@ -100,7 +109,9 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 
 	var activeMessages []db.Message
 	if kiReader != nil && kiReader.Messages != nil {
-		activeMessages = *kiReader.Messages
+		a.MessagesMu.RLock()
+		activeMessages = message.CloneAll(*kiReader.Messages)
+		a.MessagesMu.RUnlock()
 	}
 	a.CurrentStreamMu.Lock()
 	historySnapshot := a.CurrentHistorySnapshot

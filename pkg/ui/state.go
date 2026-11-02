@@ -63,7 +63,24 @@ func termForWriter(w io.Writer) *terminal.Terminal {
 }
 
 func ForceExitAlternateScreen(w io.Writer) {
+	terminal.Default().ForceExitAltScreen()
 	termForWriter(w).ForceExitAltScreen()
+}
+
+func MarkSessionReloaded() {
+	ui := getUI()
+	ui.StateMu.Lock()
+	ui.SessionReloaded = true
+	ui.StateMu.Unlock()
+}
+
+func ConsumeSessionReloaded() bool {
+	ui := getUI()
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	reloaded := ui.SessionReloaded
+	ui.SessionReloaded = false
+	return reloaded
 }
 
 func GetActiveTasks(a *agent.Agent) int {

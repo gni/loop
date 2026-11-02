@@ -13,9 +13,11 @@ import (
 // historySink adapts MultiAgent to agent.HistorySink so the shared TurnEngine can append
 // tool responses without the subagent loop carrying its own copy of the pipeline.
 type historySink struct {
-	ma  *MultiAgent
-	mu  sync.Mutex
-	err error
+	ma         *MultiAgent
+	mu         sync.Mutex
+	batchDepth int
+	dirty      bool
+	err        error
 }
 
 func (s *historySink) Err() error {
@@ -24,22 +26,62 @@ func (s *historySink) Err() error {
 	return s.err
 }
 
-func (s *historySink) Append(m db.Message) {
+func (s *historySink) BeginBatch() {
+	s.mu.Lock()
+	s.batchDepth++
+	s.mu.Unlock()
+}
+
+func (s *historySink) EndBatch(persist bool) {
+	s.mu.Lock()
+	if s.batchDepth > 0 {
+		s.batchDepth--
+	}
+	shouldFlush := s.batchDepth == 0 && s.dirty
+	if s.batchDepth == 0 {
+		s.dirty = false
+	}
+	s.mu.Unlock()
+	if shouldFlush && persist {
+		s.flushState("running")
+	}
+}
+
+func (s *historySink) AppendInMemory(m db.Message) {
 	if s.ma == nil {
 		return
 	}
 	s.ma.HistoryMu.Lock()
 	s.ma.History = append(s.ma.History, m)
 	s.ma.HistoryMu.Unlock()
-	if s.ma.Manager != nil {
-		if err := s.ma.Manager.SaveAgentState(s.ma, "running"); err != nil {
-			s.mu.Lock()
-			if s.err == nil {
-				s.err = fmt.Errorf("persist subagent %q history: %w", s.ma.Name, err)
-			}
-			s.mu.Unlock()
-		}
+}
+
+func (s *historySink) flushState(status string) {
+	if s.ma == nil || s.ma.Manager == nil {
+		return
 	}
+	if err := s.ma.Manager.SaveAgentState(s.ma, status); err != nil {
+		s.mu.Lock()
+		if s.err == nil {
+			s.err = fmt.Errorf("persist subagent %q history: %w", s.ma.Name, err)
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *historySink) Append(m db.Message) {
+	if s.ma == nil {
+		return
+	}
+	s.AppendInMemory(m)
+	s.mu.Lock()
+	if s.batchDepth > 0 {
+		s.dirty = true
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	s.flushState("running")
 }
 
 func (s *historySink) Messages() []db.Message {

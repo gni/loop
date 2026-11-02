@@ -47,23 +47,11 @@ func LoadPackages(directories ...string) (PackageResources, error) {
 				}
 				resources.Providers[name] = profile
 			}
-			for _, group := range []struct {
-				paths       []string
-				destination *[]string
-			}{{manifest.Skills, &resources.Skills}, {manifest.Prompts, &resources.Prompts}, {manifest.Plugins, &resources.Plugins}, {manifest.Extensions, &resources.Extensions}} {
-				for _, path := range group.paths {
-					resolved, err := packages.ResourcePath(entry.Directory, path)
-					if err != nil {
-						return resources, err
-					}
-					*group.destination = append(*group.destination, resolved)
-				}
-			}
-			for event, path := range manifest.Hooks {
-				resolved, err := packages.ResourcePath(entry.Directory, path)
-				if err != nil {
-					return resources, err
-				}
+			resources.Skills = append(resources.Skills, manifest.Skills...)
+			resources.Prompts = append(resources.Prompts, manifest.Prompts...)
+			resources.Plugins = append(resources.Plugins, manifest.Plugins...)
+			resources.Extensions = append(resources.Extensions, manifest.Extensions...)
+			for event, resolved := range manifest.Hooks {
 				resources.Hooks = append(resources.Hooks, Hook{Event: event, Path: resolved, Directory: entry.Directory})
 			}
 		}

@@ -30,6 +30,7 @@ func NewPagedScrollback(width, height int) (*Scrollback, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create chat history cache: %w", err)
 	}
+	_ = os.Remove(f.Name())
 	b := NewScrollback(width, height)
 	b.archive = &scrollArchive{file: f, refs: 1}
 	b.archiveOwned = true
@@ -54,10 +55,16 @@ func (a *scrollArchive) release() error {
 	f := a.file
 	a.file = nil
 	a.warm = nil
+	if f == nil {
+		return nil
+	}
 	err := f.Close()
 	removeErr := os.Remove(f.Name())
 	if err != nil {
 		return err
+	}
+	if os.IsNotExist(removeErr) {
+		return nil
 	}
 	return removeErr
 }
@@ -93,8 +100,18 @@ func (a *scrollArchive) read(offset int64, size int) string {
 }
 
 func (r *scrollRow) load() {
-	if r.archive != nil && r.size > 0 && r.text == "" {
-		r.text = r.archive.read(r.offset, r.size)
+	if r.text != "" {
+		return
+	}
+	arch := r.archive
+	if arch == nil {
+		return
+	}
+	arch.mu.Lock()
+	offset, size := r.offset, r.size
+	arch.mu.Unlock()
+	if size > 0 {
+		r.text = arch.read(offset, size)
 	}
 }
 
@@ -107,23 +124,35 @@ func (a *scrollArchive) evict(r *scrollRow) {
 	}
 	if r.size == 0 && r.text != "" {
 		file, offset := a.file, a.end
-		a.end += int64(len(r.text))
-		a.mu.Unlock()
-		n, err := file.WriteAt([]byte(r.text), offset)
-		if err == nil && n != len(r.text) {
-			err = io.ErrShortWrite
-		}
-		if err != nil {
-			a.mu.Lock()
-			a.err = fmt.Errorf("write chat history cache: %w", err)
+		if file == nil {
 			a.mu.Unlock()
 			return
 		}
-		r.archive, r.offset, r.size = a, offset, n
-	} else {
+		text := r.text
+		a.end += int64(len(text))
+		a.refs++
 		a.mu.Unlock()
+
+		n, err := file.WriteAt([]byte(text), offset)
+		if err == nil && n != len(text) {
+			err = io.ErrShortWrite
+		}
+
+		a.mu.Lock()
+		if err != nil {
+			a.err = fmt.Errorf("write chat history cache: %w", err)
+			a.mu.Unlock()
+			_ = a.release()
+			return
+		}
+		r.archive, r.offset, r.size = a, offset, n
+		r.text = ""
+		a.mu.Unlock()
+		_ = a.release()
+		return
 	}
 	r.text = ""
+	a.mu.Unlock()
 }
 
 // NewHistoryPage has an independent row collection and shares the append-only
@@ -260,6 +289,12 @@ func (b *Scrollback) Prefetch(top, direction int) {
 		offset int64
 		size   int
 	}
+	a := b.archive
+	a.mu.Lock()
+	if a.warming || a.file == nil {
+		a.mu.Unlock()
+		return
+	}
 	var spans []span
 	bytes := 0
 	for i := start; i < min(start+HistoryPageSize, len(b.rows)-max(HistoryPageSize, b.Height)); i++ {
@@ -274,11 +309,6 @@ func (b *Scrollback) Prefetch(top, direction int) {
 		bytes += r.size
 	}
 	if len(spans) == 0 {
-		return
-	}
-	a := b.archive
-	a.mu.Lock()
-	if a.warming || a.file == nil {
 		a.mu.Unlock()
 		return
 	}

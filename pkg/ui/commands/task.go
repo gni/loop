@@ -28,9 +28,11 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 
 	redrawBar := func() {
 		if kiReader != nil {
+			activeCount := a.CountActiveTasks()
 			ui.GetUI().StateMu.Lock()
-			ui.GetUI().DrawStatusBar(w, *theme)
+			ui.GetUI().State.ActiveTasksCount = activeCount
 			ui.GetUI().StateMu.Unlock()
+			ui.GetUI().DrawStatusBar(w, *theme)
 		}
 	}
 

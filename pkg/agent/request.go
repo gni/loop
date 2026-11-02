@@ -55,19 +55,19 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				}
 				msg.ToolCalls = normalisedTCs
 			}
-			if msg.Content == "" && len(msg.ToolCalls) == 0 {
+			if msg.Content == "" && len(msg.ToolCalls) == 0 && len(msg.ContentBlocks) == 0 {
 				continue
 			}
 		} else {
 			msg.Content = truncateNonFileToolContent(msg.Role, msg.Name, msg.Content, nonFileToolMaxChars, nonFileToolTruncateNotice)
-			if msg.Content == "" {
+			if msg.Content == "" && len(msg.ContentBlocks) == 0 {
 				msg.Content = " "
 			}
 		}
 
 		if msg.Role == "user" && len(validMessages) > 0 && validMessages[len(validMessages)-1].Role == "user" {
 			lastIdx := len(validMessages) - 1
-			if validMessages[lastIdx].Content == msg.Content {
+			if validMessages[lastIdx].Content == msg.Content && len(msg.ContentBlocks) == 0 {
 				continue
 			}
 			validMessages[lastIdx].Content += "\n\n" + msg.Content
@@ -87,6 +87,9 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 // instructions and the latest message. Tool-call/result groups are dropped as
 // a unit; pairing is checked again by the caller.
 func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Message {
+	if len(messages) == 0 {
+		return messages
+	}
 	prefix := 0
 	for prefix < len(messages) && messages[prefix].Role == "system" {
 		prefix++
@@ -103,19 +106,26 @@ func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Mess
 			protected = i
 		}
 	}
+	msgChars := make([]int, len(messages))
+	totalChars := 0
+	for i, msg := range messages {
+		c := messageTokenChars(msg)
+		msgChars[i] = c
+		totalChars += c
+	}
+	if TokensFromChars(totalChars) <= limitTokens {
+		return messages
+	}
 	start := prefix
-	for start < protected {
-		candidate := make([]db.Message, 0, prefix+len(messages)-start)
-		candidate = append(candidate, messages[:prefix]...)
-		candidate = append(candidate, messages[start:]...)
-		if requestTokens(candidate) <= limitTokens {
-			return candidate
-		}
+	for start < protected && TokensFromChars(totalChars) > limitTokens {
 		next := start + 1
 		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
 			for next < protected && messages[next].Role == "tool" {
 				next++
 			}
+		}
+		for i := start; i < next; i++ {
+			totalChars -= msgChars[i]
 		}
 		start = next
 	}
@@ -271,37 +281,69 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		}
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err == nil {
-		var payload map[string]any
-		err = json.Unmarshal(jsonData, &payload)
-		if err == nil {
-			wire := make([]map[string]any, 0, len(reqBody.Messages))
-			for _, msg := range reqBody.Messages {
-				item := map[string]any{"role": msg.Role, "content": msg.ChatContent()}
-				if len(msg.ToolCalls) > 0 {
-					item["tool_calls"] = msg.ToolCalls
-				}
-				if msg.ToolCallID != "" {
-					item["tool_call_id"] = msg.ToolCallID
-				}
-				if len(msg.CacheControl) > 0 {
-					item["cache_control"] = msg.CacheControl
-				}
-				if msg.Name != "" {
-					item["name"] = msg.Name
-				}
-				wire = append(wire, item)
-			}
-			payload["messages"] = wire
-			jsonData, err = json.Marshal(payload)
-		}
+	wireMessages := make([]wireChatMessage, 0, len(reqBody.Messages))
+	for _, msg := range reqBody.Messages {
+		wireMessages = append(wireMessages, wireChatMessage{
+			Role:         msg.Role,
+			Content:      msg.ChatContent(),
+			ToolCalls:    msg.ToolCalls,
+			ToolCallID:   msg.ToolCallID,
+			CacheControl: msg.CacheControl,
+			Name:         msg.Name,
+		})
 	}
+	wireReq := chatCompletionWireRequest{
+		Model:                reqBody.Model,
+		Messages:             wireMessages,
+		Tools:                reqBody.Tools,
+		ParallelToolCalls:    reqBody.ParallelToolCalls,
+		Temperature:          reqBody.Temperature,
+		FrequencyPenalty:     reqBody.FrequencyPenalty,
+		PresencePenalty:      reqBody.PresencePenalty,
+		Stream:               reqBody.Stream,
+		StreamOptions:        reqBody.StreamOptions,
+		ReasoningEffort:      reqBody.ReasoningEffort,
+		ReasoningFormat:      reqBody.ReasoningFormat,
+		ThinkingBudgetTokens: reqBody.ThinkingBudgetTokens,
+		ReasoningControl:     reqBody.ReasoningControl,
+		ChatTemplateKwargs:   reqBody.ChatTemplateKwargs,
+		MaxCompletionTokens:  reqBody.MaxCompletionTokens,
+		MaxTokens:            reqBody.MaxTokens,
+	}
+	jsonData, err := json.Marshal(wireReq)
 	if err != nil {
 		return reqBody, nil, nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
 	return reqBody, cleanMessages, jsonData, nil
+}
+
+type wireChatMessage struct {
+	Role         string               `json:"role"`
+	Content      any                  `json:"content"`
+	ToolCalls    []db.ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID   string               `json:"tool_call_id,omitempty"`
+	CacheControl []message.CacheBlock `json:"cache_control,omitempty"`
+	Name         string               `json:"name,omitempty"`
+}
+
+type chatCompletionWireRequest struct {
+	Model                string              `json:"model"`
+	Messages             []wireChatMessage   `json:"messages"`
+	Tools                []Tool              `json:"tools,omitempty"`
+	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
+	Temperature          *float64            `json:"temperature,omitempty"`
+	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
+	Stream               bool                `json:"stream"`
+	StreamOptions        *StreamOptions      `json:"stream_options,omitempty"`
+	ReasoningEffort      string              `json:"reasoning_effort,omitempty"`
+	ReasoningFormat      string              `json:"reasoning_format,omitempty"`
+	ThinkingBudgetTokens int                 `json:"thinking_budget_tokens,omitempty"`
+	ReasoningControl     bool                `json:"reasoning_control,omitempty"`
+	ChatTemplateKwargs   *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+	MaxCompletionTokens  int                 `json:"max_completion_tokens,omitempty"`
+	MaxTokens            int                 `json:"max_tokens,omitempty"`
 }
 
 func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
@@ -315,5 +357,5 @@ func (p *OpenAICompatibleProvider) GetLimits() limits.Limits {
 	if p.Config != nil {
 		return limits.Resolve(p.Config.Limits)
 	}
-	return limits.Resolve(limits.Master)
+	return limits.Resolve(limits.Current())
 }

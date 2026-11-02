@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
 	"loop/pkg/config"
@@ -108,7 +106,7 @@ func (h *ChatHistory) scheduleLayoutsLocked() {
 	go func() {
 		var err error
 		if len(messages) == 0 && size > 0 {
-			err = json.NewDecoder(io.NewSectionReader(job.file, offset, int64(size))).Decode(&messages)
+			messages, err = h.readTurnMessagesFromFile(job.file, offset, size)
 		}
 		if err == nil {
 			hooks := render.HistoryRenderHooks{}

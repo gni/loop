@@ -30,19 +30,24 @@ func isDisabledDebugTarget(target string) bool {
 	}
 }
 
+// ResolveDebugTarget resolves the canonical debug log file path, or "" if disabled.
+func ResolveDebugTarget(customPath string) string {
+	target := tool.FirstNonEmpty(strings.TrimSpace(customPath), strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE")))
+	if isDisabledDebugTarget(target) || target == "" {
+		return ""
+	}
+	if absTarget, err := filepath.Abs(target); err == nil {
+		return absTarget
+	}
+	return target
+}
+
 // NewDebugLogger enables metadata-only execution tracing for an explicit target.
 // Set debug_log_file or LOOP_DEBUG_FILE to a path to opt in.
 func NewDebugLogger(_ string, customPath string) *DebugLogger {
-	target := tool.FirstNonEmpty(strings.TrimSpace(customPath), strings.TrimSpace(os.Getenv("LOOP_DEBUG_FILE")))
-	if isDisabledDebugTarget(target) {
-		return nil
-	}
+	target := ResolveDebugTarget(customPath)
 	if target == "" {
 		return nil
-	}
-
-	if absTarget, err := filepath.Abs(target); err == nil {
-		target = absTarget
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {

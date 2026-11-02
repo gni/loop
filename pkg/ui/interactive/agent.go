@@ -199,7 +199,7 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 											parentName = parentOptions[parentIdx]
 										}
 										skillOptions := []string{"Generic (All Active Skills)"}
-										for _, s := range mam.BaseAgent.ActiveSkills {
+										for _, s := range mam.BaseAgent.GetActiveSkills() {
 											skillOptions = append(skillOptions, s.Name)
 										}
 										if skillIdx, errSelect2 := RunInteractiveSelect(sr, sigChan, rlOutput, "Select Dedicated Reference Skill:", skillOptions, theme); errSelect2 == nil {

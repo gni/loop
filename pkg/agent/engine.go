@@ -24,8 +24,12 @@ type agentSink struct {
 }
 
 func (s *agentSink) Append(m db.Message) {
+	if s.a != nil {
+		s.a.MessagesMu.Lock()
+	}
 	*s.messages = append(*s.messages, m)
 	if s.a != nil {
+		s.a.MessagesMu.Unlock()
 		s.a.emit(Event{Type: "message_end", SessionID: s.sessionID, Message: &m})
 	}
 	if s.sessionID != "" && s.a != nil {

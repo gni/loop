@@ -23,9 +23,10 @@ const (
 
 // Terminal manages terminal display modes, screen buffers, and cursor state.
 type Terminal struct {
-	writer   io.Writer
-	altDepth int
-	mu       sync.Mutex
+	writer    io.Writer
+	altWriter io.Writer
+	altDepth  int
+	mu        sync.Mutex
 }
 
 var defaultTerminal = New(os.Stderr)
@@ -52,12 +53,57 @@ func (t *Terminal) RestoreCursor() {
 	fmt.Fprint(t.writer, ShowCursor)
 }
 
+// EnterAltScreen switches w (or the default writer) into the alternate screen buffer
+// and hides the cursor, tracking nesting depth for signal and panic recovery.
+func (t *Terminal) EnterAltScreen(w io.Writer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if w == nil {
+		w = t.writer
+	}
+	t.altWriter = w
+	t.altDepth++
+	fmt.Fprint(w, EnterAlternateScreen+"\x1b[?25l")
+}
+
+// ExitAltScreen decrements alternate screen nesting depth and restores the primary
+// screen buffer and cursor visibility when the outermost caller exits.
+func (t *Terminal) ExitAltScreen(w io.Writer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if w == nil {
+		w = t.altWriter
+	}
+	if w == nil {
+		w = t.writer
+	}
+	if t.altDepth > 0 {
+		t.altDepth--
+	}
+	if t.altDepth == 0 {
+		t.altWriter = nil
+		fmt.Fprint(w, "\x1b[?25h"+ExitAlternateScreen)
+	}
+}
+
+// InAltScreen reports whether the terminal is currently in the alternate screen buffer.
+func (t *Terminal) InAltScreen() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.altDepth > 0
+}
+
 // ForceExitAltScreen unconditionally exits the alternate screen buffer and makes the cursor visible.
 func (t *Terminal) ForceExitAltScreen() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.altDepth > 0 {
+		altW := t.altWriter
 		t.altDepth = 0
+		t.altWriter = nil
+		if altW != nil && altW != t.writer {
+			fmt.Fprint(altW, ExitAlternateScreen)
+		}
 		fmt.Fprint(t.writer, ExitAlternateScreen)
 	}
 }
@@ -70,7 +116,12 @@ func (t *Terminal) RecoverPanic(onPanic func()) {
 			onPanic()
 		}
 		t.mu.Lock()
+		altW := t.altWriter
 		t.altDepth = 0
+		t.altWriter = nil
+		if altW != nil && altW != t.writer {
+			fmt.Fprint(altW, ExitAlternateScreen+DisableBracketedPaste)
+		}
 		fmt.Fprint(t.writer, ExitAlternateScreen+DisableBracketedPaste)
 		t.mu.Unlock()
 		panic(r)

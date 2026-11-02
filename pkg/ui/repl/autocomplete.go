@@ -88,14 +88,12 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 		for _, c := range baseAutocompleteCandidates {
 			addCandidate(c)
 		}
-		for _, t := range tool.LoadPromptTemplates(commands.PromptTemplateCommandDir()) {
-			addCandidate("/" + t.Name)
+		for _, dir := range commands.PromptTemplateDirs(a) {
+			for _, t := range tool.LoadPromptTemplates(dir) {
+				addCandidate("/" + t.Name)
+			}
 		}
-		workspaceRoot := ""
-		if a != nil {
-			workspaceRoot = a.GetWorkspaceRoot()
-		}
-		for _, ext := range ui.ListExtensions(workspaceRoot) {
+		for _, ext := range ui.ListAgentExtensions(a) {
 			addCandidate(ext.Name)
 		}
 	}
@@ -137,7 +135,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 		case strings.HasPrefix(prefixToPos, "/skills load ") && a != nil:
 			filterPrefix := strings.TrimPrefix(prefixToPos, "/skills load ")
-			for _, s := range a.ActiveSkills {
+			for _, s := range a.GetActiveSkills() {
 				if strings.HasPrefix(s.Name, filterPrefix) {
 					matches = append(matches, s.Name)
 				}

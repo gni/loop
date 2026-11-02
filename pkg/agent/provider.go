@@ -31,7 +31,17 @@ type OpenAICompatibleProvider struct {
 	ContextLimitMu         sync.RWMutex
 
 	thinkingMu        sync.Mutex
+	probeMu           sync.Mutex
 	ChunkDropObserver ChunkDropObserver
+}
+
+func (p *OpenAICompatibleProvider) chunkDropObserver(ctx context.Context) ChunkDropObserver {
+	if ctx != nil {
+		if obs, ok := ctx.Value(contextKeyChunkDropObserver).(ChunkDropObserver); ok && obs != nil {
+			return obs
+		}
+	}
+	return p.ChunkDropObserver
 }
 
 func (p *OpenAICompatibleProvider) activeProviderAuthStatus() error {
@@ -115,9 +125,10 @@ func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Co
 }
 
 func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chunkChan chan<- StreamChunk, chunkType string, dest *strings.Builder) *FallbackToolTextFilter {
+	observer := p.chunkDropObserver(ctx)
 	emit := func(text string) {
 		dest.WriteString(text)
-		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: chunkType, Content: text}, p.ChunkDropObserver)
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: chunkType, Content: text}, observer)
 	}
 	if p.Config == nil || !strings.EqualFold(p.Config.ToolProtocol, "xml") {
 		return fallback.NewPlainTextFilter(emit)
@@ -126,14 +137,14 @@ func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chun
 	filter.SetToolCallbacks(
 		func(toolName string, idx int) {
 			normName := tool.NormalizeName(toolName)
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx}, p.ChunkDropObserver)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx}, observer)
 		},
 		func(chunk string, idx int) {
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, p.ChunkDropObserver)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, observer)
 		},
 	)
 	filter.SetToolTargetCallback(func(target string, idx int) {
-		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, p.ChunkDropObserver)
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, observer)
 	})
 	return filter
 }
@@ -338,7 +349,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
 		}
-		if (choice.Delta.ReasoningContent != "" || choice.Delta.Content != "") && generationStart.IsZero() {
+		if (choice.Delta.ReasoningContent != "" || choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0) && generationStart.IsZero() {
 			generationStart = time.Now()
 		}
 
@@ -351,6 +362,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 		if len(choice.Delta.ToolCalls) > 0 {
 			thinkingFilter.Flush()
+			observer := p.chunkDropObserver(ctx)
 
 			for _, tc := range choice.Delta.ToolCalls {
 				idx := 0
@@ -380,10 +392,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				if tc.Function.Name != "" {
 					tcName := tool.NormalizeName(tc.Function.Name)
 					existing.Function.Name = tcName
-					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx}, p.ChunkDropObserver)
+					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: tcName, ToolCallIndex: idx}, observer)
 				}
 				if tc.Function.Arguments != "" {
-					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx}, p.ChunkDropObserver)
+					emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: tc.Function.Arguments, ToolCallIndex: idx}, observer)
 				}
 			}
 		}
