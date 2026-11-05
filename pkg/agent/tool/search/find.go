@@ -141,7 +141,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if len(matchedPaths) == 0 {
-		return fmt.Sprintf("No files found matching pattern '%s' in '%s'", pattern, searchPath), nil
+		return fmt.Sprintf("No files found matching pattern '%s' in '%s'\nCheck the parent directory with list, or broaden the filename glob. An empty search does not prove that the intended file should be created.", pattern, searchPath), nil
 	}
 
 	sort.Strings(matchedPaths)

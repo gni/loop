@@ -23,6 +23,7 @@ func (e *TurnEngine) emitRejectedToolCall(
 	theme style.UITheme,
 	render EngineRenderer,
 ) {
+	e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, fmt.Errorf("tool rejected: %s", output))
 	e.recordRejectedState(output)
 	if e.policy.ToolBatch != nil {
 		e.policy.ToolBatch.SetResult(idx, output, fmt.Errorf("tool rejected"))
@@ -67,12 +68,28 @@ func (e *TurnEngine) finalizeToolCall(
 ) {
 	a := e.agent
 	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: rawOutput, IsError: toolErr != nil})
-	e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr)
+	if !isRepetitionError(toolErr) {
+		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr)
+	}
 	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
 		rawOutput += "\n\n[" + reminder + "]"
 	}
+	recovery := tool.RecoveryFor(tc.Function.Name, tc.Function.Arguments, toolErr)
+	if recovery != nil && recovery.Tool != "" {
+		allowed := false
+		if e.agent.Registry != nil {
+			_, available := e.agent.Registry.Lookup(recovery.Tool)
+			allowed = available && !e.agent.Registry.IsDisabled(recovery.Tool)
+		}
+		if e.policy.ToolAllowlist != nil {
+			allowed = allowed && tool.IsAllowedTool(recovery.Tool, e.policy.ToolAllowlist())
+		}
+		if !allowed {
+			recovery.Tool, recovery.Arguments = "", nil
+		}
+	}
 	if toolErr != nil {
-		rawOutput = FormatToolExecutionFailure(tc.Function.Name, rawOutput, toolErr)
+		rawOutput = FormatToolExecutionFailure(tc.Function.Name, rawOutput, toolErr, recovery)
 	}
 	if rawOutput == "" {
 		rawOutput = "(no output)"
@@ -143,7 +160,7 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, IsError: toolErr != nil})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, Recovery: recovery, IsError: toolErr != nil})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}

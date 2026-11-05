@@ -34,18 +34,24 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 		return false
 	}
 	decision := promptTokens + completionTokens
-	reserve := limits.CompactionReserveTokens()
+	// A reserve larger than the local context would request compaction after
+	// every tool turn. Scale it down while keeping room for the output floor.
+	outputFloor := limits.Current().CompletionTokenFloor
+	framingHeadroom := max(64, effectiveLimit/40)
+	minimumReserve := min(max(0, effectiveLimit-1), outputFloor+framingHeadroom)
+	reserve := min(limits.CompactionReserveTokens(), max(1, effectiveLimit/4))
 
 	r := CompressionThresholdRatio()
 	if len(ratio) > 0 && ratio[0] > 0 {
 		r = ratio[0]
 		ratioHeadroom := int((1.0 - r) * float64(effectiveLimit))
-		const minSafeHeadroom = 4096
+		minSafeHeadroom := min(4096, max(1, effectiveLimit/10))
 		if ratioHeadroom < reserve && ratioHeadroom >= minSafeHeadroom {
 			reserve = ratioHeadroom
 		}
 	}
 
+	reserve = max(reserve, minimumReserve)
 	return decision >= effectiveLimit-reserve || decision >= int(r*float64(effectiveLimit))
 }
 
@@ -179,7 +185,7 @@ func (a *Agent) CompressHistory(
 		close(drained)
 	}()
 
-	summaryAssistantMsg, _, _, err := a.StreamChatCompletionsIsolated(ctx, summaryMsgs, []string{}, dummyChan)
+	summaryAssistantMsg, _, _, err := a.StreamChatCompletionsIsolated(run.WithoutTaskInstructions(ctx), summaryMsgs, []string{}, dummyChan)
 	close(dummyChan)
 	select {
 	case <-drained:
@@ -232,9 +238,7 @@ func (a *Agent) CompressHistory(
 
 	newMessages := make([]db.Message, 0, 2+len(keptMessages))
 	newMessages = append(newMessages, (*messages)[0])
-	if objective := pinnedObjective(run.Objective(ctx), keptMessages); objective != nil {
-		newMessages = append(newMessages, *objective)
-	}
+	newMessages = append(newMessages, pinnedTaskInstructions(ctx, keptMessages, *messages)...)
 	newMessages = append(newMessages, summaryMsg)
 	newMessages = append(newMessages, keptMessages...)
 	newMessages = EnforceToolPairingInvariance(newMessages)

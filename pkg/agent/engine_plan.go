@@ -77,6 +77,13 @@ func (e *TurnEngine) prepareToolCallPlan(
 
 	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)
 
+	if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
+		plan.toolErr = guardErr
+		plan.output = guardErr.Error()
+		plan.guardHit = true
+		return plan, false, false
+	}
+
 	if e.policy.ToolAllowlist != nil && !tool.IsAllowedTool(tc.Function.Name, e.policy.ToolAllowlist()) {
 		plan.toolErr = fmt.Errorf("tool '%s' is not allowed for this agent", tc.Function.Name)
 		plan.output = plan.toolErr.Error()
@@ -118,12 +125,6 @@ func (e *TurnEngine) prepareToolCallPlan(
 		plan.output = rejOutput
 		plan.skipped = true
 		return plan, false, false
-	}
-
-	if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
-		plan.toolErr = guardErr
-		plan.output = guardErr.Error()
-		plan.guardHit = true
 	}
 
 	return plan, false, false

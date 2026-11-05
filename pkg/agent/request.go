@@ -72,17 +72,6 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 			}
 		}
 
-		if msg.Role == "user" && len(validMessages) > 0 && validMessages[len(validMessages)-1].Role == "user" {
-			lastIdx := len(validMessages) - 1
-			if validMessages[lastIdx].Content == msg.Content && len(msg.ContentBlocks) == 0 {
-				continue
-			}
-			validMessages[lastIdx].Content += "\n\n" + msg.Content
-			validMessages[lastIdx].ContentBlocks = append(append([]message.ContentBlock(nil), validMessages[lastIdx].ContentBlocks...), msg.ContentBlocks...)
-			totalChars += 2 + len(msg.Content)
-			continue
-		}
-
 		validMessages = append(validMessages, msg)
 		totalChars += messageChars(msg)
 	}
@@ -90,9 +79,9 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	return validMessages, totalChars
 }
 
-// trimMessagesToTokenBudget drops the oldest turns while preserving system
-// instructions and the latest message. Tool-call/result groups are dropped as
-// a unit; pairing is checked again by the caller.
+// trimMessagesToTokenBudget evicts old conversation units while preserving
+// system instructions, the active task/user updates, and the latest evidence.
+// Assistant calls and their tool responses are removed together.
 func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Message {
 	if len(messages) == 0 {
 		return messages
@@ -101,47 +90,49 @@ func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Mess
 	for prefix < len(messages) && messages[prefix].Role == "system" {
 		prefix++
 	}
-	// Never remove the assistant call that owns the latest tool results.
-	// An orphan tool result would be discarded by the pairing validator.
 	protected := len(messages) - 1
+	for protected >= prefix && isPinnedInstruction(messages[protected]) {
+		protected--
+	}
 	if protected >= prefix && messages[protected].Role == "tool" {
-		i := protected
-		for i >= prefix && messages[i].Role == "tool" {
-			i--
-		}
-		if i >= prefix && messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
-			protected = i
+		for protected > prefix && messages[protected].Role == "tool" {
+			protected--
 		}
 	}
-	msgChars := make([]int, len(messages))
-	totalChars := 0
-	for i, msg := range messages {
-		c := messageTokenChars(msg)
-		msgChars[i] = c
-		totalChars += c
+	sizes := make([]int, len(messages))
+	total := 0
+	for index, msg := range messages {
+		sizes[index] = messageTokenChars(msg)
+		total += sizes[index]
 	}
-	if TokensFromChars(totalChars) <= limitTokens {
+	if TokensFromChars(total) <= limitTokens {
 		return messages
 	}
-	start := prefix
-	for start < protected && TokensFromChars(totalChars) > limitTokens {
-		next := start + 1
-		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
-			for next < protected && messages[next].Role == "tool" {
-				next++
+	removed := make([]bool, len(messages))
+	for index := prefix; index < protected && TokensFromChars(total) > limitTokens; {
+		if isPinnedInstruction(messages[index]) {
+			index++
+			continue
+		}
+		end := index + 1
+		if messages[index].Role == "assistant" && len(messages[index].ToolCalls) > 0 {
+			for end < protected && messages[end].Role == "tool" {
+				end++
 			}
 		}
-		for i := start; i < next; i++ {
-			totalChars -= msgChars[i]
+		for at := index; at < end; at++ {
+			removed[at] = true
+			total -= sizes[at]
 		}
-		start = next
+		index = end
 	}
-	if start == prefix {
-		return messages
+	trimmed := make([]db.Message, 0, len(messages))
+	for index, msg := range messages {
+		if !removed[index] {
+			trimmed = append(trimmed, msg)
+		}
 	}
-	trimmed := make([]db.Message, 0, prefix+len(messages)-start)
-	trimmed = append(trimmed, messages[:prefix]...)
-	return append(trimmed, messages[start:]...)
+	return trimmed
 }
 
 // chatCapabilities never guesses support from the name of the endpoint.
@@ -217,7 +208,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 
 	reqBody := ChatCompletionRequest{
 		Model:    model,
-		Messages: cleanMessages,
+		Messages: mergeAdjacentUserMessages(cleanMessages),
 		Tools:    finalTools,
 		Stream:   true,
 	}

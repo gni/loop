@@ -334,9 +334,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	if strings.TrimSpace(result) == "" {
 		if pattern == "" && globPattern != "" {
-			return fmt.Sprintf("No files found matching glob: %s", globPattern), nil
+			return fmt.Sprintf("No files found matching glob: %s\nCheck the search path and broaden the glob before changing the content pattern.", globPattern), nil
 		}
-		return fmt.Sprintf("No matches found for pattern: %s", pattern), nil
+		return fmt.Sprintf("No matches found for pattern: %s\nCheck the path/glob first. For exact code text use literal=true; otherwise try a shorter distinctive identifier or adjust the regex. Change one filter at a time.", pattern), nil
 	}
 
 	if limitReached || outputSizeReached {

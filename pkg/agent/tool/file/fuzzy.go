@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"loop/pkg/domain/diagnostic"
 )
 
 func normalizeForFuzzyMatch(text string) string {
@@ -205,7 +207,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		}, nil
 	}
 	if exactCount > 1 {
-		return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", exactCount)
+		return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", exactCount)}
 	}
 
 	normContent := normalizeForFuzzyMatch(content)
@@ -225,7 +227,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 				}, nil
 			}
 		} else if normCount > 1 {
-			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", normCount)
+			return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", normCount)}
 		}
 	}
 
@@ -310,7 +312,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			}, nil
 		}
 		if matchesCount > 1 {
-			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchesCount)
+			return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchesCount)}
 		}
 	}
 
@@ -363,7 +365,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			}, nil
 		}
 		if matchCount > 1 {
-			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchCount)
+			return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchCount)}
 		}
 	}
 
@@ -412,7 +414,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			}
 		}
 		if matchCount > 1 {
-			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchCount)
+			return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", matchCount)}
 		}
 	}
 
@@ -479,7 +481,7 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 			}, nil
 		}
 		if bestMatchCount > 1 {
-			return nil, fmt.Errorf("oldText block is not unique; found %d occurrences in file", bestMatchCount)
+			return nil, &diagnostic.Error{Code: diagnostic.AmbiguousEdit, Cause: fmt.Errorf("oldText block is not unique; found %d occurrences in file", bestMatchCount)}
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"loop/pkg/domain/diagnostic"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -181,7 +182,7 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			m, err := locateEditMatch(content, edit.OldText, edit.NewText)
 			if err != nil {
 				discardIfUncommitted()
-				return "", fmt.Errorf("edit[%d]: %w", i, err)
+				return "", diagnostic.WithTarget(fmt.Errorf("edit[%d]: %w", i, err), targetPath)
 			}
 			if m == nil {
 				if replacementAlreadyApplied(content, edit.NewText) {
@@ -191,9 +192,9 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				discardIfUncommitted()
 				if closestLine := findClosestLineMatch(content, edit.OldText); closestLine > 0 {
 					snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
-					return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s. Closest match near line %d:\n---\n%s\n---", i, targetPath, closestLine, snippet)
+					return "", &diagnostic.Error{Code: diagnostic.EditNotFound, Target: targetPath, Line: closestLine, Cause: fmt.Errorf("edit[%d]: oldText block was not found in file %s. Closest match near line %d:\n---\n%s\n---", i, targetPath, closestLine, snippet)}
 				}
-				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s", i, targetPath)
+				return "", &diagnostic.Error{Code: diagnostic.EditNotFound, Target: targetPath, Cause: fmt.Errorf("edit[%d]: oldText block was not found in file %s", i, targetPath)}
 			}
 
 			updatedContent := content[:m.startByte] + m.newText + content[m.endByte:]

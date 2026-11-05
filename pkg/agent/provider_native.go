@@ -115,6 +115,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 	if err != nil {
 		return "", nil, err
 	}
+	clean = mergeAdjacentUserMessages(clean)
 	messages = clean
 
 	modelName := p.Config.ResolveModelAlias(p.Config.Model)

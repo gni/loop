@@ -1,6 +1,9 @@
 package message
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"loop/pkg/domain/diagnostic"
+)
 
 // Standard conversational roles.
 const (
@@ -40,7 +43,8 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
-	ContextKind string `json:"context_kind,omitempty"`
+	Recovery    *diagnostic.Recovery `json:"recovery,omitempty"`
+	ContextKind string               `json:"context_kind,omitempty"`
 	// ToolOutcome records uncertainty after interruption; provider wire adapters
 	// omit this local execution metadata.
 	ToolOutcome       string          `json:"tool_outcome,omitempty"`

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"loop/pkg/agent/tool"
+	"loop/pkg/domain/diagnostic"
 )
 
 // FormatDefensiveError turns syntax errors into concise, actionable error messages.
@@ -46,11 +49,27 @@ func FormatDefensiveError(toolName string, err error) string {
 
 // FormatToolExecutionFailure preserves useful tool diagnostics while adding the
 // action-oriented failure context expected by the agent and terminal UI.
-func FormatToolExecutionFailure(toolName, output string, err error) string {
+func FormatToolExecutionFailure(toolName, output string, err error, hints ...*diagnostic.Recovery) string {
 	if err == nil {
 		return strings.TrimRight(output, "\r\n")
 	}
 	diagnostic := strings.Trim(output, "\r\n")
+	recovery := tool.RecoveryFor(toolName, "", err)
+	if len(hints) > 0 {
+		recovery = hints[0]
+	}
+	if recovery != nil {
+		if diagnostic == "" {
+			diagnostic = err.Error()
+		} else if diagnostic != err.Error() {
+			diagnostic += "\n" + err.Error()
+		}
+		diagnostic += fmt.Sprintf("\n\nRecovery [%s]: %s", recovery.Code, recovery.Instruction)
+		if recovery.Tool != "" {
+			diagnostic += fmt.Sprintf("\nSuggested next call: %s %s", recovery.Tool, recovery.Arguments)
+		}
+		return diagnostic
+	}
 	if toolName == "bash" {
 		if diagnostic != "" {
 			if strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {

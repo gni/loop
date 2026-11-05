@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"loop/pkg/agent/run"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 )
@@ -96,7 +98,11 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 		if msg.IsError {
 			status = "failed"
 		}
-		return fmt.Sprintf("Tool %s (%s; outcome %s): %s", msg.Name, status, msg.ToolOutcome, truncateTranscriptSegment(msg.Content, maxBytes))
+		detail := msg.Content
+		if msg.IsError && msg.Recovery != nil {
+			detail = fmt.Sprintf("Recovery [%s]: %s\nDiagnostic: %s", msg.Recovery.Code, msg.Recovery.Instruction, detail)
+		}
+		return fmt.Sprintf("Tool %s (%s; outcome %s): %s", msg.Name, status, msg.ToolOutcome, truncateTranscriptSegment(detail, maxBytes))
 	}
 	return ""
 }
@@ -135,14 +141,42 @@ func observedCompactionFiles(messages []db.Message) (map[string]bool, map[string
 	return reads, changes
 }
 
-func pinnedObjective(objective string, kept []db.Message) *db.Message {
-	if strings.TrimSpace(objective) == "" {
-		return nil
-	}
-	for _, msg := range kept {
-		if msg.Role == "user" && msg.Content == objective {
-			return nil
+// Retain every explicit update, not only the initial goal, when a long task
+// compacts. The same exact instructions then survive saving and reloading.
+func pinnedTaskInstructions(ctx context.Context, kept, source []db.Message) []db.Message {
+	instructions := run.Instructions(ctx)
+	if len(instructions) == 0 {
+		start := -1
+		for index := range source {
+			if source[index].Role == "user" && source[index].ContextKind == "objective" {
+				start = index
+			}
+		}
+		if start >= 0 {
+			for _, msg := range source[start:] {
+				if isPinnedInstruction(msg) {
+					instructions = append(instructions, msg.Content)
+				}
+			}
 		}
 	}
-	return &db.Message{Role: "user", ContextKind: "objective", Content: "[Original task; later user instructions take precedence]\n" + objective}
+	var pinned []db.Message
+	for index, instruction := range instructions {
+		present := false
+		for _, msg := range kept {
+			if msg.Role == "user" && strings.TrimSpace(msg.Content) == instruction {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		kind := "instruction"
+		if index == 0 {
+			kind = "objective"
+		}
+		pinned = append(pinned, db.Message{Role: "user", ContextKind: kind, Content: instruction})
+	}
+	return pinned
 }

@@ -9,19 +9,19 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func (ma *MultiAgent) compressIfNeeded(ctx context.Context, w io.Writer, theme style.UITheme) error {
+func (ma *MultiAgent) compressIfNeeded(ctx context.Context, w io.Writer, theme style.UITheme) (bool, error) {
 	history := newSwarmSink(ma).Messages()
 	if len(history) <= 4 {
-		return nil
+		return false, nil
 	}
 	// Prompt usage already measures the next request; accumulated completion
 	// tokens must not trigger repeated compaction of a small current context.
 	promptTokens, _ := ma.BaseAgent.GetGlobalTokens(history, ma.GetToolAllowlist())
 	effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
 	if !ma.BaseAgent.CompactionTrigger(promptTokens, 0, effectiveLimit) {
-		return nil
+		return false, nil
 	}
-	return ma.compactHistory(ctx, w, theme)
+	return true, ma.compactHistory(ctx, w, theme)
 }
 
 func (ma *MultiAgent) compactHistory(ctx context.Context, w io.Writer, theme style.UITheme) error {

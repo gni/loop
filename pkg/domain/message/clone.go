@@ -2,6 +2,11 @@ package message
 
 func Clone(input Message) Message {
 	output := input
+	if input.Recovery != nil {
+		recovery := *input.Recovery
+		recovery.Arguments = append(recovery.Arguments[:0:0], recovery.Arguments...)
+		output.Recovery = &recovery
+	}
 	if input.Usage != nil {
 		usage := *input.Usage
 		if usage.Cost != nil {

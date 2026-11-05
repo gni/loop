@@ -332,3 +332,14 @@ type EngineLoader interface {
 	Feed()
 	PauseDots()
 }
+
+// HistoryCompacted permits rereading evidence that has left the model context,
+// while retaining repeated-failure diagnostics and the operation guard.
+func (e *TurnEngine) HistoryCompacted() { e.guard.ForgetInspectionResults() }
+
+func (e *TurnEngine) UserSteered() {
+	previous := e.guard
+	e.guard = NewTurnExecutionGuardWithConfig(previous.maxConsecutiveCalls, previous.reminderThresholds)
+	e.guard.SetObservationInvalidator(previous.invalidator)
+	e.consecutiveGuardRejections = 0
+}

@@ -16,7 +16,7 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 	}
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
-	userMsg := db.Message{Role: "user", Content: prompt, ContentBlocks: a.InputBlocks}
+	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks}
 	a.MessagesMu.Lock()
 	*messages = append(*messages, userMsg)
 	var firstSys *db.Message
@@ -46,10 +46,14 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 	engine.BeginTurn()
 
 	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
+	compactionDue := len(*messages) > 4 && a.CompactionTrigger(globalPromptTokensEst, 0, effectiveLimit)
 	timer.Time("compaction", "start")
 	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 	if err != nil {
 		return 0, 0, err
+	}
+	if compactionDue {
+		engine.HistoryCompacted()
 	}
 	if err := a.persistenceError(); err != nil {
 		return 0, 0, err

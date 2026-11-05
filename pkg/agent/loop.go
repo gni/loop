@@ -220,6 +220,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}
 			if a.NextInput != nil {
 				for _, input := range a.NextInput() {
+					if input.Role == "user" && (input.ContextKind == "" || input.ContextKind == "instruction") {
+						run.AddInstruction(ctx, input.Content)
+						input.ContextKind = "instruction"
+						engine.UserSteered()
+					}
 					sink.Append(input)
 				}
 			}
@@ -431,7 +436,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				return fmt.Errorf("current input exceeds the local model context")
 			}
 			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
-			return a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
+			if err := a.CompressHistory(ctx, messages, sessionID, theme, writerToUse); err != nil {
+				return err
+			}
+			engine.HistoryCompacted()
+			return nil
 		},
 		IsContextOverflow: IsContextOverflow,
 		IsRecoverable:     IsRecoverableInferenceError,

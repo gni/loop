@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
@@ -47,7 +48,7 @@ func (p *OpenAICompatibleProvider) budgetRequest(messages []db.Message, tools []
 	}
 	used := requestTokens(clean) + EstimateToolSchemaTokens(tools)
 	if used+floor+headroom > contextLimit {
-		return nil, 0, fmt.Errorf("current input requires approximately %d tokens plus %d reserved output; context limit is %d", used, floor, contextLimit)
+		return nil, 0, &run.InferenceFailure{Kind: run.ContextOverflow, Cause: fmt.Errorf("task instructions and latest evidence require approximately %d tokens plus %d reserved output; context limit is %d", used, floor, contextLimit)}
 	}
 	return clean, min(output, contextLimit-used-headroom), nil
 }

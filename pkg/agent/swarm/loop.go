@@ -231,8 +231,12 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				return err
 			}
 			engine.BeginTurn()
-			if err := ma.compressIfNeeded(ctx, writer, theme); err != nil {
+			compacted, err := ma.compressIfNeeded(ctx, writer, theme)
+			if err != nil {
 				return err
+			}
+			if compacted {
+				engine.HistoryCompacted()
 			}
 			if engine.ShouldRecap() {
 				msgs := sink.Messages()
@@ -416,7 +420,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 			return nil
 		},
-		Compact:           func(ctx context.Context) error { return ma.compactHistory(ctx, writer, theme) },
+		Compact: func(ctx context.Context) error {
+			if err := ma.compactHistory(ctx, writer, theme); err != nil {
+				return err
+			}
+			engine.HistoryCompacted()
+			return nil
+		},
 		IsContextOverflow: agent.IsContextOverflow,
 		IsRecoverable:     agent.IsRecoverableInferenceError,
 		Interrupted: func(ctx context.Context, iter int, msg *db.Message, err error) error {

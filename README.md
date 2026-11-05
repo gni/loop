@@ -11,6 +11,8 @@ no heavy frameworks. no visual noise. just raw execution.
 
 The execution core is designed for a shared local model endpoint. Main agents, subagents, and compaction queue inference against that endpoint; tools can run while the model is free to serve another agent. No remote scheduler, cloud service, or additional model endpoint is required. See [offline execution architecture](docs/offline-execution.md).
 
+During a task, explicit user instructions and steering updates are retained verbatim through request trimming and compaction. The latest tool evidence remains paired with its calls; if that required context cannot fit, Loop reports the context limit instead of silently dropping instructions. Repetition protection compares observed results, including alternating calls, while allowing new file pages and background-status polling. Common file/edit failures include targeted recovery guidance, and empty searches suggest how to refine the query. These mechanisms use the existing local endpoint without extra reasoning requests. Compaction headroom scales to smaller local context windows.
+
 loop operates on a continuous feedback loop. you type a prompt. the agent reasons, spawns tasks, executes commands on your local machine, reads files, and iterates until the objective is complete.
 
 ```mermaid

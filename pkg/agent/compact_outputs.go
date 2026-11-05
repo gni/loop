@@ -56,6 +56,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 			msg.Content = fmt.Sprintf("[Historical read of '%s' superseded by subsequent operation; refer to latest file state]", path)
 		case !alreadyCompacted && toolName == "edit" && path != "" && failed && successfulUpdates[path]:
 			msg.Content = fmt.Sprintf("[Historical edit attempt on '%s' failed - resolved by subsequent update]", path)
+			msg.Recovery = nil
 		case !alreadyCompacted && len(msg.Content) > 1000:
 			msg.Content = truncateHistoricalOutput(msg.Content, toolName)
 		}
