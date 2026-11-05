@@ -7,11 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/alecthomas/chroma/v3/quick"
 
 	"loop/pkg/config"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -19,7 +19,7 @@ func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Re
 	cloned := *cfg
 	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH)
+		terminal.NotifyResize(sigChan)
 		defer signal.Stop(sigChan)
 
 		sr := NewSessionReader(rlInput)

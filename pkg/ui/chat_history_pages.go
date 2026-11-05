@@ -1,13 +1,11 @@
 package ui
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
@@ -40,14 +38,16 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 	if h.a.Ephemeral || id == "" {
 		return fallback, nil
 	}
-	store, ok := h.a.Store.(interface {
+	var r *db.HistoryReader
+	var err error
+	if store, ok := h.a.Store.(interface {
 		OpenHistory(string) (*db.HistoryReader, error)
-	})
-	if !ok {
-		return fallback, nil
+	}); ok && store != nil {
+		r, err = store.OpenHistory(id)
+	} else {
+		r, err = db.OpenHistory(id)
 	}
-	r, err := store.OpenHistory(id)
-	if err != nil {
+	if err != nil || r == nil {
 		return fallback, err
 	}
 	if !r.HasMore() {
@@ -143,11 +143,59 @@ func (h *ChatHistory) turnMessages(turn *displayTurn) ([]db.Message, error) {
 	return h.readTurnMessagesFromFile(file, turn.offset, turn.size)
 }
 
+func (h *ChatHistory) getPageSize() int {
+	if h.a != nil && h.a.Config != nil && h.a.Config.HistoryPageSize > 0 {
+		return h.a.Config.HistoryPageSize
+	}
+	if h.buffer != nil {
+		return h.buffer.PageSize()
+	}
+	return render.HistoryPageSize
+}
+
 // Read whole turns for correct tool/result pairing, but page their rendered
 // rows even when a turn exceeds the display page size.
 func (h *ChatHistory) loadOlderLocked() int {
+	pageSize := h.getPageSize()
 	added := 0
-	for h.source != nil && added < render.HistoryPageSize {
+	for (h.source != nil || (h.pendingOlderRows != nil && h.pendingOlderRows.HistoryRowCount() > 0)) && added < pageSize {
+		needed := pageSize - added
+
+		if h.pendingOlderRows != nil && h.pendingOlderRows.HistoryRowCount() > 0 {
+			avail := h.pendingOlderRows.HistoryRowCount()
+			at := h.historyStart
+			if avail <= needed {
+				delta := h.buffer.InsertPrepared(at, h.pendingOlderRows)
+				_ = h.pendingOlderRows.Close()
+				h.pendingOlderRows = nil
+				for _, turn := range h.turns {
+					turn.start += delta
+					turn.end += delta
+				}
+				turn := &displayTurn{start: at, end: at + delta - 1, appearance: h.appearanceKey()}
+				h.turns = append([]*displayTurn{turn}, h.turns...)
+				h.top += delta
+				added += delta
+			} else {
+				tail := h.pendingOlderRows.PopTailRows(needed)
+				delta := h.buffer.InsertPrepared(at, tail)
+				_ = tail.Close()
+				for _, turn := range h.turns {
+					turn.start += delta
+					turn.end += delta
+				}
+				turn := &displayTurn{start: at, end: at + delta - 1, appearance: h.appearanceKey()}
+				h.turns = append([]*displayTurn{turn}, h.turns...)
+				h.top += delta
+				added += delta
+				break
+			}
+			continue
+		}
+
+		if h.source == nil {
+			break
+		}
 		messages, err := h.source.Previous()
 		if errors.Is(err, io.EOF) {
 			if err := h.source.Close(); err != nil {
@@ -168,26 +216,54 @@ func (h *ChatHistory) loadOlderLocked() int {
 			}
 			h.source = nil
 		}
-		var out bytes.Buffer
-		PrintSessionHistory(&out, messages, GetConfiguredTheme(h.a.Config), h.a.Config)
-		if out.Len() == 0 {
+
+		chunk := h.buffer.NewHistoryPage()
+		render.PrintSessionHistory(chunk, messages, GetConfiguredTheme(h.a.Config), h.a.Config, false, h.a.Config.CollapseResults, render.HistoryRenderHooks{})
+		chunk.FinishHistoryPage()
+		if err := chunk.Err(); err != nil {
+			h.historyErr = err
+			_ = chunk.Close()
+			break
+		}
+		if chunk.EmptyHistoryPage() {
+			_ = chunk.Close()
 			continue
 		}
+
+		chunkRows := chunk.HistoryRowCount()
 		at := h.historyStart
-		delta := h.buffer.InsertHistory(at, strings.TrimRight(out.String(), "\r\n")+"\n")
-		for _, turn := range h.turns {
-			turn.start += delta
-			turn.end += delta
+		if chunkRows <= needed {
+			delta := h.buffer.InsertPrepared(at, chunk)
+			_ = chunk.Close()
+			for _, turn := range h.turns {
+				turn.start += delta
+				turn.end += delta
+			}
+			turn := &displayTurn{start: at, end: at + delta - 1, messages: messages, appearance: h.appearanceKey()}
+			if err := h.archiveTurn(turn); err != nil {
+				h.historyErr = err
+			}
+			h.turns = append([]*displayTurn{turn}, h.turns...)
+			h.top += delta
+			added += delta
+		} else {
+			tail := chunk.PopTailRows(needed)
+			delta := h.buffer.InsertPrepared(at, tail)
+			_ = tail.Close()
+			for _, turn := range h.turns {
+				turn.start += delta
+				turn.end += delta
+			}
+			turn := &displayTurn{start: at, end: at + delta - 1, messages: messages, appearance: h.appearanceKey()}
+			if err := h.archiveTurn(turn); err != nil {
+				h.historyErr = err
+			}
+			h.turns = append([]*displayTurn{turn}, h.turns...)
+			h.top += delta
+			added += delta
+			h.pendingOlderRows = chunk
+			break
 		}
-		// The final blank row is the live cursor, not part of this semantic
-		// block. Local commands can subsequently write into it.
-		turn := &displayTurn{start: at, end: at + delta - 1, messages: messages, appearance: h.appearanceKey()}
-		if err := h.archiveTurn(turn); err != nil {
-			h.historyErr = err
-		}
-		h.turns = append([]*displayTurn{turn}, h.turns...)
-		h.top += delta
-		added += delta
 	}
 	return added
 }
@@ -215,6 +291,10 @@ func (h *ChatHistory) closePagesLocked() {
 	if h.readyPage != nil {
 		_ = h.readyPage.rows.Close()
 		h.readyPage = nil
+	}
+	if h.pendingOlderRows != nil {
+		_ = h.pendingOlderRows.Close()
+		h.pendingOlderRows = nil
 	}
 	h.pendingUp = 0
 	h.pendingHome = false

@@ -1,10 +1,10 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -99,6 +99,7 @@ func handleSessionCommand(
 			*messages = nil
 			a.MessagesMu.Unlock()
 			*currentSessionID = ""
+			a.SetActiveSessionID("")
 			a.SyncSessionSystemPrompt(messages, "")
 			_ = a.SetTodos(nil)
 			if ui.GetUI().ChatHistory != nil {
@@ -121,6 +122,7 @@ func handleSessionCommand(
 		ui.GetUI().StateMu.Unlock()
 		resetSessionSnapshots(a)
 		*currentSessionID = nextID
+		a.SetActiveSessionID(nextID)
 		a.MessagesMu.Lock()
 		*messages = nil
 		a.MessagesMu.Unlock()
@@ -138,11 +140,15 @@ func handleSessionCommand(
 
 	if len(parts) <= 1 {
 		fmt.Fprintf(w, "active session: %s\n", *currentSessionID)
-		fmt.Fprintln(w, "usage: /session [list | new | load | branch <new_session_id> | clear]")
+		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <id> | clear]")
 		return
 	}
 
 	switch parts[1] {
+	case "tree":
+		handleTreeCommand(a, parts, currentSessionID, theme, w)
+		return
+
 	case "list":
 		sessions, err := db.GetSessions()
 		if err != nil {
@@ -159,10 +165,7 @@ func handleSessionCommand(
 			if s.SessionID == *currentSessionID {
 				activeMarker = " (active)"
 			}
-			previewText := s.Preview
-			if len(previewText) > 40 {
-				previewText = previewText[:40] + "..."
-			}
+			previewText := truncateString(s.Preview, 40)
 			timestamp := s.Timestamp
 			if len(timestamp) > 16 {
 				timestamp = timestamp[:16]
@@ -179,10 +182,19 @@ func handleSessionCommand(
 
 	case "branch":
 		if len(parts) < 3 {
-			fmt.Fprintln(w, "usage: /session branch <new_session_id>")
+			fmt.Fprintln(w, "usage: /session branch <new_session_id|entry_id>")
 			return
 		}
-		branchID := parts[2]
+		target := parts[2]
+		if currentSessionID != nil && *currentSessionID != "" {
+			if entries, err := db.Entries(*currentSessionID); err == nil && len(entries) > 0 {
+				if matchedID, err := resolveEntryID(entries, target); err == nil {
+					handleBranchCommand(a, []string{"/branch", matchedID}, messages, currentSessionID, theme, w, kiReader)
+					return
+				}
+			}
+		}
+		branchID := target
 		existing, err := db.LoadMessages(branchID)
 		if err != nil {
 			fmt.Fprintf(w, "cannot inspect session %q: %v\n", branchID, err)
@@ -210,7 +222,35 @@ func handleSessionCommand(
 			return
 		}
 		*currentSessionID = branchID
+		a.SetActiveSessionID(branchID)
 		fmt.Fprintf(w, "successfully branched session into '%s'. active session is now '%s'.\n", branchID, branchID)
+		ui.DrawStatusBar(os.Stderr, *theme)
+
+	case "rename":
+		if len(parts) < 3 {
+			fmt.Fprintln(w, "usage: /session rename <new_name>")
+			return
+		}
+		if currentSessionID == nil || *currentSessionID == "" {
+			fmt.Fprintln(w, "error: no active session to rename.")
+			return
+		}
+		oldID := *currentSessionID
+		newName := strings.TrimSpace(parts[2])
+		if newName == "" {
+			fmt.Fprintln(w, "error: target session name cannot be empty.")
+			return
+		}
+		if err := db.RenameSession(oldID, newName); err != nil {
+			fmt.Fprintf(w, "cannot rename session: %v\n", err)
+			return
+		}
+		*currentSessionID = newName
+		a.SetActiveSessionID(newName)
+		fmt.Fprintf(w, "session renamed from '%s' to '%s'. active session is now '%s'.\n", oldID, newName, newName)
+		if ui.GetUI().ChatHistory != nil {
+			ui.MarkSessionReloaded()
+		}
 		ui.DrawStatusBar(os.Stderr, *theme)
 
 	case "load":
@@ -291,19 +331,35 @@ func handleSessionCommand(
 
 	default:
 		fmt.Fprintf(w, "active session: %s\n", *currentSessionID)
-		fmt.Fprintln(w, "usage: /session [list | new | load | branch <new_session_id> | clear]")
+		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <id> | clear]")
 	}
 }
 
 func handleCompressCommand(
 	a *agent.Agent,
+	parts []string,
 	messages *[]db.Message,
 	currentSessionID *string,
 	theme *style.UITheme,
 	w io.Writer,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-	a.CompressHistory(context.Background(), messages, *currentSessionID, *theme, w)
+	sessionID := ""
+	if currentSessionID != nil {
+		sessionID = *currentSessionID
+	}
+	var focusInstructions string
+	if len(parts) > 1 {
+		focusInstructions = strings.TrimSpace(strings.Join(parts[1:], " "))
+	}
+	ctx := a.Lifetime
+	if ctx == nil {
+		ctx = a.Context()
+	}
+	if err := a.CompressHistory(ctx, messages, sessionID, *theme, w, focusInstructions); err != nil {
+		fmt.Fprintf(w, "cannot compact session: %v\n", err)
+		return
+	}
 	pTok, cTok, estimated := calcHistoryTokens()
 	effLimit := a.GetEffectiveContextLimit(pTok)
 	ui.UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
@@ -319,6 +375,7 @@ func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionI
 	ui.GetUI().StateMu.Unlock()
 	resetSessionSnapshots(a)
 	*currentSessionID = selected
+	a.SetActiveSessionID(selected)
 	a.MessagesMu.Lock()
 	*messages = dbHistory
 	a.MessagesMu.Unlock()

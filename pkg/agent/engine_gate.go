@@ -3,19 +3,24 @@ package agent
 import (
 	"fmt"
 	"io"
+	"strings"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
-	"strings"
 )
 
 func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, toolName string) error {
-	if e.guided == nil || !e.guided.IsEnabled() || e.agent == nil {
+	if e.guided == nil || !e.guided.IsEnabled() || e.agent == nil || !e.agent.Registry.Policy(toolName, "").RequiresPlan {
 		return nil
 	}
 
-	needsPlanApproval, blockErr := e.guided.CheckToolAllowed(e.agent, toolName)
+	todos := e.agent.GetTodos()
+	if state, ok := executionContext(e, e.agent).(tool.TodoState); ok {
+		todos = state.GetTodos()
+	}
+	needsPlanApproval, blockErr := e.guided.CheckPlanAllowed(todos, toolName)
 	if blockErr != nil {
 		return blockErr
 	}
@@ -23,7 +28,6 @@ func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, to
 		return nil
 	}
 
-	todos := e.agent.GetTodos()
 	sr.Flush()
 	if loader != nil {
 		loader.Pause()
@@ -91,13 +95,13 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 	}
 }
 
-func (e *TurnEngine) needsInteractiveApproval(toolName string) bool {
+func (e *TurnEngine) needsInteractiveApproval(call db.ToolCall) bool {
 	a := e.agent
-	return e.policy.AllowApproval && a != nil && a.Config != nil && NeedsApproval(toolName) && ((e.guided != nil && e.guided.IsEnabled()) || (!a.Config.AutoApprove && !a.Config.ApprovalAlwaysAnswer))
+	return e.policy.AllowApproval && a != nil && e.config != nil && a.Registry.Policy(call.Function.Name, call.Function.Arguments).RequiresApproval && ((e.guided != nil && e.guided.IsEnabled()) || (!e.config.AutoApprove && !e.config.ApprovalAlwaysAnswer))
 }
 
 func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
-	if !e.needsInteractiveApproval(tc.Function.Name) {
+	if !e.needsInteractiveApproval(tc) {
 		return true, false
 	}
 	if e.agent.UI == nil {
@@ -118,6 +122,7 @@ func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w i
 	}
 	if always && (e.guided == nil || !e.guided.IsEnabled()) {
 		e.agent.Config.AutoApprove = true
+		e.config.AutoApprove = true
 		if e.agent.ConfigPath != "" {
 			if err := config.SaveConfig(e.agent.ConfigPath, e.agent.Config); err != nil {
 				e.agent.recordPersistenceError(fmt.Errorf("save automatic approval preference: %w", err))

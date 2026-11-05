@@ -64,18 +64,7 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("atomically replace %s: %w", filename, err)
 	}
 	tmpName = ""
-	// Sync the directory as well as the file so the rename survives a crash
-	// on filesystems providing POSIX fsync semantics.
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open parent directory for durability: %w", err)
-	}
-	syncErr := dirFile.Sync()
-	closeErr := dirFile.Close()
-	if syncErr != nil {
-		return fmt.Errorf("sync parent directory: %w", syncErr)
-	}
-	return closeErr
+	return syncParentDirectory(dir)
 }
 
 func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
@@ -142,10 +131,12 @@ func SanitizeUTF8(data []byte) string {
 }
 
 var omissionRegexes = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:rest of|unchanged|same as|original|existing)\s+(?:code|methods?|functions?|class(?:es)?|files?|implementations?)\s*\.{3,}`),
-	regexp.MustCompile(`(?i)^\s*(?://|#|/\*)\s*\.{3,}\s*(?:\*/)?\s*$`),
-	regexp.MustCompile(`^\s*\(\s*\.{3,}\s*\)\s*$`),
-	regexp.MustCompile(`(?i)(?://|#|/\*)\s*todo\s*[\:\-\s]*\.*(?:\s*(?:implement|add|write)\s+(?:the\s+)?(rest|remaining|code|methods?))?\s*\.{3,}`),
+	regexp.MustCompile(`(?i)(?://|#|/\*|<!--|--|;)\s*\.{2,}\s*(?:rest of|unchanged|same as|original|existing|remaining|previous|other)\s*(?:code|methods?|functions?|class(?:es)?|files?|implementations?|imports?|logic)?`),
+	regexp.MustCompile(`(?i)(?:rest of|unchanged|same as|original|existing|remaining|previous)\s+(?:code|methods?|functions?|class(?:es)?|files?|implementations?|imports?|logic)\s*\.{2,}`),
+	regexp.MustCompile(`(?i)\[\s*(?:rest of|remaining|existing|previous|unchanged)\s+(?:code|implementation|file)\s*(?:unchanged|remains|same)?\s*\]`),
+	regexp.MustCompile(`(?i)^\s*(?://|#|/\*|<!--|--|;)\s*\.{2,}\s*(?:\*/|-->)?\s*$`),
+	regexp.MustCompile(`^\s*\(\s*\.{2,}\s*\)\s*$`),
+	regexp.MustCompile(`(?i)(?://|#|/\*|<!--)\s*todo\s*[\:\-\s]*\.*(?:\s*(?:implement|add|write)\s+(?:the\s+)?(rest|remaining|code|methods?|functions?))`),
 }
 
 func DetectOmissionPlaceholders(text string) []string {

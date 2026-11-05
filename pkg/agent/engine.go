@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -39,7 +41,13 @@ func (s *agentSink) Append(m db.Message) {
 	}
 }
 
-func (s *agentSink) Messages() []db.Message { return *s.messages }
+func (s *agentSink) Messages() []db.Message {
+	if s.a != nil {
+		s.a.MessagesMu.RLock()
+		defer s.a.MessagesMu.RUnlock()
+	}
+	return message.CloneAll(*s.messages)
+}
 
 func NewAgentSink(a *Agent, messages *[]db.Message, sessionID string) HistorySink {
 	return &agentSink{a: a, messages: messages, sessionID: sessionID}
@@ -80,18 +88,18 @@ func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output strin
 func NewMainRenderer(a *Agent) EngineRenderer { return &mainRenderer{a: a} }
 
 type EnginePolicy struct {
-	AgentName          string
-	ToolAllowlist      func() []string
-	AllowApproval      bool
-	RunHooks           bool
-	GuidedMode         bool
-	BeforeToolCall     func(index int, call db.ToolCall)
-	ToolBatch          *ToolBatch
-	SessionKey         string
-	DebugPrefix        string
-	ShowRecapLine      bool
-	InlineEarlyResults bool
-	ExecContext        func() tool.AgentContext
+	Config         *config.Config
+	AgentName      string
+	ToolAllowlist  func() []string
+	AllowApproval  bool
+	RunHooks       bool
+	GuidedMode     bool
+	BeforeToolCall func(index int, call db.ToolCall)
+	ToolBatch      *ToolBatch
+	SessionKey     string
+	DebugPrefix    string
+	ShowRecapLine  bool
+	ExecContext    func() tool.AgentContext
 }
 
 type TurnAwareness struct {
@@ -120,6 +128,7 @@ func (ta *TurnAwareness) Format(who string, promptTokens, totalCompletion, effec
 
 type TurnEngine struct {
 	agent                      *Agent
+	config                     *config.Config
 	policy                     EnginePolicy
 	guard                      *TurnExecutionGuard
 	awareness                  *TurnAwareness
@@ -128,26 +137,30 @@ type TurnEngine struct {
 }
 
 func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
+	cfg := policy.Config
+	if cfg == nil && a != nil {
+		cfg = a.Config
+	}
 	limit := a.GetLimits().ConsecutiveLimit
 	thresholds := []int{3, 5}
 	maxSteps := 30
 	interval := 5
 	guidedEnabled := policy.GuidedMode
-	if a != nil && a.Config != nil {
-		if a.Config.RepeatGuardLimit > 0 {
-			limit = limits.ConsecutiveLimitClamped(a.Config.RepeatGuardLimit)
+	if cfg != nil {
+		if cfg.RepeatGuardLimit > 0 {
+			limit = limits.ConsecutiveLimitClamped(cfg.RepeatGuardLimit)
 		}
-		if len(a.Config.RepeatReminderThresholds) > 0 {
-			thresholds = a.Config.RepeatReminderThresholds
+		if len(cfg.RepeatReminderThresholds) > 0 {
+			thresholds = cfg.RepeatReminderThresholds
 		}
-		if a.Config.MaxReasoningSteps > 0 {
-			maxSteps = a.Config.MaxReasoningSteps
+		if cfg.MaxReasoningSteps > 0 {
+			maxSteps = cfg.MaxReasoningSteps
 		}
-		if a.Config.Nostop.Enabled() && policy.AgentName == "" {
+		if cfg.Nostop.Enabled() && policy.AgentName == "" {
 			maxSteps = 0
 		}
-		interval = a.Config.RecapInterval
-		if a.Config.GuidedMode {
+		interval = cfg.RecapInterval
+		if cfg.GuidedMode && policy.AgentName == "" {
 			guidedEnabled = true
 		}
 	}
@@ -158,7 +171,7 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 	}
 
 	var guidedCtrl *GuidedController
-	if a != nil && a.Guided != nil {
+	if policy.AgentName == "" && a != nil && a.Guided != nil {
 		guidedCtrl = a.Guided
 		if policy.GuidedMode && !guidedCtrl.IsEnabled() {
 			guidedCtrl.SetEnabled(true)
@@ -169,6 +182,7 @@ func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 
 	return &TurnEngine{
 		agent:     a,
+		config:    cfg,
 		policy:    policy,
 		guard:     guard,
 		awareness: &TurnAwareness{MaxTurns: maxSteps, RecapInterval: interval},
@@ -184,10 +198,6 @@ func (e *TurnEngine) SetToolBatch(batch *ToolBatch) {
 	e.policy.ToolBatch = batch
 }
 
-func (e *TurnEngine) SetInlineEarlyResults(enabled bool) {
-	e.policy.InlineEarlyResults = enabled
-}
-
 func (e *TurnEngine) agentLabel() string {
 	if e.policy.AgentName != "" {
 		return e.policy.AgentName
@@ -196,7 +206,7 @@ func (e *TurnEngine) agentLabel() string {
 }
 
 func (e *TurnEngine) ShouldRecap() bool {
-	if e.agent != nil && e.agent.Config != nil && e.agent.Config.DisableRecap {
+	if e.config != nil && e.config.DisableRecap {
 		return false
 	}
 	return e.awareness.ShouldRecap()
@@ -209,7 +219,7 @@ func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion,
 		return ""
 	}
 	content := e.awareness.Format(e.agentLabel(), promptTokens, totalCompletion, effectiveLimit)
-	sink.Append(db.Message{Role: "user", Content: content})
+	sink.Append(db.Message{Role: "user", ContextKind: "runtime", Content: content})
 	if e.policy.ShowRecapLine && e.agent != nil && e.agent.UI != nil {
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(content))
 	}
@@ -242,25 +252,15 @@ func (e *TurnEngine) applyAfterHook(tc db.ToolCall, output string, err error) (s
 	return output, err
 }
 
-func (e *TurnEngine) shouldRunToolCallsParallel(calls []db.ToolCall) bool {
-	// Preview replay runs on the presentation goroutine after the worker pool
-	// finishes. It must not disable otherwise safe concurrent tool execution.
-	if len(calls) <= 1 || e.agent == nil || e.agent.Config == nil || e.agent.Config.GuidedMode || e.agent.Config.Nostop.Mode == "eco" || !e.agent.Config.ParallelToolCalls {
+func (e *TurnEngine) canRunToolInParallel(tc db.ToolCall) bool {
+	if e.agent == nil || e.config == nil || e.agent.Registry == nil || !e.config.ParallelToolCalls || e.config.GuidedMode || e.config.Nostop.Mode == "eco" {
 		return false
 	}
-	// File writes and reads must execute in model order. In particular, a
-	// later write must not finish before an earlier write to the same tree.
-	for _, tc := range calls {
-		if !e.agent.Registry.CanParallel(tc.Function.Name) {
-			return false
-		}
+	if !e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).Parallel {
+		return false
 	}
-	if e.guided != nil && e.guided.IsEnabled() {
-		for _, tc := range calls {
-			if IsActionTool(tc.Function.Name) {
-				return false
-			}
-		}
+	if e.guided != nil && e.guided.IsEnabled() && e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).RequiresPlan {
+		return false
 	}
 	return true
 }
@@ -302,19 +302,25 @@ func executionContext(e *TurnEngine, a *Agent) tool.AgentContext {
 }
 
 func (e *TurnEngine) HaltNotice() string {
-	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed with 'edit'/'write' or provide final response.]", e.agentLabel(), e.guard.maxConsecutiveCalls)
+	return RuntimeMessagef("halt_notice", "[%s halted: loop protection rejected %d consecutive tool calls. Stop repeating blocked actions and proceed or provide a final response.]", e.agentLabel(), e.guard.maxConsecutiveCalls)
 }
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
 	for _, tc := range calls {
+		outcome := "not_executed"
+		if strings.Contains(reason, "during execution") {
+			outcome = "unknown"
+		}
 		if e.policy.ToolBatch != nil {
 			e.policy.ToolBatch.CancelByProviderID(tc.ID)
 		}
 		sink.Append(db.Message{
-			Role:       "tool",
-			ToolCallID: tc.ID,
-			Name:       tc.Function.Name,
-			Content:    RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
+			Role:        "tool",
+			ToolCallID:  tc.ID,
+			Name:        tc.Function.Name,
+			Content:     RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
+			ToolOutcome: outcome,
+			IsError:     true,
 		})
 	}
 }

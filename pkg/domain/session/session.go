@@ -139,6 +139,8 @@ type Store interface {
 	// ForkSession creates a new session file with a versioned header recording
 	// parentSession and copies the leaf path up to entryID.
 	ForkSession(parentSessionID, entryID string) (string, error)
+	// Entries returns all session records in the DAG for sessionID.
+	Entries(id string) ([]Record, error)
 }
 
 func Project(entries []Record) []message.Message {

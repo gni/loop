@@ -19,15 +19,12 @@ func NewEditTool() domaintool.ToolExecutor {
 func (t *editTool) Name() string { return "edit" }
 
 func (t *editTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "<edit path=\"path/to/file\">\n<old>...</old>\n<new>...</new>\n</edit>")
+	return domaintool.FormatToolSnippet(t.Name(), "Edit a file using exact text replacements")
 }
 
 func (t *editTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'edit' for precise changes: <edit path=\"path/to/file\">\n<old>\nexact old code\n</old>\n<new>\nexact new code\n</new>\n</edit>",
-		"Match against the file's current contents. Read the file when the exact old text is not known.",
-		"Keep old text minimal (typically 2-5 lines).",
-		"If edit reports a mismatch, read the latest file and retry a smaller exact unique block. Never recover by overwriting the existing file with write.",
+		"Use 'edit' for targeted changes. Match against current file contents with unique, concise blocks (2-5 lines).",
 	})
 }
 
@@ -36,7 +33,7 @@ func (t *editTool) Definition() domaintool.Tool {
 		"edit",
 		domaintool.FormatToolDescription("edit", "Edit a file using exact text replacement blocks. Matches unique blocks against current file contents."),
 		map[string]domaintool.SchemaProp{
-			"path": domaintool.StringProp(domaintool.FormatParamDescription("edit", "path", "Path to the file to edit. Always specify path first.")),
+			"path": domaintool.StringProp(domaintool.FormatParamDescription("edit", "path", "Path to the file to edit.")),
 			"updates": {
 				Type:        "array",
 				Description: domaintool.FormatParamDescription("edit", "updates", "One or more targeted replacements."),
@@ -194,9 +191,9 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				discardIfUncommitted()
 				if closestLine := findClosestLineMatch(content, edit.OldText); closestLine > 0 {
 					snippet := renderLineSnippet(strings.Split(content, "\n"), closestLine, 3)
-					return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nDiagnostic Hint: A matching block was detected around line %d:\n---\n%s\n---\nTip: Notice the exact indentation/whitespace above. You can copy the exact block into 'oldText' without needing to call 'read'.", i, targetPath, closestLine, snippet)
+					return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s. Closest match near line %d:\n---\n%s\n---", i, targetPath, closestLine, snippet)
 				}
-				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s.\nRecommendation: Read the file again using 'read' to verify its current contents, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.", i, targetPath)
+				return "", fmt.Errorf("edit[%d]: oldText block was not found in file %s", i, targetPath)
 			}
 
 			updatedContent := content[:m.startByte] + m.newText + content[m.endByte:]
@@ -209,6 +206,9 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	if !contentChanged {
 		discardIfUncommitted()
+		if diffBuilder.Len() == 0 {
+			return "No changes made: replacement already matches file contents.", nil
+		}
 		return diffBuilder.String(), nil
 	}
 
@@ -224,6 +224,10 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
 		discardIfUncommitted()
 		return "", fmt.Errorf("failed to write modified content back: %w", err)
+	}
+
+	if warning := ValidateSyntax(safePath, finalBytes); warning != "" {
+		diffBuilder.WriteString(warning)
 	}
 
 	return diffBuilder.String(), nil

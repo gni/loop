@@ -7,6 +7,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/resources"
 )
 
 func tpl() domaintool.PromptTemplates {
@@ -26,6 +27,7 @@ type SystemPromptConfig struct {
 	Skills            []tool.Skill
 	AllSkills         []tool.Skill
 	MemoryContext     string
+	ProjectContext    string
 	ActiveTasks       []TaskInfo
 	UserGuidelines    string
 	Tools             []ToolEntry
@@ -93,9 +95,10 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	if !hasBash {
-		baseInstruction = sanitizeNoBashInstruction(baseInstruction)
-		if userGuidelines != "" {
-			userGuidelines = sanitizeNoBashInstruction(userGuidelines)
+		if baseInstruction == domaintool.SystemPromptsSnapshot().DefaultIdentity {
+			baseInstruction = "You are a software engineering assistant with tools to inspect files and edit code in the workspace."
+		} else {
+			baseInstruction = sanitizeNoBashInstruction(baseInstruction)
 		}
 	}
 
@@ -141,13 +144,13 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		if hasAskUser {
 			addRule("Guided Workflow Protocol: Inspect relevant files, clarify ambiguous requirements with 'ask_user', and register an execution plan using 'todo' before mutations.")
 		} else {
-			addRule("Guided Workflow Protocol: Inspect relevant files and register an execution plan using 'todo' before mutations. Do not call unavailable tools to ask for clarification.")
+			addRule("Guided Workflow Protocol: Inspect relevant files and register an execution plan using 'todo' before mutations.")
 		}
 		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
 	}
 
 	if cfg.SequentialTools && len(tools) > 0 {
-		addRule("Batch independent calls; execution is ordered. Do not depend on unseen results or claim writes succeeded before confirmation.")
+		addRule("Batch independent calls; execution is ordered. Await confirmed tool results before taking dependent actions.")
 	}
 
 	if cfg.SkipObservation {
@@ -157,22 +160,10 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	for _, rule := range FormatCoreRules(workspaceRoot) {
-		if cfg.GuidedMode && strings.Contains(rule, "Actions Over Talk") {
-			continue
-		}
-		if !hasBash {
-			if strings.Contains(rule, "Background Processes:") && strings.Contains(rule, "bash") {
-				continue
-			}
-			if strings.Contains(rule, "Strict Tool Hierarchy:") {
-				rule = "Use Available Tools: Always use available tools instead of commands."
-			}
-			rule = sanitizeNoBashInstruction(rule)
-		}
 		addRule(rule)
 	}
 	if !hasBash {
-		addRule("Commands: Command execution is unavailable. Always use available tools instead of commands.")
+		addRule("Commands: Terminal command execution is unavailable. Always use available native tools.")
 	}
 	for _, entry := range tools {
 		guidelines := entry.Guidelines
@@ -180,24 +171,22 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			guidelines = domaintool.CompactToolGuidelines(entry.Name, guidelines)
 		}
 		for _, rule := range guidelines {
-			if !hasBash {
-				rule = sanitizeNoBashInstruction(rule)
-			}
 			addRule(rule)
 		}
 	}
 	if userGuidelines != "" {
 		var customLines []string
+		seenCustom := make(map[string]bool)
 		for _, line := range strings.Split(userGuidelines, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
 				continue
 			}
-			key := normalizeRuleKey(trimmed)
-			if seenRules[key] {
+			lower := strings.ToLower(trimmed)
+			if seenCustom[lower] {
 				continue
 			}
-			seenRules[key] = true
+			seenCustom[lower] = true
 			customLines = append(customLines, trimmed)
 		}
 		if len(customLines) > 0 {
@@ -215,8 +204,6 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			skillLines.WriteString(fmt.Sprintf(t.SkillLine, s.Name, s.Description))
 		}
 		sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))
-	} else if cfg.CompactPrompt {
-		sb.WriteString(fmt.Sprintf(t.SkillsEmptySection, skillsDir))
 	}
 
 	var maLines strings.Builder
@@ -240,6 +227,14 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	if cfg.MemoryContext != "" {
 		sb.WriteString(fmt.Sprintf(t.MemorySection, cfg.MemoryContext))
+	}
+
+	if cfg.ProjectContext != "" {
+		if t.ProjectSection != "" {
+			sb.WriteString(fmt.Sprintf(t.ProjectSection, cfg.ProjectContext))
+		} else {
+			sb.WriteString(fmt.Sprintf("\n\n<project_context>\n%s\n</project_context>", cfg.ProjectContext))
+		}
 	}
 
 	if len(cfg.ActiveTasks) > 0 {
@@ -271,6 +266,11 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		instruction = a.Config.SystemInstruction
 	}
 
+	projectCtx := ""
+	if a != nil && (a.Config == nil || !a.Config.NoContextFiles) {
+		projectCtx = resources.DetectProjectContext(a.WorkspaceRoot)
+	}
+
 	return SystemPromptConfig{
 		BaseInstruction:   instruction,
 		WorkspaceRoot:     tool.FirstNonEmpty(a.WorkspaceRoot, "."),
@@ -282,6 +282,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		SequentialTools:   a.Config == nil || !a.Config.ParallelToolCalls,
 		Skills:            a.GetActiveSkills(),
 		MemoryContext:     a.LoadMemoryContext(),
+		ProjectContext:    projectCtx,
 		Allowlist:         allowlist,
 		Tools:             PromptToolEntries(a.Registry, includeSubagentTools),
 	}
@@ -371,7 +372,10 @@ func normalizeRuleKey(rule string) string {
 	if strings.Contains(r, "zero-slop") || strings.Contains(r, "conciseness") {
 		return "concept:conciseness"
 	}
-	if strings.Contains(r, "read files before editing") || strings.Contains(r, "read the file first") {
+	if strings.Contains(r, "read files before editing") ||
+		strings.Contains(r, "read the file first") ||
+		strings.Contains(r, "read existing files before edit") ||
+		(strings.Contains(r, "inspect relevant files") && strings.Contains(r, "edit")) {
 		return "concept:read_before_edit"
 	}
 	if strings.Contains(r, "command execution is unavailable") {

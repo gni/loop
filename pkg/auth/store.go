@@ -211,7 +211,7 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 	credential, exists := credentials[name]
 	if !exists {
 		s.mu.Unlock()
-		return profile.ResolvedApiKey(), profile.AuthStatus()
+		return profile.ResolvedAPIKey(), profile.AuthStatus()
 	}
 	if credential.Issuer != "" && credential.Issuer != profile.Endpoint {
 		s.mu.Unlock()

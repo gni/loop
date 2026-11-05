@@ -75,6 +75,9 @@ func (client *mcpClient) callToolResult(parent context.Context, name, arguments 
 	}
 	output.Output = strings.Join(text, "\n")
 	if output.IsError {
+		if output.Output != "" {
+			return output, fmt.Errorf("%s", output.Output)
+		}
 		return output, fmt.Errorf("MCP tool %s failed", name)
 	}
 	return output, nil

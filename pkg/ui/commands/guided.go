@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
+	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
@@ -87,4 +88,71 @@ func handleRollbackCommand(a *agent.Agent, theme *style.UITheme, w io.Writer) {
 	for _, line := range restored {
 		fmt.Fprintf(w, "  %s\n", line)
 	}
+}
+
+func handleUndoCommand(
+	a *agent.Agent,
+	messages *[]db.Message,
+	currentSessionID *string,
+	theme *style.UITheme,
+	w io.Writer,
+	kiReader *interceptor.KeyInterceptorReader,
+) {
+	if a == nil || messages == nil || len(*messages) == 0 {
+		fmt.Fprintln(w, "nothing to undo: conversation history is empty.")
+		return
+	}
+
+	a.MessagesMu.Lock()
+	lastUserIdx := -1
+	for i := len(*messages) - 1; i >= 0; i-- {
+		if (*messages)[i].Role == "user" {
+			lastUserIdx = i
+			break
+		}
+	}
+
+	if lastUserIdx < 0 {
+		a.MessagesMu.Unlock()
+		fmt.Fprintln(w, "nothing to undo: no user turn found in history.")
+		return
+	}
+
+	userMsg := (*messages)[lastUserIdx]
+	userPreview := strings.TrimSpace(userMsg.Content)
+	if len(userPreview) > 60 {
+		userPreview = userPreview[:60] + "..."
+	}
+
+	removedCount := len(*messages) - lastUserIdx
+	*messages = (*messages)[:lastUserIdx]
+	a.MessagesMu.Unlock()
+
+	if a.Guided != nil && len(a.Guided.Snapshots()) > 0 {
+		restored, err := a.RollbackChanges()
+		if err != nil {
+			fmt.Fprintf(w, "warning: file rollback encountered error: %v\n", err)
+		} else if len(restored) > 0 {
+			fmt.Fprintf(w, "rolled back %d file(s):\n", len(restored))
+			for _, line := range restored {
+				fmt.Fprintf(w, "  %s\n", line)
+			}
+		}
+	}
+
+	if !a.Ephemeral && currentSessionID != nil && *currentSessionID != "" {
+		if err := db.RewriteSession(*currentSessionID, *messages); err != nil {
+			fmt.Fprintf(w, "warning: failed to persist session after undo: %v\n", err)
+		}
+	}
+
+	a.SyncSessionSystemPrompt(messages, "")
+
+	if history := ui.GetUI().ChatHistory; history != nil {
+		ui.MarkSessionReloaded()
+	} else if kiReader != nil {
+		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
+	}
+
+	fmt.Fprintf(w, "undid last turn: %q (%d message(s) removed, %d remaining).\n", userPreview, removedCount, len(*messages))
 }

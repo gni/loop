@@ -38,6 +38,7 @@ type ChatHistory struct {
 	source                                          displayHistorySource
 	pageJob                                         *historyPageJob
 	readyPage                                       *preparedHistoryPage
+	pendingOlderRows                                *render.Scrollback
 	pendingUp                                       int
 	pendingHome                                     bool
 	scrollDirection                                 int
@@ -71,6 +72,9 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))}
 	paged, pageErr := render.NewPagedScrollback(width, h.buffer.Height)
 	if pageErr == nil {
+		if a != nil && a.Config != nil && a.Config.HistoryPageSize > 0 {
+			paged.SetPageSize(a.Config.HistoryPageSize)
+		}
 		h.buffer = paged
 	}
 	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
@@ -144,6 +148,9 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 		}
 		return errors.Join(err, pageErr)
 	}
+	if h.a != nil && h.a.Config != nil && h.a.Config.HistoryPageSize > 0 {
+		buffer.SetPageSize(h.a.Config.HistoryPageSize)
+	}
 	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
 	if turnErr != nil {
 		_ = buffer.Close()
@@ -191,6 +198,27 @@ func (h *ChatHistory) SetSessionID(id string) {
 	TerminalMu.Lock()
 	h.sessionID = id
 	TerminalMu.Unlock()
+}
+
+func (h *ChatHistory) SetPageSize(size int) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if h.buffer != nil && size > 0 {
+		h.buffer.SetPageSize(size)
+	}
+}
+
+func (h *ChatHistory) TotalLoadedLines() int {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if h.buffer != nil {
+		return h.buffer.Base() + h.buffer.Height
+	}
+	return 0
+}
+
+func (h *ChatHistory) AppearanceKey() string {
+	return h.appearanceKey()
 }
 
 func (h *ChatHistory) appearanceKey() string {
@@ -357,8 +385,8 @@ func (h *ChatHistory) repaintTurnsLocked() {
 			if cached := turn.alternate; cached != nil && cached.key == key && cached.rows.Width == h.buffer.Width {
 				h.restoreTurnLayoutLocked(i, cached.rows, key)
 				changed = true
+				continue
 			}
-			continue
 		}
 		replayedActive = true
 		messages, err := h.turnMessages(turn)

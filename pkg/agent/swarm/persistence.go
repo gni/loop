@@ -10,7 +10,7 @@ import (
 
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
-	"loop/pkg/db"
+	"loop/pkg/domain/message"
 )
 
 type AgentDef = subagent.AgentDef
@@ -45,11 +45,11 @@ func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) erro
 		return err
 	}
 	ma.HistoryMu.RLock()
-	history := make([]db.Message, len(ma.History))
-	copy(history, ma.History)
+	history := message.CloneAll(ma.History)
 	ma.HistoryMu.RUnlock()
 	return store.SaveState(ma.Name, AgentState{
 		Status:  status,
+		Todos:   ma.GetTodos(),
 		History: history,
 	})
 }
@@ -67,10 +67,17 @@ func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
 	if err != nil || state == nil {
 		return err
 	}
+	ma.planMu.Lock()
+	ma.todos = append([]tool.TodoItem(nil), state.Todos...)
+	ma.planMu.Unlock()
 	if len(state.History) > 0 {
+		history, changed := message.RecoverToolHistory(state.History)
 		ma.HistoryMu.Lock()
-		ma.History = state.History
+		ma.History = history
 		ma.HistoryMu.Unlock()
+		if changed {
+			return mam.SaveAgentState(ma, "interrupted")
+		}
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
@@ -165,6 +166,15 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 }
 
 func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (response db.Message, runErr error) {
+	if ma.BaseAgent == nil {
+		return db.Message{}, fmt.Errorf("subagent has no runtime")
+	}
+	ctx = run.WithPlan(ctx, ma.GetTodos)
+	ctx = run.WithObjective(ctx, latestUserPrompt(newSwarmSink(ma).Messages()))
+	ctx, runConfig, err := ma.BaseAgent.SnapshotRun(ctx)
+	if err != nil {
+		return db.Message{}, err
+	}
 	writer := ma.resolveWriter(w)
 	rawW := agent.UnwrapWriter(writer)
 
@@ -173,16 +183,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	if ma.BaseAgent != nil {
 		guidedMode = ma.BaseAgent.IsGuidedMode()
 		runHooks = true
-		if ma.BaseAgent.Config != nil {
-			if ma.BaseAgent.Config.MaxReasoningSteps > 0 {
-				maxSteps = ma.BaseAgent.Config.MaxReasoningSteps
+		if runConfig != nil {
+			if runConfig.MaxReasoningSteps > 0 {
+				maxSteps = runConfig.MaxReasoningSteps
 			}
 			allowApproval = guidedMode
 		}
 	}
+	if ma.Parent != nil {
+		guidedMode = false
+		allowApproval = false
+	}
 
 	engine := agent.NewTurnEngine(ma.BaseAgent, agent.EnginePolicy{
 		AgentName:     ma.Name,
+		Config:        runConfig,
 		ToolAllowlist: ma.GetToolAllowlist,
 		AllowApproval: allowApproval,
 		RunHooks:      runHooks,
@@ -193,7 +208,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return &multiAgentContext{AgentContext: ma.BaseAgent, ma: ma}
 		},
 	})
-	sink := newSwarmSink(ma).(*historySink)
+	sink := newSwarmSink(ma)
 	defer func() {
 		if err := sink.Err(); err != nil {
 			runErr = errors.Join(runErr, err)
@@ -201,206 +216,224 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	}()
 	renderedAgentName := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name)
 
-	for iter := 1; iter <= maxSteps; iter++ {
-		if ctx.Err() != nil {
-			return db.Message{}, ctx.Err()
-		}
-		engine.BeginTurn()
-
-		ma.compressIfNeeded(ctx, writer, theme)
-
-		allowlist := ma.GetToolAllowlist()
-		if engine.ShouldRecap() && ma.BaseAgent != nil {
-			msgs := sink.Messages()
-			promptTokens, _ := ma.BaseAgent.GetGlobalTokens(msgs, allowlist)
-			totalCompletion := ma.BaseAgent.GetSessionTotalCompletionTokens(msgs)
-			effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
-			engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
-		}
-
-		currentPrompt := ma.GetSystemPrompt()
-		ma.HistoryMu.Lock()
-		if len(ma.History) > 0 && ma.History[0].Role == "system" {
-			ma.History[0].Content = currentPrompt
-		}
-		ma.HistoryMu.Unlock()
-
-		historyCopy := sink.Messages()
-		if ma.BaseAgent != nil {
-			toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
-			ma.BaseAgent.DebugLogLLMRequest("subagent:"+ma.Name, iter, ma.BaseAgent.Config.Model, ma.BaseAgent.Config.Endpoint, historyCopy, toolsForLog)
-		}
-
-		chunkChan := make(chan agent.StreamChunk, 100)
-		type completionResult struct {
-			msg      *db.Message
-			duration time.Duration
-			dropped  int64
-			err      error
-		}
-		resChan := make(chan completionResult, 1)
-
-		go func() {
-			msg, dur, dropped, err := ma.BaseAgent.StreamChatCompletionsIsolated(ctx, historyCopy, allowlist, chunkChan)
-			close(chunkChan)
-			resChan <- completionResult{msg: msg, duration: dur, dropped: dropped, err: err}
-		}()
-
-		ma.StreamBufferMu.Lock()
-		ma.StreamBuffer = new(bytes.Buffer)
-		ma.StreamBufferMu.Unlock()
-		teeW := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
-
-		lastUserPrompt := latestUserPrompt(historyCopy)
-		ncw := agent.NewNewlineCounterWriter(teeW)
-		enableThinking := ma.BaseAgent != nil && ma.BaseAgent.ShouldShowThinking()
-		var sr agent.StreamRenderer
-		if ma.BaseAgent != nil {
-			sr = ma.BaseAgent.NewTurnStreamRenderer(ncw, theme, ma.Name, lastUserPrompt)
-		} else {
-			sr = agent.NewFallbackStreamRenderer(ncw)
-			sr.SetPrompt(lastUserPrompt)
-		}
-
-		echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
-
-		var responseHeaderStarted bool
-		var subagentStreamChars, subagentCompletionTokens int
-		var subagentGenStart, lastDraw time.Time
-		subagentCtxLimit := 128000
-		if ma.BaseAgent != nil {
-			estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, allowlist)
-			subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
-		}
-
-		startResponseHeader := func() {
-			if !responseHeaderStarted {
-				fmt.Fprintf(ncw, "\n[%s] response: ", renderedAgentName)
-				responseHeaderStarted = true
+	allowlist := ma.GetToolAllowlist()
+	var (
+		ncw                   *agent.NewlineCounterWriter
+		sr                    agent.StreamRenderer
+		lastUserPrompt        string
+		responseHeaderStarted bool
+		generationDuration    time.Duration
+	)
+	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, RecoveryAttempts: run.DefaultRecoveryAttempts}, run.Driver{
+		Observe: ma.BaseAgent.RunObserver("subagent:" + ma.Name),
+		Prepare: func(ctx context.Context, iter int) error {
+			if err := sink.Err(); err != nil {
+				return err
 			}
-		}
-
-		updateSubagentStatus := func(generating bool, tps float64, tokens int) {
-			activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.Parent == nil && ma.Manager.CurrentActiveAgent() == nil)
-			if activeSelected && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-				ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
-				ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
+			engine.BeginTurn()
+			if err := ma.compressIfNeeded(ctx, writer, theme); err != nil {
+				return err
 			}
-		}
-
-		// Render subagent tool calls from their completed arguments at
-		// execution time, using the same single-header path as the main agent.
-		for chunk := range chunkChan {
-			if subagentGenStart.IsZero() {
-				subagentGenStart = time.Now()
-				lastDraw = subagentGenStart
+			if engine.ShouldRecap() {
+				msgs := sink.Messages()
+				promptTokens, _ := ma.BaseAgent.GetGlobalTokens(msgs, allowlist)
+				totalCompletion := ma.BaseAgent.GetSessionTotalCompletionTokens(msgs)
+				effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
+				engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
+			}
+			currentPrompt := ma.GetSystemPrompt()
+			ma.HistoryMu.Lock()
+			if len(ma.History) > 0 && ma.History[0].Role == "system" {
+				ma.History[0].Content = currentPrompt
+			}
+			ma.HistoryMu.Unlock()
+			return sink.Err()
+		},
+		Infer: func(ctx context.Context, iter int) (*db.Message, error) {
+			historyCopy := sink.Messages()
+			if ma.BaseAgent != nil {
+				toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
+				ma.BaseAgent.DebugLogLLMRequest("subagent:"+ma.Name, iter, runConfig.Model, runConfig.Endpoint, historyCopy, toolsForLog)
 			}
 
-			switch chunk.Type {
-			case "reasoning":
-				subagentStreamChars += len(chunk.Content)
-				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
-				if enableThinking {
-					if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
-						startResponseHeader()
-						sr.WriteReasoning(cleaned)
-					}
+			chunkChan := make(chan agent.StreamChunk, 100)
+			type completionResult struct {
+				msg      *db.Message
+				duration time.Duration
+				dropped  int64
+				err      error
+			}
+			resChan := make(chan completionResult, 1)
+
+			go func() {
+				msg, dur, dropped, err := ma.BaseAgent.StreamChatCompletionsIsolated(ctx, historyCopy, allowlist, chunkChan)
+				close(chunkChan)
+				resChan <- completionResult{msg: msg, duration: dur, dropped: dropped, err: err}
+			}()
+
+			ma.StreamBufferMu.Lock()
+			ma.StreamBuffer = new(bytes.Buffer)
+			ma.StreamBufferMu.Unlock()
+			teeW := agent.NewCustomTeeWriter(writer, ma.streamBufferView())
+
+			lastUserPrompt = latestUserPrompt(historyCopy)
+			ncw = agent.NewNewlineCounterWriter(teeW)
+			enableThinking := ma.BaseAgent != nil && ma.BaseAgent.ShouldShowThinking()
+			if ma.BaseAgent != nil {
+				sr = ma.BaseAgent.NewTurnStreamRenderer(ncw, theme, ma.Name, lastUserPrompt)
+			} else {
+				sr = agent.NewFallbackStreamRenderer(ncw)
+				sr.SetPrompt(lastUserPrompt)
+			}
+
+			echoFilter := agent.NewPromptEchoFilter(lastUserPrompt)
+
+			responseHeaderStarted = false
+			var subagentStreamChars, subagentCompletionTokens int
+			var subagentGenStart, lastDraw time.Time
+			subagentCtxLimit := 128000
+			if ma.BaseAgent != nil {
+				estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, allowlist)
+				subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
+			}
+
+			startResponseHeader := func() {
+				if !responseHeaderStarted {
+					fmt.Fprintf(ncw, "\n[%s] response: ", renderedAgentName)
+					responseHeaderStarted = true
 				}
-			case "text":
-				subagentStreamChars += len(chunk.Content)
-				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
-				startResponseHeader()
-				sr.Write(chunk.Content)
-			case "tool_name", "tool_target":
-				// The engine prints tool titles after the model call completes.
-			case "tool_call":
-				subagentStreamChars += len(chunk.Content)
-				subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
-			default:
-				startResponseHeader()
 			}
 
-			if now := time.Now(); now.Sub(lastDraw) >= 100*time.Millisecond {
-				updateSubagentStatus(true, calcStreamTPS(subagentCompletionTokens, subagentGenStart, now), subagentCompletionTokens)
-				lastDraw = now
+			updateSubagentStatus := func(generating bool, tps float64, tokens int) {
+				activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.Parent == nil && ma.Manager.CurrentActiveAgent() == nil)
+				if activeSelected && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
+					ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+					ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
+				}
 			}
-		}
 
-		completion := <-resChan
+			// Render subagent tool calls from their completed arguments at
+			// execution time, using the same single-header path as the main agent.
+			for chunk := range chunkChan {
+				if subagentGenStart.IsZero() {
+					subagentGenStart = time.Now()
+					lastDraw = subagentGenStart
+				}
 
-		if completion.dropped > 0 && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-			fmt.Fprintf(ncw, "\n[%s] output truncated: %d stream chunk(s) could not be delivered\n",
-				style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), completion.dropped)
-		}
+				switch chunk.Type {
+				case "reasoning":
+					subagentStreamChars += len(chunk.Content)
+					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+					if enableThinking {
+						if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
+							startResponseHeader()
+							sr.WriteReasoning(cleaned)
+						}
+					}
+				case "text":
+					subagentStreamChars += len(chunk.Content)
+					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+					startResponseHeader()
+					sr.Write(chunk.Content)
+				case "tool_name", "tool_target":
+					// The engine prints tool titles after the model call completes.
+				case "tool_call":
+					subagentStreamChars += len(chunk.Content)
+					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+				default:
+					startResponseHeader()
+				}
 
-		if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
-			startResponseHeader()
-			sr.WriteReasoning(pending)
-		}
-		sr.Flush()
+				if now := time.Now(); now.Sub(lastDraw) >= 100*time.Millisecond {
+					updateSubagentStatus(true, calcStreamTPS(subagentCompletionTokens, subagentGenStart, now), subagentCompletionTokens)
+					lastDraw = now
+				}
+			}
 
-		assistantMsg := completion.msg
-		if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
-			subagentCompletionTokens = assistantMsg.CompletionTokens
-		}
+			completion := <-resChan
 
-		if !subagentGenStart.IsZero() {
-			updateSubagentStatus(false, calcStreamTPS(subagentCompletionTokens, subagentGenStart, time.Now()), subagentCompletionTokens)
-		}
+			if completion.dropped > 0 && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
+				fmt.Fprintf(ncw, "\n[%s] output truncated: %d stream chunk(s) could not be delivered\n",
+					style.NewStyle().Foreground(theme.Error).Bold(true).Render(ma.Name), completion.dropped)
+			}
 
-		ma.StreamBufferMu.Lock()
-		ma.StreamBuffer = nil
-		ma.StreamBufferMu.Unlock()
+			if pending := echoFilter.Flush(); pending != "" && enableThinking && !responseHeaderStarted {
+				startResponseHeader()
+				sr.WriteReasoning(pending)
+			}
+			sr.Flush()
 
-		if completion.err != nil {
-			return db.Message{}, completion.err
-		}
-		if assistantMsg == nil {
-			return db.Message{}, fmt.Errorf("received empty completion response")
-		}
+			assistantMsg := completion.msg
+			if assistantMsg != nil && assistantMsg.CompletionTokens > 0 {
+				subagentCompletionTokens = assistantMsg.CompletionTokens
+			}
 
-		if lastUserPrompt != "" && assistantMsg.ReasoningContent != "" {
-			assistantMsg.ReasoningContent = agent.StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
-		}
-		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
+			if !subagentGenStart.IsZero() {
+				updateSubagentStatus(false, calcStreamTPS(subagentCompletionTokens, subagentGenStart, time.Now()), subagentCompletionTokens)
+			}
 
-		if ma.BaseAgent != nil {
-			ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, completion.duration)
-		}
+			ma.StreamBufferMu.Lock()
+			ma.StreamBuffer = nil
+			ma.StreamBufferMu.Unlock()
 
-		if len(assistantMsg.ToolCalls) == 0 {
-			// Start() persists final "idle" state immediately after executeLoop returns.
-			sink.AppendInMemory(*assistantMsg)
+			generationDuration = completion.duration
+			return completion.msg, completion.err
+		},
+		Record: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
+			if lastUserPrompt != "" && assistantMsg.ReasoningContent != "" {
+				assistantMsg.ReasoningContent = agent.StripEchoedPrompt(assistantMsg.ReasoningContent, lastUserPrompt)
+			}
+			assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
+
+			if ma.BaseAgent != nil {
+				ma.BaseAgent.DebugLogLLMResponse("subagent:"+ma.Name, iter, assistantMsg, generationDuration)
+			}
+
+			sink.Append(*assistantMsg)
+			return sink.Err()
+		},
+		Complete: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
 			if !responseHeaderStarted {
 				fmt.Fprintf(ncw, "\n[%s] response: %s\n", renderedAgentName, assistantMsg.Content)
 			} else {
 				fmt.Fprintln(ncw)
 			}
-			return *assistantMsg, nil
-		}
-
-		sink.BeginBatch()
-		sink.Append(*assistantMsg)
-		ncw.EnsureNewline()
-		halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma, theme), func(tc db.ToolCall, output string, toolErr error) {
-			if ma.BaseAgent != nil {
+			return nil
+		},
+		Execute: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
+			ncw.EnsureNewline()
+			halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma), func(tc db.ToolCall, output string, toolErr error) {
 				ma.BaseAgent.DebugLogToolExecution("subagent:"+ma.Name, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
+			})
+			if err := sink.Err(); err != nil {
+				return err
 			}
-		})
-		sink.EndBatch(!halted)
-		if halted || aborted {
-			haltMsg := engine.HaltNotice()
-			if last := sink.Messages(); len(last) > 0 && last[len(last)-1].Role == "assistant" {
-				haltMsg = last[len(last)-1].Content
-			}
-			if ma.Manager != nil && halted {
-				if err := ma.Manager.SaveAgentState(ma, "failed"); err != nil {
-					return db.Message{}, fmt.Errorf("persist subagent %q failure: %w", ma.Name, err)
+			if halted || aborted {
+				if ctx.Err() != nil {
+					return ctx.Err()
 				}
+				return run.ErrBlocked
 			}
-			return db.Message{Role: "assistant", Content: haltMsg}, nil
-		}
+			return nil
+		},
+		Compact:           func(ctx context.Context) error { return ma.compactHistory(ctx, writer, theme) },
+		IsContextOverflow: agent.IsContextOverflow,
+		IsRecoverable:     agent.IsRecoverableInferenceError,
+		Interrupted: func(ctx context.Context, iter int, msg *db.Message, err error) error {
+			if msg != nil && (msg.Content != "" || msg.ReasoningContent != "") {
+				partial := *msg
+				partial.ToolCalls = nil
+				partial.StopReason = "interrupted"
+				sink.Append(partial)
+			}
+			return sink.Err()
+		},
+	})
+	if err != nil {
+		return db.Message{}, err
 	}
-
-	return db.Message{}, fmt.Errorf("reached maximum reasoning steps limit (%d)", maxSteps)
+	if outcome.Message == nil {
+		return db.Message{}, agent.ErrEmptyResponse
+	}
+	return *outcome.Message, nil
 }

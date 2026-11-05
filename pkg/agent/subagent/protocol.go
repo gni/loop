@@ -34,8 +34,9 @@ type SubagentTask struct {
 
 // AgentState records the persisted operational state and message history of a subagent.
 type AgentState struct {
-	Status  string            `json:"status"` // "idle", "running", "completed", "failed"
-	History []message.Message `json:"history"`
+	Todos   []domaintool.TodoItem `json:"todos,omitempty"`
+	Status  string                `json:"status"` // "idle", "running", "completed", "failed"
+	History []message.Message     `json:"history"`
 }
 
 // ValidateAgentName verifies that an agent name is valid and adheres to naming conventions.

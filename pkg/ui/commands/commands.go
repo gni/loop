@@ -110,8 +110,48 @@ func HandleSlashCommand(
 	case "/plan":
 		handleGuidedCommand(a, []string{"/guided", "plan"}, theme, w, kiReader)
 		return true, false
-	case "/rollback", "/undo":
+	case "/rollback":
 		handleRollbackCommand(a, theme, w)
+		return true, false
+	case "/undo":
+		handleUndoCommand(a, messages, currentSessionID, theme, w, kiReader)
+		return true, false
+	case "/tree":
+		handleTreeCommand(a, parts, currentSessionID, theme, w)
+		return true, false
+	case "/branch":
+		handleBranchCommand(a, parts, messages, currentSessionID, theme, w, kiReader)
+		return true, false
+	case "/fork", "/clone":
+		handleForkCommand(a, parts, messages, currentSessionID, theme, w)
+		return true, false
+	case "/rename", "/name":
+		if len(parts) < 2 {
+			fmt.Fprintln(w, "usage: /rename <new_name>")
+			return true, false
+		}
+		handleSessionCommand(a, []string{"/session", "rename", parts[1]}, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
+		return true, false
+	case "/copy", "/clip":
+		handleCopyCommand(messages, w)
+		return true, false
+	case "/export":
+		handleExportCommand(a, parts, messages, currentSessionID, w)
+		return true, false
+	case "/thinking", "/reasoning":
+		handleThinkingCommand(a, parts, w)
+		return true, false
+	case "/model":
+		handleModelCommand(a, parts, theme, w)
+		return true, false
+	case "/new":
+		handleSessionCommand(a, []string{"/session", "new"}, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
+		return true, false
+	case "/resume":
+		handleSessionCommand(a, append([]string{"/session", "load"}, parts[1:]...), messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
+		return true, false
+	case "/hotkeys", "/keys":
+		render.RenderHotkeys(w, *theme)
 		return true, false
 	case "/toggle", "/collapse", "/expand":
 		switch cmdName {
@@ -194,8 +234,8 @@ func HandleSlashCommand(
 	case "/session", "/sessions":
 		handleSessionCommand(a, parts, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
 		return true, false
-	case "/compress":
-		handleCompressCommand(a, messages, currentSessionID, theme, w, calcHistoryTokens)
+	case "/compress", "/compact":
+		handleCompressCommand(a, parts, messages, currentSessionID, theme, w, calcHistoryTokens)
 		return true, false
 	case "/context", "/ctx":
 		handleContextCommand(a, parts, messages, theme, w, kiReader, calcHistoryTokens)

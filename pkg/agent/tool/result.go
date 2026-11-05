@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -29,17 +30,4 @@ func ExecutePreparedResult(ctx AgentContext, executor ToolExecutor, arguments st
 	return ToolResult{Output: output, IsError: err != nil}, err
 }
 
-func (r *ToolRegistry) CanParallel(name string) bool {
-	executor, ok := r.Lookup(name)
-	if !ok {
-		return false
-	}
-	if policy, ok := executor.(interface{ ExecutionMode() string }); ok {
-		return policy.ExecutionMode() == "parallel"
-	}
-	switch NormalizeName(name) {
-	case "read", "grep", "find", "list", "task_status", "list_subagents", "audit_subagent":
-		return true
-	}
-	return false
-}
+func (r *ToolRegistry) CanParallel(name string) bool { return r.Policy(name, "").Parallel }

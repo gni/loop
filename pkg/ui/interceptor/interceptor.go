@@ -66,6 +66,7 @@ type KeyInterceptorReader struct {
 	OnClearCancelFunc       func()
 	OnChatHistoryInput      func([]byte) []byte
 	OnQueueChanged          func()
+	OnUserInput             func()
 
 	ActiveTurn             atomic.Bool   // A foreground turn is still streaming.
 	PendingCollapseToggles atomic.Uint64 // Apply active Ctrl+O presses on the foreground renderer.
@@ -205,6 +206,12 @@ func (ki *KeyInterceptorReader) readFromChannels(p []byte) (int, error) {
 		b = input
 	}
 
+	if ki.OnUserInput != nil {
+		cb := ki.OnUserInput
+		ki.OnUserInput = nil
+		cb()
+	}
+
 	if b != 4 && ki.OnClearPromptHint != nil {
 		ki.OnClearPromptHint()
 	}
@@ -307,6 +314,11 @@ readInput:
 			return 0, io.EOF
 		}
 		n, err = ki.R.Read(p)
+		if n > 0 && ki.OnUserInput != nil {
+			cb := ki.OnUserInput
+			ki.OnUserInput = nil
+			cb()
+		}
 	} else {
 		n, err = ki.readFromChannels(p)
 	}

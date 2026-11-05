@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -18,6 +17,7 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/process"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
@@ -114,24 +114,28 @@ func executeManualShellCommand(
 			}
 		}
 
-		if err := os.Chdir(target); err != nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(a.WorkspaceRoot, target)
+		}
+		cleanTarget := filepath.Clean(target)
+		info, err := os.Stat(cleanTarget)
+		if err != nil || !info.IsDir() {
+			if err == nil {
+				err = fmt.Errorf("not a directory")
+			}
 			fmt.Fprintf(ppWriter, "cd: %v\n", err)
 			return
 		}
-		pwd, err := os.Getwd()
-		if err != nil {
-			pwd = target
+		if resolved, evalErr := filepath.EvalSymlinks(cleanTarget); evalErr == nil && resolved != "" {
+			cleanTarget = resolved
 		}
-		if resolved, evalErr := filepath.EvalSymlinks(pwd); evalErr == nil && resolved != "" {
-			pwd = resolved
-		}
-		a.WorkspaceRoot = pwd
+		a.WorkspaceRoot = cleanTarget
 		if a.Config != nil {
-			trusted := config.WorkspaceTrusted(a.ConfigPath, pwd)
+			trusted := config.WorkspaceTrusted(a.ConfigPath, cleanTarget)
 			a.Config.DisableProjectPlugins = !trusted
 		}
-		fmt.Fprintf(ppWriter, "changed directory to: %s\n", pwd)
-		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", pwd)
+		fmt.Fprintf(ppWriter, "changed directory to: %s\n", cleanTarget)
+		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", cleanTarget)
 		msg := db.Message{Role: "user", Content: contextMsg}
 		a.MessagesMu.Lock()
 		*messages = append(*messages, msg)
@@ -172,13 +176,7 @@ func executeManualShellCommand(
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	process.SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = a.WorkspaceRoot
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")

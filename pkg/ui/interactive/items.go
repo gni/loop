@@ -107,6 +107,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		boolConfigItem("enable_mcp", "enable MCP", "Permit configured MCP servers to connect and expose tools", &cloned.EnableMCP, formatBool),
 		boolConfigItem("parallel_tool_calls", "parallel tool calls", "Execute multiple simultaneous model tool invocations concurrently", &cloned.ParallelToolCalls, formatBool),
 		boolConfigItem("collapse_results", "collapse results", "Visually collapse lengthy tool execution response text into previews", &cloned.CollapseResults, formatBool),
+		intConfigItem("history_page_size", "history page size", "Number of rendered terminal lines loaded per scroll chunk and kept resident in memory", &cloned.HistoryPageSize),
 		boolConfigItem("show_tokens", "show tokens", "Render token count diagnostics at the bottom of agent responses", &cloned.ShowTokens, formatBool),
 		boolConfigItem("show_microseconds", "show microseconds", "Show six fractional digits on elapsed timers", &cloned.ShowMicroseconds, formatBool),
 		selectConfigItem("theme", "theme", "Active UI color palette (default, minimal, matrix, amber, monokai)", style.GetThemeNames, &cloned.Theme, "theme"),

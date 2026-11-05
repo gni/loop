@@ -27,7 +27,8 @@ func renderTurnPromptHeader(
 	kiReader *interceptor.KeyInterceptorReader,
 ) {
 	width, _ := ui.GetTerminalSize()
-	fmt.Fprint(w, render.FormatPromptSeparator(cfg.ShowThinking, cfg.ReasoningEffort, theme, width))
+	branch := ui.CachedGitBranch()
+	fmt.Fprint(w, render.FormatPromptSeparator(cfg.ShowThinking, cfg.ReasoningEffort, theme, width, branch))
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	if fromQueue {

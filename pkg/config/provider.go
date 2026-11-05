@@ -26,7 +26,7 @@ type ProviderConfig struct {
 	API              string            `json:"api,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	Endpoint         string            `json:"endpoint"`
-	ApiKey           string            `json:"api_key,omitempty"`
+	APIKey           string            `json:"api_key,omitempty"`
 	Model            string            `json:"model,omitempty"`
 	Timeout          int               `json:"timeout,omitempty"`
 	Headers          map[string]string `json:"headers,omitempty"`
@@ -49,19 +49,19 @@ func parseEnvVarKey(key string) (string, bool) {
 	return "", false
 }
 
-func (p ProviderConfig) ResolvedApiKey() string {
-	if envVar, ok := parseEnvVarKey(p.ApiKey); ok {
+func (p ProviderConfig) ResolvedAPIKey() string {
+	if envVar, ok := parseEnvVarKey(p.APIKey); ok {
 		return os.Getenv(envVar)
 	}
-	return p.ApiKey
+	return p.APIKey
 }
 
 func (p ProviderConfig) AuthStatus() error {
-	raw := strings.TrimSpace(p.ApiKey)
+	raw := strings.TrimSpace(p.APIKey)
 	if raw == "" {
 		return nil
 	}
-	if strings.TrimSpace(p.ResolvedApiKey()) == "" {
+	if strings.TrimSpace(p.ResolvedAPIKey()) == "" {
 		return fmt.Errorf("provider %q has no API key (set api_key or an env:$VAR reference)", p.Name)
 	}
 	return nil
@@ -124,7 +124,7 @@ func (c *Config) ActivateProvider(name string) error {
 
 	c.ActiveProvider = name
 	c.Endpoint = provider.Endpoint
-	c.ApiKey = provider.ResolvedApiKey()
+	c.APIKey = provider.ResolvedAPIKey()
 	if provider.Model != "" {
 		c.Model = provider.Model
 	}
@@ -150,9 +150,9 @@ func (c *Config) UpdateActiveProvider() {
 		return
 	}
 	p.Endpoint = c.Endpoint
-	_, isEnv := parseEnvVarKey(p.ApiKey)
-	if p.ApiKey == "" || !isEnv || p.ResolvedApiKey() != c.ApiKey {
-		p.ApiKey = c.ApiKey
+	_, isEnv := parseEnvVarKey(p.APIKey)
+	if p.APIKey == "" || !isEnv || p.ResolvedAPIKey() != c.APIKey {
+		p.APIKey = c.APIKey
 	}
 	p.Model = c.Model
 	p.Timeout = c.Timeout

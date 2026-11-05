@@ -15,6 +15,8 @@ import (
 )
 
 type MultiAgent struct {
+	planMu       sync.RWMutex
+	todos        []tool.TodoItem
 	Name         string
 	SystemPrompt string
 	History      []db.Message
@@ -88,9 +90,15 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 
 	cfg := ma.BaseAgent.BaseSystemPromptConfig(allowlist, canSpawn)
 	cfg.BaseInstruction = ma.SystemPrompt
-	cfg.ActiveAgents = activeAgents
+	if canSpawn {
+		cfg.ActiveAgents = activeAgents
+	} else {
+		cfg.ActiveAgents = nil
+	}
 	cfg.AllSkills = cfg.Skills
 	cfg.Skills = ma.GetEffectiveSkills()
+	cfg.GuidedMode = false
+	cfg.ActiveTasks = nil
 
 	return agent.BuildSystemPrompt(cfg)
 }

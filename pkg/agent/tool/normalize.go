@@ -16,11 +16,6 @@ var subagentSpawnTools = map[string]bool{
 	"create_subagent": true,
 }
 
-var subagentInspectionTools = map[string]bool{
-	"list_subagents": true,
-	"audit_subagent": true,
-}
-
 // IsSubagentTool reports whether a tool name belongs to the subagent family, including
 // the per-agent delegation aliases (subagent__<name>).
 func IsSubagentTool(name string) bool {
@@ -30,7 +25,7 @@ func IsSubagentTool(name string) bool {
 
 // IsSubagentInspectionTool reports the side-effect-free members of the subagent family.
 func IsSubagentInspectionTool(name string) bool {
-	return subagentInspectionTools[NormalizeName(name)]
+	return IsSubagentTool(name) && PolicyForName(name, "").ReadOnly
 }
 
 // IsSpawnTool reports whether a tool can spawn a subagent.

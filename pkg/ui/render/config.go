@@ -95,6 +95,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		{"show thinking:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowThinking))},
 		{"markdown render:", valStyle.Render(fmt.Sprintf("%v", cfg.MarkdownRender))},
 		{"collapse results:", valStyle.Render(fmt.Sprintf("%v", cfg.CollapseResults))},
+		{"history page size:", valStyle.Render(fmt.Sprintf("%d lines", cfg.HistoryPageSize))},
 		{"show tokens:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowTokens))},
 		{"show microseconds:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowMicroseconds))},
 		{"context limit:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.ContextWindowLimit))},

@@ -93,11 +93,11 @@ type Agent struct {
 	LLMProviderMu    sync.RWMutex
 	Config           *config.Config
 	ConfigPath       string
-	HttpClient       *http.Client
+	HTTPClient       *http.Client
 	ActiveSkills     []Skill
-	McpClients       map[string]*mcpClient
-	McpClientsMu     sync.Mutex
-	McpStartErrors   map[string]error
+	MCPClients       map[string]*mcpClient
+	MCPClientsMu     sync.Mutex
+	MCPStartErrors   map[string]error
 
 	mcpGeneration int
 	mcpPending    map[string]config.MCPServerConfig
@@ -108,7 +108,7 @@ type Agent struct {
 
 	Tasks         map[string]*Task
 	TasksMu       sync.Mutex
-	NextTaskId    int
+	NextTaskID    int
 	StreamingTask string
 
 	CurrentStreamBuffer *bytes.Buffer
@@ -123,11 +123,12 @@ type Agent struct {
 	// has been rendered. It may request a safe redraw of the active turn.
 	OnStreamProgress func() bool
 
-	stateMu        sync.Mutex
-	liveToolWriter io.Writer
-	currentWriter  io.Writer
-	currentContext context.Context
-	currentTheme   style.UITheme
+	stateMu         sync.Mutex
+	activeSessionID string
+	liveToolWriter  io.Writer
+	currentWriter   io.Writer
+	currentContext  context.Context
+	currentTheme    style.UITheme
 
 	lastToolOutput         string
 	lastToolIsError        bool
@@ -145,7 +146,7 @@ type Agent struct {
 	SpawnedAgentsMu sync.RWMutex
 
 	SystemEvents       chan string
-	PendingSystemEvent string
+	pendingSystemEvent string
 
 	ClearAgentsFunc   func()
 	MultiAgentManager any
@@ -188,14 +189,14 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 		Timing:           NewTimingRecorder(),
 		Credentials:      auth.NewStore(filepath.Join(resources.AgentDirectory(configPath), "auth.json")),
 		ConfigPath:       configPath,
-		HttpClient:       httpClient,
-		McpClients:       make(map[string]*mcpClient),
-		McpStartErrors:   make(map[string]error),
+		HTTPClient:       httpClient,
+		MCPClients:       make(map[string]*mcpClient),
+		MCPStartErrors:   make(map[string]error),
 		mcpPending:       make(map[string]config.MCPServerConfig),
 		Registry:         tool.NewToolRegistry(),
 		WorkspaceRoot:    absWorkspace,
 		Tasks:            make(map[string]*Task),
-		NextTaskId:       1,
+		NextTaskID:       1,
 		SpawnedAgents:    make(map[string]bool),
 		SystemEvents:     make(chan string, 100),
 		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
@@ -204,7 +205,7 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 	}
 	a.LLMProvider = &OpenAICompatibleProvider{
 		Config:            cfg,
-		HttpClient:        httpClient,
+		HTTPClient:        httpClient,
 		ChunkDropObserver: a.recordDroppedChunk,
 		ResolveCredential: a.resolveCredential,
 	}
@@ -268,15 +269,21 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 		}
 		return
 	}
-	if (*messages)[0].Role == "system" && ((*messages)[0].Content != currentSysPrompt || forceUpdate) {
-		(*messages)[0].Content = currentSysPrompt
-		sysMsg := (*messages)[0]
-		a.MessagesMu.Unlock()
-		if sessionID != "" && a.HasMessages(sessionID) {
-			if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: sysMsg}); err != nil {
-				a.recordPersistenceError(err)
+	if (*messages)[0].Role == "system" {
+		if forceUpdate || (*messages)[0].Content == "" {
+			if (*messages)[0].Content != currentSysPrompt {
+				(*messages)[0].Content = currentSysPrompt
+				sysMsg := (*messages)[0]
+				a.MessagesMu.Unlock()
+				if sessionID != "" && a.HasMessages(sessionID) {
+					if err := a.AppendEntry(sessionID, session.Record{Type: "prompt", Message: sysMsg}); err != nil {
+						a.recordPersistenceError(err)
+					}
+				}
+				return
 			}
 		}
+		a.MessagesMu.Unlock()
 		return
 	}
 	a.MessagesMu.Unlock()
@@ -583,16 +590,16 @@ func (a *Agent) EnableTools(names ...string) {
 // enableMCPDeferred makes configured servers discoverable when MCP is enabled
 // during an existing session, without blocking the tools menu on connections.
 func (a *Agent) enableMCPDeferred() {
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	if a.mcpPending == nil {
 		a.mcpPending = make(map[string]config.MCPServerConfig)
 	}
 	for name, server := range a.Config.MCPServers {
-		if !server.Disabled && a.McpClients[name] == nil {
+		if !server.Disabled && a.MCPClients[name] == nil {
 			a.mcpPending[name] = server
 		}
 	}
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 	a.registerResourceTools()
 }
 
@@ -637,91 +644,6 @@ func (a *Agent) GetDisabledTools() []string {
 
 func (a *Agent) GetWorkspaceRoot() string {
 	return a.WorkspaceRoot
-}
-
-func (a *Agent) Context() context.Context {
-	a.stateMu.Lock()
-	ctx := a.currentContext
-	a.stateMu.Unlock()
-	if ctx != nil {
-		return ctx
-	}
-	return context.Background()
-}
-
-func (a *Agent) CurrentWriter() io.Writer {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.currentWriter
-}
-
-func (a *Agent) CurrentTheme() style.UITheme {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.currentTheme
-}
-
-func (a *Agent) LastGenerationDuration() time.Duration {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.lastGenerationDuration
-}
-
-func (a *Agent) recordDroppedChunk() {
-	if a == nil {
-		return
-	}
-	a.stateMu.Lock()
-	a.droppedChunks++
-	a.lastTurnDropped++
-	a.stateMu.Unlock()
-}
-
-func (a *Agent) DroppedChunks() int64 {
-	if a == nil {
-		return 0
-	}
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.droppedChunks
-}
-
-func (a *Agent) TurnDroppedChunks() int64 {
-	if a == nil {
-		return 0
-	}
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.lastTurnDropped
-}
-
-func (a *Agent) SetTurnState(w io.Writer, ctx context.Context, theme style.UITheme) {
-	a.stateMu.Lock()
-	a.currentWriter = w
-	a.currentContext = ctx
-	a.currentTheme = theme
-	a.lastTurnDropped = 0
-	a.stateMu.Unlock()
-}
-
-func (a *Agent) ClearTurnState() {
-	a.stateMu.Lock()
-	a.currentWriter = nil
-	a.currentContext = nil
-	a.currentTheme = style.UITheme{}
-	a.stateMu.Unlock()
-}
-
-func (a *Agent) SetCurrentWriter(w io.Writer) {
-	a.stateMu.Lock()
-	a.currentWriter = w
-	a.stateMu.Unlock()
-}
-
-func (a *Agent) SetLastGenerationDuration(d time.Duration) {
-	a.stateMu.Lock()
-	a.lastGenerationDuration = d
-	a.stateMu.Unlock()
 }
 
 func (a *Agent) GetActiveSkills() []tool.Skill {
@@ -808,45 +730,6 @@ func (a *Agent) ReloadSkillsChecked() ([]tool.Skill, error) {
 	}
 	a.SetActiveSkills(skills)
 	return a.GetActiveSkills(), nil
-}
-
-func (a *Agent) GetLiveWriter() io.Writer {
-	a.stateMu.Lock()
-	w := a.liveToolWriter
-	a.stateMu.Unlock()
-	if w != nil {
-		return w
-	}
-	return a.CurrentWriter()
-}
-
-func (a *Agent) GetChatWriter() io.Writer {
-	if a == nil {
-		return os.Stderr
-	}
-	if a.UI != nil {
-		if wh, ok := a.UI.(interface{ GetPPWriter() io.Writer }); ok {
-			if w := wh.GetPPWriter(); w != nil {
-				return w
-			}
-		}
-	}
-	if w := a.CurrentWriter(); w != nil {
-		return w
-	}
-	return os.Stderr
-}
-
-func (a *Agent) SetLiveBodyStreamed(streamed bool) {
-	a.stateMu.Lock()
-	a.liveBodyStreamed = streamed
-	a.stateMu.Unlock()
-}
-
-func (a *Agent) DidStreamLiveBody() bool {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	return a.liveBodyStreamed
 }
 
 func defaultAskUserSelection(options []tool.AskUserOption, recommended string) string {

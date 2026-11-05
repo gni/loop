@@ -150,7 +150,7 @@ func HandleProviderCommand(
 			next.Providers[name] = config.ProviderConfig{
 				Name:     name,
 				Endpoint: endpoint,
-				ApiKey:   apiKey,
+				APIKey:   apiKey,
 				Model:    model,
 			}
 			return true
@@ -267,9 +267,9 @@ func listProviders(w io.Writer, cfg *config.Config, theme UITheme) {
 		}
 
 		apiKeyDisplay := "none"
-		if item.ApiKey != "" {
-			if strings.HasPrefix(item.ApiKey, "$") || strings.HasPrefix(item.ApiKey, "env:") {
-				apiKeyDisplay = item.ApiKey
+		if item.APIKey != "" {
+			if strings.HasPrefix(item.APIKey, "$") || strings.HasPrefix(item.APIKey, "env:") {
+				apiKeyDisplay = item.APIKey
 			} else {
 				apiKeyDisplay = "configured"
 			}

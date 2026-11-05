@@ -6,18 +6,18 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
-	"syscall"
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
 func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) error {
 	_, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH)
+		terminal.NotifyResize(sigChan)
 		defer signal.Stop(sigChan)
 
 		sr := NewSessionReader(rlInput)

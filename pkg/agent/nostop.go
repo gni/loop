@@ -11,31 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/db"
 	transporthttp "loop/pkg/transport/http"
+	"loop/pkg/transport/retry"
 	"loop/pkg/ui/style"
 )
 
 var (
-	ErrEmptyResponse      = errors.New("provider returned no usable assistant response")
+	ErrEmptyResponse      = run.ErrEmptyResponse
 	ErrIncompleteResponse = errors.New("provider response is incomplete")
 	responseHTTPStatus    = regexp.MustCompile(`non-200 status: (\d{3})\b`)
 )
 
-func hasUsableAssistantResponse(msg *db.Message) bool {
-	if msg == nil {
-		return false
-	}
-	if len(msg.ToolCalls) > 0 {
-		return true
-	}
-	text := strings.TrimSpace(msg.Content)
-	switch strings.ToLower(strings.TrimRight(text, ".!")) {
-	case "", "no response from model", "no response from the model":
-		return false
-	}
-	return true
-}
+func hasUsableAssistantResponse(msg *db.Message) bool { return run.HasUsableResponse(msg) }
 
 // No total-duration or inactivity deadline is imposed by Loop in nostop mode.
 // Cancellation still propagates to the HTTP request and active tools.
@@ -46,12 +35,20 @@ func (p *OpenAICompatibleProvider) streamTimeout() time.Duration {
 	return time.Duration(p.Config.Timeout) * time.Second
 }
 
-func recoverableNostopError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || transporthttp.IsNonRetryableError(err) {
+func isRecoverableInferenceError(err error) bool {
+	if err == nil || errors.Is(err, retry.ErrExhausted) || errors.Is(err, context.Canceled) || transporthttp.IsNonRetryableError(err) {
 		return false
+	}
+	var failure *run.InferenceFailure
+	if errors.As(err, &failure) {
+		return failure.Kind == run.TransientFailure
 	}
 	if errors.Is(err, ErrEmptyResponse) || errors.Is(err, ErrIncompleteResponse) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 		return true
+	}
+	var statusError *transporthttp.StatusError
+	if errors.As(err, &statusError) {
+		return transporthttp.IsRetryableStatus(statusError.Code)
 	}
 	if match := responseHTTPStatus.FindStringSubmatch(err.Error()); len(match) == 2 {
 		code, _ := strconv.Atoi(match[1])
@@ -70,8 +67,9 @@ func recoverableNostopError(err error) bool {
 	return false
 }
 
-func (a *Agent) pauseNostop(ctx context.Context, w io.Writer, loader *turnLoader, sessionID string, theme style.UITheme, failures int) error {
-	delay := a.Config.Nostop.Pause()
+func (a *Agent) pauseRun(ctx context.Context, w io.Writer, loader *turnLoader, sessionID string, theme style.UITheme, failures int) error {
+	settings := a.configForRun(ctx).Nostop
+	delay := settings.Pause()
 	if failures > 0 {
 		// Failed requests always back off, even when the chosen pause is zero.
 		delay = max(delay, min(60*time.Second, time.Second*time.Duration(1<<min(failures-1, 6))))
@@ -90,11 +88,11 @@ func (a *Agent) pauseNostop(ctx context.Context, w io.Writer, loader *turnLoader
 			}
 		}()
 	}
-	label := fmt.Sprintf("↻ %s · pause %s · Ctrl+C to stop", a.Config.Nostop.Mode, delay)
+	label := fmt.Sprintf("↻ %s · pause %s · Ctrl+C to stop", settings.Mode, delay)
 	if failures > 0 {
-		label = "recovering · " + label
+		label = fmt.Sprintf("recovering local inference · pause %s · Ctrl+C to stop", delay)
 	}
-	a.emit(Event{Type: "nostop_wait", SessionID: sessionID, Output: label, Data: map[string]any{"mode": a.Config.Nostop.Mode, "seconds": delay.Seconds(), "recovering": failures > 0}})
+	a.emit(Event{Type: "nostop_wait", SessionID: sessionID, Output: label, Data: map[string]any{"mode": settings.Mode, "seconds": delay.Seconds(), "recovering": failures > 0}})
 	if a.UI != nil {
 		if activity, ok := a.UI.(interface {
 			DrawActivityStatsLine(io.Writer, style.UITheme, string)
@@ -118,3 +116,6 @@ func (a *Agent) pauseNostop(ctx context.Context, w io.Writer, loader *turnLoader
 		return ctx.Err()
 	}
 }
+
+// IsRecoverableInferenceError classifies inference failures for every runner.
+func IsRecoverableInferenceError(err error) bool { return isRecoverableInferenceError(err) }

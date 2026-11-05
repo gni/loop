@@ -65,7 +65,7 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	if key := p.requestKey(ctx); key != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	}
-	client := p.HttpClient
+	client := p.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}

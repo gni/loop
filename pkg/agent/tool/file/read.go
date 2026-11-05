@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +12,10 @@ import (
 	"loop/pkg/domain/ignore"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
-const readDefaultLimit = 200
+const readDefaultLimit = 2000
 
 var (
 	DirectoryTreeLister func(ctx context.Context, dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error)
@@ -37,17 +39,17 @@ func (t *readTool) PromptSnippet() string {
 
 func (t *readTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Do not call 'read' on directory paths; use 'list' to inspect directory trees.",
-		"Batch independent reads when useful. Inspect results before dependent operations such as edits and overwrites.",
+		"Use 'read' to examine files instead of cat or sed. Use 'offset' and 'limit' to inspect specific line ranges in large files.",
+		"Use 'list' for directories.",
 	})
 }
 
 func (t *readTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"read",
-		domaintool.FormatToolDescription("read", "Read text files, 200 lines by default. Specify path first. Use offset and limit to paginate; configured line and byte ceilings apply, with next-offset notices."),
+		domaintool.FormatToolDescription("read", "Read text or image files. Text files return up to 2000 lines (or 50KB) by default; use offset and limit to paginate. Image files (.png, .jpg, .gif, .webp) return visual content blocks."),
 		map[string]domaintool.SchemaProp{
-			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Specify this parameter first. Do not pass directory paths; use 'list' to inspect directory trees.")),
+			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list' to inspect directory trees.")),
 			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),
 			"limit":  domaintool.NumberProp(domaintool.FormatParamDescription("read", "limit", "Maximum number of lines to read. Optional")),
 		},
@@ -125,6 +127,10 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
+	if strings.ContainsAny(targetPath, "*?[") {
+		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'read' tool requires a specific file path; use the 'find' tool instead to search files matching this pattern (e.g. find(pattern: '%s'))", targetPath, targetPath)
+	}
+
 	safePath, err := ctx.SafePath(targetPath)
 	if err != nil {
 		return "", err
@@ -185,7 +191,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err := ctx.Context().Err(); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(safePath)
+	data, err := storage.ReadFile(safePath, int64(maxReadBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -195,7 +201,13 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if IsBinary(data) {
-		return "", fmt.Errorf("cannot read binary file; the read tool only supports text files")
+		mime := http.DetectContentType(data)
+		switch mime {
+		case "image/png", "image/jpeg", "image/gif", "image/webp":
+			return fmt.Sprintf("Read image file %s [%s, %d bytes]", targetPath, mime, len(data)), nil
+		default:
+			return "", fmt.Errorf("cannot read binary file; the read tool only supports text files and images")
+		}
 	}
 
 	_, textWithoutBOM := SplitBOM(data)
@@ -210,7 +222,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		offset = 1
 	}
 	if offset > len(lines) {
-		return "", nil
+		return "", fmt.Errorf("offset %d is beyond end of file (%d lines total)", offset, len(lines))
 	}
 
 	limit := int(args.Limit)

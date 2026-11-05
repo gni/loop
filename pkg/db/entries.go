@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"loop/pkg/domain/session"
@@ -71,22 +73,87 @@ func (s *JSONLStore) SetName(id, name string) error {
 }
 
 func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
-	infos, err := s.GetSessions()
+	if s == nil || s.core == nil {
+		return "", nil
+	}
+	s.core.mu.RLock()
+	dir := s.core.dir
+	s.core.mu.RUnlock()
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
 		return "", err
 	}
-	var selected string
-	var modified time.Time
-	for _, info := range infos {
-		if info.Cwd != workspace {
+
+	type fileCandidate struct {
+		id      string
+		modTime time.Time
+	}
+	var candidates []fileCandidate
+	for _, entry := range entries {
+		id, valid := validSessionEntry(entry)
+		if !valid {
 			continue
 		}
-		stat, err := os.Stat(s.sessionPath(info.SessionID))
-		if err == nil && stat.ModTime().After(modified) {
-			selected, modified = info.SessionID, stat.ModTime()
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, fileCandidate{id: id, modTime: info.ModTime()})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+
+	for _, candidate := range candidates {
+		filePath := filepath.Join(dir, candidate.id+".jsonl")
+		f, err := os.Open(filePath)
+		if err != nil {
+			continue
+		}
+		scanner := newJSONLScanner(f)
+		var sessionWorkspace string
+		for scanner.Scan() {
+			line := bytes.TrimSpace(scanner.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			var rec session.Record
+			if json.Unmarshal(line, &rec) == nil && rec.Type == "session" {
+				sessionWorkspace = rec.Cwd
+			}
+			break
+		}
+		scanErr := scanner.Err()
+		_ = f.Close()
+		if scanErr != nil {
+			continue
+		}
+
+		if sessionWorkspace != "" && matchesWorkspace(sessionWorkspace, workspace) {
+			return candidate.id, nil
 		}
 	}
-	return selected, nil
+
+	return "", nil
+}
+
+func matchesWorkspace(a, b string) bool {
+	if a == b {
+		return true
+	}
+	cleanA := filepath.Clean(a)
+	cleanB := filepath.Clean(b)
+	if cleanA == cleanB {
+		return true
+	}
+	evalA, errA := filepath.EvalSymlinks(cleanA)
+	evalB, errB := filepath.EvalSymlinks(cleanB)
+	return errA == nil && errB == nil && evalA == evalB
 }
 
 func (s *JSONLStore) Export(id string, w io.Writer) error {

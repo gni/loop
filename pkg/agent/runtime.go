@@ -7,19 +7,21 @@ import (
 	"strings"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
 )
 
-type RunStatus string
+type RunStatus = run.Status
 
 const (
-	RunCompleted    RunStatus = "completed"
-	RunFailed       RunStatus = "failed"
-	RunCancelled    RunStatus = "cancelled"
-	RunBlocked      RunStatus = "blocked"
-	RunLimitReached RunStatus = "limit_reached"
+	RunCompleted    RunStatus = run.Completed
+	RunFailed       RunStatus = run.Failed
+	RunCancelled    RunStatus = run.Cancelled
+	RunBlocked      RunStatus = run.Blocked
+	RunLimitReached RunStatus = run.LimitReached
 )
 
 type RunResult struct {
@@ -46,13 +48,35 @@ type Event struct {
 }
 
 func (a *Agent) emit(event Event) {
+	if err := a.sendEvent(event); err != nil {
+		a.recordPersistenceError(fmt.Errorf("event output: %w", err))
+	}
+}
+
+func (a *Agent) sendEvent(event Event) error {
+	if a.EventSink == nil {
+		return nil
+	}
 	event.Version = 1
 	event.Time = time.Now().UTC()
-	if a.EventSink != nil {
-		if err := a.EventSink(event); err != nil {
-			a.recordPersistenceError(fmt.Errorf("event output: %w", err))
-		}
+	if event.Message != nil {
+		snapshot := message.Clone(*event.Message)
+		event.Message = &snapshot
 	}
+	if event.ToolCall != nil {
+		snapshot := *event.ToolCall
+		if snapshot.Index != nil {
+			index := *snapshot.Index
+			snapshot.Index = &index
+		}
+		event.ToolCall = &snapshot
+	}
+	if event.Result != nil {
+		snapshot := *event.Result
+		snapshot.Messages = message.CloneAll(snapshot.Messages)
+		event.Result = &snapshot
+	}
+	return a.EventSink(event)
 }
 
 func (a *Agent) recordPersistenceError(err error) {
@@ -115,8 +139,8 @@ func (a *Agent) Dispose(ctx context.Context) error {
 	if a.DebugLogger != nil {
 		a.DebugLogger.Close()
 	}
-	if a.HttpClient != nil {
-		a.HttpClient.CloseIdleConnections()
+	if a.HTTPClient != nil {
+		a.HTTPClient.CloseIdleConnections()
 	}
 	return ctx.Err()
 }
@@ -124,20 +148,27 @@ func (a *Agent) Dispose(ctx context.Context) error {
 func (a *Agent) PersistenceError() error { return a.persistenceError() }
 
 func (a *Agent) resolveCredential(ctx context.Context) (string, error) {
+	return a.resolveCredentialForConfig(ctx, a.Config)
+}
+
+func (a *Agent) resolveCredentialForConfig(ctx context.Context, cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("provider configuration unavailable")
+	}
 	if a.Credentials == nil {
-		return config.ProviderConfig{ApiKey: a.Config.ApiKey}.ResolvedApiKey(), nil
+		return config.ProviderConfig{APIKey: cfg.APIKey}.ResolvedAPIKey(), nil
 	}
-	profile, exists := a.Config.Providers[a.Config.ActiveProvider]
+	profile, exists := cfg.Providers[cfg.ActiveProvider]
 	if !exists {
-		profile = config.ProviderConfig{Endpoint: a.Config.Endpoint, ApiKey: a.Config.ApiKey}
+		profile = config.ProviderConfig{Endpoint: cfg.Endpoint, APIKey: cfg.APIKey}
 	}
-	profile.Endpoint = a.Config.Endpoint
-	if strings.HasPrefix(a.Config.ApiKey, "env:") || strings.HasPrefix(a.Config.ApiKey, "$") {
-		profile.ApiKey = a.Config.ApiKey
+	profile.Endpoint = cfg.Endpoint
+	if strings.HasPrefix(cfg.APIKey, "env:") || strings.HasPrefix(cfg.APIKey, "$") {
+		profile.APIKey = cfg.APIKey
 	}
-	key, err := a.Credentials.Resolve(ctx, a.Config.ActiveProvider, profile)
+	key, err := a.Credentials.Resolve(ctx, cfg.ActiveProvider, profile)
 	if key == "" && err == nil {
-		key = config.ProviderConfig{ApiKey: a.Config.ApiKey}.ResolvedApiKey()
+		key = config.ProviderConfig{APIKey: cfg.APIKey}.ResolvedAPIKey()
 	}
 	return key, err
 }
@@ -146,8 +177,46 @@ func (a *Agent) LoadSessionMessages(id string) ([]db.Message, error) {
 	if id == "" || a.Ephemeral {
 		return nil, nil
 	}
+	var msgs []db.Message
+	var err error
 	if a.Store != nil {
-		return a.Store.LoadMessages(id)
+		msgs, err = a.Store.LoadMessages(id)
+	} else {
+		msgs, err = db.LoadMessages(id)
 	}
-	return db.LoadMessages(id)
+	if err != nil {
+		return nil, err
+	}
+	repaired, changed := message.RecoverToolHistory(msgs)
+	if changed {
+		if a.Store != nil {
+			err = a.Store.RewriteSession(id, repaired)
+		} else {
+			err = db.RewriteSession(id, repaired)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("persist interrupted tool outcomes: %w", err)
+		}
+	}
+	return repaired, nil
+}
+
+// PageRecentMessages selects recent complete turns with an optional leading
+// system prompt. The limit is soft: the oldest selected user turn is retained
+// in full. Display pagination must not use this to trim the model's context.
+func PageRecentMessages(messages []db.Message, limit int) []db.Message {
+	if limit <= 0 || len(messages) <= limit {
+		return messages
+	}
+	prefix := 0
+	if messages[0].Role == "system" {
+		prefix = 1
+	}
+	start := max(prefix, len(messages)-max(1, limit-prefix))
+	for start > prefix && messages[start].Role != "user" {
+		start--
+	}
+	selected := make([]db.Message, 0, prefix+len(messages)-start)
+	selected = append(selected, messages[:prefix]...)
+	return append(selected, messages[start:]...)
 }

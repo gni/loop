@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+
 	"github.com/spf13/cobra"
+
 	"loop/pkg/config"
 )
 
@@ -16,9 +18,9 @@ func init() {
 		if err != nil {
 			return err
 		}
-		cfg.ApiKey = redact(cfg.ApiKey)
+		cfg.APIKey = redact(cfg.APIKey)
 		for name, profile := range cfg.Providers {
-			profile.ApiKey = redact(profile.ApiKey)
+			profile.APIKey = redact(profile.APIKey)
 			if profile.OAuth != nil {
 				profile.OAuth.ClientSecret = redact(profile.OAuth.ClientSecret)
 			}

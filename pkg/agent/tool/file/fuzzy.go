@@ -483,7 +483,64 @@ func locateEditMatch(content, oldText, newText string) (*textMatch, error) {
 		}
 	}
 
+	if strippedOld, ok := stripLineNumberPrefixes(oldText); ok {
+		strippedNew, _ := stripLineNumberPrefixes(newText)
+		return locateEditMatch(content, strippedOld, strippedNew)
+	}
+
 	return nil, nil
+}
+
+func stripLineNumberPrefixes(text string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 {
+		return text, false
+	}
+	strippedLines := make([]string, len(lines))
+	hadLineNumbers := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			strippedLines[i] = line
+			continue
+		}
+		stripped := stripSingleLineNumber(line)
+		if stripped != line {
+			hadLineNumbers = true
+			strippedLines[i] = stripped
+		} else {
+			strippedLines[i] = line
+		}
+	}
+	if hadLineNumbers {
+		return strings.Join(strippedLines, "\n"), true
+	}
+	return text, false
+}
+
+func stripSingleLineNumber(line string) string {
+	leading := leadingWhitespace(line)
+	trimmed := line[len(leading):]
+	idx := 0
+	for idx < len(trimmed) && trimmed[idx] >= '0' && trimmed[idx] <= '9' {
+		idx++
+	}
+	if idx > 0 && idx < len(trimmed) {
+		sep := trimmed[idx]
+		if sep == ':' || sep == '|' {
+			idx++
+			if idx < len(trimmed) && trimmed[idx] == ' ' {
+				idx++
+			}
+			return leading + trimmed[idx:]
+		} else if sep == ' ' || sep == '\t' {
+			for idx < len(trimmed) && (trimmed[idx] == ' ' || trimmed[idx] == '\t') {
+				idx++
+			}
+			return leading + trimmed[idx:]
+		}
+	}
+	return line
 }
 
 func findClosestLineMatch(content, oldText string) int {

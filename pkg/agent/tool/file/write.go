@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	domaintool "loop/pkg/domain/tool"
 )
@@ -18,13 +19,12 @@ func NewWriteTool() domaintool.ToolExecutor {
 func (t *writeTool) Name() string { return "write" }
 
 func (t *writeTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Create or overwrite a file: {\"path\": \"path/to/file\", \"content\": \"...\"}")
+	return domaintool.FormatToolSnippet(t.Name(), "Create or overwrite a file")
 }
 
 func (t *writeTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use write to create new files or completely replace files. Read existing files before overwriting; new files need no prior read.",
-		"Independent writes to distinct files may share a model response. When names are unspecified, use new distinct paths. Count only successful writes as completed; if an existing unread path blocks a write, choose another unless that filename was explicitly requested.",
+		"Use 'write' only for new files or complete replacements.",
 	})
 }
 
@@ -33,8 +33,8 @@ func (t *writeTool) Definition() domaintool.Tool {
 		"write",
 		domaintool.FormatToolDescription("write", "Create or replace a file. Creates parent directories. Read existing files before overwriting; use distinct new filenames when names are unspecified. Independent writes may be batched; execution remains ordered. File observation requirements depend on configuration."),
 		map[string]domaintool.SchemaProp{
-			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file. ALWAYS specify 'path' first before 'content'.")),
-			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file. ALWAYS specify 'content' after 'path'.")),
+			"path":    domaintool.StringProp(domaintool.FormatParamDescription("write", "path", "Path to the target file.")),
+			"content": domaintool.StringProp(domaintool.FormatParamDescription("write", "content", "Complete content to write into the file.")),
 		},
 		"path", "content",
 	)
@@ -50,6 +50,9 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 	targetPath := ExtractFilePath(arguments, args.Path)
 	if targetPath == "" {
 		return "", fmt.Errorf("missing required argument: path")
+	}
+	if strings.ContainsAny(targetPath, "*?[") {
+		return "", fmt.Errorf("cannot write to wildcard path '%s': please provide an exact target file path", targetPath)
 	}
 
 	var content string
@@ -97,5 +100,13 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), safePath), nil
+	displayPath := targetPath
+	if rel, err := filepath.Rel(ctx.GetWorkspaceRoot(), safePath); err == nil && !strings.HasPrefix(rel, "..") {
+		displayPath = rel
+	}
+	msg := fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), displayPath)
+	if warning := ValidateSyntax(safePath, []byte(content)); warning != "" {
+		msg += warning
+	}
+	return msg, nil
 }

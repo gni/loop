@@ -148,9 +148,9 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	}
 	if v, ok := project["api_key"].(string); ok && strings.TrimSpace(v) != "" {
 		if envVar, isEnv := parseEnvVarKey(v); isEnv {
-			cfg.ApiKey = os.Getenv(envVar)
+			cfg.APIKey = os.Getenv(envVar)
 		} else {
-			cfg.ApiKey = v
+			cfg.APIKey = v
 		}
 	}
 	if v, ok := project["model"].(string); ok && strings.TrimSpace(v) != "" {
@@ -279,7 +279,7 @@ func applyEnvironment(cfg *Config) {
 		}
 	}
 	if _, ok := os.LookupEnv("LOOP_API_KEY"); ok {
-		cfg.ApiKey = "env:LOOP_API_KEY"
+		cfg.APIKey = "env:LOOP_API_KEY"
 		cfg.Sources["api_key"] = "environment:LOOP_API_KEY"
 	}
 	if raw, ok := os.LookupEnv("LOOP_TIMEOUT"); ok {
@@ -298,8 +298,8 @@ func saveProjectConfig(cfg *Config) error {
 		return err
 	}
 	if profile, ok := sanitized.Providers[sanitized.ActiveProvider]; ok {
-		if _, isEnv := parseEnvVarKey(profile.ApiKey); isEnv {
-			sanitized.ApiKey = profile.ApiKey
+		if _, isEnv := parseEnvVarKey(profile.APIKey); isEnv {
+			sanitized.APIKey = profile.APIKey
 		}
 	}
 	currentData, err := json.Marshal(sanitized)
@@ -322,14 +322,59 @@ func saveProjectConfig(cfg *Config) error {
 		if key == "disable_project_plugins" {
 			continue
 		}
-		if (key == "api_key" || key == "providers" || key == "mcp_servers") && cfg.Sources[key] != cfg.ProjectPath {
-			continue
-		}
-		if key == "api_key" {
-			if str, ok := value.(string); ok && str != "" {
-				if _, isEnv := parseEnvVarKey(str); !isEnv {
-					continue
+		if key == "api_key" || key == "providers" || key == "mcp_servers" {
+			if cfg.Sources[key] != cfg.ProjectPath {
+				continue
+			}
+			if key == "api_key" {
+				if str, ok := value.(string); ok && str != "" {
+					if _, isEnv := parseEnvVarKey(str); isEnv {
+						patch[key] = str
+					}
 				}
+				continue
+			}
+			if key == "mcp_servers" {
+				baseServers, _ := base["mcp_servers"].(map[string]any)
+				if currentServers, ok := value.(map[string]any); ok {
+					projectServers := make(map[string]any)
+					for name, serverDef := range currentServers {
+						// Never persist servers inherited from global base config into repository
+						if _, inBase := baseServers[name]; !inBase {
+							projectServers[name] = serverDef
+						}
+					}
+					if len(projectServers) > 0 {
+						patch["mcp_servers"] = projectServers
+					}
+				}
+				continue
+			}
+			if key == "providers" {
+				baseProviders, _ := base["providers"].(map[string]any)
+				if currentProviders, ok := value.(map[string]any); ok {
+					projectProviders := make(map[string]any)
+					for name, providerDef := range currentProviders {
+						// Never persist providers inherited from global base config into repository
+						if _, inBase := baseProviders[name]; !inBase {
+							if pMap, ok := providerDef.(map[string]any); ok {
+								// Strip raw API keys; only preserve env references
+								if rawKey, hasKey := pMap["api_key"].(string); hasKey && rawKey != "" {
+									if _, isEnv := parseEnvVarKey(rawKey); !isEnv {
+										delete(pMap, "api_key")
+									}
+								}
+								projectProviders[name] = pMap
+							} else {
+								projectProviders[name] = providerDef
+							}
+						}
+					}
+					if len(projectProviders) > 0 {
+						patch["providers"] = projectProviders
+					}
+				}
+				continue
 			}
 		}
 		if !reflect.DeepEqual(value, base[key]) {

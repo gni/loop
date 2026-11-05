@@ -112,7 +112,7 @@ func RunInteractiveProviderConfig(
 						id:   "prov_key_" + pName,
 						name: "  api key",
 						value: func() string {
-							key := cloned.Providers[pName].ApiKey
+							key := cloned.Providers[pName].APIKey
 							if key == "" {
 								return "(not set)"
 							}
@@ -127,7 +127,7 @@ func RunInteractiveProviderConfig(
 						description: fmt.Sprintf("API key or env reference ($VAR) for '%s'", pName),
 						onEdit: func(newVal string) error {
 							curr := cloned.Providers[pName]
-							curr.ApiKey = strings.TrimSpace(newVal)
+							curr.APIKey = strings.TrimSpace(newVal)
 							cloned.Providers[pName] = curr
 							return nil
 						},
@@ -215,7 +215,7 @@ func RunInteractiveProviderConfig(
 						Name:     pName,
 						Endpoint: pURL,
 						Model:    pModel,
-						ApiKey:   pKey,
+						APIKey:   pKey,
 						Timeout:  cloned.Timeout,
 					}
 					cloned.ActiveProvider = pName

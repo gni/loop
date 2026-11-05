@@ -61,7 +61,6 @@ type Session struct {
 	mu        sync.Mutex
 	runMu     sync.Mutex
 	messages  []db.Message
-	view      []db.Message
 	steering  []string
 	followUp  []string
 	cancel    context.CancelFunc
@@ -183,6 +182,7 @@ func New(options Options) (*Session, error) {
 	s.Agent.Inquirer = options.Inquirer
 	s.Agent.ToolSelection = options.Tools
 	s.Agent.Ephemeral = options.NoSession
+	s.Agent.SetActiveSessionID(id)
 	s.Agent.RunSession = s.RunInteractive
 	s.Agent.SyncSessionState = s.SyncInteractive
 	s.Agent.Bus = agent.NewEventBus()
@@ -208,7 +208,7 @@ func New(options Options) (*Session, error) {
 		return nil, err
 	}
 	if store != nil {
-		s.messages, err = store.LoadMessages(id)
+		s.messages, err = s.Agent.LoadSessionMessages(id)
 		if err != nil {
 			return nil, err
 		}
@@ -222,7 +222,6 @@ func New(options Options) (*Session, error) {
 	if err := s.Agent.PersistenceError(); err != nil {
 		return nil, err
 	}
-	s.view = append([]db.Message(nil), s.messages...)
 	if cfg.MaxSubagentDepth > 0 {
 		if err := s.Manager.LoadSavedAgents(); err != nil {
 			return nil, err
@@ -246,14 +245,14 @@ func (s *Session) storageID() string {
 }
 
 func (s *Session) MessagesSnapshot() []db.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Agent.MessagesMu.RLock()
+	defer s.Agent.MessagesMu.RUnlock()
 	return message.CloneAll(s.messages)
 }
 
 func (s *Session) event(event agent.Event) error {
 	// A plan update must survive interruption before the model turn ends.
-	if event.Type == "tool_execution_end" && event.ToolCall != nil && event.ToolCall.Function.Name == "todo" && !event.IsError {
+	if event.Type == "tool_execution_end" && event.ToolCall != nil && event.ToolCall.Function.Name == "todo" && !event.IsError && !strings.HasPrefix(event.SessionID, "subagent:") {
 		if err := s.persistSettings(); err != nil {
 			return err
 		}
@@ -266,9 +265,6 @@ func (s *Session) event(event agent.Event) error {
 		event.SessionID = s.ID
 	}
 	s.mu.Lock()
-	if event.Type == "message_end" && event.Message != nil {
-		s.view = append(s.view, *event.Message)
-	}
 	hooks := append([]resources.Hook(nil), s.hooks...)
 	s.mu.Unlock()
 	for _, hook := range hooks {
@@ -341,7 +337,7 @@ func (s *Session) RunInteractive(ctx context.Context, w io.Writer, messages *[]d
 		return agent.RunResult{}, err
 	}
 	result, err := s.runPrepared(ctx, prompt, w, theme, false, func() error { return s.adoptInteractive(*messages, tools, id) })
-	*messages = message.CloneAll(s.messages)
+	*messages = s.MessagesSnapshot()
 	return result, err
 }
 
@@ -373,7 +369,9 @@ func (s *Session) adoptInteractive(messages []db.Message, tools []string, id str
 	if id != "" {
 		s.ID = id
 	}
+	s.Agent.MessagesMu.Lock()
 	s.messages = message.CloneAll(messages)
+	s.Agent.MessagesMu.Unlock()
 	s.options.Tools = tools
 	s.Agent.ToolSelection = tools
 	return nil
@@ -400,7 +398,6 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		}
 		s.running = false
 		s.cancel = nil
-		s.view = append([]db.Message(nil), s.messages...)
 		idle := s.idle
 		s.mu.Unlock()
 		s.runMu.Unlock()
@@ -494,8 +491,13 @@ func (s *Session) takeSteering() []db.Message {
 
 func (s *Session) State() State {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed, Model: s.Agent.Config.Model, Provider: s.Agent.Config.ActiveProvider, Messages: message.CloneAll(s.view), Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...), Todos: s.Agent.GetTodos()}
+	state := State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed,
+		Model: s.Agent.Config.Model, Provider: s.Agent.Config.ActiveProvider,
+		Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...)}
+	s.mu.Unlock()
+	state.Messages = s.MessagesSnapshot()
+	state.Todos = s.Agent.GetTodos()
+	return state
 }
 
 func (s *Session) ClearQueue() {

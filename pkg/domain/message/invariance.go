@@ -1,86 +1,63 @@
 package message
 
-// EnforceToolPairingInvariance ensures every tool response has a corresponding assistant tool call,
-// and synthetic placeholder tool responses are generated for interrupted turns so API schemas remain valid.
+// EnforceToolPairingInvariance keeps exactly one response for each tool call in
+// the immediately preceding assistant message. Missing responses are marked as
+// interrupted before the next conversation message or the end of history.
 func EnforceToolPairingInvariance(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
 	}
-
-	var result []Message
-	startIdx := 0
-	if messages[0].Role == RoleSystem {
-		result = append(result, messages[0])
-		startIdx = 1
-	}
-
-	for i := startIdx; i < len(messages); i++ {
-		msg := messages[i]
-		if msg.Role == RoleTool {
-			hasMatchingCall := false
-			for j := len(result) - 1; j >= 0; j-- {
-				if result[j].Role == RoleAssistant {
-					for _, tc := range result[j].ToolCalls {
-						if tc.ID == msg.ToolCallID {
-							hasMatchingCall = true
-							break
-						}
-					}
-					break
-				}
-				if result[j].Role != RoleTool {
-					break
-				}
+	result := make([]Message, 0, len(messages))
+	var pending []ToolCall
+	unanswered := make(map[string]ToolCall)
+	closePending := func() {
+		for _, call := range pending {
+			if _, ok := unanswered[call.ID]; !ok {
+				continue
 			}
-			if hasMatchingCall {
+			result = append(result, Message{
+				Role: RoleTool, ToolCallID: call.ID, Name: call.Function.Name,
+				Content:     "[tool result unavailable after interruption; execution may have changed files or started processes. Inspect current state before retrying this operation.]",
+				ToolOutcome: "unknown",
+				IsError:     true,
+			})
+			delete(unanswered, call.ID)
+		}
+		pending = nil
+	}
+	for _, msg := range messages {
+		if msg.Role == RoleTool {
+			if _, ok := unanswered[msg.ToolCallID]; ok {
 				result = append(result, msg)
+				delete(unanswered, msg.ToolCallID)
 			}
 			continue
 		}
-
-		// Before appending a non-tool message, check if the preceding assistant message had missing tool responses
-		result = closeUnansweredToolCalls(result)
-
+		closePending()
 		result = append(result, msg)
+		if msg.Role == RoleAssistant {
+			pending = msg.ToolCalls
+			for _, call := range pending {
+				unanswered[call.ID] = call
+			}
+		}
 	}
-
-	// Final check on the tail of result
-	result = closeUnansweredToolCalls(result)
-
+	closePending()
 	return result
 }
 
-func closeUnansweredToolCalls(result []Message) []Message {
-	if len(result) == 0 {
-		return result
+// RecoverToolHistory makes interrupted saved calls explicit without replaying
+// them. Callers can persist the repaired context while retaining source records.
+func RecoverToolHistory(messages []Message) ([]Message, bool) {
+	repaired := EnforceToolPairingInvariance(messages)
+	if len(repaired) != len(messages) {
+		return repaired, true
 	}
-	lastAsstIdx := -1
-	for j := len(result) - 1; j >= 0; j-- {
-		if result[j].Role == RoleAssistant {
-			lastAsstIdx = j
-			break
-		}
-		if result[j].Role != RoleTool {
-			break
-		}
-	}
-	if lastAsstIdx != -1 && len(result[lastAsstIdx].ToolCalls) > 0 {
-		answered := make(map[string]bool)
-		for k := lastAsstIdx + 1; k < len(result); k++ {
-			if result[k].Role == RoleTool {
-				answered[result[k].ToolCallID] = true
-			}
-		}
-		for _, tc := range result[lastAsstIdx].ToolCalls {
-			if !answered[tc.ID] {
-				result = append(result, Message{
-					Role:       RoleTool,
-					ToolCallID: tc.ID,
-					Name:       tc.Function.Name,
-					Content:    "[tool execution was interrupted or cancelled before returning]",
-				})
-			}
+	for index, msg := range repaired {
+		original := messages[index]
+		if msg.Role != original.Role || msg.ToolCallID != original.ToolCallID || msg.ToolOutcome != original.ToolOutcome {
+			return repaired, true
 		}
 	}
-	return result
+	return repaired, false
 }

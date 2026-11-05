@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"loop/pkg/agent/swarm"
 	"loop/pkg/terminal"
@@ -17,7 +16,7 @@ import (
 func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) error {
 	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH)
+		terminal.NotifyResize(sigChan)
 		defer signal.Stop(sigChan)
 
 		sr := NewSessionReader(rlInput)

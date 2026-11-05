@@ -28,7 +28,14 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 			continue
 		}
 		switch msg.Role {
-		case "system", "user", "assistant", "tool":
+		case "system":
+			if len(validMessages) > 0 {
+				// Normalize mid-history system messages (e.g. compaction summaries)
+				// to user context turns so strict OpenAI-compatible proxies and chat templates
+				// (e.g. vLLM, llama.cpp, ChatML) don't reject them or break KV caching.
+				msg.Role = "user"
+			}
+		case "user", "assistant", "tool":
 		default:
 			continue
 		}
@@ -282,7 +289,50 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 
 	wireMessages := make([]wireChatMessage, 0, len(reqBody.Messages))
+	var pendingImageParts []map[string]any
+
+	flushPendingImages := func() {
+		if len(pendingImageParts) > 0 {
+			userParts := append([]map[string]any{{"type": "text", "text": "Attached image(s) from tool result:"}}, pendingImageParts...)
+			wireMessages = append(wireMessages, wireChatMessage{
+				Role:    "user",
+				Content: userParts,
+			})
+			pendingImageParts = nil
+		}
+	}
+
 	for _, msg := range reqBody.Messages {
+		if msg.Role == "tool" {
+			hasImages := false
+			for _, block := range msg.ContentBlocks {
+				if block.Type == "image" {
+					hasImages = true
+					url := block.URL
+					if url == "" {
+						url = "data:" + block.MimeType + ";base64," + block.Data
+					}
+					pendingImageParts = append(pendingImageParts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": url}})
+				}
+			}
+			content := msg.Content
+			if content == "" {
+				if hasImages {
+					content = "(see attached image)"
+				} else {
+					content = " "
+				}
+			}
+			wireMessages = append(wireMessages, wireChatMessage{
+				Role:         "tool",
+				Content:      content,
+				ToolCallID:   msg.ToolCallID,
+				CacheControl: msg.CacheControl,
+				Name:         msg.Name,
+			})
+			continue
+		}
+		flushPendingImages()
 		wireMessages = append(wireMessages, wireChatMessage{
 			Role:         msg.Role,
 			Content:      msg.ChatContent(),
@@ -292,6 +342,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 			Name:         msg.Name,
 		})
 	}
+	flushPendingImages()
 	wireReq := chatCompletionWireRequest{
 		Model:                reqBody.Model,
 		Messages:             wireMessages,
@@ -348,6 +399,13 @@ type chatCompletionWireRequest struct {
 
 func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
 	if role == "tool" && name != "read" && name != "write" && name != "edit" && len(content) > maxChars {
+		if name == "bash" {
+			prefix := "... (earlier command output omitted for context limits)\n"
+			if strings.Contains(suffix, "optimization") {
+				prefix = "... (earlier command output omitted for context optimization)\n"
+			}
+			return prefix + filetool.UTF8SafeSuffix(content, maxChars)
+		}
 		return filetool.UTF8SafePrefix(content, maxChars) + suffix
 	}
 	return content

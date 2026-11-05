@@ -134,12 +134,14 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) error
 
 	if toolName == "bash" {
 		if cmd := extractBashCommand(arguments); cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
-			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Do not re-run this failing command; address the error or use 'edit'/'write'"), cmd, g.failedStreaks[cmd])
+			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Stop repeating this failing command; address the error or adjust arguments before retrying"), cmd, g.failedStreaks[cmd])
 		}
 	}
 
-	if target := g.ExtractTargetFile(toolName, arguments); target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads {
-		return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its full contents are already in context above. Do NOT re-read it. Call 'edit' or 'write' now to modify the code"), target, g.targetStreaks[target])
+	if toolName == "read" {
+		if target := g.ExtractTargetFile(toolName, arguments); target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads {
+			return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its contents are already in context above. Inspect the existing output or proceed with your next action"), target, g.targetStreaks[target])
+		}
 	}
 
 	callKey := buildCallKey(toolName, arguments)
@@ -170,12 +172,12 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, _ s
 	}
 
 	newWindow := isReadWindowNew(toolName, target, arguments, g.readWindows)
-	if target != "" && target == g.lastTarget && !newWindow {
+	if toolName == "read" && target != "" && target == g.lastTarget && !newWindow {
 		g.targetStreaks[target]++
 	} else {
 		g.targetStreaks = make(map[string]int)
 		g.lastTarget = target
-		if target != "" {
+		if toolName == "read" && target != "" {
 			g.targetStreaks[target] = 1
 		}
 	}

@@ -321,6 +321,10 @@ func HasMessages(sessionID string) bool {
 	return err == nil && store.HasMessages(sessionID)
 }
 
+func OpenHistory(sessionID string) (*HistoryReader, error) {
+	return withStoreVal(func(s *JSONLStore) (*HistoryReader, error) { return s.OpenHistory(sessionID) })
+}
+
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {
 	return &JSONLStore{core: s.core, Workspace: workspace}
 }

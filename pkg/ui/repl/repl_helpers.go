@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -80,6 +79,7 @@ func startREPLSystemNotifications(a *agent.Agent, kiReader *interceptor.KeyInter
 	go func() {
 		for event := range a.SystemEvents {
 			ui.DrawStatusBar(os.Stderr, ui.GetConfiguredTheme(a.Config))
+			a.SetPendingSystemEvent(event)
 			if event != "" && kiReader.IsAtMainPrompt.Load() {
 				ui.GetUI().SetPromptHint(fmt.Sprintf("[%s]", event), 3*time.Second, nil)
 			}
@@ -91,7 +91,7 @@ func startREPLSystemNotifications(a *agent.Agent, kiReader *interceptor.KeyInter
 func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader, rl *term.Terminal, fd int) func() {
 	sigChan := make(chan os.Signal, 1)
 	resizeDone := make(chan struct{})
-	signal.Notify(sigChan, syscall.SIGWINCH)
+	terminal.NotifyResize(sigChan)
 	go func() {
 		var debounceTimer *time.Timer
 		defer func() {

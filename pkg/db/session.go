@@ -608,3 +608,19 @@ func SetLatestSessionID(sessionID string) error {
 func GetSessions() ([]SessionInfo, error) {
 	return withStoreVal(func(s *JSONLStore) ([]SessionInfo, error) { return s.GetSessions() })
 }
+
+func Branch(sessionID, entryID string) error {
+	return withStore(func(s *JSONLStore) error { return s.Branch(sessionID, entryID) })
+}
+
+func Entries(sessionID string) ([]session.Record, error) {
+	return withStoreVal(func(s *JSONLStore) ([]session.Record, error) { return s.Entries(sessionID) })
+}
+
+func RenameSession(oldID, newID string) error {
+	return withStore(func(s *JSONLStore) error { return s.RenameSession(oldID, newID) })
+}
+
+func RewriteSession(sessionID string, messages []message.Message) error {
+	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
+}

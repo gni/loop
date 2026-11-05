@@ -10,10 +10,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/ui/style"
 )
 
 type bashTool struct {
@@ -34,9 +34,10 @@ func (t *bashTool) PromptSnippet() string {
 
 func (t *bashTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Working directory persists across sequential commands in the session. Use 'dir' to execute in a specific directory.",
+		"Working directory persists across commands in this session.",
+		"Use 'bash' for build, test, git, and process management. Prefer native file tools ('read', 'edit', 'write') for file operations.",
 		"For background processes and long-running services, set 'background': true.",
-		"Prefer native file tools for inspection. Shell dependency exclusions apply only when shell_scan_defaults is enabled.",
+		"You can inspect LOOP_* environment variables for current model, provider, and workspace details.",
 	})
 }
 
@@ -48,6 +49,7 @@ func (t *bashTool) Definition() domaintool.Tool {
 			"command":    domaintool.StringProp(domaintool.FormatParamDescription("bash", "command", "The command to run in the terminal")),
 			"dir":        domaintool.StringProp(domaintool.FormatParamDescription("bash", "dir", "Optional working directory in which to execute the command. Persists across commands for this session.")),
 			"background": domaintool.BoolProp(domaintool.FormatParamDescription("bash", "background", "Set to true to run the command in the background as a tracked background task (for servers, daemons, or long-running tasks).")),
+			"timeout":    domaintool.NumberProp(domaintool.FormatParamDescription("bash", "timeout", "Optional execution timeout in seconds for this command.")),
 		},
 		"command",
 	)
@@ -62,12 +64,13 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 	var args struct {
-		Command    string `json:"command"`
-		Cmd        string `json:"cmd"`
-		Arguments  string `json:"arguments"`
-		Dir        string `json:"dir"`
-		Cwd        string `json:"cwd"`
-		Background bool   `json:"background"`
+		Command    string  `json:"command"`
+		Cmd        string  `json:"cmd"`
+		Arguments  string  `json:"arguments"`
+		Dir        string  `json:"dir"`
+		Cwd        string  `json:"cwd"`
+		Background bool    `json:"background"`
+		Timeout    float64 `json:"timeout"`
 	}
 	if err := domaintool.ParseToolArguments(arguments, &args, func(s string) { args.Command = s }); err != nil {
 		return "", err
@@ -148,6 +151,9 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	timeout := shellTimeout(ctx)
+	if args.Timeout > 0 {
+		timeout = time.Duration(args.Timeout * float64(time.Second))
+	}
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), timeout)
 	defer cancel()
 
@@ -156,12 +162,17 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("cannot generate command boundary: %w", err)
 	}
 	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
-	wrappedCmd := fmt.Sprintf("%s\n__LOOP_RET=$?\nprintf '\n%s%%s\n' \"$(pwd -P)\"\nexit $__LOOP_RET", args.Command, pwdMarker)
+	wrappedCmd := fmt.Sprintf("__loop_exit() {\n  __loop_ret=$?\n  printf '\\n%%s%%s\\n' %s \"$(pwd -P)\"\n  exit $__loop_ret\n}\ntrap __loop_exit EXIT\n%s", ShellQuote(pwdMarker), args.Command)
 	if settings, ok := ctx.(interface{ IsShellScanDefaultsEnabled() bool }); ok && settings.IsShellScanDefaultsEnabled() {
 		wrappedCmd = WithScanDefaults(wrappedCmd, workspaceRoot)
 	}
 	cmd := NewCommand(wrappedCmd)
 	cmd.Dir = workDir
+	if ep, ok := ctx.(interface{ GetExecutionEnv() map[string]string }); ok {
+		for k, v := range ep.GetExecutionEnv() {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
 
 	stdoutReader, stdoutWriter, err := os.Pipe()
 	if err != nil {
@@ -231,9 +242,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	select {
 	case <-timeoutCtx.Done():
-		if pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		}
+		killProcessGroup(pgid)
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
@@ -252,9 +261,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 
 	case res := <-done:
-		if pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		}
+		killProcessGroup(pgid)
 		select {
 		case <-outDone:
 		case <-time.After(50 * time.Millisecond):
@@ -286,8 +293,8 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("command cancelled by user: %w", context.Canceled)
 	}
 
-	output := strings.ToValidUTF8(stdout.String(), "\uFFFD")
-	errOutput := strings.ToValidUTF8(stderr.String(), "\uFFFD")
+	output := cleanShellOutput(stdout.String())
+	errOutput := cleanShellOutput(stderr.String())
 	if stdout.overflow {
 		output += "\n[stdout capture limit reached at 8 MiB; later bytes discarded]\n"
 	}
@@ -295,16 +302,33 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		errOutput += "\n[stderr capture limit reached at 8 MiB; later bytes discarded]\n"
 	}
 
-	if idx := strings.LastIndex(output, "\n"+pwdMarker); idx != -1 {
-		markerStart := idx + 1
+	markerIdx := strings.LastIndex(output, "\n"+pwdMarker)
+	isPrefixed := false
+	if markerIdx == -1 && strings.HasPrefix(output, pwdMarker) {
+		markerIdx = 0
+		isPrefixed = true
+	}
+	if markerIdx != -1 {
+		markerStart := markerIdx + 1
+		if isPrefixed {
+			markerStart = 0
+		}
 		lineEnd := strings.IndexByte(output[markerStart:], '\n')
 		var extractedDir string
 		if lineEnd == -1 {
 			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker):])
-			output = output[:idx]
+			if isPrefixed {
+				output = ""
+			} else {
+				output = output[:markerIdx]
+			}
 		} else {
 			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker) : markerStart+lineEnd])
-			output = output[:idx] + output[markerStart+lineEnd+1:]
+			if isPrefixed {
+				output = output[markerStart+lineEnd+1:]
+			} else {
+				output = output[:markerIdx] + output[markerStart+lineEnd+1:]
+			}
 		}
 		if err == nil && extractedDir != "" && persistentBash {
 			if safe, sErr := ctx.SafePath(extractedDir); sErr == nil {
@@ -343,4 +367,27 @@ func shellTimeout(ctx domaintool.AgentContext) time.Duration {
 		return provider.GetShellTimeout()
 	}
 	return 120 * time.Second
+}
+
+func cleanShellOutput(raw string) string {
+	valid := strings.ToValidUTF8(raw, "\uFFFD")
+	stripped := style.StripAnsi(valid)
+	if !strings.Contains(stripped, "\r") {
+		return stripped
+	}
+	stripped = strings.ReplaceAll(stripped, "\r\n", "\n")
+	lines := strings.Split(stripped, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "\r") {
+			parts := strings.Split(line, "\r")
+			for j := len(parts) - 1; j >= 0; j-- {
+				trimmed := strings.TrimSpace(parts[j])
+				if trimmed != "" {
+					lines[i] = parts[j]
+					break
+				}
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }

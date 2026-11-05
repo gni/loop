@@ -7,44 +7,22 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
 // historySink adapts MultiAgent to agent.HistorySink so the shared TurnEngine can append
 // tool responses without the subagent loop carrying its own copy of the pipeline.
 type historySink struct {
-	ma         *MultiAgent
-	mu         sync.Mutex
-	batchDepth int
-	dirty      bool
-	err        error
+	ma  *MultiAgent
+	mu  sync.Mutex
+	err error
 }
 
 func (s *historySink) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.err
-}
-
-func (s *historySink) BeginBatch() {
-	s.mu.Lock()
-	s.batchDepth++
-	s.mu.Unlock()
-}
-
-func (s *historySink) EndBatch(persist bool) {
-	s.mu.Lock()
-	if s.batchDepth > 0 {
-		s.batchDepth--
-	}
-	shouldFlush := s.batchDepth == 0 && s.dirty
-	if s.batchDepth == 0 {
-		s.dirty = false
-	}
-	s.mu.Unlock()
-	if shouldFlush && persist {
-		s.flushState("running")
-	}
 }
 
 func (s *historySink) AppendInMemory(m db.Message) {
@@ -74,13 +52,6 @@ func (s *historySink) Append(m db.Message) {
 		return
 	}
 	s.AppendInMemory(m)
-	s.mu.Lock()
-	if s.batchDepth > 0 {
-		s.dirty = true
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
 	s.flushState("running")
 }
 
@@ -90,15 +61,12 @@ func (s *historySink) Messages() []db.Message {
 	}
 	s.ma.HistoryMu.RLock()
 	defer s.ma.HistoryMu.RUnlock()
-	out := make([]db.Message, len(s.ma.History))
-	copy(out, s.ma.History)
-	return out
+	return message.CloneAll(s.ma.History)
 }
 
 // swarmRenderer prefixes output with the agent name, matching the previous subagent look.
 type swarmRenderer struct {
-	ma    *MultiAgent
-	theme style.UITheme
+	ma *MultiAgent
 }
 
 func (r *swarmRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, args string) {
@@ -117,8 +85,8 @@ func (r *swarmRenderer) ToolOutput(w io.Writer, theme style.UITheme, output stri
 	}
 }
 
-func newSwarmSink(ma *MultiAgent) agent.HistorySink { return &historySink{ma: ma} }
+func newSwarmSink(ma *MultiAgent) *historySink { return &historySink{ma: ma} }
 
-func newSwarmRenderer(ma *MultiAgent, theme style.UITheme) agent.EngineRenderer {
-	return &swarmRenderer{ma: ma, theme: theme}
+func newSwarmRenderer(ma *MultiAgent) agent.EngineRenderer {
+	return &swarmRenderer{ma: ma}
 }

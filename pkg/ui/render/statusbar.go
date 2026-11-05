@@ -26,6 +26,7 @@ type StatusBarState struct {
 	PlanTotal               int
 	ShowTokens              bool
 	QueuedPromptsCount      int
+	GitBranch               string
 }
 
 // FormatStatusBarLeft renders token metrics, TPS, and context usage on the left side of the status bar.
@@ -149,9 +150,15 @@ func FormatStatusBarRight(state StatusBarState, theme style.UITheme, width int) 
 	if width < 45 {
 		return rightInfo
 	} else if width < 65 {
+		if state.Model == "" {
+			return rightInfo
+		}
 		modelName := style.TruncateRunes(state.Model, 13)
 		return rightInfo + modelStyle.Render(modelName) + " "
 	} else {
+		if state.Model == "" {
+			return rightInfo
+		}
 		return rightInfo + modelStyle.Render(state.Model) + " "
 	}
 }

@@ -14,6 +14,13 @@ import (
 	"loop/pkg/domain/model"
 )
 
+const (
+	defaultMaxReasoningSteps   = 100
+	defaultMaxCompletionTokens = 8192
+	defaultContextWindowLimit  = 128000
+	defaultMinContextWindow    = 32768
+)
+
 type MCPServerConfig struct {
 	Exposure   string            `json:"exposure,omitempty"`
 	OAuth      *OAuthConfig      `json:"oauth,omitempty"`
@@ -113,7 +120,7 @@ type Config struct {
 	ShellScanDefaults        bool                       `json:"shell_scan_defaults"`
 	ExtensionTimeout         int                        `json:"extension_timeout,omitempty"`
 	Endpoint                 string                     `json:"endpoint,omitempty"`
-	ApiKey                   string                     `json:"api_key,omitempty"`
+	APIKey                   string                     `json:"api_key,omitempty"`
 	Model                    string                     `json:"model,omitempty"`
 	Temperature              float64                    `json:"temperature"`
 	FrequencyPenalty         float64                    `json:"frequency_penalty,omitempty"`
@@ -124,6 +131,7 @@ type Config struct {
 	ShowThinking             bool                       `json:"show_thinking"`
 	MarkdownRender           bool                       `json:"markdown_render"`
 	CollapseResults          bool                       `json:"collapse_results,omitempty"`
+	HistoryPageSize          int                        `json:"history_page_size,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
 	ShowMicroseconds         bool                       `json:"show_microseconds"`
 	Theme                    string                     `json:"theme"`
@@ -266,21 +274,23 @@ func DefaultConfig() *Config {
 	return &Config{
 		PromptMaxLines:           8,
 		Endpoint:                 endpoint,
-		ApiKey:                   apiKey,
+		APIKey:                   apiKey,
 		Model:                    model,
 		Temperature:              0.2,
 		SystemInstruction:        DefaultSystemInstruction,
 		ShowThinking:             false,
 		MarkdownRender:           true,
+		CollapseResults:          false,
+		HistoryPageSize:          500,
 		Theme:                    "dark",
 		DirectCommands:           false,
 		SkillsDir:                resolveDefaultSkillsDir(),
 		MCPServers:               make(map[string]MCPServerConfig),
-		MaxReasoningSteps:        12,
-		MaxCompletionTokens:      4096,
-		ContextWindowLimit:       8192,
+		MaxReasoningSteps:        defaultMaxReasoningSteps,
+		MaxCompletionTokens:      defaultMaxCompletionTokens,
+		ContextWindowLimit:       defaultContextWindowLimit,
 		AutoAdaptContext:         false,
-		MinContextWindow:         8192,
+		MinContextWindow:         defaultMinContextWindow,
 		CompressionThreshold:     0.85,
 		ReasoningEffort:          "off",
 		StreamWrites:             true,
@@ -306,7 +316,7 @@ func (cfg *Config) defaultProviderProfile(name string) ProviderConfig {
 	return ProviderConfig{
 		Name:     name,
 		Endpoint: cfg.Endpoint,
-		ApiKey:   cfg.ApiKey,
+		APIKey:   cfg.APIKey,
 		Model:    cfg.Model,
 		Timeout:  cfg.Timeout,
 	}
@@ -319,9 +329,9 @@ func (cfg *Config) applyDefaults() {
 	if len(cfg.SystemInstruction) > 5000 && strings.Contains(cfg.SystemInstruction, "Principal Software Architect") {
 		cfg.SystemInstruction = DefaultSystemInstruction
 	}
-	if cfg.ApiKey == "" {
+	if cfg.APIKey == "" {
 		if os.Getenv("OPENAI_API_KEY") != "" {
-			cfg.ApiKey = "env:OPENAI_API_KEY"
+			cfg.APIKey = "env:OPENAI_API_KEY"
 		}
 	}
 	if cfg.SkillsDir == "" {
@@ -334,13 +344,13 @@ func (cfg *Config) applyDefaults() {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
 	if cfg.MaxReasoningSteps == 0 {
-		cfg.MaxReasoningSteps = 12
+		cfg.MaxReasoningSteps = defaultMaxReasoningSteps
 	}
 	if cfg.ContextWindowLimit == 0 {
-		cfg.ContextWindowLimit = 8192
+		cfg.ContextWindowLimit = defaultContextWindowLimit
 	}
 	if cfg.MinContextWindow <= 0 {
-		cfg.MinContextWindow = 8192
+		cfg.MinContextWindow = defaultMinContextWindow
 	}
 	if cfg.CompressionThreshold == 0.0 {
 		cfg.CompressionThreshold = 0.85
@@ -361,7 +371,7 @@ func (cfg *Config) applyDefaults() {
 		cfg.SyntaxTheme = "auto"
 	}
 	if cfg.MaxCompletionTokens == 0 {
-		cfg.MaxCompletionTokens = 4096
+		cfg.MaxCompletionTokens = defaultMaxCompletionTokens
 	}
 	cfg.Limits = limits.Resolve(cfg.Limits)
 	cfg.NormalizeSafety()
@@ -408,13 +418,13 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 		}
 
 		// Embedded templates may carry legacy high-budget defaults. New
-		// installations start in the conservative local preset; existing
+		// installations start in the initial local preset; existing
 		// user configuration remains untouched on subsequent loads.
 		conf.Temperature = 0.2
-		conf.MaxReasoningSteps = 12
-		conf.MaxCompletionTokens = 4096
-		conf.ContextWindowLimit = 8192
-		conf.MinContextWindow = 8192
+		conf.MaxReasoningSteps = defaultMaxReasoningSteps
+		conf.MaxCompletionTokens = defaultMaxCompletionTokens
+		conf.ContextWindowLimit = defaultContextWindowLimit
+		conf.MinContextWindow = defaultMinContextWindow
 		conf.AutoAdaptContext = false
 		conf.CompressionThreshold = 0.85
 		conf.ReasoningEffort = "off"
@@ -503,6 +513,17 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 	return cfg, data, nil
 }
 
+// DefaultConfigPath returns the canonical path to the default user configuration file.
+func DefaultConfigPath() string {
+	if dir := os.Getenv("LOOP_AGENT_DIR"); dir != "" {
+		return filepath.Join(dir, "config.json")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".loop", "config.json")
+	}
+	return "config/config.json"
+}
+
 func SaveConfig(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -514,7 +535,10 @@ func SaveConfig(path string, cfg *Config) error {
 		return err
 	}
 	cfg.NormalizeSafety()
-	if cfg.ProjectPath != "" && (path == "" || filepath.Clean(path) == filepath.Clean(cfg.ProjectPath)) {
+	if path == "" {
+		path = DefaultConfigPath()
+	}
+	if cfg.ProjectPath != "" && filepath.Clean(path) == filepath.Clean(cfg.ProjectPath) {
 		return saveProjectConfig(cfg)
 	}
 	copy, err := Clone(cfg)
@@ -536,8 +560,8 @@ func SaveConfig(path string, cfg *Config) error {
 	cfg.Providers = nil
 
 	if profile, ok := savedProviders[cfg.ActiveProvider]; ok {
-		if _, env := parseEnvVarKey(profile.ApiKey); env {
-			cfg.ApiKey = profile.ApiKey
+		if _, env := parseEnvVarKey(profile.APIKey); env {
+			cfg.APIKey = profile.APIKey
 		}
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")

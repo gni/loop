@@ -68,7 +68,16 @@ func buildLineMatcher(pattern string, literal, ignoreCase bool) (func(string) bo
 	}
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
-		return nil, fmt.Errorf("invalid regular expression '%s': %w", pattern, err)
+		// Fallback to literal matching if the pattern contains unescaped regex metacharacters
+		if ignoreCase {
+			lowerPattern := strings.ToLower(pattern)
+			return func(line string) bool {
+				return strings.Contains(strings.ToLower(line), lowerPattern)
+			}, nil
+		}
+		return func(line string) bool {
+			return strings.Contains(line, pattern)
+		}, nil
 	}
 	return re.MatchString, nil
 }
@@ -87,18 +96,21 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 	var args struct {
-		Pattern         string  `json:"pattern"`
-		Query           string  `json:"query"`
-		Q               string  `json:"q"`
-		Path            string  `json:"path"`
-		SearchPath      string  `json:"search_path"`
-		Glob            string  `json:"glob"`
-		IgnoreCase      bool    `json:"ignore_case"`
-		IgnoreCaseCamel bool    `json:"ignoreCase"`
-		Literal         bool    `json:"literal"`
-		Context         float64 `json:"context"`
-		Limit           float64 `json:"limit"`
-		Offset          float64 `json:"offset"`
+		Pattern            string  `json:"pattern"`
+		Query              string  `json:"query"`
+		Q                  string  `json:"q"`
+		Path               string  `json:"path"`
+		SearchPath         string  `json:"search_path"`
+		Glob               string  `json:"glob"`
+		IgnoreCase         bool    `json:"ignore_case"`
+		IgnoreCaseCamel    bool    `json:"ignoreCase"`
+		CaseInsensitive    bool    `json:"case_insensitive"`
+		CaseSensitive      *bool   `json:"case_sensitive"`
+		CaseSensitiveCamel *bool   `json:"caseSensitive"`
+		Literal            bool    `json:"literal"`
+		Context            float64 `json:"context"`
+		Limit              float64 `json:"limit"`
+		Offset             float64 `json:"offset"`
 	}
 
 	if err := domaintool.ParseToolArguments(arguments, &args, func(p string) { args.Pattern = p }); err != nil {
@@ -136,7 +148,14 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		contextLines = 5
 	}
 
-	matchFunc, err := buildLineMatcher(pattern, args.Literal, args.IgnoreCase || args.IgnoreCaseCamel)
+	ignoreCase := args.IgnoreCase || args.IgnoreCaseCamel || args.CaseInsensitive
+	if args.CaseSensitive != nil {
+		ignoreCase = !*args.CaseSensitive
+	} else if args.CaseSensitiveCamel != nil {
+		ignoreCase = !*args.CaseSensitiveCamel
+	}
+
+	matchFunc, err := buildLineMatcher(pattern, args.Literal, ignoreCase)
 	if err != nil {
 		return "", err
 	}

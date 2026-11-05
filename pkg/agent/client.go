@@ -13,10 +13,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"loop/pkg/config"
+	"loop/pkg/process"
 	"loop/pkg/transport/sse"
 )
 
@@ -269,13 +269,7 @@ func (c *mcpClient) close() {
 		}
 		c.writeMu.Unlock()
 		if c.cmd != nil && c.cmd.Process != nil {
-			_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGTERM)
-			select {
-			case <-c.processDone:
-			case <-time.After(300 * time.Millisecond):
-				_ = syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL)
-				_ = c.cmd.Process.Kill()
-			}
+			_ = process.TerminateProcessGroup(c.cmd, 300*time.Millisecond)
 		}
 		if c.cancel != nil {
 			c.cancel()

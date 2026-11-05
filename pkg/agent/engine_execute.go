@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"loop/pkg/agent/tool"
-	"loop/pkg/db"
-	"loop/pkg/ui/style"
 	"strings"
 	"sync"
 	"time"
+
+	"loop/pkg/agent/tool"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func (e *TurnEngine) ExecuteToolCalls(
@@ -33,18 +34,35 @@ func (e *TurnEngine) ExecuteToolCalls(
 		}
 	}()
 
-	if e.shouldRunToolCallsParallel(assistantMsg.ToolCalls) {
-		return e.executeToolCallsParallel(ctx, assistantMsg, sink, sr, loader, w, theme, render, afterCall)
+	calls := assistantMsg.ToolCalls
+	if len(calls) == 0 {
+		return false, false
 	}
 
-	for idx, tc := range assistantMsg.ToolCalls {
-		halted, aborted := e.ExecuteToolCallAt(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, sink, sr, loader, w, theme, render, afterCall)
+	for i := 0; i < len(calls); {
+		if e.canRunToolInParallel(calls[i]) {
+			j := i + 1
+			for j < len(calls) && e.canRunToolInParallel(calls[j]) {
+				j++
+			}
+			if j-i > 1 {
+				halted, aborted := e.executeToolCallsParallelRange(ctx, assistantMsg, i, j, sink, sr, loader, w, theme, render, afterCall)
+				if halted || aborted {
+					return halted, aborted
+				}
+				i = j
+				continue
+			}
+		}
+
+		halted, aborted := e.ExecuteToolCallAt(ctx, i, calls[i], calls[i:], assistantMsg.Content, sink, sr, loader, w, theme, render, afterCall)
 		if halted || aborted {
 			if aborted {
-				e.RecordInterruption(sink, assistantMsg.ToolCalls[idx+1:], "aborted by user")
+				e.RecordInterruption(sink, calls[i+1:], "aborted by user")
 			}
 			return halted, aborted
 		}
+		i++
 	}
 	return false, false
 }
@@ -63,7 +81,7 @@ func (e *TurnEngine) ExecuteToolCallAt(
 	if halted || aborted {
 		return halted, aborted
 	}
-	tc = plan.tc
+	tc = plan.call
 	if plan.skipped {
 		e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
 		return false, false
@@ -90,15 +108,19 @@ func (e *TurnEngine) ExecuteToolCallAt(
 	}
 	e.finalizeToolCall(idx, tc, plan.output, plan.toolErr, plan.approvalRendered, true, sink, sr, w, theme, render, afterCall, plan.rich)
 	if e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
+		if len(remaining) > 1 {
+			e.RecordInterruption(sink, remaining[1:], "loop protection halted execution")
+		}
 		e.emitHaltNotice(sink, w, theme)
 		return true, false
 	}
 	return false, false
 }
 
-func (e *TurnEngine) executeToolCallsParallel(
+func (e *TurnEngine) executeToolCallsParallelRange(
 	ctx context.Context,
 	assistantMsg *db.Message,
+	startIndex, endIndex int,
 	sink HistorySink,
 	sr StreamRenderer,
 	loader EngineLoader,
@@ -108,20 +130,22 @@ func (e *TurnEngine) executeToolCallsParallel(
 	afterCall func(tc db.ToolCall, output string, toolErr error),
 ) (halted bool, aborted bool) {
 	a := e.agent
-	plans := make([]callPlan, len(assistantMsg.ToolCalls))
+	calls := assistantMsg.ToolCalls[startIndex:endIndex]
+	plans := make([]callPlan, len(calls))
 
-	for idx, tc := range assistantMsg.ToolCalls {
-		plan, halted, aborted := e.prepareToolCallPlan(ctx, idx, tc, assistantMsg.ToolCalls[idx:], assistantMsg.Content, true, true, sink, sr, loader, w, theme, render)
+	for batchIndex, tc := range calls {
+		callIndex := startIndex + batchIndex
+		plan, halted, aborted := e.prepareToolCallPlan(ctx, callIndex, tc, assistantMsg.ToolCalls[callIndex:], assistantMsg.Content, true, true, sink, sr, loader, w, theme, render)
 		if halted || aborted {
 			reason := "cancelled before execution"
 			if aborted {
 				reason = "aborted by user"
-				e.RecordInterruption(sink, assistantMsg.ToolCalls[idx+1:], reason)
+				e.RecordInterruption(sink, assistantMsg.ToolCalls[callIndex+1:], reason)
 			}
-			e.RecordInterruption(sink, assistantMsg.ToolCalls[:idx], reason)
+			e.RecordInterruption(sink, assistantMsg.ToolCalls[startIndex:callIndex], reason)
 			return halted, aborted
 		}
-		plans[idx] = plan
+		plans[batchIndex] = plan
 	}
 
 	workers := a.GetLimits().ParallelToolWorkers
@@ -148,16 +172,16 @@ func (e *TurnEngine) executeToolCallsParallel(
 			continue
 		}
 
-		if hookOut, hookErr := e.checkBeforeHook(plan.tc); hookErr != nil {
+		if hookOut, hookErr := e.checkBeforeHook(plan.call); hookErr != nil {
 			plan.output, plan.toolErr = hookOut, hookErr
 			ready <- i
 			continue
 		}
 
-		if strings.HasPrefix(plan.tc.Function.Name, "subagent__") {
-			rich, err := tool.ExecutePreparedResult(executionContext(e, a), plan.executor, plan.tc.Function.Arguments)
+		if strings.HasPrefix(plan.call.Function.Name, "subagent__") {
+			rich, err := tool.ExecutePreparedResult(executionContext(e, a), plan.executor, plan.call.Function.Arguments)
 			plan.rich = rich
-			plan.output, plan.toolErr = e.applyAfterHook(plan.tc, rich.Output, err)
+			plan.output, plan.toolErr = e.applyAfterHook(plan.call, rich.Output, err)
 			ready <- i
 			continue
 		}
@@ -176,20 +200,20 @@ func (e *TurnEngine) executeToolCallsParallel(
 			}
 
 			if ctx.Err() != nil {
-				p.toolErr = fmt.Errorf("cancelled during execution")
+				p.toolErr = ctx.Err()
 				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
 				return
 			}
 
 			a.SetLiveBodyStreamed(false)
-			rich, err := tool.ExecutePreparedResult(executionContext(e, a), p.executor, p.tc.Function.Arguments)
+			rich, err := tool.ExecutePreparedResult(executionContext(e, a), p.executor, p.call.Function.Arguments)
 			p.rich = rich
 			if ctx.Err() != nil {
-				p.toolErr = fmt.Errorf("cancelled during execution")
+				p.toolErr = ctx.Err()
 				p.output = RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", "cancelled during execution")
 				return
 			}
-			p.output, p.toolErr = e.applyAfterHook(p.tc, rich.Output, err)
+			p.output, p.toolErr = e.applyAfterHook(p.call, rich.Output, err)
 		}(i, plan)
 	}
 
@@ -206,12 +230,12 @@ func (e *TurnEngine) executeToolCallsParallel(
 	for ready != nil {
 		var idx int
 		select {
-		case next, ok := <-ready:
+		case completedIndex, ok := <-ready:
 			if !ok {
 				ready = nil
 				continue
 			}
-			idx = next
+			idx = completedIndex
 		case <-refresh.C:
 			a.refreshStreamPresentation(sr)
 			continue
@@ -224,18 +248,19 @@ func (e *TurnEngine) executeToolCallsParallel(
 				break
 			}
 			plan := &plans[next]
-			if next > 0 {
+			callIndex := startIndex + next
+			if callIndex > 0 {
 				if counter, ok := w.(*NewlineCounterWriter); ok {
 					counter.EnsureActivityGap()
 				} else {
 					fmt.Fprint(w, strings.Repeat("\n", style.ActivityGapLines+1))
 				}
 			}
-			e.ensureToolHeaderRendered(next, plan.tc, assistantMsg.Content, false, sr, w, theme, render)
+			e.ensureToolHeaderRendered(callIndex, plan.call, assistantMsg.Content, false, sr, w, theme, render)
 			if plan.skipped {
-				e.emitRejectedToolCall(next, plan.tc, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
+				e.emitRejectedToolCall(callIndex, plan.call, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
 			} else {
-				e.finalizeToolCall(next, plan.tc, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
+				e.finalizeToolCall(callIndex, plan.call, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
 			}
 			if plan.guardHit && e.consecutiveGuardRejections >= e.guard.maxConsecutiveCalls {
 				shouldHalt = true
@@ -244,11 +269,13 @@ func (e *TurnEngine) executeToolCallsParallel(
 		}
 	}
 	if ctx.Err() != nil {
-		e.RecordInterruption(sink, assistantMsg.ToolCalls[next:], "cancelled during execution")
+		remainingIndex := startIndex + next
+		e.RecordInterruption(sink, assistantMsg.ToolCalls[remainingIndex:], "cancelled during execution")
 		return true, false
 	}
 
 	if shouldHalt {
+		e.RecordInterruption(sink, assistantMsg.ToolCalls[endIndex:], "loop protection halted execution")
 		e.emitHaltNotice(sink, w, theme)
 		return true, false
 	}

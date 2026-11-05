@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
+
+	"loop/pkg/process"
 )
 
 func (c *mcpClient) startStdio() error {
@@ -17,13 +18,7 @@ func (c *mcpClient) startStdio() error {
 	c.cancel = cancel
 
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	process.SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = os.Environ()
 	for k, v := range c.config.Env {

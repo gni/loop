@@ -61,10 +61,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	pattern := domaintool.FirstNonEmpty(strings.TrimSpace(args.Pattern), strings.TrimSpace(args.Glob))
-	if pattern == "" {
-		return "", fmt.Errorf("pattern is required for find (e.g. '*.py' or '**/*.json')")
-	}
+	pattern := domaintool.FirstNonEmpty(strings.TrimSpace(args.Pattern), strings.TrimSpace(args.Glob), "*")
 
 	searchPath := domaintool.FirstNonEmpty(args.Path, args.Dir, ".")
 	safePath, err := ctx.SafePath(searchPath)
@@ -121,6 +118,9 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			if err != nil {
 				return nil
 			}
+			if path == safePath {
+				return nil
+			}
 			if skip, skipErr := ShouldSkipWalkEntry(path, d, workspaceRoot, gitIgnorePatterns); skip {
 				return skipErr
 			}
@@ -129,6 +129,9 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			relToSearch := RelSlashPath(safePath, path)
 			if MatchGlob(pattern, rel, d.Name()) || (relToSearch != rel && MatchGlob(pattern, relToSearch, d.Name())) {
 				recordMatch(rel)
+				if limitReached {
+					return fs.SkipAll
+				}
 			}
 			return nil
 		})

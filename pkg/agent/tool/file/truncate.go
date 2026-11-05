@@ -159,7 +159,7 @@ func ReadMoreLinesNotice(more, total, next int) string {
 
 func ReadFirstLineOverBudgetNotice(maxBytes, lineNo int, path string) string {
 	return domaintool.RuntimeMessagef("read_first_line_over_budget_notice",
-		"\n[First line exceeds the %d byte budget. Run: sed -n '%d p' %s | head -c %d]", maxBytes, lineNo, path, maxBytes)
+		"\n[Line %d exceeds the byte budget (%d bytes); file may contain minified content or binary data. Use limit or specific offset.]", lineNo, maxBytes)
 }
 
 func SearchLimitNotice(toolName string, shown, total, next int) string {
@@ -193,21 +193,23 @@ func OutputLimitNotice(toolName string, kb, shown, total, next int) string {
 
 func SpillPruneNotice(omittedLines, omittedChars, nextOffset, totalLines int) string {
 	return domaintool.RuntimeMessagef("spill_prune_notice",
-		"\n\n[... %d lines (%d characters) omitted to protect context window ... Showing lines 1 to %d and the last lines of %d total lines. Use read with offset=%d on the spill file to continue.]",
-		omittedLines, omittedChars, nextOffset-1, totalLines, nextOffset)
+		"\n\n[... %d lines (%d characters) truncated to protect context window ... Showing first %d lines and last lines of %d total lines]",
+		omittedLines, omittedChars, nextOffset-1, totalLines)
 }
 
 func SpillBytePruneNotice(omittedChars, shownChars, totalBytes, totalLines int) string {
 	return domaintool.RuntimeMessagef("spill_byte_prune_notice",
-		"\n\n[... %d characters omitted to protect context window ... Showing first %d characters of %d total bytes across %d total lines. Use read with offset=1 limit=1 on the spill file, or grep it, to inspect the rest.]",
+		"\n\n[... %d characters truncated to protect context window ... Showing first %d characters of %d total bytes across %d total lines]",
 		omittedChars, shownChars, totalBytes, totalLines)
 }
 
 func SpillFullOutputNotice(locator string) string {
-	return domaintool.RuntimeMessagef("spill_full_output_notice", "[Full raw output preserved at: %s]", locator)
+	if locator == "" {
+		return ""
+	}
+	return domaintool.RuntimeMessagef("spill_full_output_notice", "\n[Full raw output preserved for reference at: %s]", locator)
 }
 
 func SpillRetrievalHint() string {
-	return domaintool.RuntimeMessage("spill_retrieval_hint",
-		"[Hint: Call 'read' with offset/limit, or 'grep' on the spill file to inspect omitted sections]")
+	return domaintool.RuntimeMessage("spill_retrieval_hint", "")
 }

@@ -8,10 +8,11 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// FormatPromptSeparator formats the horizontal line with reasoning status above the prompt.
-func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme style.UITheme, width int) string {
+// FormatPromptSeparator formats the horizontal line with reasoning status and git branch above the prompt.
+func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme style.UITheme, width int, gitBranch ...string) string {
 	borderStyle := style.NewStyle().Foreground(theme.Border)
 	statusStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
+	branchStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 
 	thinkingText := "off"
 	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
@@ -20,6 +21,7 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 	}
 
 	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
+	statusLen := utf8.RuneCountInString(statusPart)
 	prefix := "─── prompt "
 	available := width - 1
 	if available <= 0 {
@@ -28,23 +30,47 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 	if available <= utf8.RuneCountInString(prefix) {
 		return borderStyle.Render(style.TruncateRunes(prefix, available)) + "\n"
 	}
-	statusLen := utf8.RuneCountInString(statusPart)
-	if available < utf8.RuneCountInString(prefix)+statusLen+3 {
-		return borderStyle.Render(prefix+strings.Repeat("─", available-utf8.RuneCountInString(prefix))) + "\n"
+
+	var branchStyled string
+	var branchLen int
+	if len(gitBranch) > 0 && strings.TrimSpace(gitBranch[0]) != "" {
+		b := strings.TrimSpace(gitBranch[0])
+		if width < 70 && len(b) > 14 {
+			b = style.TruncateRunes(b, 14)
+		}
+		branchRaw := "── ⎇ " + b + " "
+		branchLen = utf8.RuneCountInString(branchRaw)
+		if available > utf8.RuneCountInString(prefix)+branchLen+statusLen+4 {
+			branchStyled = borderStyle.Render("── ") + branchStyle.Render("⎇ "+b) + " "
+		} else {
+			branchLen = 0
+		}
 	}
-	dashes := strings.Repeat("─", available-utf8.RuneCountInString(prefix)-statusLen)
-	return borderStyle.Render(prefix+dashes) + statusStyle.Render(statusPart) + "\n"
+
+	used := utf8.RuneCountInString(prefix) + branchLen + statusLen
+	if available <= used {
+		branchStyled = ""
+		branchLen = 0
+		used = utf8.RuneCountInString(prefix) + statusLen
+	}
+
+	dashCount := max(1, available-used)
+	dashes := borderStyle.Render(strings.Repeat("─", dashCount))
+	return borderStyle.Render(prefix) + branchStyled + dashes + statusStyle.Render(statusPart) + "\n"
 }
 
 // FormatStaticStatsContent combines spinner and stats text with styling.
 func FormatStaticStatsContent(spinnerFrame string, statsText string, theme style.UITheme) string {
+	if spinnerFrame == "" && statsText == "" {
+		return ""
+	}
 	if spinnerFrame != "" {
 		displayFrame := spinnerFrame
 		if !strings.Contains(spinnerFrame, "\x1b[") {
-			displayFrame = style.NewStyle().Foreground(theme.Primary).Bold(true).Render(spinnerFrame)
+			displayFrame = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(spinnerFrame)
 		}
 		if statsText != "" {
-			return fmt.Sprintf("%s %s", displayFrame, statsText)
+			return fmt.Sprintf("%s %s", statsText, displayFrame)
 		}
 		return displayFrame
 	}

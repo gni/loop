@@ -27,7 +27,7 @@ func (t *listTool) PromptSnippet() string {
 
 func (t *listTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"If a listing returns nothing relevant, stop searching and answer from internal knowledge instead of re-listing.",
+		"Use 'list' to inspect directories. Use 'find' or 'grep' to search recursively across subdirectories.",
 	})
 }
 
@@ -88,6 +88,10 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err := validateSearchPath(safePath, ctx.GetWorkspaceRoot()); err != nil {
 		return "", err
 	}
+	if strings.ContainsAny(targetPath, "*?[") {
+		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'list' tool only accepts directory paths; use the 'find' tool instead to search files by glob pattern (e.g. find(pattern: '%s'))", targetPath, targetPath)
+	}
+
 	info, err := os.Stat(safePath)
 	if err != nil {
 		return "", fmt.Errorf("cannot access path '%s': %w", targetPath, err)

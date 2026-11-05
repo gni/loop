@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"loop/pkg/transport/sse"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
 	transport "loop/pkg/transport/http"
+	"loop/pkg/transport/sse"
 )
 
 type nativePart struct {
@@ -121,10 +121,19 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 	payload := map[string]any{"model": modelName, "stream": true}
 	var system []string
 	var turns []map[string]any
-	for _, msg := range nativeHistory(EnforceToolPairingInvariance(messages)) {
+	for i, msg := range nativeHistory(EnforceToolPairingInvariance(messages)) {
 		if msg.Role == "system" {
-			system = append(system, msg.Content)
-			continue
+			if i == 0 {
+				system = append(system, msg.Content)
+				continue
+			}
+			// Retain non-leading system messages (e.g. compaction continuity summaries)
+			// in chronological sequence as conversation context turns, rather than hoisting
+			// into the root system prompt (which corrupts prompt prefix caching).
+			msg = db.Message{
+				Role:    "user",
+				Content: msg.Content,
+			}
 		}
 		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
 			continue
@@ -163,7 +172,28 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 			var content []map[string]any
 			if role == "tool" {
 				role = "user"
-				content = append(content, map[string]any{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": msg.Content, "is_error": msg.IsError})
+				var toolContent any = msg.Content
+				if len(msg.ContentBlocks) > 0 {
+					var blocks []map[string]any
+					if msg.Content != "" {
+						blocks = append(blocks, map[string]any{"type": "text", "text": msg.Content})
+					}
+					for _, block := range msg.ContentBlocks {
+						if block.Type == "image" {
+							source := map[string]any{"type": "base64", "media_type": block.MimeType, "data": block.Data}
+							if block.URL != "" {
+								source = map[string]any{"type": "url", "url": block.URL}
+							}
+							blocks = append(blocks, map[string]any{"type": "image", "source": source})
+						} else if block.Type == "text" && block.Text != "" && block.Text != msg.Content {
+							blocks = append(blocks, map[string]any{"type": "text", "text": block.Text})
+						}
+					}
+					if len(blocks) > 0 {
+						toolContent = blocks
+					}
+				}
+				content = append(content, map[string]any{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": toolContent, "is_error": msg.IsError})
 			} else {
 				for _, block := range msg.ContentBlocks {
 					if block.Type == "thinking" && block.Signature != "" && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
@@ -230,7 +260,11 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 				}
 			}
 			if len(parts) > 0 {
-				turns = append(turns, map[string]any{"role": role, "parts": parts})
+				if len(turns) > 0 && turns[len(turns)-1]["role"] == role {
+					turns[len(turns)-1]["parts"] = append(turns[len(turns)-1]["parts"].([]map[string]any), parts...)
+				} else {
+					turns = append(turns, map[string]any{"role": role, "parts": parts})
+				}
 			}
 		default:
 			return "", nil, fmt.Errorf("unsupported provider API %q", api)
@@ -344,7 +378,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
 	defer stop()
-	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HttpClient})
+	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HTTPClient})
 	response, err := client.DoWithRetry(streamCtx, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(streamCtx, "POST", endpoint, bytes.NewReader(body))
 		if err != nil {

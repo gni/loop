@@ -159,6 +159,7 @@ func (a *scrollArchive) evict(r *scrollRow) {
 // cache. It can be rendered off the terminal thread, including during shutdown.
 func (b *Scrollback) NewHistoryPage() *Scrollback {
 	page := NewScrollback(b.Width, 1)
+	page.pageSize = b.pageSize
 	page.archive = b.archive
 	if page.archive != nil {
 		page.archive.mu.Lock()
@@ -256,6 +257,21 @@ func (b *Scrollback) InsertPrepared(at int, page *Scrollback) int {
 
 func (b *Scrollback) HistoryRowCount() int { return len(b.rows) }
 
+// PopTailRows detaches the last n rows into a new Scrollback page.
+func (b *Scrollback) PopTailRows(n int) *Scrollback {
+	if b == nil || n <= 0 || len(b.rows) == 0 {
+		return nil
+	}
+	n = min(n, len(b.rows))
+	splitAt := len(b.rows) - n
+	tail := b.NewHistoryPage()
+	tail.rows = append([]*scrollRow(nil), b.rows[splitAt:]...)
+	tail.base = max(0, len(tail.rows)-1)
+	b.rows = b.rows[:splitAt]
+	b.base = max(0, len(b.rows)-1)
+	return tail
+}
+
 func (b *Scrollback) EmptyHistoryPage() bool {
 	return len(b.rows) == 1 && strings.TrimSpace(style.StripAnsi(b.rows[0].String())) == ""
 }
@@ -276,13 +292,14 @@ func (b *Scrollback) Prefetch(top, direction int) {
 	if b.archive == nil {
 		return
 	}
-	start := max(0, top) / HistoryPageSize * HistoryPageSize
-	margin := max(b.Height*4, HistoryPageSize/3)
+	pageSize := b.PageSize()
+	start := max(0, top) / pageSize * pageSize
+	margin := max(b.Height*4, pageSize/3)
 	if direction < 0 && top-start < margin {
-		start -= HistoryPageSize
+		start -= pageSize
 	}
-	if direction > 0 && start+HistoryPageSize-top < margin+b.Height {
-		start += HistoryPageSize
+	if direction > 0 && start+pageSize-top < margin+b.Height {
+		start += pageSize
 	}
 	start = max(0, start)
 	type span struct {
@@ -297,7 +314,7 @@ func (b *Scrollback) Prefetch(top, direction int) {
 	}
 	var spans []span
 	bytes := 0
-	for i := start; i < min(start+HistoryPageSize, len(b.rows)-max(HistoryPageSize, b.Height)); i++ {
+	for i := start; i < min(start+pageSize, len(b.rows)-max(pageSize, b.Height)); i++ {
 		r := b.rows[i]
 		if r.size == 0 {
 			continue
@@ -342,7 +359,8 @@ func (b *Scrollback) evictRow(i int) {
 func (b *Scrollback) releasePage() {
 	start, end := b.pageStart, b.pageEnd
 	b.pageStart, b.pageEnd = -1, 0
-	for i := max(0, start); i < end && i < len(b.rows)-HistoryPageSize; i++ {
+	pageSize := b.PageSize()
+	for i := max(0, start); i < end && i < len(b.rows)-pageSize; i++ {
 		b.evictRow(i)
 	}
 }
@@ -351,16 +369,17 @@ func (b *Scrollback) loadPage(top int) {
 	if b.archive == nil {
 		return
 	}
-	if top >= len(b.rows)-max(HistoryPageSize, b.Height) {
+	pageSize := b.PageSize()
+	if top >= len(b.rows)-max(pageSize, b.Height) {
 		b.releasePage()
 		return
 	}
-	start := max(0, top) / HistoryPageSize * HistoryPageSize
+	start := max(0, top) / pageSize * pageSize
 	if start == b.pageStart {
 		return
 	}
 	b.releasePage()
-	b.pageStart, b.pageEnd = start, min(len(b.rows), max(start+HistoryPageSize, top+b.Height))
+	b.pageStart, b.pageEnd = start, min(len(b.rows), max(start+pageSize, top+b.Height))
 
 }
 
@@ -368,7 +387,8 @@ func (b *Scrollback) trimMemory() {
 	if b.archive == nil {
 		return
 	}
-	for i := 0; i < len(b.rows)-max(HistoryPageSize, b.Height); i++ {
+	pageSize := b.PageSize()
+	for i := 0; i < len(b.rows)-max(pageSize, b.Height); i++ {
 		b.evictRow(i)
 	}
 }

@@ -27,10 +27,10 @@ func DrawStaticStatsLine(w io.Writer, theme style.UITheme, spinnerFrame, textToD
 	_, _ = w.Write(buf.Bytes())
 }
 
-func DrawStaticPromptSeparator(w io.Writer, showThinking bool, reasoningEffort string, theme style.UITheme, width, height, pasteLinesOffset int) {
+func DrawStaticPromptSeparator(w io.Writer, showThinking bool, reasoningEffort string, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "\x1b7\x1b[%d;1H\x1b[2K", height-3-pasteLinesOffset)
-	fmt.Fprint(&buf, FormatPromptSeparator(showThinking, reasoningEffort, theme, width))
+	fmt.Fprint(&buf, FormatPromptSeparator(showThinking, reasoningEffort, theme, width, gitBranch...))
 	fmt.Fprint(&buf, "\x1b8")
 
 	_, _ = w.Write(buf.Bytes())

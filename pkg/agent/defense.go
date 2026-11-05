@@ -1,49 +1,47 @@
 package agent
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
 
-// FormatDefensiveError turns syntax errors into descriptive, action-oriented correction prompts.
+// FormatDefensiveError turns syntax errors into concise, actionable error messages.
 func FormatDefensiveError(toolName string, err error) string {
 	errStr := err.Error()
 	lowerErr := strings.ToLower(errStr)
 	// Todo diagnostics already describe their schema or plan-state error.
-	// Filesystem and background-task recovery advice does not apply to plans.
 	if toolName == "todo" {
 		return errStr
 	}
 
-	if strings.Contains(errStr, "Recommendation:") {
-		return RuntimeMessagef("alert_plain", "System Alert: Your execution of '%s' failed due to: %s", toolName, errStr)
-	}
 	if strings.Contains(lowerErr, "loop detected") || strings.Contains(lowerErr, "agent halted") {
-		return RuntimeMessagef("alert_blocked", "System Alert: Your execution of '%s' was blocked: %s", toolName, errStr)
+		return fmt.Sprintf("error: %s (Action required: Backtrack and explore an alternative approach or different strategy instead of repeating this action.)", errStr)
 	}
 
-	var suggestion string
+	var detail string
 	if strings.Contains(lowerErr, "not unique") {
-		suggestion = RuntimeMessage("suggestion_not_unique", "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block.")
-	} else if (strings.Contains(lowerErr, "oldtext block") && strings.Contains(lowerErr, "not found")) ||
+		detail = RuntimeMessage("suggestion_not_unique", "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block.")
+	} else if (strings.Contains(lowerErr, "oldtext") && strings.Contains(lowerErr, "not found")) ||
 		strings.Contains(lowerErr, "targetcontent not found") {
-		suggestion = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.")
+		detail = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.")
 	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||
 		toolName == "task_status" || toolName == "task_kill" {
-		suggestion = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.")
+		detail = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.")
 	} else if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no such file") {
-		suggestion = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.")
+		detail = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.")
 	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "security violation") {
-		suggestion = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.")
+		detail = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.")
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
-		suggestion = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If the command depends on specific environment setups or files, verify they are present.")
+		detail = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find', 'list') instead of shell commands.")
 	} else if strings.HasPrefix(lowerErr, "unknown tool:") {
-		suggestion = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.")
-	} else {
-		suggestion = RuntimeMessage("suggestion_default", "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly.")
+		detail = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.")
 	}
 
-	return RuntimeMessagef("alert_with_recommendation", "System Alert: Your execution of '%s' failed due to: %s\nRecommendation: %s", toolName, errStr, suggestion)
+	if detail != "" && !strings.Contains(lowerErr, detail) && !strings.Contains(lowerErr, "closest match near line") {
+		return fmt.Sprintf("error [%s]: %s (%s)", toolName, errStr, detail)
+	}
+	return fmt.Sprintf("error [%s]: %s", toolName, errStr)
 }
 
 // FormatToolExecutionFailure preserves useful tool diagnostics while adding the
@@ -58,13 +56,16 @@ func FormatToolExecutionFailure(toolName, output string, err error) string {
 			if strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {
 				return diagnostic
 			}
+			if strings.Contains(diagnostic, "exit status") || strings.Contains(diagnostic, "exit code") || strings.Contains(diagnostic, "command timed out") {
+				return diagnostic
+			}
 			if !strings.HasPrefix(strings.ToLower(diagnostic), "[command failed") && !strings.HasPrefix(strings.ToLower(diagnostic), "command failed") && !strings.HasPrefix(diagnostic, "Error:") {
 				errMsg := strings.TrimPrefix(err.Error(), "command failed: ")
-				return RuntimeMessagef("command_failed_header", "[Command Failed: %s]", errMsg) + "\n" + diagnostic
+				return fmt.Sprintf("command failed: %s\n%s", errMsg, diagnostic)
 			}
 			return diagnostic
 		}
-		return RuntimeMessagef("command_failed_header", "[Command Failed: %s]", err.Error())
+		return fmt.Sprintf("command failed: %s", err.Error())
 	}
 	alert := FormatDefensiveError(toolName, err)
 	if strings.TrimSpace(diagnostic) == "" || strings.TrimSpace(diagnostic) == strings.TrimSpace(err.Error()) {

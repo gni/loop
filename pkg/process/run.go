@@ -3,11 +3,10 @@ package process
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"syscall"
 	"time"
 )
 
@@ -64,27 +63,19 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	cmd.Stdin = options.Input
 	cmd.Stdout = output
 	cmd.Stderr = diagnostics
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	_ = KillProcessGroup(cmd)
 	result := Result{Stdout: output.data.String(), Stderr: diagnostics.data.String()}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
 	}
 	if output.Overflow {
-		return result, fmt.Errorf("process output exceeded %d bytes", output.Limit)
+		err = errors.Join(err, fmt.Errorf("process output exceeded %d bytes", output.Limit))
 	}
-	if err != nil {
-		return result, err
+	if diagnostics.Overflow {
+		err = errors.Join(err, fmt.Errorf("process diagnostics exceeded %d bytes", diagnostics.Limit))
 	}
-	return result, nil
+	return result, err
 }

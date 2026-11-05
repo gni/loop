@@ -93,7 +93,7 @@ func HandleMCPCommand(
 				if cfg.Disabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
-					if err, failed := a.McpStartErrors[name]; failed {
+					if err, failed := a.MCPStartErrors[name]; failed {
 						status = fmt.Sprintf("failed to start (%v)", err)
 					} else {
 						status = "not connected"

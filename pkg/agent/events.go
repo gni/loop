@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/db"
 )
 
@@ -146,4 +147,13 @@ func (r *TimingRecorder) TotalMs(namespace string) int64 {
 		}
 	}
 	return total
+}
+
+// RunObserver forwards shared-runner lifecycle events to the session event sink.
+// Presentation adapters and headless consumers receive the same event contract.
+func (a *Agent) RunObserver(sessionID string) func(run.Event) error {
+	return func(event run.Event) error {
+		return a.sendEvent(Event{Type: event.Type, SessionID: sessionID,
+			Message: event.Message, Data: map[string]int{"step": event.Step}})
+	}
 }

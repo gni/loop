@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -162,7 +161,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 	sr, hasSessionReader := rlInput.(*SessionReader)
 	if hasSessionReader {
 		sigChan = make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGWINCH)
+		terminal.NotifyResize(sigChan)
 		defer signal.Stop(sigChan)
 	}
 

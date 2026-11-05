@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/domain/session"
 	"loop/pkg/ui/style"
 )
 
@@ -56,13 +58,32 @@ func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, er
 }
 
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) (result RunResult, runErr error) {
+	ctx = run.WithObjective(ctx, prompt)
+	ctx, runConfig, snapshotErr := a.SnapshotRun(ctx)
+	if snapshotErr != nil {
+		return RunResult{Status: RunFailed, Error: snapshotErr.Error()}, snapshotErr
+	}
+	a.SetActiveSessionID(sessionID)
 	result.Status = RunCompleted
-	if err := a.Config.Nostop.Validate(); err != nil {
+	if err := runConfig.Nostop.Validate(); err != nil {
 		result.Status = RunFailed
 		result.Error = err.Error()
 		return result, err
 	}
-	nostop := a.Config.Nostop.Enabled()
+	nostop := runConfig.Nostop.Enabled()
+	a.MessagesMu.RLock()
+	repaired, changed := message.RecoverToolHistory(*messages)
+	a.MessagesMu.RUnlock()
+	if changed {
+		if sessionID != "" {
+			if err := a.AppendEntry(sessionID, session.Record{Type: "context", Messages: repaired}); err != nil {
+				return RunResult{Status: RunFailed, Error: err.Error()}, err
+			}
+		}
+		a.MessagesMu.Lock()
+		*messages = repaired
+		a.MessagesMu.Unlock()
+	}
 	startedAt := len(*messages)
 	a.stateMu.Lock()
 	a.persistenceErr = nil
@@ -153,7 +174,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	maxSteps := a.Config.MaxReasoningSteps
+	maxSteps := runConfig.MaxReasoningSteps
 	if maxSteps <= 0 {
 		maxSteps = 30
 	}
@@ -163,7 +184,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		ToolAllowlist: func() []string { return allowlist },
 		AllowApproval: true,
 		RunHooks:      true,
-		GuidedMode:    a.IsGuidedMode(),
+		GuidedMode:    runConfig.GuidedMode,
+		Config:        runConfig,
 		ShowRecapLine: !isNonInteractive,
 	})
 	sink := NewAgentSink(a, messages, sessionID)
@@ -173,315 +195,198 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	}
 	lastToolTrailingNewlines := 0
 
-	failures := 0
-	for iter := 1; nostop || iter <= maxSteps; iter++ {
-		result.Turns = iter
-		if err := a.persistenceError(); err != nil {
-			runErr = err
-			return
+	var (
+		globalPromptTokensEst, effectiveLimit int
+		sr                                    StreamRenderer
+		ncw                                   *NewlineCounterWriter
+		toolStream                            *toolStreamSequencer
+		batch                                 *ToolBatch
+		syncPostTurnStatus                    func()
+	)
+	closePending := func() {
+		if batch != nil {
+			batch.CancelUnfinished()
 		}
-		a.emit(Event{Type: "turn_start", SessionID: sessionID})
-		if a.NextInput != nil {
-			for _, input := range a.NextInput() {
-				sink.Append(input)
+		if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+			marker.MarkPendingWriteResults("Not executed")
+		}
+	}
+	driver := run.Driver{
+		Observe: a.RunObserver(sessionID),
+		Prepare: func(ctx context.Context, iter int) error {
+			result.Turns = iter
+			if err := a.persistenceError(); err != nil {
+				return err
 			}
-		}
-		if ctx.Err() != nil {
-			runErr = ctx.Err()
-			return
-		}
-
-		globalPromptTokensEst, effectiveLimit, err := a.prepareAgentStep(ctx, messages, allowlist, sessionID, iter, lastToolTrailingNewlines, engine, sink, timer, writerToUse, theme)
-		if err != nil {
-			if nostop && ctx.Err() == nil && a.persistenceError() == nil && recoverableNostopError(err) {
-				failures++
-				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "nostop context recovery: " + err.Error()})
-				if waitErr := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, failures); waitErr != nil {
-					runErr = waitErr
-					return
+			if a.NextInput != nil {
+				for _, input := range a.NextInput() {
+					sink.Append(input)
 				}
-				continue
 			}
-			runErr = err
-			return
-		}
+			var err error
+			globalPromptTokensEst, effectiveLimit, err = a.prepareAgentStep(ctx, messages, allowlist, sessionID, iter, lastToolTrailingNewlines, engine, sink, timer, writerToUse, theme)
+			return err
+		},
+		Infer: func(ctx context.Context, iter int) (*db.Message, error) {
+			toolsForLog := a.Registry.GetAvailableTools(allowlist)
+			a.DebugLogLLMRequest(sessionID, iter, runConfig.Model, runConfig.Endpoint, *messages, toolsForLog)
 
-		toolsForLog := a.Registry.GetAvailableTools(allowlist)
-		a.DebugLogLLMRequest(sessionID, iter, a.Config.Model, a.Config.Endpoint, *messages, toolsForLog)
+			chunkChan := make(chan StreamChunk, 200)
+			type streamResult struct {
+				msg *db.Message
+				err error
+			}
+			resChan := make(chan streamResult, 1)
 
-		chunkChan := make(chan StreamChunk, 200)
-		type streamResult struct {
-			msg *db.Message
-			err error
-		}
-		resChan := make(chan streamResult, 1)
+			timer.Time("llm", "start")
+			go func() {
+				msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
+				close(chunkChan)
+				resChan <- streamResult{msg: msg, err: err}
+			}()
 
-		timer.Time("llm", "start")
-		go func() {
-			msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
-			close(chunkChan)
-			resChan <- streamResult{msg: msg, err: err}
-		}()
-
-		streamBuf := new(bytes.Buffer)
-		a.CurrentStreamMu.Lock()
-		a.CurrentStreamBuffer = streamBuf
-		a.CurrentStreamMu.Unlock()
-
-		teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: &lockedStreamBuffer{mu: &a.CurrentStreamMu, buf: streamBuf}}
-		ncw := &NewlineCounterWriter{Writer: teeWriter}
-		a.SetCurrentWriter(ncw)
-		sr := a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
-		if replay, ok := sr.(interface {
-			ReplayActiveTurn(io.Writer, bool, style.UITheme)
-		}); ok {
+			streamBuf := new(bytes.Buffer)
 			a.CurrentStreamMu.Lock()
-			a.CurrentStreamReplay = replay.ReplayActiveTurn
+			a.CurrentStreamBuffer = streamBuf
 			a.CurrentStreamMu.Unlock()
-		}
 
-		echoFilter := NewPromptEchoFilter(prompt)
-		priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
-
-		updateStreamStatus := func(generating bool) {
-			if a.UI != nil && !isNonInteractive {
-				a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), a.Config.ShowTokens)
-				a.UI.DrawStatusBar(rawW, theme)
+			teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: &lockedStreamBuffer{mu: &a.CurrentStreamMu, buf: streamBuf}}
+			ncw = &NewlineCounterWriter{Writer: teeWriter}
+			a.SetCurrentWriter(ncw)
+			sr = a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
+			if replay, ok := sr.(interface {
+				ReplayActiveTurn(io.Writer, bool, style.UITheme)
+			}); ok {
+				a.CurrentStreamMu.Lock()
+				a.CurrentStreamReplay = replay.ReplayActiveTurn
+				a.CurrentStreamMu.Unlock()
 			}
-		}
 
-		updateStreamStatus(true)
+			echoFilter := NewPromptEchoFilter(prompt)
+			priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 
-		// Stream each tool call in index order while keeping interleaved
-		// argument fragments from different files separate.
-		toolStream := newToolStreamSequencer(sr, true)
-		batch := NewToolBatch(func(update ToolLifecycleEvent) {
-			if presenter, ok := sr.(interface{ ObserveToolLifecycle(ToolLifecycleEvent) }); ok {
-				presenter.ObserveToolLifecycle(update)
+			updateStreamStatus := func(generating bool) {
+				if a.UI != nil && !isNonInteractive {
+					a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), a.Config.ShowTokens)
+					a.UI.DrawStatusBar(rawW, theme)
+				}
 			}
-			a.emit(Event{Type: "tool_lifecycle", SessionID: sessionID, Data: update})
-		})
-		toolStream.SetBatch(batch)
-		// Previews follow model order in both execution modes. Execution
-		// results remain paired with their call even when workers finish
-		// out of order. The execution policy is unchanged.
-		sequentialDisplay := true
-		if sequentialDisplay {
+
+			updateStreamStatus(true)
+
+			// Stream each tool call in index order while keeping interleaved
+			// argument fragments from different files separate.
+			toolStream = newToolStreamSequencer(sr, true)
+			batch = NewToolBatch(func(update ToolLifecycleEvent) {
+				if presenter, ok := sr.(interface{ ObserveToolLifecycle(ToolLifecycleEvent) }); ok {
+					presenter.ObserveToolLifecycle(update)
+				}
+				a.emit(Event{Type: "tool_lifecycle", SessionID: sessionID, Data: update})
+			})
+			toolStream.SetBatch(batch)
+			// Previews follow model order in both execution modes. Execution
+			// results remain paired with their call even when workers finish
+			// out of order. The execution policy is unchanged.
 			toolStream.DeferFollowingCalls()
 			if presenter, ok := sr.(interface{ SetSequentialToolResults(bool) }); ok {
 				presenter.SetSequentialToolResults(true)
 			}
-		}
-		// A completed JSON call can be executed while the model generates
-		// subsequent calls. History remains staged until the assistant's final
-		// response reconciles provider IDs and arguments.
-		var earlyCalls []db.ToolCall
-		var earlyMessages []db.Message
-		earlyStopped := false
-		if presenter, ok := sr.(interface {
-			ShowLiveToolContent(int, string, string, string)
-			EndLiveToolContent()
-		}); ok {
-			toolStream.PreviewOnly()
-			toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
-				// Ctrl+O may change this setting while the provider is streaming.
-				// Apply it before every chunk, including the first of a new file.
-				if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
-					view.SetLiveCollapse(a.Config.CollapseResults)
-				}
-				if (name == "write" || name == "edit") && !a.Config.StreamWrites {
-					delta = ""
-				}
-				presenter.ShowLiveToolContent(index, name, path, delta)
-			})
-			toolStream.SetEditDiffPreview(func(name, arguments string) string {
-				return PreviewToolDiff(a, name, arguments)
-			})
-			toolStream.SetOnReady(func(index int, name, arguments string) {
-				// Only commit a contiguous series of completed write/edit
-				// calls. Interleaved, unfinished or unsupported calls continue
-				// through the standard post-inference execution engine.
-				if !a.Config.StreamWrites || earlyStopped || ctx.Err() != nil || index != len(earlyCalls) ||
-					(name != "write" && name != "edit") || a.IsGuidedMode() ||
-					engine.needsInteractiveApproval(name) {
-					return
-				}
-				call := db.ToolCall{ID: "call_early_" + db.NewUUID(), Type: "function", Function: db.ToolFunction{Name: name, Arguments: arguments}}
-				presenter.EndLiveToolContent()
-				engine.SetToolBatch(batch)
-				engine.SetInlineEarlyResults(true)
-				staged := &deferredHistorySink{}
-				halted, aborted := engine.ExecuteToolCallAt(ctx, index, call, []db.ToolCall{call}, "", staged, sr, loader, ncw, theme, NewMainRenderer(a), func(tc db.ToolCall, output string, toolErr error) {
-					a.DebugLogToolExecution(sessionID, iter, tc.Function.Name, tc.Function.Arguments, output, toolErr, 0)
-				})
-				engine.SetInlineEarlyResults(false)
-				earlyCalls = append(earlyCalls, call)
-				earlyMessages = append(earlyMessages, staged.messages...)
-				if halted || aborted {
-					earlyStopped = true
-					cancel()
-				}
-			})
-		} else {
-			// Keep the original stream mode if the renderer has no live view.
-			toolStream = newToolStreamSequencer(sr, true)
-			toolStream.SetBatch(batch)
-		}
-		a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream)
-		timer.Time("llm", "end")
-
-		if pending := echoFilter.Flush(); pending != "" {
-			sr.WriteReasoning(pending)
-		}
-		if loader != nil {
-			loader.ShowDots()
-		}
-
-		toolStream.Finish()
-		if presenter, ok := sr.(interface{ EndLiveToolContent() }); ok {
-			presenter.EndLiveToolContent()
-		}
-		sr.Flush()
-		// Handle a toggle received with the last provider chunk before
-		// the live stream snapshot is released.
-		canReplay := true
-		if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
-			canReplay = view.SafeToReplay()
-		}
-		if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
-			if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
-				view.InvalidateTrackedRows()
-			}
-		}
-		updateStreamStatus(false)
-
-		a.CurrentStreamMu.Lock()
-		a.CurrentStreamBuffer = nil
-		a.CurrentStreamReplay = nil
-		a.CurrentStreamMu.Unlock()
-
-		res := <-resChan
-		// Retrying after a speculative file operation could replay a side effect.
-		if res.err != nil && len(earlyCalls) == 0 && ctx.Err() == nil && isContextOverflow(res.err) && len(*messages) > 4 {
-			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
-			if err := a.CompressHistory(ctx, messages, sessionID, theme, writerToUse); err == nil {
-				retryChunks := make(chan StreamChunk, 200)
-				retryDone := make(chan streamResult, 1)
-				go func() {
-					msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, retryChunks)
-					close(retryChunks)
-					retryDone <- streamResult{msg, err}
-				}()
-				for chunk := range relayStreamChunks(ctx, retryChunks) {
-					a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
-					if chunk.Type == "text" {
-						sr.Write(chunk.Content)
-					} else if chunk.Type == "reasoning" {
-						sr.WriteReasoning(chunk.Content)
+			// Streaming previews never execute tools. Only the finalized assistant
+			// message accepted by the runner can authorize execution.
+			if presenter, ok := sr.(interface {
+				ShowLiveToolContent(int, string, string, string)
+				EndLiveToolContent()
+			}); ok {
+				toolStream.PreviewOnly()
+				toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
+					// Ctrl+O may change this setting while the provider is streaming.
+					// Apply it before every chunk, including the first of a new file.
+					if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
+						view.SetLiveCollapse(a.Config.CollapseResults)
 					}
-				}
-				sr.Flush()
-				res = <-retryDone
+					if (name == "write" || name == "edit") && !a.Config.StreamWrites {
+						delta = ""
+					}
+					presenter.ShowLiveToolContent(index, name, path, delta)
+				})
+				toolStream.SetEditDiffPreview(func(name, arguments string) string {
+					return PreviewToolDiff(a, name, arguments)
+				})
+				toolStream.SetOnReady(func(_ int, _, _ string) {
+					presenter.EndLiveToolContent()
+				})
 			} else {
-				res.err = errors.Join(res.err, err)
+				// Keep the original stream mode if the renderer has no live view.
+				toolStream = newToolStreamSequencer(sr, true)
+				toolStream.SetBatch(batch)
 			}
-		}
-		if res.err == nil && !hasUsableAssistantResponse(res.msg) {
-			res.err = ErrEmptyResponse
-		}
-		if res.err != nil {
-			batch.CancelUnfinished()
-			if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
-				pending.MarkPendingWriteResults("Not executed")
-			}
-			runErr = res.err
-			if len(earlyCalls) > 0 {
-				// A provider error cannot roll back an already approved file
-				// operation. Preserve its tool/assistant history pairing.
-				partial := db.Message{Role: "assistant"}
-				if res.msg != nil {
-					partial = *res.msg
-				}
-				partial.ToolCalls = earlyCalls
-				partial.StopReason = "interrupted"
-				sink.Append(partial)
-				for _, m := range earlyMessages {
-					sink.Append(m)
-				}
-			} else if res.msg != nil && (res.msg.Content != "" || res.msg.ReasoningContent != "") {
-				partial := *res.msg
-				partial.ToolCalls = nil
-				partial.StopReason = "interrupted"
-				sink.Append(partial)
-			}
-			if nostop && ctx.Err() == nil && recoverableNostopError(res.err) {
-				if err := a.persistenceError(); err != nil {
-					runErr = err
-					return
-				}
-				failures++
-				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "nostop recovery: " + res.err.Error()})
-				ncw.EnsureNewline()
-				if err := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, failures); err != nil {
-					runErr = err
-					return
-				}
-				runErr = nil
-				lastToolTrailingNewlines = ncw.trailingNewlines
-				continue
+			a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream)
+			timer.Time("llm", "end")
+
+			if pending := echoFilter.Flush(); pending != "" {
+				sr.WriteReasoning(pending)
 			}
 			if loader != nil {
-				loader.Stop()
+				loader.ShowDots()
 			}
-			a.renderTurnError(writerToUse, ncw, sink, res.err, ctx.Err(), isNonInteractive, theme)
-			return
-		}
 
-		assistantMsg := res.msg
-		failures = 0
-
-		if prompt != "" && assistantMsg.ReasoningContent != "" {
-			assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
-		}
-
-		if !reconcileEarlyToolCalls(assistantMsg, earlyCalls, earlyMessages) {
-			batch.CancelUnfinished()
-			sink.Append(db.Message{Role: "assistant", ToolCalls: earlyCalls, StopReason: "interrupted"})
-			for _, m := range earlyMessages {
-				sink.Append(m)
+			toolStream.Finish()
+			if presenter, ok := sr.(interface{ EndLiveToolContent() }); ok {
+				presenter.EndLiveToolContent()
 			}
-			runErr = fmt.Errorf("provider changed a tool call after its completed arguments were executed; refusing remaining calls")
-			a.renderTurnError(writerToUse, ncw, sink, runErr, ctx.Err(), isNonInteractive, theme)
-			return
-		}
-
-		batch.Seal(assistantMsg.ToolCalls)
-		assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
-		a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
-		sink.Append(*assistantMsg)
-		for _, m := range earlyMessages {
-			sink.Append(m)
-		}
-
-		// Compaction is performed immediately before the next inference, when
-		// another model call is actually necessary. A final answer must not
-		// trigger a separate summarization request.
-		globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(*messages, allowlist)
-		globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
-
-		var finalTps float64
-		if dur := a.LastGenerationDuration(); dur > 0 {
-			finalTps = float64(assistantMsg.CompletionTokens) / dur.Seconds()
-		}
-
-		syncPostTurnStatus := func() {
-			if a.UI != nil && !isNonInteractive {
-				a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
-				a.UI.DrawStatusBar(rawW, theme)
+			sr.Flush()
+			// Handle a toggle received with the last provider chunk before
+			// the live stream snapshot is released.
+			canReplay := true
+			if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+				canReplay = view.SafeToReplay()
 			}
-		}
+			if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
+				if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+					view.InvalidateTrackedRows()
+				}
+			}
+			updateStreamStatus(false)
 
-		if len(assistantMsg.ToolCalls) == 0 {
+			a.CurrentStreamMu.Lock()
+			a.CurrentStreamBuffer = nil
+			a.CurrentStreamReplay = nil
+			a.CurrentStreamMu.Unlock()
+
+			res := <-resChan
+			return res.msg, res.err
+		},
+		Record: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
+			if prompt != "" && assistantMsg.ReasoningContent != "" {
+				assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
+			}
+
+			batch.Seal(assistantMsg.ToolCalls)
+			assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
+			a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())
+			sink.Append(*assistantMsg)
+
+			// Compaction is performed immediately before the next inference, when
+			// another model call is actually necessary. A final answer must not
+			// trigger a separate summarization request.
+			globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(*messages, allowlist)
+			globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
+
+			var finalTps float64
+			if dur := a.LastGenerationDuration(); dur > 0 {
+				finalTps = float64(assistantMsg.CompletionTokens) / dur.Seconds()
+			}
+
+			syncPostTurnStatus = func() {
+				if a.UI != nil && !isNonInteractive {
+					a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
+					a.UI.DrawStatusBar(rawW, theme)
+				}
+			}
+
+			return a.persistenceError()
+		},
+		Complete: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
 			result.Text = assistantMsg.Content
 			// A usable final reply ends the objective in every pacing mode.
 			// Nonstop extends tool execution and recovery, not completed work.
@@ -491,63 +396,86 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			timePrinted = true
 			a.renderFinalAgentTurn(assistantMsg, sr, loader, rawW, writerToUse, sessionID, startTime, theme)
 			syncPostTurnStatus()
-			return
-		}
+			return nil
+		},
+		Execute: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
+			syncPostTurnStatus()
 
-		syncPostTurnStatus()
+			timer.Time("tool", "start")
+			halted, aborted := a.runTurnToolCalls(ctx, engine, batch, toolStream, assistantMsg, true, sink, sr, loader, ncw, theme, sessionID, iter)
+			timer.Time("tool", "end")
 
-		timer.Time("tool", "start")
-		halted, aborted := a.runRemainingToolCalls(ctx, engine, batch, toolStream, assistantMsg, earlyCalls, sequentialDisplay, sink, sr, loader, ncw, theme, sessionID, iter)
-		timer.Time("tool", "end")
-		a.emit(Event{Type: "turn_end", SessionID: sessionID, Message: assistantMsg})
-		// Tool execution may run without provider chunks. Handle queued Ctrl+O
-		// after the tool results have entered saved conversation history.
-		canReplay = true
-		if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
-			canReplay = view.SafeToReplay()
-		}
-		if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
-			if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
-				view.InvalidateTrackedRows()
+			// Tool execution may run without provider chunks. Handle queued Ctrl+O
+			// after the tool results have entered saved conversation history.
+			canReplay := true
+			if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+				canReplay = view.SafeToReplay()
 			}
-		}
-		if halted || aborted {
-			if ctx.Err() != nil {
-				runErr = ctx.Err()
-			} else {
-				result.Status = RunBlocked
-				runErr = fmt.Errorf("agent execution blocked")
+			if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
+				if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+					view.InvalidateTrackedRows()
+				}
 			}
-			return
-		}
-		lastToolTrailingNewlines = ncw.trailingNewlines
-		if nostop && a.Config.Nostop.PauseAfter(iter) {
-			if err := a.pauseNostop(ctx, writerToUse, loader, sessionID, theme, 0); err != nil {
-				runErr = err
-				return
+			if halted || aborted {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return run.ErrBlocked
 			}
+			lastToolTrailingNewlines = ncw.trailingNewlines
+			return a.persistenceError()
+		},
+		Compact: func(ctx context.Context) error {
+			closePending()
+			if len(*messages) <= 4 {
+				return fmt.Errorf("current input exceeds the local model context")
+			}
+			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
+			return a.CompressHistory(ctx, messages, sessionID, theme, writerToUse)
+		},
+		IsContextOverflow: IsContextOverflow,
+		IsRecoverable:     IsRecoverableInferenceError,
+		Interrupted: func(ctx context.Context, iter int, msg *db.Message, err error) error {
+			closePending()
+			if msg != nil && (msg.Content != "" || msg.ReasoningContent != "") {
+				partial := *msg
+				partial.ToolCalls = nil
+				partial.StopReason = "interrupted"
+				sink.Append(partial)
+			}
+			return a.persistenceError()
+		},
+		Pause: func(ctx context.Context, iter, failures int) error {
+			if failures > 0 {
+				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "recovering local inference"})
+				if ncw != nil {
+					ncw.EnsureNewline()
+				}
+				return a.pauseRun(ctx, writerToUse, loader, sessionID, theme, failures)
+			}
+			if nostop && runConfig.Nostop.PauseAfter(iter) {
+				return a.pauseRun(ctx, writerToUse, loader, sessionID, theme, 0)
+			}
+			return nil
+		},
+	}
+	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, Continuous: nostop, RecoveryAttempts: run.DefaultRecoveryAttempts}, driver)
+	result.Status, result.Turns = outcome.Status, outcome.Steps
+	runErr = err
+	if err != nil {
+		closePending()
+		if loader != nil {
+			loader.Stop()
+		}
+		if outcome.Status == run.LimitReached {
+			fmt.Fprintf(writerToUse, "\nmaximum reasoning steps reached (%d).\n", maxSteps)
+		} else if outcome.Status != run.Blocked {
+			var errorWriter io.Writer = writerToUse
+			if ncw != nil {
+				errorWriter = ncw
+			}
+			a.renderTurnError(writerToUse, errorWriter, sink, err, ctx.Err(), isNonInteractive, theme)
 		}
 	}
-
-	if loader != nil {
-		loader.Stop()
-	}
-	result.Status = RunLimitReached
-	runErr = fmt.Errorf("maximum reasoning steps reached (%d)", maxSteps)
-	errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-	fmt.Fprintf(writerToUse, "\n%s reached maximum reasoning steps limit (%d).\n", errStyle.Render("warning:"), maxSteps)
 	return
-}
-
-func isContextOverflow(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	for _, marker := range []string{"context_length_exceeded", "maximum context length", "context window exceeded", "prompt is too long", "input token count exceeds"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
 }

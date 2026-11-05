@@ -97,13 +97,13 @@ func (t *Terminal) InAltScreen() bool {
 func (t *Terminal) ForceExitAltScreen() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.altDepth > 0 {
-		altW := t.altWriter
-		t.altDepth = 0
-		t.altWriter = nil
-		if altW != nil && altW != t.writer {
-			fmt.Fprint(altW, ExitAlternateScreen)
-		}
+	altW := t.altWriter
+	t.altDepth = 0
+	t.altWriter = nil
+	if altW != nil && altW != t.writer {
+		fmt.Fprint(altW, ExitAlternateScreen)
+	}
+	if t.writer != nil {
 		fmt.Fprint(t.writer, ExitAlternateScreen)
 	}
 }

@@ -284,7 +284,17 @@ func validateTodoItems(items []domaintool.TodoItem) ([]domaintool.TodoItem, erro
 	}
 
 	if inProgressCount > 1 {
-		return nil, errors.New(domaintool.RuntimeMessagef("todo_policy_violation", "policy violation: at most 1 task may be 'in_progress' at a time (found %d). Please mark previous tasks 'completed' or 'pending' before starting the next", inProgressCount))
+		// Auto-resolve: keep the last in_progress task active and demote earlier ones to pending
+		lastIdx := -1
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Status == "in_progress" {
+				if lastIdx == -1 {
+					lastIdx = i
+				} else {
+					items[i].Status = "pending"
+				}
+			}
+		}
 	}
 
 	return items, nil
@@ -339,7 +349,7 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 		if len(currentTasks) > 0 {
 			return nil, t.formatSummary(currentTasks), nil
 		}
-		return nil, "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
+		return nil, "No active todo plan.", nil
 	}
 
 	isJSON := strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")

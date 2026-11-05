@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
-	"strings"
 )
 
 type callPlan struct {
-	tc               db.ToolCall
+	call             db.ToolCall
 	executor         tool.ToolExecutor
-	idx              int
 	output           string
 	toolErr          error
 	skipped          bool
@@ -37,7 +37,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 	theme style.UITheme,
 	render EngineRenderer,
 ) (plan callPlan, halted bool, aborted bool) {
-	plan = callPlan{tc: tc, idx: idx}
+	plan = callPlan{call: tc}
 	e.agent.emit(Event{Type: "tool_execution_start", SessionID: e.policy.SessionKey, ToolCall: &tc})
 	if ctx.Err() != nil {
 		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
@@ -92,7 +92,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 		return plan, false, false
 	}
 	tc.Function.Arguments = prepared
-	plan.tc = tc
+	plan.call = tc
 	plan.executor = executor
 
 	if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {

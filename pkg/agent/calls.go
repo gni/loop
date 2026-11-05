@@ -31,8 +31,8 @@ func emitChunk(ctx context.Context, chunkChan chan<- StreamChunk, chunk StreamCh
 	return false
 }
 
-// relayStreamChunks keeps reading provider output while the presentation goroutine
-// executes an early file operation. The queue is deliberately bounded: under
+// relayStreamChunks keeps reading provider output while terminal presentation
+// is busy. The queue is deliberately bounded: under
 // extreme backpressure, emitChunk's existing drop reporting still applies.
 // All rendering remains on the caller goroutine, in original chunk order.
 func relayStreamChunks(ctx context.Context, source <-chan StreamChunk) <-chan StreamChunk {

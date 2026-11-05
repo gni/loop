@@ -8,6 +8,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	filetool "loop/pkg/agent/tool/file"
+	domaintool "loop/pkg/domain/tool"
 )
 
 type compiledSchema struct {
@@ -124,4 +125,26 @@ func normalizeToolArguments(name, arguments string, value any) any {
 		}
 	}
 	return object
+}
+
+// CanonicalArguments is used at the model adapter boundary. Direct tool callers
+// still receive normalization and strict schema validation through Prepare.
+func CanonicalArguments(name, arguments string) string {
+	if len(arguments) > 8<<20 {
+		return arguments
+	}
+	var value any
+	if json.Unmarshal([]byte(arguments), &value) != nil {
+		repaired := domaintool.RepairJSON(arguments)
+		if json.Unmarshal([]byte(repaired), &value) != nil {
+			return arguments
+		}
+		arguments = repaired
+	}
+	value = normalizeToolArguments(name, arguments, value)
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return arguments
+	}
+	return string(encoded)
 }

@@ -80,6 +80,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 		ui.LastStatusBarText = ""
 	}
 
+	ui.State.GitBranch = CachedGitBranch()
 	newStatusBarText := render.FormatStatusBarLine(ui.State, theme, width)
 	indicator := "▾"
 	if ui.CollapseResults {

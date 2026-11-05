@@ -35,7 +35,7 @@ func (h *ChatHistory) refreshStalePageLocked() {
 }
 
 func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHistoryPage, rows *render.Scrollback, cfg *config.Config, theme style.UITheme, key string) *preparedHistoryPage {
-	p := &preparedHistoryPage{rows: rows, more: old.more, appearance: key}
+	p := &preparedHistoryPage{rows: rows, more: old.more, appearance: key, pending: old.pending}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
@@ -89,18 +89,26 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 		if p.more && source != nil {
 			_ = source.Close()
 		}
+		if p.pending != nil {
+			_ = p.pending.Close()
+		}
 		_ = p.rows.Close()
 		return
 	}
 	h.pageJob = nil
+	h.pendingOlderRows = p.pending
 	if p.err != nil {
 		h.historyErr = p.err
 		if p.more && source != nil {
 			_ = source.Close()
 		}
+		if h.pendingOlderRows != nil {
+			_ = h.pendingOlderRows.Close()
+			h.pendingOlderRows = nil
+		}
 		p.more = false
 	}
-	if !p.more {
+	if !p.more && h.pendingOlderRows == nil {
 		h.source = nil
 	}
 	if len(p.turns) == 0 {

@@ -3,10 +3,11 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"loop/pkg/agent/tool"
-	"loop/pkg/resources"
 	"strings"
 	"time"
+
+	"loop/pkg/agent/tool"
+	"loop/pkg/resources"
 )
 
 func (s *Session) Commands() []resources.Command {
@@ -38,7 +39,7 @@ func (s *Session) ExecuteCommand(ctx context.Context, name string, args []string
 	}
 	for _, command := range s.Commands() {
 		if command.Name == name {
-			return resources.RunCommand(ctx, command, args, s.Workspace, s.messages, timeout)
+			return resources.RunCommand(ctx, command, args, s.Workspace, s.MessagesSnapshot(), timeout)
 		}
 	}
 	return "", fmt.Errorf("extension command %q is not available", name)

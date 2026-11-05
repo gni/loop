@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"loop/pkg/process"
 	"os"
 	"strings"
 	"time"
 
 	"loop/pkg/db"
+	"loop/pkg/process"
 )
 
 var PermissionHook func(ToolCallEvent) *PermissionDecision
@@ -107,7 +107,7 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 		if reason == "" {
 			reason = err.Error()
 		}
-		return output, fmt.Errorf("after_tool_hook failed: %s", reason)
+		return output, errors.Join(toolErr, fmt.Errorf("after_tool_hook failed: %s", reason))
 	}
 
 	if stdout != "" {

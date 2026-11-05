@@ -80,12 +80,12 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 	if len(configs) > 0 {
 		a.registerResourceTools()
 	}
-	a.McpClientsMu.Lock()
-	if a.McpClients == nil {
-		a.McpClients = make(map[string]*mcpClient)
+	a.MCPClientsMu.Lock()
+	if a.MCPClients == nil {
+		a.MCPClients = make(map[string]*mcpClient)
 	}
-	if a.McpStartErrors == nil {
-		a.McpStartErrors = make(map[string]error)
+	if a.MCPStartErrors == nil {
+		a.MCPStartErrors = make(map[string]error)
 	}
 	if a.mcpPending == nil {
 		a.mcpPending = make(map[string]config.MCPServerConfig)
@@ -104,7 +104,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 			a.mcpPending[name] = cfg
 		}
 	}
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 
 	sort.Strings(eager)
 
@@ -173,8 +173,8 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 }
 
 func (a *Agent) DeferredMCPServers() []string {
-	a.McpClientsMu.Lock()
-	defer a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Lock()
+	defer a.MCPClientsMu.Unlock()
 
 	names := make([]string, 0, len(a.mcpPending))
 	for name := range a.mcpPending {
@@ -189,21 +189,21 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 		return nil, fmt.Errorf("nil agent")
 	}
 
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	if a.mcpGeneration != generation {
-		a.McpClientsMu.Unlock()
+		a.MCPClientsMu.Unlock()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
-	if existing := a.McpClients[name]; existing != nil && existing.initialized && existing.healthy() {
-		a.McpClientsMu.Unlock()
+	if existing := a.MCPClients[name]; existing != nil && existing.initialized && existing.healthy() {
+		a.MCPClientsMu.Unlock()
 		return existing, nil
 	}
 	if attempt := a.mcpConnecting[name]; attempt != nil {
-		a.McpClientsMu.Unlock()
+		a.MCPClientsMu.Unlock()
 		<-attempt.done
-		a.McpClientsMu.Lock()
+		a.MCPClientsMu.Lock()
 		stale := a.mcpGeneration != generation
-		a.McpClientsMu.Unlock()
+		a.MCPClientsMu.Unlock()
 		if stale {
 			return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 		}
@@ -214,16 +214,16 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	}
 	attempt := &mcpConnectAttempt{done: make(chan struct{})}
 	a.mcpConnecting[name] = attempt
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 
 	client, err := a.startAndRegisterMCPServer(name, cfg, generation)
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	attempt.client, attempt.err = client, err
 	if a.mcpConnecting[name] == attempt {
 		delete(a.mcpConnecting, name)
 	}
 	close(attempt.done)
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 	return client, err
 }
 
@@ -271,29 +271,29 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 		})
 	}
 
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	if a.mcpGeneration != generation {
-		a.McpClientsMu.Unlock()
+		a.MCPClientsMu.Unlock()
 		client.close()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
-	if a.McpClients == nil {
-		a.McpClients = make(map[string]*mcpClient)
+	if a.MCPClients == nil {
+		a.MCPClients = make(map[string]*mcpClient)
 	}
-	if previous := a.McpClients[name]; previous != nil && previous != client {
+	if previous := a.MCPClients[name]; previous != nil && previous != client {
 		previous.close()
 	}
 	a.Registry.UnregisterPrefix("mcp__" + name + "__")
-	a.McpClients[name] = client
+	a.MCPClients[name] = client
 	delete(a.mcpPending, name)
-	delete(a.McpStartErrors, name)
+	delete(a.MCPStartErrors, name)
 	for _, executor := range executors {
 		a.Registry.Register(executor)
 		if cfg.Exposure == "search" {
 			a.Registry.Hide(executor.Name())
 		}
 	}
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 	if len(executors) > 0 {
 		a.markSystemPromptDirty()
 	}
@@ -311,14 +311,14 @@ func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
 }
 
 func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	if a.Config == nil || !a.Config.EnableMCP {
-		a.McpClientsMu.Unlock()
+		a.MCPClientsMu.Unlock()
 		return nil, fmt.Errorf("MCP is disabled; set enable_mcp=true")
 	}
 	cfg, exists := a.Config.MCPServers[name]
 	generation := a.mcpGeneration
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 
 	if !exists {
 		return nil, fmt.Errorf("MCP server '%s' is not configured", name)
@@ -377,33 +377,33 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 }
 
 func (a *Agent) recordMCPError(name string, generation int, err error) {
-	a.McpClientsMu.Lock()
-	defer a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Lock()
+	defer a.MCPClientsMu.Unlock()
 	if a.mcpGeneration != generation {
 		return
 	}
-	if a.McpStartErrors == nil {
-		a.McpStartErrors = make(map[string]error)
+	if a.MCPStartErrors == nil {
+		a.MCPStartErrors = make(map[string]error)
 	}
-	a.McpStartErrors[name] = err
+	a.MCPStartErrors[name] = err
 }
 
 func (a *Agent) StopMCPServers() {
-	a.McpClientsMu.Lock()
+	a.MCPClientsMu.Lock()
 	a.mcpGeneration++
 
-	for name, client := range a.McpClients {
+	for name, client := range a.MCPClients {
 		if client != nil {
 			client.close()
 			mcpLog("Stopped MCP server '%s'", name)
 		}
 	}
-	a.McpClients = make(map[string]*mcpClient)
+	a.MCPClients = make(map[string]*mcpClient)
 	a.mcpConnecting = make(map[string]*mcpConnectAttempt)
 	a.mcpPending = make(map[string]config.MCPServerConfig)
-	a.McpStartErrors = make(map[string]error)
+	a.MCPStartErrors = make(map[string]error)
 	a.Registry.UnregisterPrefix("mcp__")
-	a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Unlock()
 
 	a.markSystemPromptDirty()
 }
@@ -424,11 +424,11 @@ func (a *Agent) GetMCPTools() []Tool {
 }
 
 func (a *Agent) GetMCPServersStatus() map[string]string {
-	a.McpClientsMu.Lock()
-	defer a.McpClientsMu.Unlock()
+	a.MCPClientsMu.Lock()
+	defer a.MCPClientsMu.Unlock()
 
-	status := make(map[string]string, len(a.McpClients))
-	for name, client := range a.McpClients {
+	status := make(map[string]string, len(a.MCPClients))
+	for name, client := range a.MCPClients {
 		if client == nil {
 			continue
 		}

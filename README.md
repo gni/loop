@@ -9,6 +9,8 @@ no heavy frameworks. no visual noise. just raw execution.
 
 ### ARCHITECTURE
 
+The execution core is designed for a shared local model endpoint. Main agents, subagents, and compaction queue inference against that endpoint; tools can run while the model is free to serve another agent. No remote scheduler, cloud service, or additional model endpoint is required. See [offline execution architecture](docs/offline-execution.md).
+
 loop operates on a continuous feedback loop. you type a prompt. the agent reasons, spawns tasks, executes commands on your local machine, reads files, and iterates until the objective is complete.
 
 ```mermaid
@@ -179,7 +181,7 @@ For a single launch, both flags are required when enabling the mode:
 
 Nonstop works on the objective in your prompt until the model gives a nonempty final reply without tool calls, then returns control. A completed summary ends the run immediately, with no extra inference or pacing pause. It does not expand the goal to unrelated work. The selected mode remains enabled for your next prompt.
 
-Empty responses, reasoning-only output, interrupted streams, and transient connection/server failures retry automatically. Failed requests back off for up to 60 seconds, or the chosen interval if longer. Nonstop removes Loop's main reasoning-step ceiling and inference inactivity timeout; history still compacts automatically. Permanent errors, tool approvals, and repetition guards remain authoritative. Ctrl+C cancels inference, tools, or a pacing pause. Prompts typed during a run steer its next turn; cancel first to run slash commands. Provider/proxy deadlines can interrupt requests and are retried when classified as transient.
+Empty responses, reasoning-only output, interrupted streams, and transient connection/server failures receive bounded recovery. Each reasoning step shares a budget of four generation HTTP attempts across inference, compaction, protocol fallback, and transport retries, with at most two outer recovery attempts. Failed requests back off; exhausted recovery stops with an error so an unavailable local server cannot keep a task retrying forever. Nonstop removes the main reasoning-step ceiling and inference inactivity timeout; history still compacts automatically. Permanent errors, tool approvals, and repetition guards remain authoritative. Ctrl+C cancels queued inference, active inference, tools, or a pacing pause. Prompts typed during a run steer its next turn; cancel first to run slash commands. Inference recovery never replays tools.
 
 #### session management
 

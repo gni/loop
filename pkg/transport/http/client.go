@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"loop/pkg/transport/retry"
 )
 
 // RetryConfig encapsulates resilience and backoff parameters.
@@ -78,7 +80,8 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			return nil, err
 		}
 		if attempt > 0 {
-			ceiling := min(c.config.BaseDelay*time.Duration(1<<min(attempt-1, 10)), 30*time.Second)
+			multiplier := time.Duration(1 << min(attempt-1, 10))
+			ceiling := min(c.config.BaseDelay, maxRetryDelay/multiplier) * multiplier
 			backoff := time.Duration(rand.Int64N(max(1, int64(ceiling))))
 			if c.config.Backoff != nil {
 				backoff = min(ceiling, max(0, c.config.Backoff(ceiling)))
@@ -102,12 +105,15 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			}
 		}
 
+		if err := retry.Claim(ctx); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
 		req, err := createReq()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		resp, err = c.config.Client.Do(req)
+		resp, err = c.config.Client.Do(req.WithContext(ctx))
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 				return nil, ctx.Err()
@@ -128,20 +134,10 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			const maxErrorBodyBytes = 4096
 			body, bodyErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 			resp.Body.Close()
-			if bodyErr != nil {
-				lastErr = fmt.Errorf("server returned non-200 status: %d. Body read failed: %v", resp.StatusCode, bodyErr)
-			} else if len(body) == 0 {
-				lastErr = fmt.Errorf("server returned non-200 status: %d. Body: (empty)", resp.StatusCode)
-			} else {
-				lastErr = fmt.Errorf("server returned non-200 status: %d. Body: %s", resp.StatusCode, string(body))
-			}
+			lastErr = &StatusError{Code: resp.StatusCode, Body: string(body), ReadError: bodyErr}
 
 			if IsRetryableStatus(resp.StatusCode) {
-				if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds >= 0 {
-					retryDelay = min(time.Duration(seconds)*time.Second, 30*time.Second)
-				} else if date, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
-					retryDelay = min(max(0, time.Until(date)), 30*time.Second)
-				}
+				retryDelay = serverRetryDelay(resp.Header, time.Now())
 				continue
 			}
 			return nil, lastErr
@@ -162,4 +158,30 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 	}
 
 	return resp, nil
+}
+
+const maxRetryDelay = 30 * time.Second
+
+// serverRetryDelay accepts provider millisecond hints and standard Retry-After
+// seconds or dates. Clamp integers before converting them to a duration.
+func serverRetryDelay(header http.Header, now time.Time) time.Duration {
+	if delay, ok := parseRetryDelay(header.Get("retry-after-ms"), time.Millisecond); ok {
+		return delay
+	}
+	value := strings.TrimSpace(header.Get("Retry-After"))
+	if delay, ok := parseRetryDelay(value, time.Second); ok {
+		return delay
+	}
+	if deadline, err := http.ParseTime(value); err == nil {
+		return min(max(0, deadline.Sub(now)), maxRetryDelay)
+	}
+	return 0
+}
+
+func parseRetryDelay(value string, unit time.Duration) (time.Duration, bool) {
+	count, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return time.Duration(min(count, uint64(maxRetryDelay/unit))) * unit, true
 }

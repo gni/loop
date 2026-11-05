@@ -10,10 +10,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	bashtool "loop/pkg/agent/tool/bash"
+	"loop/pkg/process"
 )
 
 type Task struct {
@@ -107,10 +107,10 @@ func killTaskProcessLocked(task *Task) {
 	task.Status = "killed"
 	task.EndTime = time.Now()
 	if task.Pgid > 0 {
-		_ = syscall.Kill(-task.Pgid, syscall.SIGKILL)
+		_ = process.KillPgid(task.Pgid)
 	}
-	if task.Cmd != nil && task.Cmd.Process != nil {
-		_ = task.Cmd.Process.Kill()
+	if task.Cmd != nil {
+		_ = process.KillProcessGroup(task.Cmd)
 	}
 }
 
@@ -122,8 +122,8 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		return "", fmt.Errorf("agent already disposed: %w", a.Lifetime.Err())
 	}
 	a.TasksMu.Lock()
-	id := fmt.Sprintf("task_%d", a.NextTaskId)
-	a.NextTaskId++
+	id := fmt.Sprintf("task_%d", a.NextTaskID)
+	a.NextTaskID++
 
 	task := &Task{
 		ID:             id,

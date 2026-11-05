@@ -1,10 +1,8 @@
 package storage
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 func Lock(path string, exclusive bool) (func(), error) {
@@ -15,27 +13,12 @@ func Lock(path string, exclusive bool) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	operation := syscall.LOCK_SH
-	if exclusive {
-		operation = syscall.LOCK_EX
-	}
-	for {
-		err = syscall.Flock(int(file.Fd()), operation)
-		if !errors.Is(err, syscall.EINTR) {
-			break
-		}
-	}
-	if err != nil {
+	if err := flock(file, exclusive); err != nil {
 		_ = file.Close()
 		return nil, err
 	}
 	return func() {
-		for {
-			unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-			if !errors.Is(unlockErr, syscall.EINTR) {
-				break
-			}
-		}
+		_ = funlock(file)
 		_ = file.Close()
 	}, nil
 }

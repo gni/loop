@@ -2,12 +2,13 @@ package resources
 
 import (
 	"fmt"
-	"loop/pkg/storage"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"loop/pkg/storage"
 )
 
 type Diagnostic struct {
@@ -112,7 +113,18 @@ func InstructionsForDirectories(directories ...string) (string, []Diagnostic) {
 			continue
 		}
 		seen[cleanDir] = true
-		for _, name := range []string{"AGENTS.override.md", "AGENTS.md", "CLAUDE.md"} {
+
+		candidateFiles := []string{
+			"AGENTS.override.md",
+			"AGENTS.md",
+			"CLAUDE.md",
+			".cursorrules",
+			".windsurfrules",
+			filepath.Join(".github", "copilot-instructions.md"),
+			"CONVENTIONS.md",
+		}
+
+		for _, name := range candidateFiles {
 			path := filepath.Join(cleanDir, name)
 			info, err := os.Stat(path)
 			if os.IsNotExist(err) {
@@ -133,6 +145,29 @@ func InstructionsForDirectories(directories ...string) (string, []Diagnostic) {
 			}
 			fmt.Fprintf(&output, "\n\nInstructions (%s):\n%s", path, strings.TrimSpace(text))
 			break
+		}
+
+		cursorRulesDir := filepath.Join(cleanDir, ".cursor", "rules")
+		entries, err := os.ReadDir(cursorRulesDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				diagnostics = append(diagnostics, Diagnostic{cursorRulesDir, err.Error()})
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".md") && !strings.HasSuffix(entry.Name(), ".mdc")) {
+				continue
+			}
+			rulePath := filepath.Join(cursorRulesDir, entry.Name())
+			text, exists, err := ReadCachedTextFile(rulePath, 128<<10)
+			if err != nil {
+				diagnostics = append(diagnostics, Diagnostic{rulePath, err.Error()})
+				continue
+			}
+			if exists && strings.TrimSpace(text) != "" {
+				fmt.Fprintf(&output, "\n\nInstructions (%s):\n%s", rulePath, strings.TrimSpace(text))
+			}
 		}
 	}
 	return output.String(), diagnostics

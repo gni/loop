@@ -40,6 +40,10 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
+	ContextKind string `json:"context_kind,omitempty"`
+	// ToolOutcome records uncertainty after interruption; provider wire adapters
+	// omit this local execution metadata.
+	ToolOutcome       string          `json:"tool_outcome,omitempty"`
 	IsError           bool            `json:"is_error,omitempty"`
 	Usage             *Usage          `json:"usage,omitempty"`
 	Structured        json.RawMessage `json:"structured_content,omitempty"`

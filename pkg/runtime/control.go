@@ -7,7 +7,6 @@ import (
 
 	"loop/pkg/config"
 	"loop/pkg/db"
-	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -39,9 +38,6 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 	if err := s.persistSettings(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.view = append(s.view[:0], s.messages...)
-	s.mu.Unlock()
 	return s.Agent.PersistenceError()
 }
 
@@ -66,9 +62,6 @@ func (s *Session) Compact(ctx context.Context) error {
 	if err := s.Agent.CompressHistory(ctx, &s.messages, s.storageID(), style.GetTheme("plain"), io.Discard); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.view = append(s.view[:0], s.messages...)
-	s.mu.Unlock()
 	return nil
 }
 
@@ -94,8 +87,5 @@ func (s *Session) SyncInteractive(messages []db.Message, tools []string, id stri
 		return err
 	}
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
-	s.mu.Lock()
-	s.view = message.CloneAll(s.messages)
-	s.mu.Unlock()
 	return s.persistSettingsIfActive()
 }

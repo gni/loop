@@ -83,6 +83,8 @@ func PrintSessionHistory(
 	spacing := agent.NewNewlineCounterWriter(w)
 	w = spacing
 
+	collapse := collapseResults || (cfg != nil && cfg.CollapseResults)
+
 	var lastRole, lastUserPrompt string
 	responses := make(map[string]int)
 	for i, msg := range messages {
@@ -161,7 +163,7 @@ func PrintSessionHistory(
 				if strings.TrimSpace(cleanReasoning) != "" {
 					effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
 					if cfg.ShowThinking && effort != "off" && effort != "none" {
-						if collapseResults {
+						if collapse {
 							fmt.Fprintln(w, FormatThinkingSummary(theme, msg.ReasoningDuration, false, ThinkingLineCount(cleanReasoning), cfg.ShowMicroseconds))
 						} else {
 							hooks.RenderReasoning(w, strings.TrimRight(cleanReasoning, "\r\n"), theme)
@@ -205,12 +207,12 @@ func PrintSessionHistory(
 				renderToolTitleLine(w, tc.Function.Name, tc.Function.Arguments, ToolStatusPending, theme)
 
 				if len(tc.Function.Arguments) > 0 && IsWriteLikeTool(tc.Function.Name) {
-					RenderToolOutput(w, "", false, collapseResults, theme, tc.Function.Name, tc.Function.Arguments, false)
+					RenderToolOutput(w, "", false, collapse, theme, tc.Function.Name, tc.Function.Arguments, false)
 				}
 
 				if i == len(messages)-1 && isGenerating {
 					runningStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
-					if collapseResults {
+					if collapse {
 						fmt.Fprintln(w, runningStyle.Render("  [running... (collapsed)]"))
 					} else {
 						fmt.Fprintln(w, runningStyle.Render("  [running...]"))
@@ -244,7 +246,7 @@ func PrintSessionHistory(
 				}
 			}
 			renderToolTitleLine(w, toolName, argsJSON, status, theme)
-			RenderToolOutput(w, msg.Content, isError, cfg != nil && cfg.CollapseResults, theme, toolName, argsJSON, false)
+			RenderToolOutput(w, msg.Content, isError, collapse, theme, toolName, argsJSON, false)
 
 		case "error":
 			if lastRole != "" {

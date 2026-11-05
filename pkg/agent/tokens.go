@@ -59,7 +59,7 @@ func EstimateMessagesTokens(messages []db.Message) int {
 	// billing totals separately. Old provider prompt counts no longer describe
 	// the compacted request, so estimate from retained content instead.
 	for _, m := range messages {
-		if m.Role == "system" && m.Usage != nil {
+		if (m.Role == "system" || m.Role == "user") && m.Usage != nil {
 			chars := 0
 			for _, retained := range messages {
 				chars += messageChars(retained) + len(retained.Role) + len(retained.Name) + len(retained.ToolCallID) + 12
@@ -91,7 +91,7 @@ func CacheTokenTotals(history []db.Message) (int, int) {
 	return reads, writes
 }
 
-var DefaultContextTiers = []int{32768, 65536, 131072, 262144}
+var DefaultContextTiers = []int{32768, 65536, 131072, 262144, 524288, 1048576}
 
 func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit int, minWindow int, autoAdapt bool) int {
 	maxCeiling := configuredLimit
@@ -187,7 +187,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	// messages must also be accounted for.
 	compacted := false
 	for _, m := range messages {
-		if m.Role == "system" && m.Usage != nil {
+		if (m.Role == "system" || m.Role == "user") && m.Usage != nil {
 			compacted = true
 			break
 		}

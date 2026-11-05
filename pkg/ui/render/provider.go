@@ -45,7 +45,7 @@ func RenderProviders(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			}
 
 			apiKeyDisplay := "none"
-			if p.ApiKey != "" {
+			if p.APIKey != "" {
 				apiKeyDisplay = "configured"
 			}
 			timeoutDisplay := ""

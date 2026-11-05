@@ -120,5 +120,6 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	getUI().StateMu.Lock()
 	pasteLinesOffset := getUI().PasteLinesOffset
 	getUI().StateMu.Unlock()
-	render.DrawStaticPromptSeparator(w, showThinking, reasoningEffort, theme, width, height, pasteLinesOffset)
+	branch := CachedGitBranch()
+	render.DrawStaticPromptSeparator(w, showThinking, reasoningEffort, theme, width, height, pasteLinesOffset, branch)
 }

@@ -48,6 +48,7 @@ type PromptTemplates struct {
 	MultiAgentNoSkills      string `json:"multi_agent_no_skills"`
 	MultiAgentSpawnRules    string `json:"multi_agent_spawn_rules"`
 	MemorySection           string `json:"memory_section"`
+	ProjectSection          string `json:"project_section"`
 	BackgroundTasksSection  string `json:"background_tasks_section"`
 	BackgroundTaskLine      string `json:"background_task_line"`
 }
@@ -235,6 +236,7 @@ func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
 	overrideString(&base.Templates.MultiAgentNoSkills, user.Templates.MultiAgentNoSkills)
 	overrideString(&base.Templates.MultiAgentSpawnRules, user.Templates.MultiAgentSpawnRules)
 	overrideString(&base.Templates.MemorySection, user.Templates.MemorySection)
+	overrideString(&base.Templates.ProjectSection, user.Templates.ProjectSection)
 	overrideString(&base.Templates.BackgroundTasksSection, user.Templates.BackgroundTasksSection)
 	overrideString(&base.Templates.BackgroundTaskLine, user.Templates.BackgroundTaskLine)
 

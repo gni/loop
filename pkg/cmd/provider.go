@@ -47,7 +47,7 @@ var providerAddCmd = &cobra.Command{
 		cfg.Providers[name] = config.ProviderConfig{
 			Name:     name,
 			Endpoint: url,
-			ApiKey:   key,
+			APIKey:   key,
 			Model:    model,
 		}
 		if !saveConfigOrPrintErr(cfg) {

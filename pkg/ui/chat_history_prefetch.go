@@ -21,6 +21,7 @@ type preparedHistoryPage struct {
 	turns      []*displayTurn
 	more       bool
 	err        error
+	pending    *render.Scrollback
 }
 
 type historyPageWriter struct {
@@ -38,17 +39,18 @@ func (w historyPageWriter) Write(data []byte) (int, error) {
 }
 
 func (h *ChatHistory) hasOlderLocked() bool {
-	return h.source != nil || h.pageJob != nil || h.readyPage != nil
+	return h.source != nil || h.pageJob != nil || h.readyPage != nil || (h.pendingOlderRows != nil && h.pendingOlderRows.HistoryRowCount() > 0)
 }
 
 func (h *ChatHistory) prefetchMarginLocked() int {
-	return max(h.buffer.Height*6, render.HistoryPageSize/2)
+	pageSize := h.getPageSize()
+	return max(h.buffer.Height*6, pageSize/2)
 }
 
 // One page is prepared ahead of navigation. The worker owns the source until
 // completion; reset/close cancels it without waiting on disk or formatting.
 func (h *ChatHistory) prefetchOlderLocked() {
-	if h.closed.Load() || h.source == nil || h.pageJob != nil || h.readyPage != nil {
+	if h.closed.Load() || (!h.hasOlderLocked()) || h.pageJob != nil || h.readyPage != nil {
 		return
 	}
 	cfg, err := config.Clone(h.a.Config)
@@ -60,28 +62,67 @@ func (h *ChatHistory) prefetchOlderLocked() {
 	h.pageJob = job
 	source := h.source
 	page := h.buffer.NewHistoryPage()
+	pending := h.pendingOlderRows
+	h.pendingOlderRows = nil
 	theme, appearance := GetConfiguredTheme(cfg), h.appearanceKey()
 	go func() {
-		prepared := h.prepareOlderPage(job, source, page, cfg, theme, appearance)
+		prepared := h.prepareOlderPage(job, source, page, pending, cfg, theme, appearance)
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
 		h.finishPreparedPageLocked(job, source, prepared)
 	}()
 }
 
-func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string) *preparedHistoryPage {
+func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, pending *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string) *preparedHistoryPage {
 	p := &preparedHistoryPage{rows: page, more: true, appearance: appearance}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
 	}
-	for page.HistoryRowCount() < render.HistoryPageSize {
+	targetPageSize := render.HistoryPageSize
+	if cfg != nil && cfg.HistoryPageSize > 0 {
+		targetPageSize = cfg.HistoryPageSize
+	}
+	for page.HistoryRowCount() < targetPageSize {
 		select {
 		case <-job.stop:
 			p.err = io.ErrClosedPipe
 		default:
 		}
 		if p.err != nil {
+			break
+		}
+
+		if pending != nil && pending.HistoryRowCount() > 0 {
+			needed := targetPageSize - page.HistoryRowCount()
+			avail := pending.HistoryRowCount()
+			if avail <= needed {
+				count := page.InsertPrepared(0, pending)
+				_ = pending.Close()
+				pending = nil
+				for _, turn := range p.turns {
+					turn.start += count
+					turn.end += count
+				}
+				turn := &displayTurn{start: 0, end: count - 1, appearance: appearance}
+				p.turns = append([]*displayTurn{turn}, p.turns...)
+			} else {
+				tail := pending.PopTailRows(needed)
+				count := page.InsertPrepared(0, tail)
+				_ = tail.Close()
+				for _, turn := range p.turns {
+					turn.start += count
+					turn.end += count
+				}
+				turn := &displayTurn{start: 0, end: count - 1, appearance: appearance}
+				p.turns = append([]*displayTurn{turn}, p.turns...)
+				break
+			}
+			continue
+		}
+
+		if source == nil {
+			p.more = false
 			break
 		}
 		messages, err := source.Previous()
@@ -122,17 +163,38 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 			_ = chunk.Close()
 			continue
 		}
-		count := page.InsertPrepared(0, chunk)
-		_ = chunk.Close()
-		for _, turn := range p.turns {
-			turn.start += count
-			turn.end += count
+
+		needed := targetPageSize - page.HistoryRowCount()
+		chunkRows := chunk.HistoryRowCount()
+		if chunkRows <= needed {
+			count := page.InsertPrepared(0, chunk)
+			_ = chunk.Close()
+			for _, turn := range p.turns {
+				turn.start += count
+				turn.end += count
+			}
+			turn := &displayTurn{start: 0, end: count - 1, messages: messages, appearance: appearance}
+			if err := h.archiveTurnTo(turn, job.file); err != nil {
+				p.err = err
+			}
+			p.turns = append([]*displayTurn{turn}, p.turns...)
+		} else {
+			tail := chunk.PopTailRows(needed)
+			count := page.InsertPrepared(0, tail)
+			_ = tail.Close()
+			for _, turn := range p.turns {
+				turn.start += count
+				turn.end += count
+			}
+			turn := &displayTurn{start: 0, end: count - 1, messages: messages, appearance: appearance}
+			if err := h.archiveTurnTo(turn, job.file); err != nil {
+				p.err = err
+			}
+			p.turns = append([]*displayTurn{turn}, p.turns...)
+			pending = chunk
+			break
 		}
-		turn := &displayTurn{start: 0, end: count - 1, messages: messages, appearance: appearance}
-		if err := h.archiveTurnTo(turn, job.file); err != nil {
-			p.err = err
-		}
-		p.turns = append([]*displayTurn{turn}, p.turns...)
+
 		if remaining, ok := source.(interface{ HasMore() bool }); ok && !remaining.HasMore() {
 			p.more = false
 			break
@@ -141,6 +203,7 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 			break
 		}
 	}
+	p.pending = pending
 	select {
 	case <-job.stop:
 		p.err = io.ErrClosedPipe
@@ -148,11 +211,19 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 	}
 	if p.err != nil {
 		p.more = false
-	}
-	if !p.more {
-		if err := source.Close(); p.err == nil {
-			p.err = err
+		if pending != nil {
+			_ = pending.Close()
+			p.pending = nil
 		}
+	}
+	if !p.more && (p.pending == nil || p.pending.HistoryRowCount() == 0) {
+		if source != nil {
+			if err := source.Close(); p.err == nil {
+				p.err = err
+			}
+		}
+	} else if p.pending != nil && p.pending.HistoryRowCount() > 0 {
+		p.more = true
 	}
 	return p
 }

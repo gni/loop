@@ -113,17 +113,20 @@ func (gc *GuidedController) ResetForNewUserTurn(todos []tool.TodoItem) {
 }
 
 func (gc *GuidedController) CheckToolAllowed(a *Agent, toolName string) (bool, error) {
-	if gc == nil || !gc.IsEnabled() {
-		return false, nil
-	}
-	norm := tool.NormalizeName(strings.ToLower(strings.TrimSpace(toolName)))
-	if IsInspectionTool(norm) {
-		return false, nil
-	}
-
 	var todos []tool.TodoItem
 	if a != nil {
 		todos = a.GetTodos()
+	}
+	return gc.CheckPlanAllowed(todos, toolName)
+}
+
+// CheckPlanAllowed uses the calling agent's plan rather than shared base state.
+func (gc *GuidedController) CheckPlanAllowed(todos []tool.TodoItem, toolName string) (bool, error) {
+	if gc == nil || !gc.IsEnabled() {
+		return false, nil
+	}
+	if !tool.PolicyForName(toolName, "").RequiresPlan {
+		return false, nil
 	}
 	if len(todos) == 0 {
 		gc.mu.Lock()

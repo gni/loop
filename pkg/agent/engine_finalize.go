@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
-	"strings"
 )
 
 func (e *TurnEngine) emitRejectedToolCall(
@@ -78,8 +79,8 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 
 	maxOutputBytes := tool.DefaultMaxToolOutputBytes
-	if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
-		maxOutputBytes = a.Config.MaxToolOutputBytes
+	if e.config != nil && e.config.MaxToolOutputBytes > 0 {
+		maxOutputBytes = e.config.MaxToolOutputBytes
 	}
 	if ceiling := a.GetLimits().MaxOutputBytes; ceiling < maxOutputBytes {
 		maxOutputBytes = ceiling
@@ -121,18 +122,11 @@ func (e *TurnEngine) finalizeToolCall(
 				render.ToolOutput(&rendered, theme, pruned, false, tc.Function.Name, tc.Function.Arguments, tc.Function.Name == "write")
 				if line := verifiedToolSummaryLine(rendered.String()); line != "" {
 					if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
-						resultHandled = replacer.TryCompleteWriteResult(idx, line)
+						_ = replacer.TryCompleteWriteResult(idx, line)
 					}
-					if !resultHandled && e.policy.InlineEarlyResults {
-						// Executing beside this exact preview: a terminal without
-						// tracked rows can safely append the verified summary here.
-						fmt.Fprintln(w, line)
-						resultHandled = true
-					} else if !e.policy.InlineEarlyResults {
-						// Old previews may have scrolled away; never print their
-						// result under an unrelated later file.
-						resultHandled = true
-					}
+					// Old previews may have scrolled away; their result must
+					// not appear beneath an unrelated later file.
+					resultHandled = true
 				}
 			}
 		}

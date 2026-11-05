@@ -3,13 +3,14 @@ package commands
 import (
 	"fmt"
 	"io"
+	"strconv"
+
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/style"
-	"strconv"
 )
 
 // setConfigValue validates a single value and applies its in-memory effects.
@@ -28,7 +29,7 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		a.Config.Model = val
 		a.Config.UpdateActiveProvider()
 	case "api_key", "key":
-		a.Config.ApiKey = val
+		a.Config.APIKey = val
 		a.Config.UpdateActiveProvider()
 	case "temperature", "temp":
 		t, err := strconv.ParseFloat(val, 64)
@@ -64,6 +65,13 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 	case "collapse_results", "collapse":
 		a.Config.CollapseResults = config.ParseBool(val)
 		ui.SetCollapseStatus(a.Config.CollapseResults)
+	case "history_page_size", "page_size", "history_chunk", "history_lines":
+		if !parseConfigPositiveInt(w, "history page size", val, &a.Config.HistoryPageSize) {
+			return false
+		}
+		if h := ui.GetUI().ChatHistory; h != nil {
+			h.SetPageSize(a.Config.HistoryPageSize)
+		}
 	case "show_tokens", "tokens":
 		a.Config.ShowTokens = config.ParseBool(val)
 	case "show_microseconds", "microseconds":

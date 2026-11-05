@@ -23,7 +23,7 @@ import (
 type OpenAICompatibleProvider struct {
 	ResolveCredential      func(context.Context) (string, error)
 	Config                 *config.Config
-	HttpClient             *http.Client
+	HTTPClient             *http.Client
 	ThinkingSupported      bool
 	ThinkingSupportChecked bool
 	DetectedContextLimit   int
@@ -159,7 +159,19 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return nil, err
 	}
 	defer func() {
+		runErr = classifyInferenceFailure(runErr)
 		if result != nil {
+			seen := make(map[string]bool, len(result.ToolCalls))
+			for index := range result.ToolCalls {
+				call := &result.ToolCalls[index]
+				call.Function.Name = tool.NormalizeName(call.Function.Name)
+				call.Function.Arguments = tool.CanonicalArguments(call.Function.Name, SanitizeLLMControlTokens(call.Function.Arguments))
+				if call.ID == "" || seen[call.ID] {
+					call.ID = "call_" + db.NewUUID()
+				}
+				seen[call.ID] = true
+				call.Type = "function"
+			}
 			result.Provider = p.Config.ActiveProvider
 			result.Model = p.Config.Model
 			selected := p.selectedModel()
@@ -210,7 +222,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	resilient := transporthttp.NewResilientClient(transporthttp.RetryConfig{
 		MaxRetries: 3,
 		BaseDelay:  time.Second,
-		Client:     p.HttpClient,
+		Client:     p.HTTPClient,
 		BeforeAttempt: func(int) error {
 			return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after ")
 		},
@@ -457,5 +469,5 @@ func (p *OpenAICompatibleProvider) requestKey(ctx context.Context) string {
 	if key, ok := ctx.Value(credentialContextKey{}).(string); ok {
 		return key
 	}
-	return p.Config.ApiKey
+	return p.Config.APIKey
 }

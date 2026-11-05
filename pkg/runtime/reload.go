@@ -62,8 +62,5 @@ func (s *Session) Reload() error {
 	s.loaded = loaded
 	s.mu.Unlock()
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
-	s.mu.Lock()
-	s.view = append(s.view[:0], s.messages...)
-	s.mu.Unlock()
 	return s.Agent.PersistenceError()
 }

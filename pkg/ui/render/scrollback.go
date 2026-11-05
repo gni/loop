@@ -75,14 +75,28 @@ type Scrollback struct {
 	archiveOwned   bool
 	pageStart      int
 	pageEnd        int
+	pageSize       int
 }
 
 func NewScrollback(width, height int) *Scrollback {
-	b := &Scrollback{Width: max(1, width), Height: max(1, height), pageStart: -1}
+	b := &Scrollback{Width: max(1, width), Height: max(1, height), pageStart: -1, pageSize: HistoryPageSize}
 	for range b.Height {
 		b.rows = append(b.rows, &scrollRow{})
 	}
 	return b
+}
+
+func (b *Scrollback) PageSize() int {
+	if b != nil && b.pageSize > 0 {
+		return b.pageSize
+	}
+	return HistoryPageSize
+}
+
+func (b *Scrollback) SetPageSize(size int) {
+	if b != nil && size > 0 {
+		b.pageSize = size
+	}
 }
 
 func (b *Scrollback) Dropped() int { return b.dropped }
@@ -110,7 +124,7 @@ func (b *Scrollback) up() {
 	b.rows[b.base].freeze()
 	b.base++
 	b.rows = append(b.rows, &scrollRow{})
-	b.evictRow(len(b.rows) - HistoryPageSize - 1)
+	b.evictRow(len(b.rows) - b.PageSize() - 1)
 }
 
 func (b *Scrollback) lf() {
@@ -455,8 +469,8 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 			wrapped := ChatHistoryRows(group.String(), width)
 			for j, text := range wrapped {
 				rows = append(rows, &scrollRow{text: text, soft: j < len(wrapped)-1})
-				if b.archive != nil && len(rows) > HistoryPageSize {
-					b.archive.evict(rows[len(rows)-HistoryPageSize-1])
+				if b.archive != nil && len(rows) > b.PageSize() {
+					b.archive.evict(rows[len(rows)-b.PageSize()-1])
 				}
 			}
 		}

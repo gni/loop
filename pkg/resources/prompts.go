@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,8 +130,21 @@ func safeAttachmentPath(rawPath, workspace string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	info, err := os.Stat(absCandidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", os.ErrNotExist
+		}
+		return "", err
+	}
+	if info.IsDir() {
+		return "", os.ErrNotExist
+	}
 	resolved, err := filepath.EvalSymlinks(absCandidate)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", os.ErrNotExist
+		}
 		return "", err
 	}
 	rel, err := filepath.Rel(canonicalWorkspace, resolved)
@@ -153,6 +167,9 @@ func Attachments(input, workspace string) (string, []message.ContentBlock, error
 		rawPath := word[1:]
 		resolvedPath, err := safeAttachmentPath(rawPath, workspace)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return "", nil, fmt.Errorf("attachment %s: %w", rawPath, err)
 		}
 		block, err := message.ReadAttachment(resolvedPath)

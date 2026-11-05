@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"loop/pkg/db"
-	"loop/pkg/domain/model"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"loop/pkg/db"
+	"loop/pkg/domain/model"
 )
 
 func (p *OpenAICompatibleProvider) selectedModel() model.Model {
@@ -66,7 +67,7 @@ func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
 	for name, value := range profile.Headers {
 		request.Header.Set(name, os.ExpandEnv(value))
 	}
-	response, err := a.HttpClient.Do(request)
+	response, err := a.HTTPClient.Do(request)
 	if err != nil {
 		return nil, err
 	}

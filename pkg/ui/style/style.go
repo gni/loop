@@ -49,12 +49,25 @@ func ActivityDivider(theme UITheme) string {
 }
 
 func ActivitySpinnerFrame(theme UITheme, frameIndex int) string {
-	active := NewStyle().Foreground(theme.Highlight).Bold(true).Render("•")
-	muted := NewStyle().Foreground(theme.Border).Render("·")
-	position := [4]int{0, 1, 2, 1}[frameIndex%4]
-	dots := [3]string{muted, muted, muted}
-	dots[position] = active
-	return strings.Join(dots[:], " ")
+	type prismStep struct {
+		glyph string
+		color color.Color
+		bold  bool
+	}
+	steps := []prismStep{
+		{glyph: "◇", color: theme.Border, bold: false},
+		{glyph: "◈", color: theme.Secondary, bold: false},
+		{glyph: "◆", color: theme.Primary, bold: true},
+		{glyph: "⟡", color: theme.Highlight, bold: true},
+		{glyph: "◆", color: theme.Primary, bold: true},
+		{glyph: "◈", color: theme.Secondary, bold: false},
+	}
+	step := steps[frameIndex%len(steps)]
+	s := NewStyle().Foreground(step.color)
+	if step.bold {
+		s = s.Bold(true)
+	}
+	return s.Render(step.glyph)
 }
 
 func (s Style) MaxWidth(v int) Style {

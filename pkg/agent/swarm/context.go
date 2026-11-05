@@ -20,6 +20,18 @@ func (mac *multiAgentContext) DedicatedBashTool() tool.ToolExecutor {
 	return mac.ma.BashTool
 }
 
+func (mac *multiAgentContext) GetExecutionEnv() map[string]string {
+	if mac == nil || mac.ma == nil || mac.ma.BaseAgent == nil {
+		return nil
+	}
+	env := mac.ma.BaseAgent.GetExecutionEnv()
+	if env == nil {
+		env = make(map[string]string)
+	}
+	env["LOOP_SUBAGENT"] = mac.ma.Name
+	return env
+}
+
 func (mac *multiAgentContext) SpawnTask(command string, w io.Writer) (string, error) {
 	id, err := mac.AgentContext.SpawnTask(command, w)
 	if err == nil && mac.ma != nil {
@@ -97,12 +109,7 @@ func (mac *multiAgentContext) DiscardSnapshot(absPath string) {
 	}
 }
 
-func (mac *multiAgentContext) GetTodos() []tool.TodoItem {
-	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
-		return ts.GetTodos()
-	}
-	return nil
-}
+func (mac *multiAgentContext) GetTodos() []tool.TodoItem { return mac.ma.GetTodos() }
 
 func (mac *multiAgentContext) GetTaskCommand(taskID string) string {
 	if tc, ok := mac.AgentContext.(interface{ GetTaskCommand(string) string }); ok {
@@ -111,12 +118,7 @@ func (mac *multiAgentContext) GetTaskCommand(taskID string) string {
 	return ""
 }
 
-func (mac *multiAgentContext) SetTodos(todos []tool.TodoItem) error {
-	if ts, ok := mac.AgentContext.(tool.TodoState); ok {
-		return ts.SetTodos(todos)
-	}
-	return nil
-}
+func (mac *multiAgentContext) SetTodos(todos []tool.TodoItem) error { return mac.ma.SetTodos(todos) }
 
 func (mac *multiAgentContext) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
 	if uq, ok := mac.AgentContext.(tool.UserInquirer); ok {

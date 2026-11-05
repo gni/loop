@@ -1,7 +1,5 @@
 package tool
 
-import "slices"
-
 // Descriptions explain behavior; field names, types, enums and required lists
 // already describe the arguments. Keep only parameter hints that add meaning.
 var compactToolDescriptions = map[string]string{
@@ -48,11 +46,11 @@ var compactParameterHints = map[string]map[string]string{
 // CompactToolGuidelines omits only builtin rules already in native schemas.
 // Explicit catalog and executor guidelines remain verbatim.
 func CompactToolGuidelines(name string, guidelines []string) []string {
-	if hasToolPromptOverride(name) || !slices.Equal(guidelines, ToolGuidelines(name)) {
+	if hasToolPromptOverride(name) {
 		return guidelines
 	}
 	switch name {
-	case "read", "write", "edit", "ask_user":
+	case "read", "write", "edit", "ask_user", "bash", "list", "find", "grep", "todo", "task_status", "task_kill":
 		return nil
 	}
 	return guidelines
