@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,8 @@ type ReadResult struct {
 }
 
 type SessionReader struct {
+	context    context.Context
+	cancelled  <-chan struct{}
 	chanInput  chan byte
 	inputChan  chan ReadResult
 	doneChan   chan struct{}
@@ -31,6 +34,12 @@ func NewSessionReader(rlInput io.Reader) *SessionReader {
 		doneChan: make(chan struct{}),
 	}
 
+	if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
+		sr.context = provider.GetInputContext()
+		if sr.context != nil {
+			sr.cancelled = sr.context.Done()
+		}
+	}
 	if cr, ok := rlInput.(interface{ GetInputChan() chan byte }); ok {
 		sr.chanInput = cr.GetInputChan()
 		return sr
@@ -83,6 +92,9 @@ func (sr *SessionReader) Read(p []byte) (int, error) {
 
 func (sr *SessionReader) readByte(sigChan chan os.Signal) (byte, bool, error) {
 	for {
+		if sr.context != nil && sr.context.Err() != nil {
+			return 0, false, sr.context.Err()
+		}
 		if len(sr.pending) > 0 {
 			b := sr.pending[0]
 			sr.pending = sr.pending[1:]
@@ -93,6 +105,8 @@ func (sr *SessionReader) readByte(sigChan chan os.Signal) (byte, bool, error) {
 		}
 		if sr.chanInput != nil {
 			select {
+			case <-sr.cancelled:
+				return 0, false, sr.context.Err()
 			case <-sr.doneChan:
 				return 0, false, io.EOF
 			case <-sigChan:
@@ -105,6 +119,8 @@ func (sr *SessionReader) readByte(sigChan chan os.Signal) (byte, bool, error) {
 			}
 		}
 		select {
+		case <-sr.cancelled:
+			return 0, false, sr.context.Err()
 		case <-sr.doneChan:
 			return 0, false, io.EOF
 		case <-sigChan:

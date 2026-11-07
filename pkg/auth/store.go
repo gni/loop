@@ -272,10 +272,11 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 	if err != nil {
 		return "", err
 	}
-	updated := credential
-	if current, ok := latest[name]; ok {
-		updated = current
+	current, exists := latest[name]
+	if !exists || !sameCredential(current, credential) {
+		return "", fmt.Errorf("credentials changed during refresh; retry authentication")
 	}
+	updated := current
 	updated.AccessToken = response.AccessToken
 	if response.RefreshToken != "" {
 		updated.RefreshToken = response.RefreshToken
@@ -289,6 +290,13 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 		return "", fmt.Errorf("stored OAuth credential has no access token")
 	}
 	return updated.AccessToken, nil
+}
+
+// Compare the snapshot without time's in-memory monotonic metadata: the latest
+// value has just been decoded from disk. A logout or replacement wins over an
+// older refresh response, including a refresh from another process.
+func sameCredential(a, b Credential) bool {
+	return a.Type == b.Type && a.Issuer == b.Issuer && a.Key == b.Key && a.Environment == b.Environment && a.AccessToken == b.AccessToken && a.RefreshToken == b.RefreshToken && a.ClientID == b.ClientID && a.ExpiresAt.Equal(b.ExpiresAt)
 }
 
 type tokenResponse struct {

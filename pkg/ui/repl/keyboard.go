@@ -87,6 +87,37 @@ func decodeKeyboardSequence(seq []byte) []byte {
 	if !strings.HasPrefix(text, "\x1b[") {
 		return seq
 	}
+	// Navigation may carry modifiers and event types even without CSI-u.
+	// Normalize those reports before history filtering; releases are not edits.
+	if len(text) >= 3 {
+		final := text[len(text)-1]
+		if strings.ContainsRune("ABCDHF~", rune(final)) && !strings.HasPrefix(text, "\x1b[27;") {
+			fields := strings.Split(text[2:len(text)-1], ";")
+			modifier := 1
+			valid := len(fields) <= 2
+			if len(fields) == 2 {
+				event := strings.Split(fields[1], ":")
+				if len(event) > 1 && event[1] == "3" {
+					return nil
+				}
+				var err error
+				modifier, err = strconv.Atoi(event[0])
+				valid = err == nil && modifier > 0
+			}
+			if valid {
+				if final == '~' && (fields[0] == "5" || fields[0] == "6") {
+					return []byte("\x1b[" + fields[0] + "~")
+				}
+				if final != '~' && (fields[0] == "" || fields[0] == "1") {
+					modifier = 1 + (modifier-1)&7
+					if modifier == 1 {
+						return []byte{27, '[', final}
+					}
+					return []byte("\x1b[1;" + strconv.Itoa(modifier) + string(final))
+				}
+			}
+		}
+	}
 	var code, mod int
 	mod = 1
 	if strings.HasSuffix(text, "u") {

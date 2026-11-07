@@ -54,7 +54,13 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 	if ctx != nil && ctx.Context() != nil {
 		parent = ctx.Context()
 	}
-	result, err := process.Run(parent, process.Options{Executable: absPath, Input: strings.NewReader(arguments), Timeout: 10 * time.Second, OutputLimit: maxPluginOutputBytes, ErrorLimit: maxPluginErrorBytes})
+	environment := os.Environ()
+	if provider, ok := ctx.(interface{ GetExecutionEnv() map[string]string }); ok {
+		for key, value := range provider.GetExecutionEnv() {
+			environment = append(environment, key+"="+value)
+		}
+	}
+	result, err := process.Run(parent, process.Options{Executable: absPath, Directory: ctx.GetWorkspaceRoot(), Environment: environment, Input: strings.NewReader(arguments), Timeout: 10 * time.Second, OutputLimit: maxPluginOutputBytes, ErrorLimit: maxPluginErrorBytes})
 	if err != nil {
 		return result.Stdout, fmt.Errorf("plugin execution failed: %w (details: %s)", err, strings.TrimSpace(result.Stderr))
 	}

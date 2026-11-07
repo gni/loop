@@ -121,6 +121,7 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	if a.Lifetime != nil && a.Lifetime.Err() != nil {
 		return "", fmt.Errorf("agent already disposed: %w", a.Lifetime.Err())
 	}
+	sessionID := a.ActiveSessionID()
 	a.TasksMu.Lock()
 	id := fmt.Sprintf("task_%d", a.NextTaskID)
 	a.NextTaskID++
@@ -153,6 +154,9 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}
 	cmd := bashtool.NewCommand(shellCommand)
 	cmd.Dir = a.WorkspaceRoot
+	for key, value := range a.GetExecutionEnv() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 
 	task.Cmd = cmd
 	cmd.Stdout = &taskWriter{task: task, agent: a, w: w, isStderr: false}
@@ -204,16 +208,22 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		task.mu.Unlock()
 
 		a.TasksMu.Lock()
-		if a.StreamingTask == task.ID {
+		tracked := a.Tasks[task.ID] == task
+		wasStreaming := tracked && a.StreamingTask == task.ID
+		if wasStreaming {
 			a.StreamingTask = ""
+		}
+		a.TasksMu.Unlock()
+		if wasStreaming {
 			dest := a.resolveTaskOutputWriter(w)
 			fmt.Fprintf(dest, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
 		}
-		a.TasksMu.Unlock()
 
-		select {
-		case a.SystemEvents <- fmt.Sprintf("Background task %s finished: %s", task.ID, finalStatus):
-		default:
+		if tracked && a.ActiveSessionID() == sessionID {
+			select {
+			case a.SystemEvents <- fmt.Sprintf("Background task %s finished: %s", task.ID, finalStatus):
+			default:
+			}
 		}
 	}()
 
@@ -334,36 +344,32 @@ func (a *Agent) ListTasks() []TaskInfo {
 
 func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	a.TasksMu.Lock()
-	defer a.TasksMu.Unlock()
-
-	dest := a.resolveTaskOutputWriter(w)
 	resolvedID, task := a.findTaskLocked(id)
-	if a.StreamingTask == resolvedID && resolvedID != "" {
+	var notice string
+	var outBytes, errBytes []byte
+	switch {
+	case a.StreamingTask == resolvedID && resolvedID != "":
 		a.StreamingTask = ""
-		fmt.Fprintf(dest, "\n[stopped streaming output of %s]\n", resolvedID)
-		return
+		notice = fmt.Sprintf("\n[stopped streaming output of %s]\n", resolvedID)
+	case task == nil:
+		notice = fmt.Sprintf("\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
+	default:
+		task.mu.Lock()
+		if task.Status == "running" {
+			a.StreamingTask = resolvedID
+			notice = fmt.Sprintf("\n[streaming output of %s...]\n", resolvedID)
+		} else {
+			notice = fmt.Sprintf("\n[recorded output of %s]\n", resolvedID)
+		}
+		outBytes = append([]byte(nil), task.Stdout.Bytes()...)
+		errBytes = append([]byte(nil), task.Stderr.Bytes()...)
+		task.mu.Unlock()
 	}
-
-	if task == nil {
-		fmt.Fprintf(dest, "\nError: %s\n", RuntimeMessagef("task_not_found", "task %s not found", resolvedID))
-		return
-	}
-
-	task.mu.Lock()
-	isRunning := task.Status == "running"
-	task.mu.Unlock()
-	if isRunning {
-		a.StreamingTask = resolvedID
-		fmt.Fprintf(dest, "\n[streaming output of %s...]\n", resolvedID)
-	} else {
-		fmt.Fprintf(dest, "\n[recorded output of %s]\n", resolvedID)
-	}
-
-	task.mu.Lock()
-	outBytes := append([]byte(nil), task.Stdout.Bytes()...)
-	errBytes := append([]byte(nil), task.Stderr.Bytes()...)
-	task.mu.Unlock()
-
+	a.TasksMu.Unlock()
+	// Terminal writers can query task status while rendering. Never call them
+	// while holding TasksMu or a task's mutex.
+	dest := a.resolveTaskOutputWriter(w)
+	fmt.Fprint(dest, notice)
 	if len(outBytes) > 0 {
 		_, _ = dest.Write(outBytes)
 	}

@@ -32,16 +32,7 @@ func NormalizeConfigJSON(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, err
 	}
-	if raw, ok := values["approval_always_answer"]; ok {
-		var legacy bool
-		if err := json.Unmarshal(raw, &legacy); err != nil {
-			return nil, fmt.Errorf("approval_always_answer: %w", err)
-		}
-		if legacy {
-			values["auto_approve"] = json.RawMessage("true")
-		}
-		delete(values, "approval_always_answer")
-	}
+
 	for old, alias := range legacyBooleans {
 		raw, ok := values[old]
 		if !ok {

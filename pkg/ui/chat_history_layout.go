@@ -244,7 +244,7 @@ func (h *ChatHistory) limitLayoutScrollLocked(from, to int) int {
 	key := h.appearanceKey()
 	limited := to
 	for _, turn := range h.turns {
-		if turn == h.active || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
+		if turn == h.active || (len(turn.messages) == 0 && turn.size == 0) || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
 			continue
 		}
 		if to < from {

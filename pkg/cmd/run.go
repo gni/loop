@@ -110,7 +110,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 		theme := ui.GetConfiguredTheme(cfg)
 		s.Agent.UI = ui.NewAgentUI(s.Agent.Config, theme)
-		repl.RunREPL(s.Agent, allowed, theme, s.ID)
+		repl.RunREPLContext(cmd.Context(), s.Agent, allowed, theme, s.ID)
 		return nil
 	}
 	var pipedInput string

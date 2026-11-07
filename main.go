@@ -13,6 +13,7 @@ import (
 
 func main() {
 	term := terminal.Default()
+	supervisor := lifecycle.Default()
 	if termpkg.IsTerminal(int(os.Stderr.Fd())) {
 		term.RestoreCursor()
 	}
@@ -35,6 +36,9 @@ func main() {
 		exitMu.Lock()
 		code := exitCode
 		exitMu.Unlock()
+		if code == 0 && supervisor.Context().Err() != nil {
+			code = supervisor.ExitCode()
+		}
 		if code != 0 {
 			os.Exit(code)
 		}
@@ -45,7 +49,6 @@ func main() {
 	})
 	defer term.ForceExitAltScreen()
 
-	supervisor := lifecycle.Default()
 	supervisor.OnShutdown(func() {
 		term.ForceExitAltScreen()
 	})

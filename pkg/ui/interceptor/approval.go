@@ -12,7 +12,8 @@ import (
 )
 
 type ApprovalByteReader struct {
-	Input <-chan byte
+	Context context.Context
+	Input   <-chan byte
 }
 
 func (r *ApprovalByteReader) Read(p []byte) (int, error) {
@@ -20,7 +21,17 @@ func (r *ApprovalByteReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	first, ok := <-r.Input
+	var done <-chan struct{}
+	if r.Context != nil {
+		done = r.Context.Done()
+	}
+	var first byte
+	var ok bool
+	select {
+	case <-done:
+		return 0, r.Context.Err()
+	case first, ok = <-r.Input:
+	}
 	if !ok {
 		return 0, io.EOF
 	}
@@ -71,7 +82,7 @@ func (ki *KeyInterceptorReader) BeginApprovalInput() io.Reader {
 	}
 	ki.DrainApprovalInput()
 	if ki.ApprovalReader == nil {
-		ki.ApprovalReader = &ApprovalByteReader{Input: ki.ApprovalChan}
+		ki.ApprovalReader = &ApprovalByteReader{Input: ki.ApprovalChan, Context: ki.InputContext}
 	}
 	return ki.ApprovalReader
 }
@@ -123,7 +134,7 @@ func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte,
 	}
 	decision := interactive.AskForSubagentCancellationWithReader(
 		output,
-		&ApprovalByteReader{Input: rawInput},
+		&ApprovalByteReader{Input: rawInput, Context: ki.InputContext},
 		theme,
 		agentName,
 	)

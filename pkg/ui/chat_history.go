@@ -473,7 +473,7 @@ func (h *ChatHistory) RedrawLocked() bool {
 }
 
 func (h *ChatHistory) FilterInput(key []byte) []byte {
-	if h.closed.Load() {
+	if len(key) == 0 || h.closed.Load() {
 		return key
 	}
 	action := string(key)
@@ -599,6 +599,10 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		h.buffer.Prefetch(h.top, -1)
 	}
 	h.browsing = h.top < h.buffer.Base()
+	// Start the refresh even when a stale turn holds the viewport in place.
+	if h.layoutScroll != 0 {
+		h.scheduleLayoutsLocked()
+	}
 	if h.top != oldTop {
 		if !h.browsing {
 			h.paintLocked()

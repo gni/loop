@@ -41,17 +41,27 @@ func init() {
 		if err != nil {
 			return err
 		}
-		var found []session.SessionInfo
+		query := strings.ToLower(args[0])
+		found := make([]session.SessionInfo, 0)
 		for _, entry := range entries {
-			matches := strings.Contains(strings.ToLower(entry.Name+" "+entry.SessionID+" "+entry.Preview), strings.ToLower(args[0]))
+			matches := strings.Contains(strings.ToLower(entry.Name+" "+entry.SessionID+" "+entry.Preview), query)
 			if !matches {
 				records, err := store.Entries(entry.SessionID)
 				if err != nil {
 					return err
 				}
 				for _, record := range records {
-					if strings.Contains(strings.ToLower(record.Message.Content), strings.ToLower(args[0])) {
+					if strings.Contains(strings.ToLower(record.Message.Content), query) {
 						matches = true
+						break
+					}
+					for _, message := range record.Messages {
+						if strings.Contains(strings.ToLower(message.Content), query) {
+							matches = true
+							break
+						}
+					}
+					if matches {
 						break
 					}
 				}

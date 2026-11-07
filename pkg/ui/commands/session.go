@@ -23,6 +23,36 @@ func resetSessionSnapshots(a *agent.Agent) {
 	}
 }
 
+// Drop transient work before entering another conversation. Failed loads leave
+// the current conversation intact because callers run this only after validation.
+func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorReader) {
+	state := ui.GetUI()
+	state.StateMu.Lock()
+	if reader == nil {
+		reader, _ = state.ActiveInputReader.(*interceptor.KeyInterceptorReader)
+	}
+	state.LastStatsText = ""
+	state.State.QueuedPromptsCount = 0
+	state.State.CompletionTokens = 0
+	if reader != nil {
+		reader.ResetTypeAheadLocked()
+	}
+	state.StateMu.Unlock()
+	if reader != nil {
+		reader.ClearQueue()
+	}
+	_ = a.SetTodos(nil)
+	a.ClearTasks()
+	resetSessionSnapshots(a)
+	if a.ClearAgentsFunc != nil {
+		a.ClearAgentsFunc()
+	}
+	a.CurrentStreamMu.Lock()
+	a.CurrentStreamBuffer = nil
+	a.CurrentStreamReplay = nil
+	a.CurrentStreamMu.Unlock()
+}
+
 func handleClearCommand(
 	a *agent.Agent,
 	messages *[]db.Message,
@@ -38,37 +68,14 @@ func handleClearCommand(
 			return
 		}
 	}
-	if err := a.SetTodos(nil); err != nil {
-		fmt.Fprintf(w, "cannot clear plan: %v\n", err)
-		return
-	}
+	resetConversationState(a, kiReader)
 	a.MessagesMu.Lock()
 	*messages = freshMessages
 	a.MessagesMu.Unlock()
 	a.SyncSessionSystemPrompt(messages, "")
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().LastStatsText = ""
-	ui.GetUI().StateMu.Unlock()
-	a.ClearTasks()
-	resetSessionSnapshots(a)
 	if ch, ok := rlHistory.(interface{ Clear() }); ok {
 		ch.Clear()
 	}
-	if kiReader != nil {
-		kiReader.ClearQueue()
-	}
-	if a.ClearAgentsFunc != nil {
-		a.ClearAgentsFunc()
-	}
-
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().State.QueuedPromptsCount = 0
-	ui.GetUI().State.CompletionTokens = 0
-	ui.GetUI().StateMu.Unlock()
-
-	a.CurrentStreamMu.Lock()
-	a.CurrentStreamBuffer = nil
-	a.CurrentStreamMu.Unlock()
 
 	const clearNotice = "conversation cleared and started a new one."
 	if history := ui.GetUI().ChatHistory; history != nil {
@@ -92,13 +99,13 @@ func handleSessionCommand(
 	if a.Ephemeral && len(parts) > 1 {
 		switch parts[1] {
 		case "new", "clear":
+			resetConversationState(a, kiReader)
 			a.MessagesMu.Lock()
 			*messages = nil
 			a.MessagesMu.Unlock()
 			*currentSessionID = ""
 			a.SetActiveSessionID("")
 			a.SyncSessionSystemPrompt(messages, "")
-			_ = a.SetTodos(nil)
 			if ui.GetUI().ChatHistory != nil {
 				ui.MarkSessionReloaded()
 			}
@@ -114,10 +121,7 @@ func handleSessionCommand(
 		if err := db.SetLatestSessionID(nextID); err != nil {
 			return fmt.Errorf("activate new session: %w", err)
 		}
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().LastStatsText = ""
-		ui.GetUI().StateMu.Unlock()
-		resetSessionSnapshots(a)
+		resetConversationState(a, kiReader)
 		*currentSessionID = nextID
 		a.SetActiveSessionID(nextID)
 		a.MessagesMu.Lock()
@@ -137,7 +141,7 @@ func handleSessionCommand(
 
 	if len(parts) <= 1 {
 		fmt.Fprintf(w, "active session: %s\n", *currentSessionID)
-		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <id> | clear]")
+		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <name> | clear]")
 		return
 	}
 
@@ -232,23 +236,20 @@ func handleSessionCommand(
 			fmt.Fprintln(w, "error: no active session to rename.")
 			return
 		}
-		oldID := *currentSessionID
-		newName := strings.TrimSpace(parts[2])
+		newName := strings.TrimSpace(strings.Join(parts[2:], " "))
 		if newName == "" {
 			fmt.Fprintln(w, "error: target session name cannot be empty.")
 			return
 		}
-		if err := db.RenameSession(oldID, newName); err != nil {
+		store, err := db.DefaultStore()
+		if err == nil {
+			err = store.SetName(*currentSessionID, newName)
+		}
+		if err != nil {
 			fmt.Fprintf(w, "cannot rename session: %v\n", err)
 			return
 		}
-		*currentSessionID = newName
-		a.SetActiveSessionID(newName)
-		fmt.Fprintf(w, "session renamed from '%s' to '%s'. active session is now '%s'.\n", oldID, newName, newName)
-		if ui.GetUI().ChatHistory != nil {
-			ui.MarkSessionReloaded()
-		}
-		ui.DrawStatusBar(os.Stderr, *theme)
+		fmt.Fprintf(w, "session named %q.\n", newName)
 
 	case "load":
 		if len(parts) > 2 {
@@ -314,7 +315,7 @@ func handleSessionCommand(
 
 	default:
 		fmt.Fprintf(w, "active session: %s\n", *currentSessionID)
-		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <id> | clear]")
+		fmt.Fprintln(w, "usage: /session [list | new | load [id] | tree | branch <id> | rename <name> | clear]")
 	}
 }
 
@@ -353,10 +354,7 @@ func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionI
 	if err := db.SetLatestSessionID(selected); err != nil {
 		return err
 	}
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().LastStatsText = ""
-	ui.GetUI().StateMu.Unlock()
-	resetSessionSnapshots(a)
+	resetConversationState(a, nil)
 	*currentSessionID = selected
 	a.SetActiveSessionID(selected)
 	a.MessagesMu.Lock()

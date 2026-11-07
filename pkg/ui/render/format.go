@@ -201,6 +201,9 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 
 func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
 	toolName = domaintool.NormalizeName(toolName)
+	if toolName == "task_state" {
+		return symbol + " " + GetActionStyle(toolName, theme).Render("Task progress")
+	}
 	toolStyle := GetActionStyle(toolName, theme)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 

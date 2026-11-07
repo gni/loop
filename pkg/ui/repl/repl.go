@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,17 @@ import (
 )
 
 func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
+	ctx := a.Lifetime
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	RunREPLContext(ctx, a, allowedTools, theme, initialSessionID)
+}
+
+func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	ui.IsInteractive = true
 	defer func() { ui.IsInteractive = false }()
 
@@ -87,6 +99,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	}
 
 	kiReader := &interceptor.KeyInterceptorReader{
+		InputContext: ctx,
 		R:            os.Stdin,
 		Agent:        a,
 		Theme:        theme,
@@ -165,6 +178,9 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	defer watchREPLResizes(a, kiReader, rl, fd)()
 
 	for {
+		if ctx.Err() != nil {
+			break
+		}
 		promptPrefix := ui.GetPromptSymbol(a.Config)
 		if name := mam.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
@@ -222,6 +238,9 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 			kiReader.SetPromptDraft("", 0)
 			fmt.Fprint(os.Stderr, "\x1b[?2004l")
 			term.Restore(fd, oldState)
+			if ctx.Err() != nil {
+				break
+			}
 		}
 
 		prevOffset := ui.GetUI().PasteLinesOffset

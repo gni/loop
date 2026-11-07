@@ -61,7 +61,7 @@ func restorePlan(entries []session.Record) ([]tool.TodoItem, error) {
 			}
 		case "", "message":
 			replayMessage(entry.Message)
-		case "context":
+		case "context", "compaction":
 			if !hasCheckpoint && !hasToolHistory {
 				for _, msg := range entry.Messages {
 					replayMessage(msg)

@@ -140,6 +140,9 @@ func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
 	toolName = domaintool.NormalizeName(toolName)
 	if !isError {
+		if toolName == "task_state" && renderTaskState(w, output, collapse, theme) {
+			return
+		}
 		if toolName == "todo" && bodyWasStreamed {
 			// Task descriptions were already shown during generation. Keep
 			// the verified status counts without printing the full list again.

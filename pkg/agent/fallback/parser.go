@@ -3,8 +3,10 @@ package fallback
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"loop/pkg/agent/tool"
@@ -45,6 +47,49 @@ var (
 	}()
 )
 
+// Reuse the executable tools' schemas so fallback XML cannot drift from their
+// numeric, boolean and structured parameter contracts. Text stays literal.
+var xmlArgumentSchemas = func() map[string]map[string]tool.SchemaProp {
+	schemas := make(map[string]map[string]tool.SchemaProp)
+	for _, executor := range []tool.ToolExecutor{
+		tool.NewBashTool(), tool.NewReadTool(), tool.NewWriteTool(), tool.NewEditTool(),
+		tool.NewFindTool(), tool.NewGrepTool(), tool.NewListTool(), tool.NewSymbolTool(),
+		tool.NewTaskStatusTool(), tool.NewTaskKillTool(), tool.NewTodoTool(), tool.NewTaskStateTool(),
+		tool.NewAskUserTool(), tool.NewLoadMCPTool(), tool.NewLoadSkillTool(),
+	} {
+		schemas[executor.Name()] = executor.Definition().Function.Parameters.Properties
+	}
+	return schemas
+}()
+
+func xmlArgumentValue(name, key, value string) interface{} {
+	switch xmlArgumentSchemas[name][key].Type {
+	case "number":
+		if number, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) {
+			return number
+		}
+	case "integer":
+		if number, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+			return number
+		}
+	case "boolean":
+		if boolean, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil {
+			return boolean
+		}
+	case "array":
+		var array []interface{}
+		if json.Unmarshal([]byte(value), &array) == nil && array != nil {
+			return array
+		}
+	case "object":
+		var object map[string]interface{}
+		if json.Unmarshal([]byte(value), &object) == nil && object != nil {
+			return object
+		}
+	}
+	return value
+}
+
 // ParseXMLAttrs extracts key="val", key='val', or key=val attribute pairs from XML tag string.
 func ParseXMLAttrs(s string) map[string]string {
 	attrs := make(map[string]string)
@@ -62,9 +107,12 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 	// If body is already valid JSON, merge tag attributes into it if not present
 	var temp map[string]interface{}
 	if json.Unmarshal([]byte(body), &temp) == nil {
+		if temp == nil {
+			temp = make(map[string]interface{})
+		}
 		for k, v := range attrs {
 			if _, exists := temp[k]; !exists {
-				temp[k] = v
+				temp[k] = xmlArgumentValue(name, k, v)
 			}
 		}
 		if merged, err := json.Marshal(temp); err == nil {
@@ -75,7 +123,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 
 	argsMap := make(map[string]interface{})
 	for k, v := range attrs {
-		argsMap[k] = v
+		argsMap[k] = xmlArgumentValue(name, k, v)
 	}
 
 	switch name {
@@ -192,9 +240,9 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 		}
 		name := funcMatch[1]
 		rawBody := strings.TrimSpace(funcMatch[2])
-		params := make(map[string]string)
+		params := make(map[string]interface{})
 		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
-			params[p[1]] = strings.TrimSpace(p[2])
+			params[p[1]] = xmlArgumentValue(tool.NormalizeName(name), p[1], strings.TrimSpace(p[2]))
 		}
 		if len(params) == 0 {
 			calls = append(calls, BuildToolCall(name, rawBody))

@@ -69,6 +69,13 @@ func (s *Supervisor) Context() context.Context {
 	return s.ctx
 }
 
+// ExitCode reports the requested shutdown status even if cleanup is still running.
+func (s *Supervisor) ExitCode() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitCode
+}
+
 // OnCancel registers a callback executed when a single interrupt signal occurs.
 // If the callback returns true, the signal is considered consumed and execution continues.
 // If it returns false, normal graceful shutdown proceeds.

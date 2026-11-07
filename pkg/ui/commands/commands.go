@@ -130,7 +130,7 @@ func HandleSlashCommand(
 			fmt.Fprintln(w, "usage: /rename <new_name>")
 			return true, false
 		}
-		handleSessionCommand(a, []string{"/session", "rename", parts[1]}, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
+		handleSessionCommand(a, append([]string{"/session", "rename"}, parts[1:]...), messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
 		return true, false
 	case "/copy", "/clip":
 		handleCopyCommand(messages, w)

@@ -2,6 +2,7 @@ package interceptor
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 )
 
 type KeyInterceptorReader struct {
+	InputContext      context.Context
 	R                 io.Reader
 	Agent             *agent.Agent
 	Theme             style.UITheme
@@ -187,13 +189,23 @@ func (ki *KeyInterceptorReader) writeToTerminal(p []byte) (int, error) {
 	return ki.resolveTargetWriter(os.Stdout).Write(p)
 }
 
+func (ki *KeyInterceptorReader) GetInputContext() context.Context {
+	return ki.InputContext
+}
+
 func (ki *KeyInterceptorReader) GetInputChan() chan byte {
 	return ki.InputChan
 }
 
 func (ki *KeyInterceptorReader) readFromChannels(p []byte) (int, error) {
+	var done <-chan struct{}
+	if ki.InputContext != nil {
+		done = ki.InputContext.Done()
+	}
 	var b byte
 	select {
+	case <-done:
+		return 0, ki.InputContext.Err()
 	case injected, ok := <-ki.InjectChan:
 		if !ok {
 			return 0, io.EOF
@@ -298,6 +310,9 @@ readInputChannel:
 
 func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
 readInput:
+	if ki.InputContext != nil && ki.InputContext.Err() != nil {
+		return 0, ki.InputContext.Err()
+	}
 	if len(ki.PasteRemaining) > 0 {
 		n := copy(p, ki.PasteRemaining)
 		ki.PasteRemaining = ki.PasteRemaining[n:]

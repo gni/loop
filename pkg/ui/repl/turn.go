@@ -65,6 +65,10 @@ func executeREPLTurn(
 	preExpanded bool,
 	fromQueue bool,
 ) {
+	parent := kiReader.InputContext
+	if parent == nil {
+		parent = context.Background()
+	}
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().LastStatsText = ""
 	ui.GetUI().StateMu.Unlock()
@@ -77,6 +81,8 @@ func executeREPLTurn(
 			fmt.Fprintf(os.Stderr, "Error sending message: %v\n", err)
 		} else {
 			select {
+			case <-parent.Done():
+				active.CancelActiveTurn()
 			case <-active.Context.Done():
 				fmt.Fprintln(os.Stderr, "agent context cancelled.")
 			case <-active.Output:
@@ -91,7 +97,7 @@ func executeREPLTurn(
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	if attachmentSource != nil {
 		ctx = resources.WithAttachmentSource(ctx, line, *attachmentSource)
 	}
