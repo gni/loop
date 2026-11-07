@@ -32,7 +32,7 @@ var (
 
 func init() {
 	render.ExtensionCounter = func(workspaceRoot string) int {
-		if ui := getUI(); ui != nil && ui.Config != nil && (ui.Config.DisableProjectPlugins || ui.Config.DisableLocalPlugins) {
+		if ui := getUI(); ui != nil && ui.Config != nil && (!ui.Config.ProjectResources || !ui.Config.LocalPlugins) {
 			workspaceRoot = ""
 		}
 		return len(ListExtensions(workspaceRoot))

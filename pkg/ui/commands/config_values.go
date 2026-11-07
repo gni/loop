@@ -16,6 +16,12 @@ import (
 // setConfigValue validates a single value and applies its in-memory effects.
 // Persistence is deliberately performed once by handleConfigCommand.
 func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.Writer) bool {
+	normalizedKey, normalizedValue, err := config.CanonicalSetting(key, val)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return false
+	}
+	key, val = normalizedKey, normalizedValue
 	switch key {
 	case "prompt_max_lines":
 		if !parseConfigPositiveInt(w, "prompt max lines", val, &a.Config.PromptMaxLines) {
@@ -37,7 +43,10 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 			fmt.Fprintf(w, "Invalid temperature value: %v\n", err)
 			return false
 		}
-		a.Config.Temperature = t
+		if err := a.Config.SetValue("temperature", strconv.FormatFloat(t, 'g', -1, 64)); err != nil {
+			fmt.Fprintln(w, err)
+			return false
+		}
 	case "auto_approve", "yes", "yolo":
 		a.Config.AutoApprove = config.ParseBool(val)
 		if a.Config.AutoApprove {
@@ -45,8 +54,6 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		}
 	case "guided_mode", "guided":
 		a.SetGuidedMode(config.ParseBool(val))
-	case "approval_always_answer", "always_answer":
-		a.Config.ApprovalAlwaysAnswer = config.ParseBool(val)
 	case "show_thinking", "thinking":
 		a.Config.ShowThinking = config.ParseBool(val)
 	case "markdown_render", "markdown":
@@ -123,8 +130,8 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		a.Config.KeyFile = val
 	case "ca_file", "ca":
 		a.Config.CAFile = val
-	case "skip_verify", "skip":
-		a.Config.SkipVerify = config.ParseBool(val)
+	case "tls_verify", "skip":
+		a.Config.TLSVerify = config.ParseBool(val)
 	case "stream_writes", "stream_write", "stream":
 		a.Config.StreamWrites = config.ParseBool(val)
 	case "debug_log_file", "debug":
@@ -158,9 +165,9 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		a.Config.ShellScanDefaults = config.ParseBool(val)
 	case "atomic_writes", "atomic_write":
 		a.Config.AtomicWrites = config.ParseBool(val)
-	case "disable_file_observation_guard", "file_guard_off":
-		a.Config.DisableObservationGuard = config.ParseBool(val)
-	case "recap_interval", "recap":
+	case "file_observation_guard", "file_guard_off":
+		a.Config.FileObservationGuard = config.ParseBool(val)
+	case "recap_interval":
 		n, err := strconv.Atoi(val)
 		if err != nil {
 			fmt.Fprintf(w, "Invalid recap interval: %v (must be an integer; negative disables)\n", err)
@@ -174,8 +181,8 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 		}
 		a.Config.PromptsFile = val
 		fmt.Fprintf(w, "prompt catalog reloaded from %s\n", val)
-	case "disable_recap":
-		a.Config.DisableRecap = config.ParseBool(val)
+	case "recap":
+		a.Config.Recap = config.ParseBool(val)
 	case "ask_user_mode", "ask_user":
 		mode, err := config.ParseAskUserMode(val)
 		if err != nil {
@@ -190,8 +197,10 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 			a.DisableTools(cleaned...)
 		}
 	default:
-		fmt.Fprintf(w, "unknown config key: %s\n", key)
-		return false
+		if err := a.Config.SetValue(key, val); err != nil {
+			fmt.Fprintln(w, err)
+			return false
+		}
 	}
 
 	return true
@@ -200,7 +209,7 @@ func setConfigValue(a *agent.Agent, key, val string, theme *style.UITheme, w io.
 func parseConfigPositiveInt(w io.Writer, name, val string, target *int) bool {
 	n, err := strconv.Atoi(val)
 	if err != nil || n <= 0 {
-		fmt.Fprintf(w, "Invalid %s: %v (must be positive integer)\n", name, err)
+		fmt.Fprintf(w, "%s must be a positive integer\n", name)
 		return false
 	}
 	*target = n

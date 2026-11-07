@@ -208,7 +208,7 @@ func (e *TurnEngine) agentLabel() string {
 }
 
 func (e *TurnEngine) ShouldRecap() bool {
-	if e.config != nil && e.config.DisableRecap {
+	if e.config != nil && !e.config.Recap {
 		return false
 	}
 	return e.awareness.ShouldRecap()

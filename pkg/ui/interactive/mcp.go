@@ -102,7 +102,7 @@ func RunInteractiveMCPConfig(
 						id:   "server_enabled",
 						name: "status",
 						value: func() string {
-							if cloned.MCPServers[srvName].Disabled {
+							if !cloned.MCPServers[srvName].Enabled {
 								return "\x1b[31mdisabled\x1b[0m"
 							}
 							return "\x1b[32menabled\x1b[0m"
@@ -110,7 +110,7 @@ func RunInteractiveMCPConfig(
 						description: fmt.Sprintf("Toggle to enable or disable MCP server '%s'", srvName),
 						onToggle: func() {
 							curr := cloned.MCPServers[srvName]
-							curr.Disabled = !curr.Disabled
+							curr.Enabled = !(curr.Enabled)
 							cloned.MCPServers[srvName] = curr
 						},
 					},
@@ -209,6 +209,7 @@ func RunInteractiveMCPConfig(
 								cloned.MCPServers = make(map[string]config.MCPServerConfig)
 							}
 							cloned.MCPServers[sName] = config.MCPServerConfig{
+								Enabled: true,
 								URL:     sURL,
 								Headers: make(map[string]string),
 							}

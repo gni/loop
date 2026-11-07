@@ -92,7 +92,7 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 			}
 		}
 	}
-	cfg.DisableProjectPlugins = !trusted
+	cfg.ProjectResources = trusted
 	if !trusted {
 		applyEnvironment(cfg)
 		return cfg, nil
@@ -105,6 +105,10 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read project settings: %w", err)
+	}
+	data, err = NormalizeConfigJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("project settings: %w", err)
 	}
 	var project map[string]any
 	if err := json.Unmarshal(data, &project); err != nil {
@@ -136,7 +140,7 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	}
 	cfg.ProjectBase = baseConfig
 	cfg.ProjectPath = projectPath
-	cfg.DisableProjectPlugins = false
+	cfg.ProjectResources = true
 	cfg.applyDefaults()
 	if err := cfg.ActivateProvider(cfg.ActiveProvider); err != nil {
 		return nil, err
@@ -319,7 +323,7 @@ func saveProjectConfig(cfg *Config) error {
 	}
 	patch := make(map[string]any)
 	for key, value := range current {
-		if key == "disable_project_plugins" {
+		if key == "project_resources" {
 			continue
 		}
 		if key == "api_key" || key == "providers" || key == "mcp_servers" {
@@ -382,7 +386,7 @@ func saveProjectConfig(cfg *Config) error {
 		}
 	}
 	for key := range base {
-		if key == "disable_project_plugins" || key == "api_key" || key == "providers" || key == "mcp_servers" {
+		if key == "project_resources" || key == "api_key" || key == "providers" || key == "mcp_servers" {
 			continue
 		}
 		if _, exists := current[key]; !exists {

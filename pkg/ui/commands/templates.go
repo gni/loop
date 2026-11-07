@@ -28,7 +28,7 @@ func PromptTemplateDirs(a *agent.Agent) []string {
 		}
 		return nil
 	}
-	includeProject := a.Config == nil || (!a.Config.DisableProjectPlugins && !a.Config.DisableLocalPlugins)
+	includeProject := a.Config == nil || (a.Config.ProjectResources && a.Config.LocalPlugins)
 	var extra []string
 	if a.Config != nil {
 		for _, dir := range a.Config.PromptDirectories {

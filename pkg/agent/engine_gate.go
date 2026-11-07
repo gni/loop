@@ -97,7 +97,7 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 
 func (e *TurnEngine) needsInteractiveApproval(call db.ToolCall) bool {
 	a := e.agent
-	return e.policy.AllowApproval && a != nil && e.config != nil && a.Registry.Policy(call.Function.Name, call.Function.Arguments).RequiresApproval && ((e.guided != nil && e.guided.IsEnabled()) || (!e.config.AutoApprove && !e.config.ApprovalAlwaysAnswer))
+	return e.policy.AllowApproval && a != nil && e.config != nil && a.Registry.Policy(call.Function.Name, call.Function.Arguments).RequiresApproval && ((e.guided != nil && e.guided.IsEnabled()) || !e.config.AutoApprove)
 }
 
 func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {

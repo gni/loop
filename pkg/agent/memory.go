@@ -26,7 +26,7 @@ func (a *Agent) emitOnceMemoryError(msg string) {
 }
 
 func (a *Agent) LoadMemoryContext() string {
-	if a == nil || (a.Config != nil && a.Config.NoContextFiles) {
+	if a == nil || (a.Config != nil && !a.Config.ContextFiles) {
 		return ""
 	}
 	var output strings.Builder
@@ -48,7 +48,7 @@ func (a *Agent) LoadMemoryContext() string {
 	agentDir := resources.AgentDirectory(a.ConfigPath)
 	read(filepath.Join(agentDir, "LOOP.md"), "User directives")
 
-	trusted := a.Config == nil || !a.Config.DisableProjectPlugins
+	trusted := a.Config == nil || a.Config.ProjectResources
 	if !trusted {
 		read(filepath.Join(agentDir, "MEMORY.md"), "Project architecture and learnings")
 		instructions, diagnostics := resources.InstructionsForDirectories(agentDir)

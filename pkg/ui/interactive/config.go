@@ -16,7 +16,11 @@ import (
 )
 
 func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (*config.Config, error) {
-	cloned := *cfg
+	copy, err := config.Clone(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cloned := *copy
 	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
 		terminal.NotifyResize(sigChan)
@@ -27,9 +31,9 @@ func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Re
 
 		formatBool := func(v bool) string {
 			if v {
-				return "on"
+				return "true"
 			}
-			return "off"
+			return "false"
 		}
 
 		items := buildConfigSettingItems(&cloned, formatBool)

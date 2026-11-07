@@ -132,7 +132,7 @@ func executeManualShellCommand(
 		a.WorkspaceRoot = cleanTarget
 		if a.Config != nil {
 			trusted := config.WorkspaceTrusted(a.ConfigPath, cleanTarget)
-			a.Config.DisableProjectPlugins = !trusted
+			a.Config.ProjectResources = trusted
 		}
 		fmt.Fprintf(ppWriter, "changed directory to: %s\n", cleanTarget)
 		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", cleanTarget)

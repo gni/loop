@@ -13,7 +13,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 	askUserOptions := []string{"interactive", "always_ask", "auto_recommended", "disabled"}
 	reasoningOptions := []string{"off", "low", "medium", "high", "max"}
 
-	return []*settingItem{
+	items := []*settingItem{
 		intConfigItem("prompt_max_lines", "prompt max lines", "Maximum visible prompt rows; grows with text and scrolls beyond this limit (default 8)", &cloned.PromptMaxLines),
 		{
 			id:          "temperature",
@@ -28,6 +28,9 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				if err != nil {
 					return fmt.Errorf("invalid float")
 				}
+				if err := cloned.SetValue("temperature", newVal); err != nil {
+					return err
+				}
 				if v < 0.0 || v > 2.0 {
 					return fmt.Errorf("must be between 0.0 and 2.0")
 				}
@@ -36,10 +39,9 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 			},
 		},
 		boolConfigItem("guided_mode", "guided mode", "Require workspace exploration, todo plan approval, and diff previews before mutating files", &cloned.GuidedMode, formatBool),
-		boolConfigItem("disable_file_observation_guard", "disable file observation guard", "Allow overwrite or edit without a prior read or revision match. Workspace boundaries remain enforced", &cloned.DisableObservationGuard, formatBool),
+		boolConfigItem("file_observation_guard", "file observation guard", "Require a prior read before editing or overwriting files", &cloned.FileObservationGuard, formatBool),
 		boolConfigItem("shell_scan_defaults", "shell scan defaults", "Apply dependency exclusions to shell scanners; disabled by default for normal shell behavior", &cloned.ShellScanDefaults, formatBool),
 		boolConfigItem("auto_approve", "auto approve", "Execute tool operations directly without interactive approval", &cloned.AutoApprove, formatBool),
-		boolConfigItem("approval_always_answer", "approval always answer", "Skip the approval modal and pre-answer 'always' for unattended loop runs", &cloned.ApprovalAlwaysAnswer, formatBool),
 		stringListConfigItem("disabled_tools", "disabled tools", "Comma-separated list of disabled tools (e.g. bash,edit)", &cloned.DisabledTools),
 		{
 			id:          "ask_user_mode",
@@ -103,8 +105,13 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		intConfigItem("max_reasoning_steps", "max reasoning steps", "Safety ceiling on autonomous tool execution turns before stopping", &cloned.MaxReasoningSteps),
 		boolConfigItem("direct_commands", "direct commands", "Execute non-tool plain text as system shell instructions when recognized", &cloned.DirectCommands, formatBool),
 		boolConfigItem("compact_prompt", "compact prompt", "Use short builtin schemas and avoid repeating native tool listings", &cloned.CompactPrompt, formatBool),
-		boolConfigItem("stream_writes", "stream writes", "Stream tool output and completions smoothly token-by-token", &cloned.StreamWrites, formatBool),
-		boolConfigItem("enable_mcp", "enable MCP", "Permit configured MCP servers to connect and expose tools", &cloned.EnableMCP, formatBool),
+		boolConfigItem("stream_writes", "stream writes", "Show file-write previews as content arrives", &cloned.StreamWrites, formatBool),
+		boolConfigItem("local_plugins", "local plugins", "Load executable plugins and custom commands", &cloned.LocalPlugins, formatBool),
+		boolConfigItem("context_files", "context files", "Read project instructions and memory files", &cloned.ContextFiles, formatBool),
+		boolConfigItem("persistent_bash", "persistent bash", "Keep shell state between commands", &cloned.PersistentBash, formatBool),
+		boolConfigItem("atomic_writes", "atomic writes", "Replace files only after the new content is ready", &cloned.AtomicWrites, formatBool),
+		boolConfigItem("prompt_cache_breakpoints", "prompt cache breakpoints", "Send cache hints to providers that support them", &cloned.PromptCacheBreakpoints, formatBool),
+		boolConfigItem("mcp", "MCP", "Permit configured MCP servers to connect and expose tools", &cloned.MCP, formatBool),
 		boolConfigItem("parallel_tool_calls", "parallel tool calls", "Execute multiple simultaneous model tool invocations concurrently", &cloned.ParallelToolCalls, formatBool),
 		boolConfigItem("collapse_results", "collapse results", "Visually collapse lengthy tool execution response text into previews", &cloned.CollapseResults, formatBool),
 		intConfigItem("history_page_size", "history page size", "Number of rendered terminal lines loaded per scroll chunk and kept resident in memory", &cloned.HistoryPageSize),
@@ -150,7 +157,7 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 				return nil
 			},
 		},
-		boolConfigItem("disable_recap", "recap disabled", "Suppress the turn/token recap line entirely, independently of the interval", &cloned.DisableRecap, formatBool),
+		boolConfigItem("recap", "recap", "Show periodic task progress recaps", &cloned.Recap, formatBool),
 		stringConfigItem("prompts_file", "prompts file", "User-editable prompt catalog layered over embedded defaults (empty uses ~/.loop/prompts.json)", &cloned.PromptsFile),
 		stringConfigItem("before_tool_hook", "before tool hook", "Shell command script invoked prior to running tool commands", &cloned.BeforeToolHook),
 		stringConfigItem("after_tool_hook", "after tool hook", "Shell command script invoked upon successful tool execution", &cloned.AfterToolHook),
@@ -158,8 +165,30 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 		stringConfigItem("cert_file", "cert file", "Client mTLS x509 certificate file path", &cloned.CertFile),
 		stringConfigItem("key_file", "key file", "Client mTLS private key file path", &cloned.KeyFile),
 		stringConfigItem("ca_file", "ca file", "Custom Certificate Authority bundle file path", &cloned.CAFile),
-		boolConfigItem("skip_verify", "skip verify", "Disable TLS certificate authenticity validation", &cloned.SkipVerify, formatBool),
+		boolConfigItem("tls_verify", "TLS verify", "Verify server certificates", &cloned.TLSVerify, formatBool),
 	}
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		seen[item.id] = true
+	}
+	// Include every scalar setting so adding a config field cannot leave it
+	// silently missing from the editor. Structured settings use JSON via /config.
+	for _, key := range config.SettingKeys() {
+		if seen[key] || key == "api_key" || key == "system_instruction" {
+			continue
+		}
+		value, _ := cloned.SettingValue(key)
+		if strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") || value == "null" {
+			continue
+		}
+		items = append(items, &settingItem{
+			id: key, name: strings.ReplaceAll(key, "_", " "),
+			value:       func() string { value, _ := cloned.SettingValue(key); return value },
+			description: "Change " + strings.ReplaceAll(key, "_", " "),
+			onEdit:      func(value string) error { return cloned.SetValue(key, value) },
+		})
+	}
+	return items
 }
 
 func matchOption(options []string, val string) (string, bool) {
@@ -192,6 +221,14 @@ func intConfigItem(id, name, desc string, target *int) *settingItem {
 		value:       func() string { return strconv.Itoa(*target) },
 		description: desc,
 		onEdit: func(newVal string) error {
+			if id == "timeout" || id == "shell_timeout" || id == "extension_timeout" {
+				n, err := strconv.Atoi(newVal)
+				if err != nil || n < 0 {
+					return fmt.Errorf("must be a non-negative integer")
+				}
+				*target = n
+				return nil
+			}
 			return parsePositiveInt(newVal, target)
 		},
 	}

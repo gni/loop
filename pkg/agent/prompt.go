@@ -267,7 +267,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 	}
 
 	projectCtx := ""
-	if a != nil && (a.Config == nil || !a.Config.NoContextFiles) {
+	if a != nil && (a.Config == nil || a.Config.ContextFiles) {
 		projectCtx = resources.DetectProjectContext(a.WorkspaceRoot)
 	}
 
@@ -278,7 +278,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		CompactPrompt:     compact,
 		NativeToolSchemas: a.Config == nil || !strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml"),
 		GuidedMode:        a.IsGuidedMode(),
-		SkipObservation:   a.Config != nil && a.Config.DisableObservationGuard,
+		SkipObservation:   a.Config != nil && !a.Config.FileObservationGuard,
 		SequentialTools:   a.Config == nil || !a.Config.ParallelToolCalls,
 		Skills:            a.GetActiveSkills(),
 		MemoryContext:     a.LoadMemoryContext(),

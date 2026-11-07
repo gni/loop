@@ -32,7 +32,7 @@ func handleConfigCommand(
 	rl := terminalFromReader(kiReader)
 
 	if len(parts) <= 1 {
-		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
+		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
@@ -51,7 +51,7 @@ func handleConfigCommand(
 		previous := *a.Config
 		if newConfig.GuidedMode && !previous.GuidedMode {
 			newConfig.AutoApprove = false
-			newConfig.ApprovalAlwaysAnswer = false
+
 			newConfig.ParallelToolCalls = false
 		}
 		if newConfig.PromptsFile != previous.PromptsFile {

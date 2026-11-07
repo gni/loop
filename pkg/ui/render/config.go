@@ -34,95 +34,33 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	valStyle := style.NewStyle().
 		Foreground(theme.Text)
 
-	guidedVal := valStyle.Render("disabled")
-	if cfg.GuidedMode {
-		guidedVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("enabled")
-	}
-
-	approveVal := valStyle.Render("disabled")
-	if cfg.AutoApprove {
-		approveVal = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render("auto-approve")
-	} else if cfg.ApprovalAlwaysAnswer {
-		approveVal = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render("always")
-	}
-
-	askModeVal := valStyle.Render(cfg.AskUserMode)
-	if cfg.AskUserMode == "always_ask" {
-		askModeVal = style.NewStyle().Foreground(theme.Error).Bold(true).Render("always_ask")
-	}
-
-	directVal := valStyle.Render("disabled")
-	if cfg.DirectCommands {
-		directVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("enabled")
-	}
-
-	recapVal := valStyle.Render(fmt.Sprintf("every %d turns", cfg.RecapInterval))
-	if cfg.DisableRecap || cfg.RecapInterval <= 0 {
-		recapVal = style.NewStyle().Foreground(theme.Success).Bold(true).Render("disabled")
-	}
-
-	timeoutVal := "disabled"
-	if cfg.Timeout > 0 {
-		timeoutVal = fmt.Sprintf("%ds", cfg.Timeout)
-	}
-
-	nostopVal := "off"
-	stepsVal := fmt.Sprintf("%d", cfg.MaxReasoningSteps)
-	if cfg.Nostop.Enabled() {
-		nostopVal = fmt.Sprintf("%s / %s", cfg.Nostop.Mode, cfg.Nostop.Pause())
-		timeoutVal = "disabled (nostop)"
-		stepsVal = "unlimited (nostop)"
-	}
-	disabledToolsVal := "none"
-	if len(cfg.DisabledTools) > 0 {
-		disabledToolsVal = strings.Join(cfg.DisabledTools, ", ")
-	}
-
 	type kvPair struct {
 		key string
 		val string
 	}
-
-	pairs := []kvPair{
-		{"prompt max lines:", valStyle.Render(fmt.Sprint(cfg.PromptRows()))},
-		{"active provider:", valStyle.Render(cfg.ActiveProvider)},
-		{"temperature:", valStyle.Render(fmt.Sprintf("%.2f", cfg.Temperature))},
-		{"guided mode:", guidedVal},
-		{"nostop pacing:", valStyle.Render(nostopVal)},
-		{"file guard disabled:", valStyle.Render(fmt.Sprintf("%v", cfg.DisableObservationGuard))},
-		{"shell scan defaults:", valStyle.Render(fmt.Sprint(cfg.ShellScanDefaults))},
-		{"auto-approve:", approveVal},
-		{"show thinking:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowThinking))},
-		{"markdown render:", valStyle.Render(fmt.Sprintf("%v", cfg.MarkdownRender))},
-		{"collapse results:", valStyle.Render(fmt.Sprintf("%v", cfg.CollapseResults))},
-		{"history page size:", valStyle.Render(fmt.Sprintf("%d lines", cfg.HistoryPageSize))},
-		{"show tokens:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowTokens))},
-		{"show microseconds:", valStyle.Render(fmt.Sprintf("%v", cfg.ShowMicroseconds))},
-		{"context limit:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.ContextWindowLimit))},
-		{"auto adapt context:", valStyle.Render(fmt.Sprintf("%v", cfg.AutoAdaptContext))},
-		{"min context window:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.MinContextWindow))},
-		{"max completion tokens:", valStyle.Render(fmt.Sprintf("%d tokens", cfg.MaxCompletionTokens))},
-		{"max reasoning steps:", valStyle.Render(stepsVal)},
-		{"direct commands:", directVal},
-		{"client cert:", valStyle.Render(cfg.CertFile)},
-		{"client key:", valStyle.Render(cfg.KeyFile)},
-		{"skip ssl verify:", valStyle.Render(fmt.Sprintf("%v", cfg.SkipVerify))},
-		{"stream writes:", valStyle.Render(fmt.Sprintf("%v", cfg.StreamWrites))},
-		{"visual theme:", valStyle.Render(cfg.Theme)},
-		{"syntax theme:", valStyle.Render(cfg.SyntaxTheme)},
-		{"max paste lines:", valStyle.Render(fmt.Sprintf("%d", cfg.MaxPasteLines))},
-		{"max paste chars:", valStyle.Render(fmt.Sprintf("%d", cfg.MaxPasteChars))},
-		{"llm timeout:", valStyle.Render(timeoutVal)},
-		{"approval always:", valStyle.Render(fmt.Sprintf("%v", cfg.ApprovalAlwaysAnswer))},
-		{"ask user mode:", askModeVal},
-		{"recap interval:", valStyle.Render(fmt.Sprintf("%d", cfg.RecapInterval))},
-		{"recap:", recapVal},
-		{"prompts file:", valStyle.Render(cfg.PromptsFile)},
-		{"disabled tools:", valStyle.Render(disabledToolsVal)},
+	pairs := make([]kvPair, 0, len(config.SettingKeys()))
+	for _, key := range config.SettingKeys() {
+		value, _ := cfg.SettingValue(key)
+		if key == "providers" {
+			value = fmt.Sprintf("%d configured", len(cfg.Providers))
+		}
+		if key == "mcp_servers" {
+			value = fmt.Sprintf("%d configured", len(cfg.MCPServers))
+		}
+		if key == "api_key" && value != "" {
+			value = "<set>"
+		}
+		value = strings.Join(strings.Fields(value), " ")
+		valueWidth := max(1, termW-38)
+		if termW >= 140 {
+			valueWidth = max(1, (termW-10)/2-30)
+		}
+		value = style.TruncateRunes(value, valueWidth)
+		pairs = append(pairs, kvPair{key + ":", valStyle.Render(value)})
 	}
 
 	formatCell := func(p kvPair) string {
-		kPad := 22 - utf8.RuneCountInString(p.key)
+		kPad := 29 - utf8.RuneCountInString(p.key)
 		if kPad < 1 {
 			kPad = 1
 		}
@@ -130,7 +68,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	}
 
 	var rowsBuilder strings.Builder
-	if termW >= 76 {
+	if termW >= 140 {
 		rows := (len(pairs) + 1) / 2
 		colWidth := (termW - 10) / 2
 		if colWidth < 34 {

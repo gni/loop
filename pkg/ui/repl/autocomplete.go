@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
+	"loop/pkg/config"
 	"loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/commands"
@@ -34,16 +35,7 @@ var baseAutocompleteCandidates = []string{
 	"/tools", "/tools list", "/tools disable ", "/tools enable ", "/tools toggle ", "/tools reset", "/tools menu", "/tool",
 }
 
-var configAutocompleteKeys = []string{
-	"prompt_max_lines",
-	"endpoint", "model", "temperature", "guided_mode", "disable_file_observation_guard", "auto_approve", "show_thinking",
-	"collapse_results", "show_tokens", "show_microseconds", "theme", "syntax_theme", "context_limit", "steps",
-	"direct_commands", "cert_file", "key_file", "skip_verify", "reasoning_effort",
-	"before_tool_hook", "after_tool_hook", "debug", "debug_file",
-	"max_paste_lines", "max_paste_chars", "auto_adapt_context", "min_context_window",
-	"approval_always_answer", "ask_user_mode", "recap_interval", "disable_recap",
-	"prompts_file", "disabled_tools",
-}
+var configAutocompleteKeys = config.SettingKeys()
 
 func matchPrefixWithSpace(candidates []string, filter string, spaceSet map[string]bool) []string {
 	var out []string

@@ -13,7 +13,7 @@ func (s *Session) Reload() error {
 	}
 	defer s.runMu.Unlock()
 	directories := []string{resources.AgentDirectory(s.Agent.ConfigPath)}
-	if !s.Agent.Config.DisableProjectPlugins {
+	if s.Agent.Config.ProjectResources {
 		directories = append(directories, s.Workspace+"/.loop")
 	}
 	loaded, err := resources.LoadPackages(directories...)
@@ -27,7 +27,7 @@ func (s *Session) Reload() error {
 	if err := applyResources(cfg, s.loaded, loaded); err != nil {
 		return err
 	}
-	trusted := !cfg.DisableProjectPlugins
+	trusted := cfg.ProjectResources
 	skillDirs := agent.SkillSearchDirsForWorkspace(cfg.SkillsDir, s.Workspace, trusted)
 	for _, extraDir := range cfg.SkillDirectories {
 		if s.Agent.ProjectResourceAllowed(extraDir) {
@@ -39,7 +39,7 @@ func (s *Session) Reload() error {
 		return err
 	}
 	plugins := tool.NewToolRegistry()
-	if !cfg.DisableLocalPlugins {
+	if cfg.LocalPlugins {
 		dirs := append(tool.PluginSearchDirs(s.Workspace), cfg.PluginDirectories...)
 		seen := make(map[string]bool)
 		for _, dir := range dirs {

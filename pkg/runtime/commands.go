@@ -12,7 +12,7 @@ import (
 
 func (s *Session) Commands() []resources.Command {
 	cfg := s.Agent.Config
-	if cfg.DisableLocalPlugins {
+	if !cfg.LocalPlugins {
 		return nil
 	}
 	directories := append(tool.ExtensionSearchDirs(s.Workspace), cfg.ExtensionDirectories...)

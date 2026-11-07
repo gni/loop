@@ -16,7 +16,7 @@ func (s *Session) validateTools(names []string) error {
 		}
 		parts := strings.SplitN(name, "__", 3)
 		if len(parts) == 3 && parts[0] == "mcp" {
-			if server, exists := s.Agent.Config.MCPServers[parts[1]]; exists && !server.Disabled {
+			if server, exists := s.Agent.Config.MCPServers[parts[1]]; exists && server.Enabled {
 				continue
 			}
 		}

@@ -210,7 +210,7 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 		ResolveCredential: a.resolveCredential,
 	}
 
-	a.FileObservations.SetDisabled(cfg != nil && cfg.DisableObservationGuard)
+	a.FileObservations.SetDisabled(cfg != nil && !cfg.FileObservationGuard)
 
 	a.Registry.UnknownToolHook = a.ResolveUnknownTool
 	a.Registry.Register(tool.NewLoadMCPTool())
@@ -230,7 +230,7 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 	a.Registry.Register(tool.NewTaskStateTool())
 	a.Registry.Register(tool.NewAskUserTool())
 
-	if a.Config != nil && !a.Config.DisableLocalPlugins {
+	if a.Config != nil && a.Config.LocalPlugins {
 		for _, dir := range a.pluginDirs() {
 			_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
 		}
@@ -468,7 +468,7 @@ func (a *Agent) ApplyConfig(cfg *config.Config) {
 	}
 	a.ensureGuided().SetEnabled(cfg.GuidedMode)
 	if a.FileObservations != nil {
-		a.FileObservations.SetDisabled(cfg.DisableObservationGuard)
+		a.FileObservations.SetDisabled(!cfg.FileObservationGuard)
 	}
 	a.syncOpenAIProviderLocked(cfg, true)
 
@@ -550,7 +550,7 @@ func (a *Agent) EnableTools(names ...string) {
 		return
 	}
 
-	wasMCPDisabled := !a.Config.EnableMCP
+	wasMCPDisabled := !a.Config.MCP
 	wasSubagentsDisabled := a.Config.MaxSubagentDepth <= 0
 	requested := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -563,7 +563,7 @@ func (a *Agent) EnableTools(names ...string) {
 			a.Config.SetAskUserMode("interactive")
 		}
 		if normalized == "load_mcp" || normalized == "search_tools" || normalized == "list_mcp_resources" || normalized == "list_mcp_resource_templates" || normalized == "read_mcp_resource" || strings.HasPrefix(normalized, "mcp__") {
-			a.Config.EnableMCP = true
+			a.Config.MCP = true
 		}
 		if tool.IsSubagentTool(normalized) {
 			if a.Config.MaxSubagentDepth <= 0 {
@@ -574,7 +574,7 @@ func (a *Agent) EnableTools(names ...string) {
 
 	// Turning on a feature through a single tool must not silently enable all
 	// related tools. Those other tools remain individually opt-in.
-	if wasMCPDisabled && a.Config.EnableMCP {
+	if wasMCPDisabled && a.Config.MCP {
 		for _, name := range []string{"load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
 			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
 				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
@@ -609,7 +609,7 @@ func (a *Agent) enableMCPDeferred() {
 		a.mcpPending = make(map[string]config.MCPServerConfig)
 	}
 	for name, server := range a.Config.MCPServers {
-		if !server.Disabled && a.MCPClients[name] == nil {
+		if server.Enabled && a.MCPClients[name] == nil {
 			a.mcpPending[name] = server
 		}
 	}
@@ -626,12 +626,12 @@ func (a *Agent) EnableAllTools() {
 		a.markSystemPromptDirty()
 		return
 	}
-	wasMCPDisabled := !a.Config.EnableMCP
+	wasMCPDisabled := !a.Config.MCP
 	a.Config.DisabledTools = nil
 	if a.Config.AskUserMode == "disabled" {
 		a.Config.SetAskUserMode("interactive")
 	}
-	a.Config.EnableMCP = true
+	a.Config.MCP = true
 	if wasMCPDisabled {
 		a.enableMCPDeferred()
 	}
@@ -703,7 +703,7 @@ func (a *Agent) ConfiguredSkillDirs() []string {
 	if a == nil || a.Config == nil {
 		return nil
 	}
-	trusted := !a.Config.DisableProjectPlugins
+	trusted := a.Config.ProjectResources
 	dirs := SkillSearchDirsForWorkspace(a.Config.SkillsDir, a.WorkspaceRoot, trusted)
 	seen := make(map[string]bool, len(dirs))
 	for _, d := range dirs {
@@ -821,7 +821,7 @@ func getPluginDirs(workspaceRoot string) []string {
 }
 
 func (a *Agent) ReloadPlugins() error {
-	if a.Config != nil && a.Config.DisableLocalPlugins {
+	if a.Config != nil && !a.Config.LocalPlugins {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
@@ -843,7 +843,7 @@ func (a *Agent) HasSubagent(name string) bool {
 }
 
 func (a *Agent) ProjectResourceAllowed(path string) bool {
-	if a.Config == nil || !a.Config.DisableProjectPlugins {
+	if a.Config == nil || a.Config.ProjectResources {
 		return true
 	}
 	rel, err := filepath.Rel(a.WorkspaceRoot, path)
@@ -885,11 +885,25 @@ func (a *Agent) enforceOptionalTools() {
 	if a == nil || a.Registry == nil || a.Config == nil {
 		return
 	}
-	if !a.Config.EnableMCP {
+	if !a.Config.MCP {
 		a.Registry.Disable("load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource")
 		for name := range a.Registry.GetAllExecutors() {
 			if strings.HasPrefix(name, "mcp__") {
 				a.Registry.Disable(name)
+			}
+		}
+	}
+	for name := range a.Registry.GetAllExecutors() {
+		if !a.Config.LocalPlugins && strings.HasPrefix(name, "plugin__") {
+			a.Registry.Disable(name)
+		}
+		if strings.HasPrefix(name, "mcp__") {
+			parts := strings.SplitN(name, "__", 3)
+			if len(parts) == 3 {
+				server, ok := a.Config.MCPServers[parts[1]]
+				if !ok || !server.Enabled {
+					a.Registry.Disable(name)
+				}
 			}
 		}
 	}

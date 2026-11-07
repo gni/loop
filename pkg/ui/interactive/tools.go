@@ -45,7 +45,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 				if a.Config != nil && a.Config.MaxSubagentDepth <= 0 && tool.IsSubagentTool(toolName) {
 					desc += " (Subagents are off. Enabling this tool also enables subagents at depth 1.)"
 				}
-				if a.Config != nil && !a.Config.EnableMCP && (toolName == "load_mcp" || toolName == "search_tools" || toolName == "list_mcp_resources" || toolName == "list_mcp_resource_templates" || toolName == "read_mcp_resource") {
+				if a.Config != nil && !a.Config.MCP && (toolName == "load_mcp" || toolName == "search_tools" || toolName == "list_mcp_resources" || toolName == "list_mcp_resource_templates" || toolName == "read_mcp_resource") {
 					desc += " (MCP is off. Enabling this tool also enables MCP.)"
 				}
 				items = append(items, &settingItem{

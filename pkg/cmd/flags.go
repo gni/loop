@@ -51,22 +51,21 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if modelName != "" {
 		cfg.Model = modelName
 	}
-	if autoYes {
-		cfg.AutoApprove = true
+	if cmd.Flags().Changed("yes") {
+		cfg.AutoApprove = autoYes
 	}
 	if cmd.Flags().Changed("guided") {
 		cfg.GuidedMode = guidedModeFlag
 		if guidedModeFlag {
 			cfg.AutoApprove = false
-			cfg.ApprovalAlwaysAnswer = false
 			cfg.ParallelToolCalls = false
 		}
 	}
-	if showThinking {
-		cfg.ShowThinking = true
+	if cmd.Flags().Changed("thinking") {
+		cfg.ShowThinking = showThinking
 	}
-	if showTokens {
-		cfg.ShowTokens = true
+	if cmd.Flags().Changed("tokens") {
+		cfg.ShowTokens = showTokens
 	}
 	if maxStepsFlag != 0 {
 		cfg.MaxReasoningSteps = maxStepsFlag

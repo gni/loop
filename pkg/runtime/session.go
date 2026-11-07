@@ -107,7 +107,7 @@ func New(options Options) (*Session, error) {
 	cfg.PluginDirectories = append(cfg.PluginDirectories, filepath.Join(agentDirectory, "plugins"))
 	cfg.ExtensionDirectories = append(cfg.ExtensionDirectories, filepath.Join(agentDirectory, "extensions"))
 	packageDirs := []string{agentDirectory}
-	if !cfg.DisableProjectPlugins {
+	if cfg.ProjectResources {
 		packageDirs = append(packageDirs, filepath.Join(workspace, ".loop"))
 	}
 	loaded, err := resources.LoadPackages(packageDirs...)
@@ -446,7 +446,7 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		}
 		expanded := transformed
 		if !preExpanded && (!literal || strings.HasPrefix(strings.TrimSpace(attachmentSource), "/")) {
-			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, !s.Agent.Config.DisableProjectPlugins, s.Agent.Config.PromptDirectories))
+			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, s.Agent.Config.ProjectResources, s.Agent.Config.PromptDirectories))
 			if err != nil {
 				return result, err
 			}

@@ -116,7 +116,7 @@ func (t *mcpResourceTool) ExecuteResult(ctx tool.AgentContext, arguments string)
 		names = []string{args.Server}
 	} else {
 		for name, cfg := range t.agent.Config.MCPServers {
-			if !cfg.Disabled {
+			if cfg.Enabled {
 				names = append(names, name)
 			}
 		}

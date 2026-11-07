@@ -37,6 +37,7 @@ var mcpAddCmd = &cobra.Command{
 			cfg.MCPServers = make(map[string]config.MCPServerConfig)
 		}
 		cfg.MCPServers[name] = config.MCPServerConfig{
+			Enabled: true,
 			URL:     url,
 			Headers: headers,
 		}

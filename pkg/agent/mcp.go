@@ -73,7 +73,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 	if a == nil {
 		return fmt.Errorf("nil agent")
 	}
-	if a.Config == nil || !a.Config.EnableMCP {
+	if a.Config == nil || !a.Config.MCP {
 		return nil
 	}
 
@@ -95,7 +95,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 
 	var eager []string
 	for name, cfg := range configs {
-		if cfg.Disabled {
+		if !cfg.Enabled {
 			continue
 		}
 		if cfg.AlwaysLoad {
@@ -145,8 +145,8 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 	if a == nil {
 		return "", fmt.Errorf("nil agent")
 	}
-	if a.Config == nil || !a.Config.EnableMCP {
-		return "", fmt.Errorf("MCP is disabled; set enable_mcp=true")
+	if a.Config == nil || !a.Config.MCP {
+		return "", fmt.Errorf("MCP is disabled; set mcp=true")
 	}
 
 	client, err := a.connectMCPServer(name)
@@ -312,9 +312,9 @@ func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
 
 func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	a.MCPClientsMu.Lock()
-	if a.Config == nil || !a.Config.EnableMCP {
+	if a.Config == nil || !a.Config.MCP {
 		a.MCPClientsMu.Unlock()
-		return nil, fmt.Errorf("MCP is disabled; set enable_mcp=true")
+		return nil, fmt.Errorf("MCP is disabled; set mcp=true")
 	}
 	cfg, exists := a.Config.MCPServers[name]
 	generation := a.mcpGeneration
@@ -323,7 +323,7 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	if !exists {
 		return nil, fmt.Errorf("MCP server '%s' is not configured", name)
 	}
-	if cfg.Disabled {
+	if !cfg.Enabled {
 		return nil, fmt.Errorf("MCP server '%s' is disabled", name)
 	}
 	return a.connectServer(name, cfg, generation)
@@ -339,7 +339,7 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
 	transport.ResponseHeaderTimeout = connectTimeout
-	if a.Config != nil && (a.Config.CAFile != "" || a.Config.CertFile != "" || a.Config.KeyFile != "" || a.Config.SkipVerify) {
+	if a.Config != nil && (a.Config.CAFile != "" || a.Config.CertFile != "" || a.Config.KeyFile != "" || !a.Config.TLSVerify) {
 		if tlsConfig, err := config.GetTLSConfig(a.Config); err == nil && tlsConfig != nil {
 			transport.TLSClientConfig = tlsConfig
 		}

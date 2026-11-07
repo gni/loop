@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -30,8 +31,8 @@ type MCPServerConfig struct {
 	Env        map[string]string `json:"env,omitempty"`
 	URL        string            `json:"url,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
-	Disabled   bool              `json:"disabled,omitempty"`
-	AlwaysLoad bool              `json:"alwaysLoad,omitempty"`
+	Enabled    bool              `json:"enabled"`
+	AlwaysLoad bool              `json:"always_load"`
 }
 
 // ChatCapabilities are explicit opt-ins for non-universal chat-completions fields.
@@ -99,7 +100,7 @@ func (c *Config) NormalizeSafety() {
 	}
 	if c.GuidedMode {
 		c.AutoApprove = false
-		c.ApprovalAlwaysAnswer = false
+
 		c.ParallelToolCalls = false
 	}
 }
@@ -112,10 +113,10 @@ type Config struct {
 	ProjectBase              *Config                    `json:"-"`
 	PluginDirectories        []string                   `json:"plugin_directories,omitempty"`
 	ExtensionDirectories     []string                   `json:"extension_directories,omitempty"`
-	DisableProjectPlugins    bool                       `json:"disable_project_plugins,omitempty"`
+	ProjectResources         bool                       `json:"-"`
 	PromptDirectories        []string                   `json:"prompt_directories,omitempty"`
 	SkillDirectories         []string                   `json:"skill_directories,omitempty"`
-	NoContextFiles           bool                       `json:"no_context_files,omitempty"`
+	ContextFiles             bool                       `json:"context_files"`
 	ShellTimeout             int                        `json:"shell_timeout,omitempty"`
 	ShellScanDefaults        bool                       `json:"shell_scan_defaults"`
 	ExtensionTimeout         int                        `json:"extension_timeout,omitempty"`
@@ -126,11 +127,11 @@ type Config struct {
 	FrequencyPenalty         float64                    `json:"frequency_penalty,omitempty"`
 	PresencePenalty          float64                    `json:"presence_penalty,omitempty"`
 	SystemInstruction        string                     `json:"system_instruction"`
-	AutoApprove              bool                       `json:"auto_approve,omitempty"`
-	GuidedMode               bool                       `json:"guided_mode,omitempty"`
+	AutoApprove              bool                       `json:"auto_approve"`
+	GuidedMode               bool                       `json:"guided_mode"`
 	ShowThinking             bool                       `json:"show_thinking"`
 	MarkdownRender           bool                       `json:"markdown_render"`
-	CollapseResults          bool                       `json:"collapse_results,omitempty"`
+	CollapseResults          bool                       `json:"collapse_results"`
 	HistoryPageSize          int                        `json:"history_page_size,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
 	ShowMicroseconds         bool                       `json:"show_microseconds"`
@@ -139,10 +140,10 @@ type Config struct {
 	CertFile                 string                     `json:"cert_file,omitempty"`
 	KeyFile                  string                     `json:"key_file,omitempty"`
 	CAFile                   string                     `json:"ca_file,omitempty"`
-	SkipVerify               bool                       `json:"skip_verify"`
+	TLSVerify                bool                       `json:"tls_verify"`
 	SkillsDir                string                     `json:"skills_dir"`
 	MCPServers               map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
-	EnableMCP                bool                       `json:"enable_mcp,omitempty"`
+	MCP                      bool                       `json:"mcp"`
 	ChatCapabilities         ChatCapabilities           `json:"chat_capabilities,omitempty"`
 	MaxReasoningSteps        int                        `json:"max_reasoning_steps"`
 	ContextWindowLimit       int                        `json:"context_window_limit"`
@@ -157,9 +158,9 @@ type Config struct {
 	Providers                map[string]ProviderConfig  `json:"providers,omitempty"`
 	ActiveProvider           string                     `json:"active_provider,omitempty"`
 	MaxCompletionTokens      int                        `json:"max_completion_tokens,omitempty"`
-	CompactPrompt            bool                       `json:"compact_prompt,omitempty"`
+	CompactPrompt            bool                       `json:"compact_prompt"`
 	ToolProtocol             string                     `json:"tool_protocol,omitempty"`
-	DisableLocalPlugins      bool                       `json:"disable_local_plugins,omitempty"`
+	LocalPlugins             bool                       `json:"local_plugins"`
 	DisabledTools            []string                   `json:"disabled_tools,omitempty"`
 	DebugLogFile             string                     `json:"debug_log_file,omitempty"`
 	MaxSubagentDepth         int                        `json:"max_subagent_depth,omitempty"`
@@ -171,13 +172,12 @@ type Config struct {
 	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
-	DisableObservationGuard  bool                       `json:"disable_file_observation_guard,omitempty"`
-	PromptCacheBreakpoints   bool                       `json:"prompt_cache_breakpoints,omitempty"`
+	FileObservationGuard     bool                       `json:"file_observation_guard"`
+	PromptCacheBreakpoints   bool                       `json:"prompt_cache_breakpoints"`
 	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
-	ApprovalAlwaysAnswer     bool                       `json:"approval_always_answer,omitempty"`
 	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
 	RecapInterval            int                        `json:"recap_interval,omitempty"`
-	DisableRecap             bool                       `json:"disable_recap,omitempty"`
+	Recap                    bool                       `json:"recap"`
 	Limits                   limits.Limits              `json:"limits,omitempty"`
 	PromptsFile              string                     `json:"prompts_file,omitempty"`
 }
@@ -272,17 +272,24 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
+		ContextFiles:             true,
+		FileObservationGuard:     true,
+		TLSVerify:                true,
+		ProjectResources:         true,
 		PromptMaxLines:           8,
 		Endpoint:                 endpoint,
 		APIKey:                   apiKey,
 		Model:                    model,
 		Temperature:              0.2,
+		FrequencyPenalty:         .2,
+		ShowTokens:               true,
+		ToolProtocol:             "json",
 		SystemInstruction:        DefaultSystemInstruction,
 		ShowThinking:             false,
 		MarkdownRender:           true,
 		CollapseResults:          false,
 		HistoryPageSize:          500,
-		Theme:                    "dark",
+		Theme:                    "plain",
 		DirectCommands:           false,
 		SkillsDir:                resolveDefaultSkillsDir(),
 		MCPServers:               make(map[string]MCPServerConfig),
@@ -294,7 +301,7 @@ func DefaultConfig() *Config {
 		CompressionThreshold:     0.85,
 		ReasoningEffort:          "off",
 		StreamWrites:             true,
-		SyntaxTheme:              "auto",
+		SyntaxTheme:              "monokai",
 		Providers:                make(map[string]ProviderConfig),
 		CompactPrompt:            true,
 		MaxPasteLines:            80,
@@ -307,7 +314,7 @@ func DefaultConfig() *Config {
 		AtomicWrites:             true,
 		AskUserMode:              "interactive",
 		RecapInterval:            5,
-		DisableRecap:             true,
+		Recap:                    false,
 		Limits:                   limits.Defaults(),
 	}
 }
@@ -394,11 +401,6 @@ func LoadConfig(path string) (*Config, error) {
 func loadConfigWithRaw(path string) (*Config, []byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		conf := DefaultConfig()
-		if len(embeddedDefaultConfig) > 0 {
-			if err := json.Unmarshal(embeddedDefaultConfig, conf); err != nil {
-				conf = DefaultConfig()
-			}
-		}
 
 		if len(embeddedDefaultProviders) > 0 {
 			var provFile ProvidersFile
@@ -417,22 +419,6 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 			}
 		}
 
-		// Embedded templates may carry legacy high-budget defaults. New
-		// installations start in the initial local preset; existing
-		// user configuration remains untouched on subsequent loads.
-		conf.Temperature = 0.2
-		conf.MaxReasoningSteps = defaultMaxReasoningSteps
-		conf.MaxCompletionTokens = defaultMaxCompletionTokens
-		conf.ContextWindowLimit = defaultContextWindowLimit
-		conf.MinContextWindow = defaultMinContextWindow
-		conf.AutoAdaptContext = false
-		conf.CompressionThreshold = 0.85
-		conf.ReasoningEffort = "off"
-		conf.ShowThinking = false
-		conf.ParallelToolCalls = false
-		conf.DisableRecap = true
-		conf.DirectCommands = false
-		conf.DisableLocalPlugins = true
 		conf.applyDefaults()
 		conf.ensureDefaultProvider()
 		conf.SyncActiveProvider()
@@ -448,6 +434,7 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 	}
 
 	cfg := DefaultConfig()
+	applyLegacyDefaults(data, cfg)
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
@@ -595,7 +582,7 @@ func SaveConfig(path string, cfg *Config) error {
 
 func GetTLSConfig(cfg *Config) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: cfg.SkipVerify,
+		InsecureSkipVerify: !cfg.TLSVerify,
 	}
 
 	if cfg.CertFile != "" && cfg.KeyFile != "" {
@@ -725,7 +712,7 @@ func MCPServersEqual(a, b map[string]MCPServerConfig) bool {
 		if !exists {
 			return false
 		}
-		if cfgA.Type != cfgB.Type || cfgA.Command != cfgB.Command || cfgA.URL != cfgB.URL || cfgA.Disabled != cfgB.Disabled || cfgA.AlwaysLoad != cfgB.AlwaysLoad {
+		if cfgA.Type != cfgB.Type || cfgA.Command != cfgB.Command || cfgA.URL != cfgB.URL || cfgA.Enabled != cfgB.Enabled || cfgA.AlwaysLoad != cfgB.AlwaysLoad || cfgA.Exposure != cfgB.Exposure || !reflect.DeepEqual(cfgA.OAuth, cfgB.OAuth) {
 			return false
 		}
 		if len(cfgA.Args) != len(cfgB.Args) || !stringMapsEqual(cfgA.Env, cfgB.Env) || !stringMapsEqual(cfgA.Headers, cfgB.Headers) {

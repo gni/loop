@@ -90,7 +90,7 @@ func HandleMCPCommand(
 			for _, name := range keys {
 				status, active := mcpStatuses[name]
 				cfg := a.Config.MCPServers[name]
-				if cfg.Disabled {
+				if !cfg.Enabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
 					if err, failed := a.MCPStartErrors[name]; failed {
@@ -109,6 +109,7 @@ func HandleMCPCommand(
 		}
 		name, url := parts[2], parts[3]
 		a.Config.MCPServers[name] = config.MCPServerConfig{
+			Enabled: true,
 			URL:     url,
 			Headers: config.ParseHeaderArgs(parts[4:]),
 		}
@@ -125,7 +126,7 @@ func HandleMCPCommand(
 			fmt.Fprintf(w, "error: MCP server '%s' not found.\n", name)
 			return
 		}
-		cfg.Disabled = (sub == "disable")
+		cfg.Enabled = (sub == "enable")
 		a.Config.MCPServers[name] = cfg
 		fmt.Fprintf(w, "MCP Server '%s' successfully %sd.\n", name, sub)
 		restartAndSyncMCP()
