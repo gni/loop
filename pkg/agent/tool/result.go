@@ -30,4 +30,7 @@ func ExecutePreparedResult(ctx AgentContext, executor ToolExecutor, arguments st
 	return ToolResult{Output: output, IsError: err != nil}, err
 }
 
-func (r *ToolRegistry) CanParallel(name string) bool { return r.Policy(name, "").Parallel }
+func (r *ToolRegistry) CanParallel(name string) bool {
+	policy := r.Policy(name, "")
+	return policy.ReadOnly && policy.Parallel
+}

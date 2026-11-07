@@ -222,10 +222,12 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 	a.Registry.Register(tool.NewGrepTool())
 	a.Registry.Register(tool.NewListTool())
 	a.Registry.Register(tool.NewFindTool())
+	a.Registry.Register(tool.NewSymbolTool())
 	a.Registry.Register(tool.NewLoadSkillTool())
 	a.Registry.Register(tool.NewTaskStatusTool())
 	a.Registry.Register(tool.NewTaskKillTool())
 	a.Registry.Register(tool.NewTodoTool())
+	a.Registry.Register(tool.NewTaskStateTool())
 	a.Registry.Register(tool.NewAskUserTool())
 
 	if a.Config != nil && !a.Config.DisableLocalPlugins {
@@ -389,6 +391,18 @@ func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
 	}
 	a.ensureGuided().CaptureFileSnapshot(absPath)
 	return nil
+}
+
+// InvalidateCodeIndex refreshes declarations after committed native edits.
+func (a *Agent) InvalidateCodeIndex(path string) {
+	if a.Registry == nil {
+		return
+	}
+	if executor, exists := a.Registry.Lookup("search_symbols"); exists {
+		if index, ok := executor.(interface{ Invalidate(string) }); ok {
+			index.Invalidate(path)
+		}
+	}
 }
 
 func (a *Agent) RecordMutation(absPath string, data []byte) {

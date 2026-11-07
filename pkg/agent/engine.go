@@ -9,6 +9,7 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
@@ -134,6 +135,7 @@ type TurnEngine struct {
 	awareness                  *TurnAwareness
 	guided                     *GuidedController
 	consecutiveGuardRejections int
+	batchFailure               string
 }
 
 func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
@@ -256,7 +258,8 @@ func (e *TurnEngine) canRunToolInParallel(tc db.ToolCall) bool {
 	if e.agent == nil || e.config == nil || e.agent.Registry == nil || !e.config.ParallelToolCalls || e.config.GuidedMode || e.config.Nostop.Mode == "eco" {
 		return false
 	}
-	if !e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).Parallel {
+	policy := e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments)
+	if !policy.ReadOnly || !policy.Parallel {
 		return false
 	}
 	if e.guided != nil && e.guided.IsEnabled() && e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).RequiresPlan {
@@ -320,6 +323,8 @@ func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, r
 			Name:        tc.Function.Name,
 			Content:     RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
 			ToolOutcome: outcome,
+			Evidence:    &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome},
+			TaskState:   e.observeTaskTool(tc, &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome}, true),
 			IsError:     true,
 		})
 	}

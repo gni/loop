@@ -1,12 +1,15 @@
 package file
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -41,6 +44,21 @@ func (t *writeTool) Definition() domaintool.Tool {
 }
 
 func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	result, err := t.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (t *writeTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) (domaintool.ToolResult, error) {
+	observed := &evidence.Record{Kind: "file"}
+	output, err := t.execute(ctx, arguments, observed)
+	observed.Outcome = evidence.Succeeded
+	if err != nil {
+		observed.Outcome = evidence.Failed
+	}
+	return domaintool.ToolResult{Output: output, IsError: err != nil, Evidence: observed}, err
+}
+
+func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, observed *evidence.Record) (string, error) {
 	var args struct {
 		Path    string  `json:"path"`
 		Content *string `json:"content"`
@@ -71,6 +89,8 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", err
 	}
 
+	observed.Target = safePath
+
 	unlock := LockPath(safePath)
 	defer unlock()
 
@@ -90,6 +110,23 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", err
 	}
 
+	// Avoid changing timestamps or replacing a file when its bytes already match.
+	if info, statErr := os.Lstat(safePath); statErr == nil && info.Mode().IsRegular() && info.Size() == int64(len(content)) {
+		if current, openErr := os.Open(safePath); openErr == nil {
+			data, readErr := io.ReadAll(io.LimitReader(current, int64(len(content))+1))
+			_ = current.Close()
+			if readErr == nil && bytes.Equal(data, []byte(content)) {
+				unchanged := false
+				observed.Changed = &unchanged
+				observer.RecordRead(safePath, data)
+				discardIfUncommitted()
+				var warning string
+				observed.Diagnostics, warning = inspectSyntax(safePath, data)
+				return "No changes made: file already contains the requested content." + warning, nil
+			}
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 		discardIfUncommitted()
 		return "", fmt.Errorf("failed to create directory: %w", err)
@@ -100,12 +137,16 @@ func (t *writeTool) Execute(ctx domaintool.AgentContext, arguments string) (stri
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
+	changed := true
+	observed.Changed = &changed
 	displayPath := targetPath
 	if rel, err := filepath.Rel(ctx.GetWorkspaceRoot(), safePath); err == nil && !strings.HasPrefix(rel, "..") {
 		displayPath = rel
 	}
 	msg := fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), displayPath)
-	if warning := ValidateSyntax(safePath, []byte(content)); warning != "" {
+	var warning string
+	observed.Diagnostics, warning = inspectSyntax(safePath, []byte(content))
+	if warning != "" {
 		msg += warning
 	}
 	return msg, nil

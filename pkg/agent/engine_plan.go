@@ -12,14 +12,15 @@ import (
 )
 
 type callPlan struct {
-	call             db.ToolCall
-	executor         tool.ToolExecutor
-	output           string
-	toolErr          error
-	skipped          bool
-	guardHit         bool
-	approvalRendered bool
-	rich             tool.ToolResult
+	call              db.ToolCall
+	executor          tool.ToolExecutor
+	output            string
+	toolErr           error
+	skipped           bool
+	dependencySkipped bool
+	guardHit          bool
+	approvalRendered  bool
+	rich              tool.ToolResult
 }
 
 func (e *TurnEngine) prepareToolCallPlan(
@@ -76,6 +77,13 @@ func (e *TurnEngine) prepareToolCallPlan(
 	}
 
 	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)
+	// Tool calls have no dependency graph. After a failed prerequisite, defer
+	// remaining actions until the model has inspected the actual result.
+	if e.batchFailure != "" && !e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).ReadOnly {
+		plan.skipped, plan.dependencySkipped = true, true
+		plan.output = fmt.Sprintf("Not executed: earlier tool %s failed or reported syntax errors. Review its result, then issue any still-needed actions in a new turn. Read-only inspections may continue.", e.batchFailure)
+		return plan, false, false
+	}
 
 	if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
 		plan.toolErr = guardErr

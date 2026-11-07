@@ -8,8 +8,8 @@ import (
 )
 
 func (s *Session) Reload() error {
-	if !s.runMu.TryLock() {
-		return ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return err
 	}
 	defer s.runMu.Unlock()
 	directories := []string{resources.AgentDirectory(s.Agent.ConfigPath)}

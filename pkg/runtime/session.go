@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ type Session struct {
 }
 
 func New(options Options) (*Session, error) {
+	options.Tools = slices.Clone(options.Tools)
 	if options.ConfigPath == "" {
 		options.ConfigPath = filepath.Join(resources.AgentDirectory(""), "config.json")
 	}
@@ -285,12 +287,28 @@ type Outcome struct {
 	Err    error
 }
 
+// lockIdle reserves an open, idle session for a mutation. The caller must unlock runMu.
+func (s *Session) lockIdle() error {
+	if !s.runMu.TryLock() {
+		return ErrBusy
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		s.runMu.Unlock()
+		return fmt.Errorf("session is closed")
+	}
+	return nil
+}
+
 func (s *Session) reserve(ctx context.Context) (context.Context, error) {
 	if !s.runMu.TryLock() {
 		return nil, ErrBusy
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Checking closure and publishing the running state must be atomic with Close.
 	if s.closed {
 		s.runMu.Unlock()
 		return nil, fmt.Errorf("session is closed")
@@ -372,8 +390,8 @@ func (s *Session) adoptInteractive(messages []db.Message, tools []string, id str
 	s.Agent.MessagesMu.Lock()
 	s.messages = message.CloneAll(messages)
 	s.Agent.MessagesMu.Unlock()
-	s.options.Tools = tools
-	s.Agent.ToolSelection = tools
+	s.options.Tools = slices.Clone(tools)
+	s.Agent.ToolSelection = s.options.Tools
 	return nil
 }
 
@@ -457,7 +475,7 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 }
 
 func (s *Session) Queue(prompt string, followUp bool) error {
-	if prompt == "" {
+	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("queued prompt is empty")
 	}
 	s.mu.Lock()

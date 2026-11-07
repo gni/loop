@@ -22,14 +22,24 @@ type taskInstructions struct {
 	mu        sync.RWMutex
 	objective string
 	updates   []string
+	inherited []string
+}
+
+type inheritedInstructionsKey struct{}
+
+// WithInheritedInstructions carries exact user instructions, never summaries
+// extracted from tool output. Each child receives an independent slice.
+func WithInheritedInstructions(ctx context.Context, instructions []string) context.Context {
+	return context.WithValue(ctx, inheritedInstructionsKey{}, append([]string(nil), instructions...))
 }
 
 func WithObjective(ctx context.Context, objective string) context.Context {
-	return context.WithValue(ctx, objectiveKey{}, &taskInstructions{objective: strings.TrimSpace(objective)})
+	inherited, _ := ctx.Value(inheritedInstructionsKey{}).([]string)
+	return context.WithValue(ctx, objectiveKey{}, &taskInstructions{objective: strings.TrimSpace(objective), inherited: append([]string(nil), inherited...)})
 }
 
 func WithoutTaskInstructions(ctx context.Context) context.Context {
-	return context.WithValue(ctx, objectiveKey{}, (*taskInstructions)(nil))
+	return WithoutTask(context.WithValue(ctx, objectiveKey{}, (*taskInstructions)(nil)))
 }
 
 func Objective(ctx context.Context) string {
@@ -59,6 +69,7 @@ func AddInstruction(ctx context.Context, instruction string) {
 		}
 	}
 	state.updates = append(state.updates, instruction)
+	reopenTask(ctx)
 }
 
 func Instructions(ctx context.Context) []string {
@@ -71,6 +82,18 @@ func Instructions(ctx context.Context) []string {
 	var instructions []string
 	if state.objective != "" {
 		instructions = append(instructions, state.objective)
+	}
+	for _, inherited := range state.inherited {
+		duplicate := false
+		for _, present := range instructions {
+			if present == inherited {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			instructions = append(instructions, inherited)
+		}
 	}
 	return append(instructions, state.updates...)
 }

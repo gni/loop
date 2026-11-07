@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"loop/pkg/domain/diagnostic"
+	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -90,6 +91,21 @@ func tryApplyNonOverlappingBatch(initialContent string, edits []ReplaceEdit) (st
 }
 
 func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	result, err := t.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (t *editTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) (domaintool.ToolResult, error) {
+	observed := &evidence.Record{Kind: "file"}
+	output, err := t.execute(ctx, arguments, observed)
+	observed.Outcome = evidence.Succeeded
+	if err != nil {
+		observed.Outcome = evidence.Failed
+	}
+	return domaintool.ToolResult{Output: output, IsError: err != nil, Evidence: observed}, err
+}
+
+func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observed *evidence.Record) (string, error) {
 	var args struct {
 		Path         string        `json:"path"`
 		Updates      []ReplaceEdit `json:"updates"`
@@ -129,6 +145,8 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err != nil {
 		return "", err
 	}
+
+	observed.Target = safePath
 
 	unlock := LockPath(safePath)
 	defer unlock()
@@ -205,12 +223,16 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
-	if !contentChanged {
+	if !contentChanged || content == initialContent {
+		changed := false
+		observed.Changed = &changed
+		var warning string
+		observed.Diagnostics, warning = inspectSyntax(safePath, data)
 		discardIfUncommitted()
 		if diffBuilder.Len() == 0 {
-			return "No changes made: replacement already matches file contents.", nil
+			return "No changes made: replacement already matches file contents." + warning, nil
 		}
-		return diffBuilder.String(), nil
+		return diffBuilder.String() + warning, nil
 	}
 
 	diffBuilder.WriteString(GenerateDisplayDiff(initialContent, content, 3))
@@ -227,7 +249,11 @@ func (t *editTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("failed to write modified content back: %w", err)
 	}
 
-	if warning := ValidateSyntax(safePath, finalBytes); warning != "" {
+	changed := true
+	observed.Changed = &changed
+	var warning string
+	observed.Diagnostics, warning = inspectSyntax(safePath, finalBytes)
+	if warning != "" {
 		diffBuilder.WriteString(warning)
 	}
 

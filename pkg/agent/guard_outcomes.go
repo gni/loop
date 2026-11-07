@@ -14,6 +14,7 @@ type observedOutcome struct {
 	repeats    int
 	failed     bool
 	inspection bool
+	noProgress bool
 }
 
 // recordOutcome detects unchanged failures and inspections even when the model
@@ -51,7 +52,7 @@ func (g *TurnExecutionGuard) outcomeRejection(name, key string) error {
 		return nil
 	}
 	outcome := g.outcomes[key]
-	if !outcome.failed && !outcome.inspection {
+	if !outcome.failed && !outcome.inspection && !outcome.noProgress {
 		return nil
 	}
 	if outcome.repeats < g.maxConsecutiveCalls {
@@ -59,6 +60,9 @@ func (g *TurnExecutionGuard) outcomeRejection(name, key string) error {
 	}
 	if outcome.failed {
 		return fmt.Errorf("loop detected: %s returned the same failure %d times, including calls separated by other tools. Correct the reported cause before retrying", name, outcome.repeats)
+	}
+	if outcome.noProgress {
+		return fmt.Errorf("loop detected: %s left the file unchanged %d times, including calls separated by other tools. Inspect the current content and revise the requested change", name, outcome.repeats)
 	}
 	return fmt.Errorf("loop detected: %s returned the same inspection result %d times without an observed change. Reuse that evidence or change the query/range", name, outcome.repeats)
 }

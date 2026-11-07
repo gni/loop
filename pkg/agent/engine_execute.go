@@ -10,6 +10,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/ui/style"
 )
 
@@ -28,6 +29,8 @@ func (e *TurnEngine) ExecuteToolCalls(
 	if a == nil || assistantMsg == nil {
 		return false, false
 	}
+	e.batchFailure = ""
+	defer func() { e.batchFailure = "" }()
 	defer func() {
 		if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
 			marker.MarkPendingWriteResults("Not executed")
@@ -83,12 +86,13 @@ func (e *TurnEngine) ExecuteToolCallAt(
 	}
 	tc = plan.call
 	if plan.skipped {
-		e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render)
+		e.emitRejectedToolCall(idx, tc, plan.output, !plan.approvalRendered, sr.DidStreamToolBody(idx), sink, sr, w, theme, render, plan.dependencySkipped)
 		return false, false
 	}
 	if !plan.guardHit {
 		if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
 			plan.output, plan.toolErr = hookOut, hookErr
+			plan.rich.Evidence = &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: evidence.NotExecuted}
 		} else {
 			if loader != nil {
 				if tc.Function.Name == "bash" {
@@ -100,7 +104,10 @@ func (e *TurnEngine) ExecuteToolCallAt(
 			plan.rich, plan.toolErr = e.executeToolWithProgress(plan.executor, tc, sr)
 			plan.output = plan.rich.Output
 			if ctx.Err() != nil {
-				e.RecordInterruption(sink, remaining, "cancelled during execution")
+				e.RecordInterruption(sink, []db.ToolCall{tc}, "cancelled during execution")
+				if len(remaining) > 1 {
+					e.RecordInterruption(sink, remaining[1:], "cancelled before execution")
+				}
 				return true, false
 			}
 			plan.output, plan.toolErr = e.applyAfterHook(tc, plan.output, plan.toolErr)
@@ -174,6 +181,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 
 		if hookOut, hookErr := e.checkBeforeHook(plan.call); hookErr != nil {
 			plan.output, plan.toolErr = hookOut, hookErr
+			plan.rich.Evidence = &evidence.Record{Kind: "tool", Target: plan.call.Function.Name, Outcome: evidence.NotExecuted}
 			ready <- i
 			continue
 		}
@@ -270,7 +278,8 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 	}
 	if ctx.Err() != nil {
 		remainingIndex := startIndex + next
-		e.RecordInterruption(sink, assistantMsg.ToolCalls[remainingIndex:], "cancelled during execution")
+		e.RecordInterruption(sink, assistantMsg.ToolCalls[remainingIndex:endIndex], "cancelled during execution")
+		e.RecordInterruption(sink, assistantMsg.ToolCalls[endIndex:], "cancelled before execution")
 		return true, false
 	}
 

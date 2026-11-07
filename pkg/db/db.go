@@ -98,7 +98,7 @@ func isSkippedSlashRecord(msg message.Message) bool {
 	if msg.Role != message.RoleUser {
 		return false
 	}
-	return msg.Content == "" || strings.HasPrefix(msg.Content, "[user manually executed slash command:")
+	return (strings.TrimSpace(msg.Content) == "" && len(msg.ContentBlocks) == 0) || strings.HasPrefix(msg.Content, "[user manually executed slash command:")
 }
 
 func (s *JSONLStore) sessionPath(sessionID string) string {

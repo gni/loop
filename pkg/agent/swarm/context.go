@@ -51,7 +51,12 @@ func (mac *multiAgentContext) IsShellScanDefaultsEnabled() bool {
 }
 
 func (mac *multiAgentContext) Context() context.Context {
-	if ctx, _, _, ok := mac.ma.activeTurn(); ok {
+	mac.ma.HistoryMu.RLock()
+	ctx := mac.ma.ActiveContext
+	mac.ma.HistoryMu.RUnlock()
+	// A cancelled task context must stay cancelled. Falling back to the
+	// agent lifetime here would let an interrupted tool continue mutating.
+	if ctx != nil {
 		return ctx
 	}
 	return mac.ma.Context
@@ -88,6 +93,12 @@ func (mac *multiAgentContext) CheckMutationAllowed(absPath string, isEdit bool) 
 		return fo.CheckMutationAllowed(absPath, isEdit)
 	}
 	return nil
+}
+
+func (mac *multiAgentContext) InvalidateCodeIndex(path string) {
+	if index, ok := mac.AgentContext.(interface{ InvalidateCodeIndex(string) }); ok {
+		index.InvalidateCodeIndex(path)
+	}
 }
 
 func (mac *multiAgentContext) RecordMutation(absPath string, data []byte) {

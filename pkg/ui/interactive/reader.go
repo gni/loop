@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -17,9 +18,12 @@ type ReadResult struct {
 }
 
 type SessionReader struct {
-	chanInput chan byte
-	inputChan chan ReadResult
-	doneChan  chan struct{}
+	chanInput  chan byte
+	inputChan  chan ReadResult
+	doneChan   chan struct{}
+	closeOnce  sync.Once
+	pending    []byte
+	pendingErr error
 }
 
 func NewSessionReader(rlInput io.Reader) *SessionReader {
@@ -34,10 +38,11 @@ func NewSessionReader(rlInput io.Reader) *SessionReader {
 
 	sr.inputChan = make(chan ReadResult, 100)
 	go func() {
+		defer close(sr.inputChan)
 		var readBuf [1024]byte
 		for {
 			n, err := rlInput.Read(readBuf[:])
-			if n > 0 {
+			if n > 0 || err != nil {
 				data := make([]byte, n)
 				copy(data, readBuf[:n])
 				select {
@@ -55,79 +60,106 @@ func NewSessionReader(rlInput io.Reader) *SessionReader {
 }
 
 func (sr *SessionReader) Close() {
-	if sr.doneChan != nil {
-		select {
-		case <-sr.doneChan:
-		default:
+	sr.closeOnce.Do(func() {
+		if sr.doneChan != nil {
 			close(sr.doneChan)
 		}
-	}
+	})
 }
 
+// Read preserves bytes that do not fit in the caller's buffer.
 func (sr *SessionReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	data, _, err := sr.ReadKeyOrResize(nil)
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
-	return copy(p, data), nil
+	n := copy(p, data)
+	sr.pending = append(append([]byte(nil), data[n:]...), sr.pending...)
+	return n, nil
 }
 
-func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, error) {
-	if sr.chanInput != nil {
+func (sr *SessionReader) readByte(sigChan chan os.Signal) (byte, bool, error) {
+	for {
+		if len(sr.pending) > 0 {
+			b := sr.pending[0]
+			sr.pending = sr.pending[1:]
+			return b, false, nil
+		}
+		if sr.pendingErr != nil {
+			return 0, false, sr.pendingErr
+		}
+		if sr.chanInput != nil {
+			select {
+			case <-sr.doneChan:
+				return 0, false, io.EOF
+			case <-sigChan:
+				return 0, true, nil
+			case b, ok := <-sr.chanInput:
+				if !ok {
+					return 0, false, io.EOF
+				}
+				return b, false, nil
+			}
+		}
 		select {
+		case <-sr.doneChan:
+			return 0, false, io.EOF
 		case <-sigChan:
-			return nil, true, nil
-		case b, ok := <-sr.chanInput:
+			return 0, true, nil
+		case res, ok := <-sr.inputChan:
 			if !ok {
-				return nil, false, io.EOF
+				return 0, false, io.EOF
 			}
-			buf := []byte{b}
-			if b == 27 {
-				timeout := limits.EscapeDisambiguation()
-				timer := time.NewTimer(timeout)
-				defer timer.Stop()
-				for {
-					select {
-					case next, ok := <-sr.chanInput:
-						if !ok {
-							return buf, false, nil
-						}
-						buf = append(buf, next)
-						if !timer.Stop() {
-							select {
-							case <-timer.C:
-							default:
-							}
-						}
-						timer.Reset(timeout)
-					case <-timer.C:
-						return buf, false, nil
-					}
-				}
-			}
-			for {
-				select {
-				case next, ok := <-sr.chanInput:
-					if !ok {
-						return buf, false, nil
-					}
-					buf = append(buf, next)
-				default:
-					return buf, false, nil
-				}
-			}
+			sr.pending, sr.pendingErr = res.Data, res.Err
 		}
 	}
+}
 
-	select {
-	case <-sigChan:
-		return nil, true, nil
-	case res, ok := <-sr.inputChan:
-		if !ok {
-			return nil, false, io.EOF
-		}
-		return res.Data, false, res.Err
+// ReadKeyOrResize frames one key, even when a terminal batches several keys
+// in one read or splits an escape sequence across reads.
+func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, error) {
+	b, resized, err := sr.readByte(sigChan)
+	if err != nil || resized {
+		return nil, resized, err
 	}
+	key := []byte{b}
+	if b == 27 {
+		timeout := make(chan os.Signal, 1)
+		timer := time.AfterFunc(limits.EscapeDisambiguation(), func() { timeout <- os.Interrupt })
+		defer timer.Stop()
+		next, expired, err := sr.readByte(timeout)
+		if err != nil || expired {
+			return key, false, nil
+		}
+		if next != '[' && next != 'O' {
+			sr.pending = append([]byte{next}, sr.pending...)
+			return key, false, nil
+		}
+		key = append(key, next)
+		for {
+			next, expired, err = sr.readByte(timeout)
+			if err != nil || expired {
+				return key, false, nil
+			}
+			key = append(key, next)
+			if next >= 0x40 && next <= 0x7e {
+				return key, false, nil
+			}
+		}
+	}
+	if b >= utf8.RuneSelf {
+		for !utf8.FullRune(key) && len(key) < utf8.UTFMax {
+			next, _, err := sr.readByte(nil)
+			if err != nil {
+				break
+			}
+			key = append(key, next)
+		}
+	}
+	return key, false, nil
 }
 
 func consumeLineBytes(chunk []byte, line *strings.Builder, out io.Writer) (bool, error) {

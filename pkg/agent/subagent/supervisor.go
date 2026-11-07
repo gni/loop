@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"loop/pkg/domain/limits"
+	taskstate "loop/pkg/domain/task"
 )
 
 // TaskSupervisor coordinates task execution tracking across subagents.
@@ -80,7 +81,18 @@ func (s *TaskSupervisor) GetTask(id string) (*SubagentTask, error) {
 		return nil, fmt.Errorf("task '%s' not found", id)
 	}
 	taskCopy := *task
+	taskCopy.TaskState = taskstate.Clone(task.TaskState)
 	return &taskCopy, nil
+}
+
+func (s *TaskSupervisor) UpdateTaskAssessment(id string, assessment *taskstate.State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, exists := s.tasks[id]
+	if !exists || entry.Status == "completed" || entry.Status == "failed" {
+		return
+	}
+	entry.TaskState = taskstate.Clone(assessment)
 }
 
 // UpdateTaskStatus records state changes, output responses, or errors.

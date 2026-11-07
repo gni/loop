@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -366,7 +367,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			continue
 		}
 
-		if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
+		if n >= 3 && readBuf[0] == 27 && (readBuf[1] == '[' || readBuf[1] == 'O') {
 			if len(filtered) > 0 {
 				switch readBuf[2] {
 				case 'A':
@@ -451,7 +452,12 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 	}
 }
 
+var ErrSelectionCancelled = errors.New("selection cancelled")
+
 func RunInteractiveSelect(sr *SessionReader, sigChan chan os.Signal, rlOutput io.Writer, title string, items []string, theme style.UITheme) (int, error) {
+	if len(items) == 0 {
+		return -1, fmt.Errorf("no items to select")
+	}
 	selectedIdx := 0
 
 	for {
@@ -460,7 +466,27 @@ func RunInteractiveSelect(sr *SessionReader, sigChan chan os.Signal, rlOutput io
 		buf.WriteString(style.NewStyle().Foreground(theme.Primary).Bold(true).Render(title))
 		buf.WriteString("\n\n")
 
-		for idx, item := range items {
+		width, height := terminal.GetDimensions()
+		if width < 1 {
+			width = 80
+		}
+		if height < 1 {
+			height = 24
+		}
+		visible := height - 6
+		if visible < 1 {
+			visible = 1
+		}
+		start := selectedIdx - visible + 1
+		if start < 0 {
+			start = 0
+		}
+		end := start + visible
+		if end > len(items) {
+			end = len(items)
+		}
+		for idx := start; idx < end; idx++ {
+			item := style.TruncateRunes(strings.Join(strings.Fields(items[idx]), " "), max(1, width-8))
 			if idx == selectedIdx {
 				primaryBold := style.NewStyle().Foreground(theme.Primary).Bold(true)
 				buf.WriteString(fmt.Sprintf("    %s %s\n", primaryBold.Render("›"), primaryBold.Render(item)))
@@ -488,13 +514,13 @@ func RunInteractiveSelect(sr *SessionReader, sigChan chan os.Signal, rlOutput io
 		if n == 1 {
 			switch readBuf[0] {
 			case 3, 27, 4:
-				return -1, fmt.Errorf("selection cancelled")
+				return -1, ErrSelectionCancelled
 			case 13, 10:
 				return selectedIdx, nil
 			}
 		}
 
-		if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
+		if n >= 3 && readBuf[0] == 27 && (readBuf[1] == '[' || readBuf[1] == 'O') {
 			switch readBuf[2] {
 			case 'A':
 				selectedIdx = (selectedIdx - 1 + len(items)) % len(items)

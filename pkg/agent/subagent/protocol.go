@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
+	taskstate "loop/pkg/domain/task"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -23,13 +24,14 @@ type AgentDef struct {
 
 // SubagentTask represents an asynchronous execution task delegated to a subagent.
 type SubagentTask struct {
-	ID        string    `json:"id"`
-	AgentName string    `json:"agent_name"`
-	Prompt    string    `json:"prompt"`
-	Status    string    `json:"status"` // "pending", "running", "completed", "failed"
-	Response  string    `json:"response"`
-	Error     string    `json:"error"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TaskState *taskstate.State `json:"task_state,omitempty"`
+	ID        string           `json:"id"`
+	AgentName string           `json:"agent_name"`
+	Prompt    string           `json:"prompt"`
+	Status    string           `json:"status"` // "pending", "running", "completed", "failed"
+	Response  string           `json:"response"`
+	Error     string           `json:"error"`
+	UpdatedAt time.Time        `json:"updated_at"`
 }
 
 // AgentState records the persisted operational state and message history of a subagent.

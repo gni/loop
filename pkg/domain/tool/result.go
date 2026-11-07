@@ -3,10 +3,12 @@ package tool
 import (
 	"encoding/json"
 
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/message"
 )
 
 type ToolResult struct {
+	Evidence   *evidence.Record       `json:"evidence,omitempty"`
 	Output     string                 `json:"output"`
 	Content    []message.ContentBlock `json:"content,omitempty"`
 	Structured json.RawMessage        `json:"structured_content,omitempty"`

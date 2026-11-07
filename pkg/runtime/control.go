@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"loop/pkg/config"
@@ -11,8 +10,8 @@ import (
 )
 
 func (s *Session) UpdateConfig(cfg *config.Config) error {
-	if !s.runMu.TryLock() {
-		return ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return err
 	}
 	defer s.runMu.Unlock()
 	copy, err := config.Clone(cfg)
@@ -26,12 +25,6 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 		return err
 	}
 	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
-		return fmt.Errorf("session is closed")
-	}
-	s.mu.Lock()
 	s.Agent.ApplyConfig(copy)
 	s.mu.Unlock()
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
@@ -42,8 +35,8 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 }
 
 func (s *Session) SetTools(names []string) error {
-	if !s.runMu.TryLock() {
-		return ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return err
 	}
 	defer s.runMu.Unlock()
 	if err := s.validateTools(names); err != nil {
@@ -55,8 +48,8 @@ func (s *Session) SetTools(names []string) error {
 }
 
 func (s *Session) Compact(ctx context.Context) error {
-	if !s.runMu.TryLock() {
-		return ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return err
 	}
 	defer s.runMu.Unlock()
 	if err := s.Agent.CompressHistory(ctx, &s.messages, s.storageID(), style.GetTheme("plain"), io.Discard); err != nil {
@@ -68,16 +61,10 @@ func (s *Session) Compact(ctx context.Context) error {
 // SyncInteractive makes local session changes effective immediately, including
 // when the user switches sessions and exits without sending another prompt.
 func (s *Session) SyncInteractive(messages []db.Message, tools []string, id string, inheritPlan bool) error {
-	if !s.runMu.TryLock() {
-		return ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return err
 	}
 	defer s.runMu.Unlock()
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
-		return fmt.Errorf("session is closed")
-	}
 	if inheritPlan && id != "" && id != s.ID {
 		if err := s.persistSettingsFor(id); err != nil {
 			return err

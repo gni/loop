@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/ui/style"
 )
 
@@ -22,9 +23,16 @@ func (e *TurnEngine) emitRejectedToolCall(
 	w io.Writer,
 	theme style.UITheme,
 	render EngineRenderer,
+	dependencySkipped ...bool,
 ) {
-	e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, fmt.Errorf("tool rejected: %s", output))
-	e.recordRejectedState(output)
+	deferred := len(dependencySkipped) > 0 && dependencySkipped[0]
+	if !deferred {
+		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, fmt.Errorf("tool rejected: %s", output))
+		e.recordRejectedState(output)
+		if e.batchFailure == "" {
+			e.batchFailure = tc.Function.Name
+		}
+	}
 	if e.policy.ToolBatch != nil {
 		e.policy.ToolBatch.SetResult(idx, output, fmt.Errorf("tool rejected"))
 		e.policy.ToolBatch.Finish(idx, true)
@@ -48,7 +56,8 @@ func (e *TurnEngine) emitRejectedToolCall(
 	}
 	render.ToolOutput(w, theme, output, true, tc.Function.Name, tc.Function.Arguments, bodyStreamed)
 	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: output, IsError: true})
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output, IsError: true})
+	observed := &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: evidence.NotExecuted}
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output, IsError: true, ToolOutcome: evidence.NotExecuted, Evidence: observed, TaskState: e.observeTaskTool(tc, observed, true)})
 }
 
 func (e *TurnEngine) finalizeToolCall(
@@ -67,9 +76,26 @@ func (e *TurnEngine) finalizeToolCall(
 	rich tool.ToolResult,
 ) {
 	a := e.agent
+	if e.batchFailure == "" && (toolErr != nil || rich.Evidence.HasErrors()) {
+		e.batchFailure = tc.Function.Name
+	}
+	if rich.Evidence == nil {
+		outcome := evidence.Succeeded
+		if toolErr != nil {
+			outcome = evidence.Failed
+		}
+		if isRepetitionError(toolErr) {
+			outcome = evidence.NotExecuted
+		}
+		rich.Evidence = &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome}
+	}
+	if rich.Evidence.ExitCode != nil {
+		rawOutput = strings.TrimRight(rawOutput, "\r\n") + fmt.Sprintf("\n\n[Command exit code: %d]", *rich.Evidence.ExitCode)
+		rawOutput = strings.TrimLeft(rawOutput, "\n")
+	}
 	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: rawOutput, IsError: toolErr != nil})
 	if !isRepetitionError(toolErr) {
-		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr)
+		e.guard.RecordObservedResult(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr, rich.Evidence)
 	}
 	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
 		rawOutput += "\n\n[" + reminder + "]"
@@ -160,7 +186,7 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, Recovery: recovery, IsError: toolErr != nil})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, Recovery: recovery, Evidence: evidence.Clone(rich.Evidence), IsError: toolErr != nil, TaskState: e.observeTaskTool(tc, rich.Evidence, toolErr != nil)})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}

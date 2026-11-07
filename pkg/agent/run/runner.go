@@ -43,17 +43,18 @@ type Policy struct {
 // Driver supplies side effects. Infer may stream presentation, but it cannot
 // execute tools. Record must durably accept the assistant before Execute runs.
 type Driver struct {
-	Observe           func(Event) error
-	Prepare           func(context.Context, int) error
-	Infer             func(context.Context, int) (*message.Message, error)
-	Record            func(context.Context, int, *message.Message) error
-	Execute           func(context.Context, int, *message.Message) error
-	Complete          func(context.Context, int, *message.Message) error
-	Compact           func(context.Context) error
-	IsContextOverflow func(error) bool
-	IsRecoverable     func(error) bool
-	Interrupted       func(context.Context, int, *message.Message, error) error
-	Pause             func(context.Context, int, int) error
+	Observe            func(Event) error
+	Prepare            func(context.Context, int) error
+	Infer              func(context.Context, int) (*message.Message, error)
+	Record             func(context.Context, int, *message.Message) error
+	Execute            func(context.Context, int, *message.Message) error
+	Complete           func(context.Context, int, *message.Message) error
+	CompletionReminder func(context.Context, int, string) error
+	Compact            func(context.Context) error
+	IsContextOverflow  func(error) bool
+	IsRecoverable      func(error) bool
+	Interrupted        func(context.Context, int, *message.Message, error) error
+	Pause              func(context.Context, int, int) error
 }
 
 type Result struct {
@@ -168,10 +169,27 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 				}
 			}
 		}
+		reminder := ""
+		if len(msg.ToolCalls) == 0 {
+			reminder = AssessCompletion(ctx, msg)
+			if reminder != "" && (driver.CompletionReminder == nil || (!policy.Continuous && step == policy.MaxSteps)) {
+				AssessCompletion(ctx, msg)
+				reminder = ""
+			}
+		}
 		if err := driver.Record(ctx, step, msg); err != nil {
 			return result, err
 		}
 		if len(msg.ToolCalls) == 0 {
+			if reminder != "" && driver.CompletionReminder != nil {
+				if err := driver.CompletionReminder(ctx, step, reminder); err != nil {
+					return result, err
+				}
+				if err := observe(Event{Type: "turn_end", Step: step, Message: msg}); err != nil {
+					return result, err
+				}
+				continue
+			}
 			result.Message = msg
 			if driver.Complete != nil {
 				runErr = driver.Complete(ctx, step, msg)

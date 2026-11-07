@@ -1,7 +1,15 @@
 package message
 
+import (
+	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/task"
+)
+
 func Clone(input Message) Message {
 	output := input
+	output.TaskState = task.Clone(input.TaskState)
+	output.InheritedInstructions = append([]string(nil), input.InheritedInstructions...)
+	output.Evidence = evidence.Clone(input.Evidence)
 	if input.Recovery != nil {
 		recovery := *input.Recovery
 		recovery.Arguments = append(recovery.Arguments[:0:0], recovery.Arguments...)

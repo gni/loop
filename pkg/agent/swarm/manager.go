@@ -220,7 +220,10 @@ func (mam *MultiAgentManager) spawnAgentWithSkills(
 			Parameters: tool.JSONSchema{
 				Type: "object",
 				Properties: map[string]tool.SchemaProp{
-					"prompt": tool.StringProp(tpl.SubagentParamPrompt),
+					"prompt":          tool.StringProp(tpl.SubagentParamPrompt + " Send a focused task; avoid forwarding conversation history. Total handoff limit: 16 KiB."),
+					"constraints":     {Type: "array", Description: "User and workspace constraints the child must preserve, including offline or validation restrictions (up to 16).", Items: &tool.SchemaProp{Type: "string"}},
+					"relevant_paths":  {Type: "array", Description: "Workspace files or directories relevant to this task (up to 16); the child reads them as needed.", Items: &tool.SchemaProp{Type: "string"}},
+					"output_contract": tool.StringProp("Optional expected result format and acceptance criteria; default is brief findings/changes, locations, actual checks, and unresolved issues."),
 				},
 				Required: []string{"prompt"},
 			},

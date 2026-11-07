@@ -12,6 +12,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
+	"loop/pkg/domain/task"
 )
 
 type RunStatus = run.Status
@@ -25,11 +26,12 @@ const (
 )
 
 type RunResult struct {
-	Status   RunStatus    `json:"status"`
-	Text     string       `json:"text,omitempty"`
-	Turns    int          `json:"turns"`
-	Messages []db.Message `json:"messages,omitempty"`
-	Error    string       `json:"error,omitempty"`
+	TaskState *task.State  `json:"task_state,omitempty"`
+	Status    RunStatus    `json:"status"`
+	Text      string       `json:"text,omitempty"`
+	Turns     int          `json:"turns"`
+	Messages  []db.Message `json:"messages,omitempty"`
+	Error     string       `json:"error,omitempty"`
 }
 
 type Event struct {
@@ -73,6 +75,7 @@ func (a *Agent) sendEvent(event Event) error {
 	}
 	if event.Result != nil {
 		snapshot := *event.Result
+		snapshot.TaskState = task.Clone(snapshot.TaskState)
 		snapshot.Messages = message.CloneAll(snapshot.Messages)
 		event.Result = &snapshot
 	}

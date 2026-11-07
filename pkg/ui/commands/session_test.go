@@ -1,6 +1,13 @@
 package commands
 
 import (
+	"bytes"
+	"context"
+	"loop/pkg/agent"
+	"loop/pkg/config"
+	"loop/pkg/db"
+	"loop/pkg/ui/style"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,5 +49,65 @@ func TestResolveEntryID(t *testing.T) {
 	_, err = resolveEntryID(entries, "")
 	if err == nil || !strings.Contains(err.Error(), "empty entry ID") {
 		t.Fatalf("expected empty entry ID error, got: %v", err)
+	}
+}
+
+func TestResumeLoadsAndRepairsConversation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.NewJSONLStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetDefaultStore(store)
+	a := agent.NewAgentAt(&config.Config{}, filepath.Join(dir, "config.json"), nil, dir)
+	a.Store = store
+	defer a.Dispose(context.Background())
+	for _, m := range []db.Message{
+		{Role: "system", Content: "saved instructions"},
+		{Role: "user", Content: "saved conversation"},
+		{Role: "assistant", ToolCalls: []db.ToolCall{{ID: "interrupted-call", Type: "function", Function: db.ToolFunction{Name: "bash", Arguments: `{"command":"pwd"}`}}}},
+	} {
+		if err := store.SaveMessage("saved-conversation", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages := []db.Message{{Role: "user", Content: "previous conversation"}}
+	id := "previous"
+	theme := style.GetTheme("plain")
+	var out bytes.Buffer
+	handled, quit := HandleSlashCommand(a, "/resume saved-conversation", &messages, nil, &theme, &out, &id, nil, nil, nil)
+	if !handled || quit || id != "saved-conversation" || a.ActiveSessionID() != id {
+		t.Fatalf("resume failed: id=%q, output=%s", id, out.String())
+	}
+	if len(messages) != 4 || messages[1].Content != "saved conversation" || messages[3].ToolCallID != "interrupted-call" || messages[3].ToolOutcome != "unknown" {
+		t.Fatalf("conversation not restored/repaired: %+v", messages)
+	}
+	persisted, err := store.LoadMessages(id)
+	if err != nil || len(persisted) != 4 {
+		t.Fatalf("repair not persisted: %v, %v", persisted, err)
+	}
+}
+
+func TestResumeEmptySessionPreservesActiveConversation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.NewJSONLStore(filepath.Join(dir, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetDefaultStore(store)
+	a := agent.NewAgentAt(&config.Config{}, filepath.Join(dir, "config.json"), nil, dir)
+	a.Store = store
+	defer a.Dispose(context.Background())
+	if err := store.SaveMessage("empty", db.Message{Role: "system", Content: "instructions"}); err != nil {
+		t.Fatal(err)
+	}
+	id := "current"
+	a.SetActiveSessionID(id)
+	messages := []db.Message{{Role: "user", Content: "keep this conversation"}}
+	if err := loadSavedSession("empty", &id, &messages, a); err == nil {
+		t.Fatal("empty session activated")
+	}
+	if id != "current" || a.ActiveSessionID() != "current" || len(messages) != 1 || messages[0].Content != "keep this conversation" {
+		t.Fatalf("failed load changed current conversation: %q, %+v", id, messages)
 	}
 }

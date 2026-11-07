@@ -5,7 +5,7 @@ import "strings"
 const maxFallbackOpeningBytes = 4096
 
 var (
-	directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "todo", "ask_user"}
+	directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "search_symbols", "task_state", "todo", "ask_user"}
 
 	fallbackOpeningMarkers = [...]string{
 		"<tool_call",

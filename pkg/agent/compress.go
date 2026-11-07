@@ -223,11 +223,17 @@ func (a *Agent) CompressHistory(
 	}
 
 	usage := message.MergeUsage(message.TotalUsage(toCompress), message.TotalUsage([]db.Message{*summaryAssistantMsg}))
+	inherited := run.DelegationInstructions(ctx)
+	if len(inherited) == 0 {
+		inherited = delegationUserInstructions(*messages)
+	}
 	summaryMsg := db.Message{
-		Usage:       &usage,
-		Role:        "user",
-		ContextKind: "summary",
-		Content:     fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
+		InheritedInstructions: inherited,
+		TaskState:             taskSnapshotForHistory(ctx, *messages),
+		Usage:                 &usage,
+		Role:                  "user",
+		ContextKind:           "summary",
+		Content:               fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
 	}
 
 	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))

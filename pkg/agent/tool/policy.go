@@ -15,16 +15,16 @@ var actionPolicy = ExecutionPolicy{RequiresApproval: true, RequiresPlan: true}
 // such as plan updates stay ordered without requiring filesystem approval.
 func PolicyForName(name, arguments string) ExecutionPolicy {
 	switch NormalizeName(name) {
-	case "read", "grep", "find", "list", "task_status", "list_subagents", "audit_subagent",
+	case "read", "grep", "find", "list", "search_symbols", "task_status", "list_subagents", "audit_subagent",
 		"search_tools", "list_mcp_resources", "list_mcp_resource_templates":
 		return inspectionPolicy
 	case "ask_user", "load_skill":
 		return ExecutionPolicy{ReadOnly: true, RetrySafe: false}
-	case "todo":
+	case "todo", "task_state":
 		var args struct {
 			Action string `json:"action"`
 		}
-		if json.Unmarshal([]byte(arguments), &args) == nil && args.Action == "list" {
+		if json.Unmarshal([]byte(arguments), &args) == nil && (args.Action == "list" || args.Action == "get") {
 			return ExecutionPolicy{ReadOnly: true, RetrySafe: true}
 		}
 		return ExecutionPolicy{}

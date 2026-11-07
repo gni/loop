@@ -58,7 +58,11 @@ func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, er
 }
 
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) (result RunResult, runErr error) {
+	prompt = strings.TrimSpace(prompt)
 	ctx = run.WithObjective(ctx, prompt)
+	if prompt != "" {
+		ctx = run.WithTask(run.WithPlan(ctx, a.GetTodos), db.NewUUID(), prompt)
+	}
 	ctx, runConfig, snapshotErr := a.SnapshotRun(ctx)
 	if snapshotErr != nil {
 		return RunResult{Status: RunFailed, Error: snapshotErr.Error()}, snapshotErr
@@ -84,6 +88,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		*messages = repaired
 		a.MessagesMu.Unlock()
 	}
+	a.MessagesMu.RLock()
+	inherited := delegationUserInstructions(*messages)
+	a.MessagesMu.RUnlock()
+	ctx = run.WithDelegationInstructions(ctx, inherited)
 	startedAt := len(*messages)
 	a.stateMu.Lock()
 	a.persistenceErr = nil
@@ -102,12 +110,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				result.Status = RunCancelled
 			}
 		}
+		result.TaskState = run.EndTask(ctx, result.Status)
 		if startedAt <= len(*messages) {
 			result.Messages = append([]db.Message(nil), (*messages)[startedAt:]...)
 		}
 		a.emit(Event{Type: "agent_end", SessionID: sessionID, Result: &result})
 	}()
-	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return
 	}
@@ -403,6 +411,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			syncPostTurnStatus()
 			return nil
 		},
+		CompletionReminder: func(ctx context.Context, iter int, reminder string) error {
+			sink.Append(db.Message{Role: "user", ContextKind: "runtime", Content: reminder})
+			return a.persistenceError()
+		},
 		Execute: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
 			syncPostTurnStatus()
 
@@ -472,6 +484,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	result.Status, result.Turns = outcome.Status, outcome.Steps
 	runErr = err
 	if err != nil {
+		sink.Append(db.Message{Role: "error", ContextKind: "task_state", Content: "Task execution stopped: " + string(outcome.Status), TaskState: run.EndTask(ctx, outcome.Status)})
 		closePending()
 		if loader != nil {
 			loader.Stop()

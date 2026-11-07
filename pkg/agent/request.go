@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -91,7 +92,7 @@ func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Mess
 		prefix++
 	}
 	protected := len(messages) - 1
-	for protected >= prefix && isPinnedInstruction(messages[protected]) {
+	for protected >= prefix && isPinnedRequestContext(messages[protected]) {
 		protected--
 	}
 	if protected >= prefix && messages[protected].Role == "tool" {
@@ -110,7 +111,7 @@ func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Mess
 	}
 	removed := make([]bool, len(messages))
 	for index := prefix; index < protected && TokensFromChars(total) > limitTokens; {
-		if isPinnedInstruction(messages[index]) {
+		if isPinnedRequestContext(messages[index]) {
 			index++
 			continue
 		}
@@ -151,19 +152,10 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	messages []db.Message,
 	tools []tool.Tool,
 ) (ChatCompletionRequest, []db.Message, []byte, error) {
-	effort := ""
-	if p.Config != nil {
-		effort = strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
-	}
-	enableThinking := effort != "off" && effort != "none" && effort != ""
-	budget := -1
-	if enableThinking {
-		budget = limits.ReasoningBudget(effort)
-		if p.Config != nil {
-			budget = limits.Resolve(p.Config.Limits).ReasoningTokenBudgets[effort]
-		}
-	}
+	return p.prepareChatCompletionRequestContext(nil, messages, tools)
+}
 
+func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (ChatCompletionRequest, []db.Message, []byte, error) {
 	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
 	inputMsgs := messages
 	if autoAdapt {
@@ -176,9 +168,33 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
 		finalTools = nil
 	}
-	cleanMessages, maxCompTokens, err := p.budgetRequest(validMessages, finalTools)
+	cleanMessages, maxCompTokens, err := p.budgetRequestContext(ctx, validMessages, finalTools)
 	if err != nil {
 		return ChatCompletionRequest{}, nil, nil, err
+	}
+
+	reqBody, err := p.chatCompletionRequest(cleanMessages, finalTools, maxCompTokens)
+	if err != nil {
+		return ChatCompletionRequest{}, nil, nil, err
+	}
+	jsonData, err := marshalChatCompletionRequest(reqBody)
+	return reqBody, cleanMessages, jsonData, err
+}
+
+// chatCompletionRequest is shared by inference and the optional local token counter
+// so tools, thinking controls, and chat formatting use the same request settings.
+func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, tools []tool.Tool, maxCompTokens int) (ChatCompletionRequest, error) {
+	effort := ""
+	if p.Config != nil {
+		effort = strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
+	}
+	enableThinking := effort != "off" && effort != "none" && effort != ""
+	budget := -1
+	if enableThinking {
+		budget = limits.ReasoningBudget(effort)
+		if p.Config != nil {
+			budget = limits.Resolve(p.Config.Limits).ReasoningTokenBudgets[effort]
+		}
 	}
 
 	reasoningEffort := ""
@@ -197,7 +213,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 
 	caps := p.chatCapabilities()
 	if !enableThinking && p.Config != nil && !caps.ReasoningEffort && !caps.ThinkingControls && len(p.selectedModel().Reasoning) > 0 {
-		return ChatCompletionRequest{}, nil, nil, fmt.Errorf("cannot enforce reasoning:off for model %q: the provider has no configured reasoning_effort or thinking_controls capability", p.Config.Model)
+		return ChatCompletionRequest{}, fmt.Errorf("cannot enforce reasoning:off for model %q: the provider has no configured reasoning_effort or thinking_controls capability", p.Config.Model)
 	}
 	var model string
 	var temperature float64
@@ -208,8 +224,8 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 
 	reqBody := ChatCompletionRequest{
 		Model:    model,
-		Messages: mergeAdjacentUserMessages(cleanMessages),
-		Tools:    finalTools,
+		Messages: mergeAdjacentUserMessages(messages),
+		Tools:    tools,
 		Stream:   true,
 	}
 
@@ -279,6 +295,10 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 		}
 	}
 
+	return reqBody, nil
+}
+
+func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error) {
 	wireMessages := make([]wireChatMessage, 0, len(reqBody.Messages))
 	var pendingImageParts []map[string]any
 
@@ -354,10 +374,10 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 	}
 	jsonData, err := json.Marshal(wireReq)
 	if err != nil {
-		return reqBody, nil, nil, fmt.Errorf("failed to marshal request body: %w", err)
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	return reqBody, cleanMessages, jsonData, nil
+	return jsonData, nil
 }
 
 type wireChatMessage struct {
@@ -369,24 +389,7 @@ type wireChatMessage struct {
 	Name         string               `json:"name,omitempty"`
 }
 
-type chatCompletionWireRequest struct {
-	Model                string              `json:"model"`
-	Messages             []wireChatMessage   `json:"messages"`
-	Tools                []Tool              `json:"tools,omitempty"`
-	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
-	Temperature          *float64            `json:"temperature,omitempty"`
-	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
-	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
-	Stream               bool                `json:"stream"`
-	StreamOptions        *StreamOptions      `json:"stream_options,omitempty"`
-	ReasoningEffort      string              `json:"reasoning_effort,omitempty"`
-	ReasoningFormat      string              `json:"reasoning_format,omitempty"`
-	ThinkingBudgetTokens int                 `json:"thinking_budget_tokens,omitempty"`
-	ReasoningControl     bool                `json:"reasoning_control,omitempty"`
-	ChatTemplateKwargs   *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
-	MaxCompletionTokens  int                 `json:"max_completion_tokens,omitempty"`
-	MaxTokens            int                 `json:"max_tokens,omitempty"`
-}
+type chatCompletionWireRequest = chatCompletionRequest[wireChatMessage]
 
 func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
 	if role == "tool" && name != "read" && name != "write" && name != "edit" && len(content) > maxChars {

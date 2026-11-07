@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 )
@@ -36,19 +37,10 @@ func drainSubagentOutput(ch <-chan db.Message) {
 }
 
 func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
-	var raw string
-	var args struct {
-		Prompt  string `json:"prompt"`
-		Task    string `json:"task"`
-		Input   string `json:"input"`
-		Message string `json:"message"`
-	}
-	if err := tool.ParseToolArguments(arguments, &args, func(v string) { raw = v }); err != nil {
-		return "", fmt.Errorf("parse subagent prompt arguments: %w", err)
-	}
-	prompt := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Prompt, args.Task, args.Input, args.Message))
-	if prompt == "" {
-		return "", fmt.Errorf("missing required argument: prompt")
+	inherited := run.DelegationInstructions(ctx.Context())
+	prompt, err := prepareHandoff(ctx, arguments, inherited)
+	if err != nil {
+		return "", err
 	}
 
 	if s.subagent == nil || s.subagent.Manager == nil {
@@ -61,6 +53,9 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 
 	drainSubagentOutput(s.subagent.Output)
 
@@ -78,10 +73,11 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errSub)
 		return "", errSub
 	case s.subagent.Input <- db.Message{
-		Role:       "user",
-		Name:       "ParentAgent",
-		ToolCallID: taskID,
-		Content:    prompt,
+		Role:                  "user",
+		Name:                  "ParentAgent",
+		ToolCallID:            taskID,
+		Content:               prompt,
+		InheritedInstructions: inherited,
 	}:
 	}
 

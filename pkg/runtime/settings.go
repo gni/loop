@@ -76,6 +76,20 @@ func (s *Session) persistSettingsFor(id string) error {
 	if s.Store == nil {
 		return nil
 	}
+	// Settings are kept in memory until the conversation has actual content.
+	// UI commands and plan/config changes alone must not create session files.
+	s.Agent.MessagesMu.RLock()
+	active := false
+	for _, msg := range s.messages {
+		if msg.HasConversationContent() {
+			active = true
+			break
+		}
+	}
+	s.Agent.MessagesMu.RUnlock()
+	if !active {
+		return nil
+	}
 	cfg := s.Agent.Config
 	data, err := json.Marshal(savedSettings{Provider: cfg.ActiveProvider, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, DisabledTools: cfg.DisabledTools, Tools: s.options.Tools, Todos: s.Agent.GetTodos()})
 	if err != nil {

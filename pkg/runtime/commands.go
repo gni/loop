@@ -26,8 +26,8 @@ func (s *Session) Commands() []resources.Command {
 }
 
 func (s *Session) ExecuteCommand(ctx context.Context, name string, args []string) (string, error) {
-	if !s.runMu.TryLock() {
-		return "", ErrBusy
+	if err := s.lockIdle(); err != nil {
+		return "", err
 	}
 	defer s.runMu.Unlock()
 	if !strings.HasPrefix(name, "/") {

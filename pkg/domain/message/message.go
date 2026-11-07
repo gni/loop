@@ -2,7 +2,10 @@ package message
 
 import (
 	"encoding/json"
+
 	"loop/pkg/domain/diagnostic"
+	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/task"
 )
 
 // Standard conversational roles.
@@ -43,8 +46,11 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
-	Recovery    *diagnostic.Recovery `json:"recovery,omitempty"`
-	ContextKind string               `json:"context_kind,omitempty"`
+	TaskState             *task.State          `json:"task_state,omitempty"`
+	InheritedInstructions []string             `json:"inherited_instructions,omitempty"`
+	Evidence              *evidence.Record     `json:"evidence,omitempty"`
+	Recovery              *diagnostic.Recovery `json:"recovery,omitempty"`
+	ContextKind           string               `json:"context_kind,omitempty"`
 	// ToolOutcome records uncertainty after interruption; provider wire adapters
 	// omit this local execution metadata.
 	ToolOutcome       string          `json:"tool_outcome,omitempty"`

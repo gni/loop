@@ -106,6 +106,9 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		fo.RecordMutation(safePath, data)
 	}
+	if index, ok := ctx.(interface{ InvalidateCodeIndex(string) }); ok {
+		index.InvalidateCodeIndex(safePath)
+	}
 	ctx.ReloadSkills()
 	return nil
 }

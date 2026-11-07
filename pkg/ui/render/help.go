@@ -38,7 +38,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/thinking [level]", "view or set reasoning effort (off/low/medium/high/max)"},
 		{"/model [name]", "view or set active AI model"},
 		{"/new", "start a new conversation session"},
-		{"/resume [id]", "resume an archived conversation session"},
+		{"/resume [id]", "select a conversation with ↑/↓ and Enter, or load by id"},
 		{"/hotkeys", "display all interactive keyboard shortcuts"},
 		{"/config [show|set <k> <v>]", "view or modify runtime settings"},
 		{"/session [list|new|load|tree|branch|rename|clear]", "manage persistent conversation sessions"},

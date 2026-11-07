@@ -11,6 +11,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -120,6 +121,9 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 	}
 
 	outcome := g.outcomes[key]
+	if outcome.noProgress && (outcome.repeats == thresholds[0] || (len(thresholds) > 1 && outcome.repeats == thresholds[1])) {
+		return "This action has repeatedly left the file unchanged. Reuse the current contents or revise the requested change before trying again."
+	}
 	if isStatusPollingTool(toolName) && (outcome.repeats == thresholds[0] || (len(thresholds) > 1 && outcome.repeats == thresholds[1])) {
 		return "The background status has not changed. Allow the task time to run, or work on another independent step before polling again."
 	}
@@ -180,6 +184,10 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) (guar
 }
 
 func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, output string, err error) {
+	g.RecordObservedResult(toolName, arguments, output, err, nil)
+}
+
+func (g *TurnExecutionGuard) RecordObservedResult(toolName, arguments string, output string, err error, observed *evidence.Record) {
 	if g == nil {
 		return
 	}
@@ -192,6 +200,10 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 	}
 
 	sameOutcome := g.recordOutcome(toolName, callKey, arguments, output, err)
+	unchanged := observed != nil && observed.Changed != nil && !*observed.Changed && err == nil
+	outcome := g.outcomes[callKey]
+	outcome.noProgress = unchanged
+	g.outcomes[callKey] = outcome
 	// Changing output is progress for inspections and status polling. Mutating
 	// tools retain the existing identical-call guard even on successful no-ops.
 	inspection := tool.PolicyForName(toolName, arguments).ReadOnly
@@ -229,7 +241,7 @@ func (g *TurnExecutionGuard) RecordPostExecution(toolName, arguments string, out
 		}
 	}
 
-	isModifying := err == nil && (toolName == "write" || toolName == "edit" || (toolName == "bash" && isBashModifying(cmd)))
+	isModifying := err == nil && !unchanged && (toolName == "write" || toolName == "edit" || (toolName == "bash" && isBashModifying(cmd)))
 	if isModifying {
 		g.outcomes = make(map[string]observedOutcome)
 		g.outcomeOrder = nil

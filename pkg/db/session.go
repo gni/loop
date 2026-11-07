@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
@@ -99,6 +100,11 @@ func (s *JSONLStore) setLatestSessionIDUnlocked(sessionID string) error {
 	}
 
 	path := s.sessionPath(sessionID)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	now := time.Now()
 	if os.Chtimes(path, now, now) == nil {
 		if info, statErr := os.Stat(path); statErr == nil {
@@ -147,14 +153,16 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 		return "", err
 	}
 
-	s.core.mu.RLock()
-	defer s.core.mu.RUnlock()
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
 
 	if data, err := os.ReadFile(s.latestSessionPath()); err == nil {
 		id := strings.TrimSpace(string(data))
 		if id != "" && session.ValidateID(id) == nil {
 			if fi, err := os.Stat(s.sessionPath(id)); err == nil && !fi.IsDir() {
-				return id, nil
+				if sum, ok := s.summarizeSessionLocked(id, fs.FileInfoToDirEntry(fi)); ok && sum.hasVisible {
+					return id, nil
+				}
 			}
 		}
 	}
@@ -175,9 +183,11 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 		if !ok {
 			continue
 		}
-		if info, err := entry.Info(); err == nil && info.ModTime().After(latestTime) {
-			latestTime = info.ModTime()
-			latestFile = name
+		if sum, ok := s.summarizeSessionLocked(name, entry); ok && sum.hasVisible {
+			if info, err := entry.Info(); err == nil && info.ModTime().After(latestTime) {
+				latestTime = info.ModTime()
+				latestFile = name
+			}
 		}
 	}
 
@@ -225,6 +235,7 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 	var startTime, firstTimestamp string
 	var cwd, displayName, parentSession string
 	var msgCount, contextMsgCount, totalTokens int
+	hasConversation := false
 	var previewBuilder, contextPreviewBuilder strings.Builder
 	var previewRunes, contextPreviewRunes int
 	var prompts []string
@@ -264,6 +275,9 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 					continue
 				}
 				contextMsgCount++
+				if isConversationMessage(m) {
+					hasConversation = true
+				}
 				if m.Role != message.RoleSystem && m.Content != "" {
 					appendPreviewSnippet(&contextPreviewBuilder, &contextPreviewRunes, m.Content)
 				}
@@ -280,6 +294,9 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 			continue
 		}
 
+		if isConversationMessage(record.Message) {
+			hasConversation = true
+		}
 		msgCount++
 		if firstTimestamp == "" {
 			firstTimestamp = record.Timestamp
@@ -324,7 +341,7 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 	sum := cachedSummary{
 		size:       info.Size(),
 		modified:   info.ModTime(),
-		hasVisible: effectiveCount > 0,
+		hasVisible: hasConversation,
 		startTime:  startTime,
 		prompts:    prompts,
 		info: session.SessionInfo{
@@ -623,4 +640,9 @@ func RenameSession(oldID, newID string) error {
 
 func RewriteSession(sessionID string, messages []message.Message) error {
 	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
+}
+
+// A stored system prompt or settings record is not a conversation.
+func isConversationMessage(msg message.Message) bool {
+	return !isSkippedSlashRecord(msg) && msg.HasConversationContent()
 }

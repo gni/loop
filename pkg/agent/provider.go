@@ -32,6 +32,8 @@ type OpenAICompatibleProvider struct {
 
 	thinkingMu        sync.Mutex
 	probeMu           sync.Mutex
+	tokenCounterMu    sync.Mutex
+	tokenCounter      *requestTokenCounter
 	ChunkDropObserver ChunkDropObserver
 }
 
@@ -214,7 +216,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		kickTimer()
 	}
 
-	_, _, jsonData, err := p.prepareChatCompletionRequest(messages, tools)
+	_, _, jsonData, err := p.prepareChatCompletionRequestContext(streamCtx, messages, tools)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,10 +35,6 @@ func handleClearCommand(
 	if !a.Ephemeral {
 		if err := db.ClearSession(*currentSessionID); err != nil {
 			fmt.Fprintf(w, "cannot clear session: %v\n", err)
-			return
-		}
-		if err := a.SaveMessage(*currentSessionID, freshMessages[0]); err != nil {
-			fmt.Fprintf(w, "cannot save session: %v\n", err)
 			return
 		}
 	}
@@ -256,17 +253,8 @@ func handleSessionCommand(
 	case "load":
 		if len(parts) > 2 {
 			selected := parts[2]
-			dbHistory, err := db.LoadMessages(selected)
-			if err != nil {
+			if err := loadSavedSession(selected, currentSessionID, messages, a); err != nil {
 				fmt.Fprintf(w, "cannot load session %q: %v\n", selected, err)
-				return
-			}
-			if len(dbHistory) == 0 {
-				fmt.Fprintf(w, "error: session '%s' not found or empty.\n", selected)
-				return
-			}
-			if err := applyLoadedSession(selected, dbHistory, currentSessionID, messages, a); err != nil {
-				fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, err)
 				return
 			}
 			if ui.GetUI().ChatHistory != nil {
@@ -277,7 +265,7 @@ func handleSessionCommand(
 			return
 		}
 
-		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
+		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
@@ -292,20 +280,15 @@ func handleSessionCommand(
 					sessionChanged = true
 				}
 			} else if selected != "" {
-				dbHistory, loadErr := db.LoadMessages(selected)
-				switch {
-				case loadErr != nil:
+				if loadErr := loadSavedSession(selected, currentSessionID, messages, a); loadErr != nil {
 					fmt.Fprintf(w, "cannot load session %q: %v\n", selected, loadErr)
-				case len(dbHistory) == 0:
-					fmt.Fprintf(w, "session %q is empty.\n", selected)
-				default:
-					if activateErr := applyLoadedSession(selected, dbHistory, currentSessionID, messages, a); activateErr != nil {
-						fmt.Fprintf(w, "cannot activate session %q: %v\n", selected, activateErr)
-					} else {
-						sessionChanged = true
-					}
+				} else {
+					sessionChanged = true
 				}
 			}
+		}
+		if err != nil && !errors.Is(err, interactive.ErrSelectionCancelled) {
+			fmt.Fprintf(w, "cannot open session picker: %v\n", err)
 		}
 		if sessionChanged {
 			if ui.GetUI().ChatHistory != nil {
@@ -381,4 +364,25 @@ func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionI
 	a.MessagesMu.Unlock()
 	a.SyncSessionSystemPrompt(messages, selected)
 	return nil
+}
+
+// Avoid passing a typed nil reader through an io.Reader interface.
+func sessionInputReader(reader *interceptor.KeyInterceptorReader) io.Reader {
+	if reader == nil {
+		return nil
+	}
+	return reader
+}
+
+func loadSavedSession(selected string, currentSessionID *string, messages *[]db.Message, a *agent.Agent) error {
+	history, err := a.LoadSessionMessages(selected)
+	if err != nil {
+		return err
+	}
+	for _, msg := range history {
+		if msg.HasConversationContent() {
+			return applyLoadedSession(selected, history, currentSessionID, messages, a)
+		}
+	}
+	return fmt.Errorf("session not found or empty")
 }

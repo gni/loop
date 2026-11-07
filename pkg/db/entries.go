@@ -135,7 +135,15 @@ func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
 		}
 
 		if sessionWorkspace != "" && matchesWorkspace(sessionWorkspace, workspace) {
-			return candidate.id, nil
+			messages, err := s.LoadMessages(candidate.id)
+			if err != nil {
+				continue
+			}
+			for _, msg := range messages {
+				if isConversationMessage(msg) {
+					return candidate.id, nil
+				}
+			}
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
@@ -56,13 +57,28 @@ func (t *bashTool) Definition() domaintool.Tool {
 }
 
 func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	result, err := t.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (t *bashTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) (domaintool.ToolResult, error) {
 	if provider, ok := ctx.(interface {
 		DedicatedBashTool() domaintool.ToolExecutor
 	}); ok {
 		if dedicated := provider.DedicatedBashTool(); dedicated != nil && dedicated != t {
-			return dedicated.Execute(ctx, arguments)
+			if rich, ok := dedicated.(domaintool.ResultExecutor); ok {
+				return rich.ExecuteResult(ctx, arguments)
+			}
+			output, err := dedicated.Execute(ctx, arguments)
+			return domaintool.ToolResult{Output: output, IsError: err != nil}, err
 		}
 	}
+	observed := &evidence.Record{Kind: "command", Outcome: evidence.NotExecuted}
+	output, err := t.execute(ctx, arguments, observed)
+	return domaintool.ToolResult{Output: output, IsError: err != nil, Evidence: observed}, err
+}
+
+func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observed *evidence.Record) (string, error) {
 	var args struct {
 		Command    string  `json:"command"`
 		Cmd        string  `json:"cmd"`
@@ -76,6 +92,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 	args.Command = domaintool.FirstNonEmpty(args.Command, args.Cmd, args.Arguments)
+	observed.Target = args.Command
 	if strings.TrimSpace(args.Command) == "" {
 		return "", fmt.Errorf("command parameter is empty")
 	}
@@ -147,6 +164,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("task_spawn_failed", "failed to spawn background task: %w"), err)
 		}
+		observed.Outcome, observed.TaskID = evidence.Started, id
 		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'task_status') or stop with /stop (or 'task_kill'). Toggle live stream via Ctrl+O.", id, bgCmd), nil
 	}
 
@@ -202,6 +220,7 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		_ = stderrWriter.Close()
 		return "", fmt.Errorf("failed to start command: %w", err)
 	}
+	observed.Outcome = evidence.Unknown
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
@@ -261,6 +280,15 @@ func (t *bashTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 
 	case res := <-done:
+		if res.ps != nil {
+			if code := res.ps.ExitCode(); code >= 0 {
+				observed.ExitCode = &code
+			}
+			observed.Outcome = evidence.Succeeded
+			if !res.ps.Success() {
+				observed.Outcome = evidence.Failed
+			}
+		}
 		killProcessGroup(pgid)
 		select {
 		case <-outDone:

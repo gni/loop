@@ -111,12 +111,7 @@ func handleForkCommand(
 		fmt.Fprintf(w, "cannot fork session %s: %v\n", parentID, err)
 		return
 	}
-	dbHistory, err := db.LoadMessages(newID)
-	if err != nil {
-		fmt.Fprintf(w, "cannot load forked session %s: %v\n", newID, err)
-		return
-	}
-	if err := applyLoadedSession(newID, dbHistory, currentSessionID, messages, a); err != nil {
+	if err := loadSavedSession(newID, currentSessionID, messages, a); err != nil {
 		fmt.Fprintf(w, "cannot activate forked session %s: %v\n", newID, err)
 		return
 	}

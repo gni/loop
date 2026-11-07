@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"loop/pkg/agent/subagent"
+	taskstate "loop/pkg/domain/task"
 )
 
 type SubagentTask = subagent.SubagentTask
@@ -25,4 +26,8 @@ func (mam *MultiAgentManager) GetTask(id string) (*SubagentTask, error) {
 
 func (mam *MultiAgentManager) UpdateTaskStatus(id string, status string, response string, err error) {
 	mam.getSupervisor().UpdateTaskStatus(id, status, response, err)
+}
+
+func (mam *MultiAgentManager) UpdateTaskAssessment(id string, state *taskstate.State) {
+	mam.getSupervisor().UpdateTaskAssessment(id, state)
 }

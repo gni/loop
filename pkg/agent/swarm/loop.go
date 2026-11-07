@@ -110,13 +110,16 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					msg.Content,
 				)
 
-				turnCtx, turnCancel := context.WithCancel(ma.Context)
+				turnCtx, turnCancel := context.WithCancel(run.WithInheritedInstructions(ma.Context, msg.InheritedInstructions))
 				ma.setActiveTurn(turnCtx, turnCancel, time.Now())
 
 				var response db.Message
 				err := startErr
 				if err == nil {
 					response, err = ma.executeLoop(turnCtx, writer, theme)
+				}
+				if ma.Manager != nil && taskID != "" {
+					ma.Manager.UpdateTaskAssessment(taskID, response.TaskState)
 				}
 
 				turnCancel()
@@ -148,7 +151,11 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					continue
 				}
 
-				if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", response.Content, nil); saveErr != nil {
+				parentResult := response.Content
+				if response.TaskState != nil {
+					parentResult = fmt.Sprintf("[Subagent task outcome: %s; %s assessment]\n%s\n\n%s", response.TaskState.Status, response.TaskState.Source, response.TaskState.Summary, parentResult)
+				}
+				if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", parentResult, nil); saveErr != nil {
 					if ma.Manager != nil && taskID != "" {
 						ma.Manager.UpdateTaskStatus(taskID, "failed", "", saveErr)
 					}
@@ -171,9 +178,13 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	}
 	ctx = run.WithPlan(ctx, ma.GetTodos)
 	ctx = run.WithObjective(ctx, latestUserPrompt(newSwarmSink(ma).Messages()))
+	ctx = run.WithTask(ctx, db.NewUUID(), run.Objective(ctx))
 	ctx, runConfig, err := ma.BaseAgent.SnapshotRun(ctx)
 	if err != nil {
 		return db.Message{}, err
+	}
+	if _, cancel, started, ok := ma.activeTurn(); ok {
+		ma.setActiveTurn(ctx, cancel, started)
 	}
 	writer := ma.resolveWriter(w)
 	rawW := agent.UnwrapWriter(writer)
@@ -404,6 +415,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 			return nil
 		},
+		CompletionReminder: func(ctx context.Context, iter int, reminder string) error {
+			sink.Append(db.Message{Role: "user", ContextKind: "runtime", Content: reminder})
+			return sink.Err()
+		},
 		Execute: func(ctx context.Context, iter int, assistantMsg *db.Message) error {
 			ncw.EnsureNewline()
 			halted, aborted := engine.ExecuteToolCalls(ctx, assistantMsg, sink, sr, nil, ncw, theme, newSwarmRenderer(ma), func(tc db.ToolCall, output string, toolErr error) {
@@ -440,7 +455,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		},
 	})
 	if err != nil {
-		return db.Message{}, err
+		state := run.EndTask(ctx, outcome.Status)
+		sink.Append(db.Message{Role: "error", ContextKind: "task_state", Content: "Task execution stopped: " + string(outcome.Status), TaskState: state})
+		return db.Message{TaskState: state}, err
 	}
 	if outcome.Message == nil {
 		return db.Message{}, agent.ErrEmptyResponse

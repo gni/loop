@@ -72,7 +72,9 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 				completeReads[path] = true
 			}
 		case "edit", "write":
-			successfulUpdates[path] = true
+			if !msg.Evidence.HasErrors() && (msg.Evidence == nil || msg.Evidence.Changed == nil || *msg.Evidence.Changed) {
+				successfulUpdates[path] = true
+			}
 		}
 	}
 	return output

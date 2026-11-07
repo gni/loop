@@ -1,15 +1,18 @@
 package interactive
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 
 	"golang.org/x/term"
 
 	"loop/pkg/db"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -24,14 +27,24 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 		fd = int(f.Fd())
 	}
 	if term.IsTerminal(fd) {
-		if oldState, err := term.MakeRaw(fd); err == nil {
-			defer term.Restore(fd, oldState)
+		oldState, err := term.MakeRaw(fd)
+		if err != nil {
+			return "", false, fmt.Errorf("prepare session picker: %w", err)
 		}
+		defer term.Restore(fd, oldState)
 	}
 
 	sr := NewSessionReader(rlInput)
 	defer sr.Close()
 
+	if term.IsTerminal(fd) {
+		terminal.Default().EnterAltScreen(rlOutput)
+		defer terminal.Default().ExitAltScreen(rlOutput)
+		signals := make(chan os.Signal, 1)
+		terminal.NotifyResize(signals)
+		defer signal.Stop(signals)
+		return runSessionPicker(sr, signals, rlOutput, theme)
+	}
 	for {
 		sessions, err := db.GetSessions()
 		if err != nil {
@@ -46,8 +59,8 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 		} else {
 			for i, s := range sessions {
 				preview := s.Preview
-				if len(preview) > 50 {
-					preview = preview[:50] + "..."
+				if len([]rune(preview)) > 50 {
+					preview = string([]rune(preview)[:50]) + "..."
 				}
 				timestamp := s.Timestamp
 				if len(timestamp) > 16 {
@@ -74,7 +87,7 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 			continue
 		}
 		if inputStr == "q" || inputStr == "exit" {
-			return "", false, fmt.Errorf("cancelled")
+			return "", false, ErrSelectionCancelled
 		}
 		if inputStr == "n" {
 			return "", true, nil
@@ -103,5 +116,55 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 		}
 
 		fmt.Fprint(rlOutput, "invalid choice. please try again.\r\n")
+	}
+}
+
+func runSessionPicker(sr *SessionReader, signals chan os.Signal, rlOutput io.Writer, theme style.UITheme) (string, bool, error) {
+	for {
+		sessions, err := db.GetSessions()
+		if err != nil {
+			return "", false, err
+		}
+		items := make([]string, 0, len(sessions)+2)
+		for _, session := range sessions {
+			label := session.Name
+			if label == "" {
+				label = session.SessionID
+			}
+			preview := strings.Join(strings.Fields(session.Preview), " ")
+			items = append(items, fmt.Sprintf("%s · %d messages · %s", label, session.MsgCount, preview))
+		}
+		labels := append([]string(nil), items...)
+		items = append(items, "Start a new session")
+		if len(sessions) > 0 {
+			items = append(items, "Delete a session…")
+		}
+		index, err := RunInteractiveSelect(sr, signals, rlOutput, "loop sessions", items, theme)
+		if err != nil {
+			return "", false, err
+		}
+		if index < len(sessions) {
+			return sessions[index].SessionID, false, nil
+		}
+		if index == len(sessions) {
+			return "", true, nil
+		}
+		index, err = RunInteractiveSelect(sr, signals, rlOutput, "delete session · esc to return", labels, theme)
+		if err != nil {
+			if !errors.Is(err, ErrSelectionCancelled) {
+				return "", false, err
+			}
+			continue
+		}
+		confirmation, err := RunInteractiveSelect(sr, signals, rlOutput, "Delete "+sessions[index].SessionID+"?", []string{"Cancel", "Delete"}, theme)
+		if err != nil && !errors.Is(err, ErrSelectionCancelled) {
+			return "", false, err
+		}
+		if err != nil || confirmation != 1 {
+			continue
+		}
+		if err := db.ClearSession(sessions[index].SessionID); err != nil {
+			return "", false, err
+		}
 	}
 }

@@ -18,6 +18,7 @@ var baseAutocompleteCandidates = []string{
 	"/plan", "/rollback", "/undo",
 	"/config ", "/config show", "/config set ",
 	"/clear", "/skills", "/skills load ",
+	"/resume", "/new", "/sessions",
 	"/session ", "/session list", "/session new", "/session load", "/session branch ", "/session clear",
 	"/help", "/commands", "/exit", "/quit", "/mcp",
 	"/task ", "/task list", "/task view ", "/task stream ", "/task kill ", "/task remove ", "/task clear",

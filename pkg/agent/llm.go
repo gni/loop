@@ -38,9 +38,12 @@ type ChatTemplateKwargs struct {
 	ReasoningStrength string `json:"reasoning_strength,omitempty"`
 }
 
-type ChatCompletionRequest struct {
+type ChatCompletionRequest = chatCompletionRequest[db.Message]
+
+// The in-memory and wire requests share every field except message representation.
+type chatCompletionRequest[M any] struct {
 	Model                string              `json:"model"`
-	Messages             []db.Message        `json:"messages"`
+	Messages             []M                 `json:"messages"`
 	Tools                []Tool              `json:"tools,omitempty"`
 	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
 	Temperature          *float64            `json:"temperature,omitempty"`
@@ -91,6 +94,10 @@ func sameInferenceTarget(first, second *OpenAICompatibleProvider) bool {
 }
 
 func copyProviderCapabilities(destination, source *OpenAICompatibleProvider) {
+	counter := source.requestCounter()
+	destination.tokenCounterMu.Lock()
+	destination.tokenCounter = counter
+	destination.tokenCounterMu.Unlock()
 	source.thinkingMu.Lock()
 	supported, checked := source.ThinkingSupported, source.ThinkingSupportChecked
 	source.thinkingMu.Unlock()
@@ -215,6 +222,7 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 		messages = transformed
 	}
 	messages = taskInstructionMessages(ctx, messages)
+	messages = taskContextMessages(ctx, messages)
 	release, err := a.acquireInference(ctx)
 	if err != nil {
 		return nil, 0, 0, err

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -83,6 +84,9 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 		return "User: " + truncateTranscriptSegment(msg.Content, maxBytes)
 	case "assistant":
 		var output strings.Builder
+		if msg.TaskState != nil {
+			fmt.Fprintln(&output, run.TaskBrief(msg.TaskState))
+		}
 		if msg.Content != "" {
 			fmt.Fprintf(&output, "Agent: %s\n", truncateTranscriptSegment(msg.Content, maxBytes))
 		}
@@ -99,10 +103,16 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 			status = "failed"
 		}
 		detail := msg.Content
+		outcome := msg.ToolOutcome
+		if msg.Evidence != nil {
+			outcome = msg.Evidence.Outcome
+			observed, _ := json.Marshal(msg.Evidence)
+			detail = "Observed tool effects: " + truncateTranscriptSegment(string(observed), min(768, maxBytes/2)) + "\n" + detail
+		}
 		if msg.IsError && msg.Recovery != nil {
 			detail = fmt.Sprintf("Recovery [%s]: %s\nDiagnostic: %s", msg.Recovery.Code, msg.Recovery.Instruction, detail)
 		}
-		return fmt.Sprintf("Tool %s (%s; outcome %s): %s", msg.Name, status, msg.ToolOutcome, truncateTranscriptSegment(detail, maxBytes))
+		return fmt.Sprintf("Tool %s (%s; outcome %s): %s", msg.Name, status, outcome, truncateTranscriptSegment(detail, maxBytes))
 	}
 	return ""
 }
@@ -117,7 +127,7 @@ func observedCompactionFiles(messages []db.Message) (map[string]bool, map[string
 		for _, call := range msg.ToolCalls {
 			calls[call.ID] = call
 		}
-		if msg.Role != "tool" || historicalToolFailed(msg) {
+		if msg.Role != "tool" {
 			continue
 		}
 		call, exists := calls[msg.ToolCallID]
@@ -130,9 +140,17 @@ func observedCompactionFiles(messages []db.Message) (map[string]bool, map[string
 		}
 		switch call.Function.Name {
 		case "read":
-			reads[path] = true
+			if !historicalToolFailed(msg) {
+				reads[path] = true
+			}
 		case "edit", "write":
-			changes[path] = true
+			if msg.Evidence != nil && msg.Evidence.Changed != nil {
+				if *msg.Evidence.Changed {
+					changes[path] = true
+				}
+			} else if !historicalToolFailed(msg) {
+				changes[path] = true // Compatibility with older session records.
+			}
 		}
 	}
 	for path := range changes {

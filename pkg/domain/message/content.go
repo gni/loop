@@ -72,3 +72,9 @@ func (m Message) ChatContent() any {
 	}
 	return parts
 }
+
+// HasConversationContent excludes system prompts and unsent/blank messages.
+// Attachments and tool calls count even when there is no plain text.
+func (m Message) HasConversationContent() bool {
+	return m.Role != "" && m.Role != RoleSystem && (strings.TrimSpace(m.Content) != "" || len(m.ContentBlocks) > 0 || len(m.ToolCalls) > 0)
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -16,7 +17,7 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 	}
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
-	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks}
+	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks, TaskState: run.TaskSnapshot(a.Context()), InheritedInstructions: run.DelegationInstructions(a.Context())}
 	a.MessagesMu.Lock()
 	*messages = append(*messages, userMsg)
 	var firstSys *db.Message
