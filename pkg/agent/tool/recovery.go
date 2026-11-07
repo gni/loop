@@ -47,7 +47,7 @@ func RecoveryFor(name, arguments string, err error) *diagnostic.Recovery {
 	case diagnostic.MissingPath:
 		recovery.Instruction = "Locate the intended path before trying again. A missing path does not establish that a new file should be created."
 		if target != "" {
-			recovery.Tool, next = "find", map[string]any{"pattern": filepath.Base(target), "limit": 20}
+			recovery.Tool, next = "find_files", map[string]any{"pattern": filepath.Base(target), "limit": 20}
 		}
 	case diagnostic.PermissionDenied:
 		recovery.Instruction = "The filesystem denied this operation. Check the target and report the permission issue; repeating the call will not grant access."

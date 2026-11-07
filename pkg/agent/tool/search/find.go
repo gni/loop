@@ -20,7 +20,7 @@ func NewFindTool() domaintool.ToolExecutor {
 	return &findTool{}
 }
 
-func (t *findTool) Name() string { return "find" }
+func (t *findTool) Name() string { return "find_files" }
 
 func (t *findTool) PromptSnippet() string {
 	return domaintool.FormatToolSnippet(t.Name(), "Find files by glob pattern")
@@ -32,13 +32,13 @@ func (t *findTool) PromptGuidelines() []string {
 
 func (t *findTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
-		"find",
-		domaintool.FormatToolDescription("find", "Find files by glob pattern. Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue."),
+		"find_files",
+		domaintool.FormatToolDescription("find_files", "Find files by glob pattern. Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue."),
 		map[string]domaintool.SchemaProp{
-			"pattern": domaintool.StringProp(domaintool.FormatParamDescription("find", "pattern", "Glob pattern to match files (e.g. *.py, **/*.json)")),
-			"path":    domaintool.StringProp(domaintool.FormatParamDescription("find", "path", "Directory to search in (default: current directory)")),
-			"limit":   domaintool.NumberProp(domaintool.FormatParamDescription("find", "limit", "Maximum results to return (default: 500)")),
-			"offset":  domaintool.NumberProp(domaintool.FormatParamDescription("find", "offset", file.DefaultLimitTexts["find_param_offset"])),
+			"pattern": domaintool.StringProp(domaintool.FormatParamDescription("find_files", "pattern", "Glob pattern to match files (e.g. *.py, **/*.json)")),
+			"path":    domaintool.StringProp(domaintool.FormatParamDescription("find_files", "path", "Directory to search in (default: current directory)")),
+			"limit":   domaintool.NumberProp(domaintool.FormatParamDescription("find_files", "limit", "Maximum results to return (default: 500)")),
+			"offset":  domaintool.NumberProp(domaintool.FormatParamDescription("find_files", "offset", file.DefaultLimitTexts["find_param_offset"])),
 		},
 		"pattern",
 	)
@@ -141,7 +141,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if len(matchedPaths) == 0 {
-		return fmt.Sprintf("No files found matching pattern '%s' in '%s'\nCheck the parent directory with list, or broaden the filename glob. An empty search does not prove that the intended file should be created.", pattern, searchPath), nil
+		return fmt.Sprintf("No files found matching pattern '%s' in '%s'\nCheck the parent directory with list_directory, or broaden the filename glob. An empty search does not prove that the intended file should be created.", pattern, searchPath), nil
 	}
 
 	sort.Strings(matchedPaths)
@@ -149,7 +149,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	cut := file.TruncateHead(matchedPaths, len(matchedPaths), limits.For(ctx).MaxOutputBytes)
 	result := cut.Content
 	if limitReached || cut.Truncated {
-		result += file.SearchLimitNotice("find", cut.ShownLines, totalMatches, cut.ShownLines+offset)
+		result += file.SearchLimitNotice("find_files", cut.ShownLines, totalMatches, cut.ShownLines+offset)
 	}
 	return result, nil
 }

@@ -194,10 +194,10 @@ func HandleSlashCommand(
 			handleTaskCommand(a, parts, theme, w, kiReader)
 		}
 		return true, false
-	case "/task_kill", "/taskkill", "/kill", "/stop", "/task_stop", "/taskstop":
+	case "/stop_task", "/task_kill", "/taskkill", "/kill", "/stop", "/task_stop", "/taskstop":
 		handleTaskCommand(a, append([]string{"/task", "kill"}, parts[1:]...), theme, w, kiReader)
 		return true, false
-	case "/task_status", "/taskstatus", "/task_view", "/taskview", "/status":
+	case "/get_task_status", "/task_status", "/taskstatus", "/task_view", "/taskview", "/status":
 		handleTaskCommand(a, append([]string{"/task", "status"}, parts[1:]...), theme, w, kiReader)
 		return true, false
 	case "/ps":

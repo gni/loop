@@ -1,27 +1,29 @@
 package fallback
 
-import "strings"
+import (
+	domaintool "loop/pkg/domain/tool"
+	"sort"
+	"strings"
+)
 
 const maxFallbackOpeningBytes = 4096
 
 var (
-	directToolNames = []string{"write", "edit", "bash", "read", "grep", "find", "list", "search_symbols", "task_state", "todo", "ask_user"}
-
-	fallbackOpeningMarkers = [...]string{
-		"<tool_call",
-		"<execute",
-		"<tool:",
-		"<function",
-		"<write",
-		"<edit",
-		"<bash",
-		"<read",
-		"<grep",
-		"<find",
-		"<list",
-		"<todo",
-		"<ask_user",
-	}
+	directToolNames = func() []string {
+		names := domaintool.BuiltinToolNames()
+		for legacy := range domaintool.LegacyToolNames() {
+			names = append(names, legacy)
+		}
+		sort.Strings(names)
+		return names
+	}()
+	fallbackOpeningMarkers = func() []string {
+		markers := []string{"<tool_call", "<execute", "<tool:", "<function"}
+		for _, name := range directToolNames {
+			markers = append(markers, "<"+name)
+		}
+		return markers
+	}()
 
 	fallbackTargetAttrKeys = [...]string{
 		"path", "file", "file_path", "filepath", "filename", "file_name",
@@ -167,7 +169,7 @@ func (f *ToolTextFilter) process(final bool) {
 				if name := extractHermesFunctionName(f.pending); name != "" {
 					f.activeToolName = name
 					if f.emitToolName != nil {
-						f.emitToolName(name, f.toolCallIndex)
+						f.emitToolName(domaintool.NormalizeName(name), f.toolCallIndex)
 					}
 				}
 			}
@@ -275,7 +277,7 @@ func (f *ToolTextFilter) process(final bool) {
 		if toolName := extractFallbackToolName(opening); toolName != "" {
 			f.activeToolName = toolName
 			if f.emitToolName != nil {
-				f.emitToolName(toolName, f.toolCallIndex)
+				f.emitToolName(domaintool.NormalizeName(toolName), f.toolCallIndex)
 			}
 			if target := extractOpeningTarget(toolName, opening); target != "" && f.emitToolTarget != nil {
 				f.emitToolTarget(target, f.toolCallIndex)
@@ -365,7 +367,7 @@ func closingBoundaryIndex(text, prefix string) int {
 		}
 
 		end := i + len(prefix)
-		if end >= len(text) || text[end] == '>' || isFallbackWhitespace(text[end]) {
+		if strings.HasSuffix(prefix, ">") || end >= len(text) || text[end] == '>' || isFallbackWhitespace(text[end]) {
 			return i
 		}
 		i++
@@ -378,7 +380,7 @@ func validFallbackOpeningBoundary(opening string, markerLength int) bool {
 		return false
 	}
 	next := opening[markerLength]
-	return next == '>' || next == '=' || isFallbackWhitespace(next)
+	return next == '>' || next == '/' || next == '=' || isFallbackWhitespace(next)
 }
 
 func earliestFallbackOpening(text string) int {

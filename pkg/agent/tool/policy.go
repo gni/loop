@@ -15,7 +15,7 @@ var actionPolicy = ExecutionPolicy{RequiresApproval: true, RequiresPlan: true}
 // such as plan updates stay ordered without requiring filesystem approval.
 func PolicyForName(name, arguments string) ExecutionPolicy {
 	switch NormalizeName(name) {
-	case "read", "grep", "find", "list", "search_symbols", "task_status", "list_subagents", "audit_subagent",
+	case "read", "grep", "find_files", "list_directory", "search_symbols", "get_task_status", "list_subagents", "inspect_subagent",
 		"search_tools", "list_mcp_resources", "list_mcp_resource_templates":
 		return inspectionPolicy
 	case "ask_user", "load_skill":

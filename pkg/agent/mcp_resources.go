@@ -92,7 +92,14 @@ type mcpResourceTool struct {
 func (t *mcpResourceTool) Name() string          { return t.name }
 func (t *mcpResourceTool) ExecutionMode() string { return "parallel" }
 func (t *mcpResourceTool) Definition() tool.Tool {
-	return tool.NewFunctionTool(t.name, "Read MCP resources and resource templates", map[string]tool.SchemaProp{"server": tool.StringProp("Configured server name"), "uri": tool.StringProp("Resource URI"), "cursor": tool.StringProp("Pagination cursor")})
+	description := "Read one MCP resource by URI. Non-image binary resources are saved as local artifacts."
+	if t.name == "list_mcp_resources" {
+		description = "List resources available from configured MCP servers."
+	}
+	if t.name == "list_mcp_resource_templates" {
+		description = "List parameterized resource templates from configured MCP servers."
+	}
+	return tool.NewFunctionTool(t.name, description, map[string]tool.SchemaProp{"server": tool.StringProp("Configured server name"), "uri": tool.StringProp("Resource URI"), "cursor": tool.StringProp("Pagination cursor")})
 }
 func (t *mcpResourceTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	result, err := t.ExecuteResult(ctx, arguments)

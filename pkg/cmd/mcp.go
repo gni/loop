@@ -17,17 +17,17 @@ var mcpCmd = &cobra.Command{
 var mcpListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured MCP servers",
-	Run:   runRenderCmd(render.RenderMCPServers),
+	RunE:  runRenderCmd(render.RenderMCPServers),
 }
 
 var mcpAddCmd = &cobra.Command{
 	Use:   "add <name> <url> [headerKey:headerVal]...",
 	Short: "Add a new MCP server configuration",
 	Args:  cobra.MinimumNArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		name := args[0]
 		url := args[1]
@@ -41,10 +41,11 @@ var mcpAddCmd = &cobra.Command{
 			URL:     url,
 			Headers: headers,
 		}
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		fmt.Printf("MCP Server '%s' successfully added/updated.\n", name)
+		return nil
 	},
 }
 
@@ -52,22 +53,22 @@ var mcpRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
 	Short: "Remove an MCP server configuration",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		name := args[0]
 		if _, ok := cfg.MCPServers[name]; !ok {
-			fmt.Printf("Error: MCP server '%s' not found.\n", name)
-			return
+			return fmt.Errorf("MCP server %q not found", name)
 		}
 
 		delete(cfg.MCPServers, name)
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		fmt.Printf("MCP Server '%s' removed.\n", name)
+		return nil
 	},
 }
 

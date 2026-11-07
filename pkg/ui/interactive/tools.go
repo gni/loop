@@ -1,6 +1,8 @@
 package interactive
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 )
 
 func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) error {
+	var saveErr error
 	_, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
 		terminal.NotifyResize(sigChan)
@@ -66,7 +69,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 							a.DisableTools(toolName)
 						}
 						if a.ConfigPath != "" && a.Config != nil {
-							_ = config.SaveConfig(a.ConfigPath, a.Config)
+							saveErr = config.SaveConfig(a.ConfigPath, a.Config)
 						}
 					},
 				})
@@ -75,6 +78,9 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 		}
 
 		extraRender := func(buf *strings.Builder) {
+			if saveErr != nil {
+				fmt.Fprintf(buf, "  Changes applied in memory; save failed: %v\n", saveErr)
+			}
 			borderLine := "  " + style.NewStyle().Foreground(theme.Border).Render("──────────────────────────────────────────────────") + "\n"
 			hintLine := "  " + style.NewStyle().Foreground(theme.Text).Italic(true).Render("Space/Enter: toggle tool | Esc: return | Type to filter") + "\n"
 			buf.WriteString(borderLine + hintLine + borderLine)
@@ -82,5 +88,8 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 
 		return runSettingsMenuLoop(sr, rlOutput, theme, "tool permissions & availability", itemsProvider, extraRender)
 	})
+	if saveErr != nil {
+		return errors.Join(err, fmt.Errorf("tool permissions applied in memory, but could not save: %w", saveErr))
+	}
 	return err
 }

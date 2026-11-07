@@ -4,19 +4,11 @@ import (
 	"io"
 	"strings"
 
-	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
-
-func PrintBanner(w io.Writer, a *agent.Agent) {
-	if a == nil || a.Config == nil {
-		return
-	}
-	render.PrintBanner(w, a, GetConfiguredTheme(a.Config))
-}
 
 func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg *config.Config) {
 	ui := getUI()

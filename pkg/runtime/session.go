@@ -181,6 +181,11 @@ func New(options Options) (*Session, error) {
 			_ = s.Agent.Dispose(context.Background())
 		}
 	}()
+	if cfg.LocalPlugins {
+		if err := s.Agent.ReloadPlugins(); err != nil {
+			return nil, err
+		}
+	}
 	s.Agent.Inquirer = options.Inquirer
 	s.Agent.ToolSelection = options.Tools
 	s.Agent.Ephemeral = options.NoSession
@@ -376,8 +381,11 @@ func (s *Session) adoptInteractive(messages []db.Message, tools []string, id str
 			return err
 		}
 		s.mu.Lock()
-		s.Agent.ApplyConfig(cfg)
+		applyErr := s.Agent.ApplyConfig(cfg)
 		s.mu.Unlock()
+		if applyErr != nil {
+			return applyErr
+		}
 		if err := s.Agent.SetTodos(todos); err != nil {
 			return err
 		}

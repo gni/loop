@@ -78,6 +78,7 @@ func (r *ToolRegistry) Register(t ToolExecutor) {
 }
 
 func (r *ToolRegistry) Unregister(name string) {
+	name = NormalizeName(name)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
@@ -109,7 +110,6 @@ func (r *ToolRegistry) Disable(names ...string) {
 		}
 		norm := NormalizeName(trimmed)
 		r.disabled[norm] = true
-		r.disabled[trimmed] = true
 	}
 }
 
@@ -245,12 +245,12 @@ func (r *ToolRegistry) Hide(name string) {
 	if r.hidden == nil {
 		r.hidden = make(map[string]bool)
 	}
-	r.hidden[name] = true
+	r.hidden[NormalizeName(name)] = true
 }
 func (r *ToolRegistry) Expose(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.hidden, name)
+	delete(r.hidden, NormalizeName(name))
 }
 
 func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExecutor) {

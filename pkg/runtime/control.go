@@ -14,19 +14,12 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 		return err
 	}
 	defer s.runMu.Unlock()
-	copy, err := config.Clone(cfg)
-	if err != nil {
-		return err
-	}
-	if err := copy.ValidatePrompt(); err != nil {
-		return err
-	}
-	if err := copy.Nostop.Validate(); err != nil {
-		return err
-	}
 	s.mu.Lock()
-	s.Agent.ApplyConfig(copy)
+	applyErr := s.Agent.ApplyConfig(cfg)
 	s.mu.Unlock()
+	if applyErr != nil {
+		return applyErr
+	}
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
 	if err := s.persistSettings(); err != nil {
 		return err

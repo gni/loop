@@ -186,8 +186,11 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 		}
 
 		var functionDef FunctionDefinition
-		if err := json.Unmarshal(jsonBytes, &functionDef); err != nil || functionDef.Name == "" {
-			continue
+		if err := json.Unmarshal(jsonBytes, &functionDef); err != nil {
+			return fmt.Errorf("parse plugin descriptor for %s: %w", pluginPath, err)
+		}
+		if functionDef.Name == "" {
+			return fmt.Errorf("plugin descriptor for %s has no name", pluginPath)
 		}
 
 		if !strings.HasPrefix(functionDef.Name, "plugin__") {
@@ -195,7 +198,7 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 		}
 
 		if !IsSafeIdentifier(functionDef.Name) {
-			continue
+			return fmt.Errorf("invalid plugin name %q in %s", functionDef.Name, pluginPath)
 		}
 
 		if _, exists := registry.Lookup(functionDef.Name); exists {

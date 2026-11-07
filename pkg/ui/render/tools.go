@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
 
@@ -93,13 +94,11 @@ func classifyTool(name string) string {
 	if strings.HasPrefix(name, "mcp__") {
 		return "mcp"
 	}
-	if strings.HasPrefix(name, "subagent__") || name == "create_subagent" || name == "remove_subagent" || name == "list_subagents" || name == "audit_subagent" {
+	if tool.IsSubagentTool(name) {
 		return "subagent"
 	}
-	switch tool.NormalizeName(name) {
-	case "bash", "read", "write", "edit", "grep", "list", "find", "load_skill", "task_status", "task_kill", "todo", "ask_user", "load_mcp":
+	if domaintool.IsBuiltinName(name) {
 		return "built-in"
-	default:
-		return "plugin"
 	}
+	return "plugin"
 }

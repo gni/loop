@@ -65,7 +65,7 @@ func NewTaskStatusTool() ToolExecutor {
 	return &taskStatusTool{}
 }
 
-func (t *taskStatusTool) Name() string { return "task_status" }
+func (t *taskStatusTool) Name() string { return "get_task_status" }
 
 func (t *taskStatusTool) PromptSnippet() string {
 	return FormatToolSnippet(t.Name(), "Retrieve the execution status and output of a background task")
@@ -73,10 +73,10 @@ func (t *taskStatusTool) PromptSnippet() string {
 
 func (t *taskStatusTool) Definition() Tool {
 	return NewFunctionTool(
-		"task_status",
-		FormatToolDescription("task_status", "Retrieve the execution status and buffered stdout/stderr output of a background task."),
+		"get_task_status",
+		FormatToolDescription("get_task_status", "Retrieve the execution status and buffered stdout/stderr output of a background task."),
 		map[string]SchemaProp{
-			"task_id": StringProp(FormatParamDescription("task_status", "task_id", "The ID of the background task (e.g. 'task_1').")),
+			"task_id": StringProp(FormatParamDescription("get_task_status", "task_id", "The ID of the background task (e.g. 'task_1').")),
 		},
 		"task_id",
 	)
@@ -117,7 +117,7 @@ func NewTaskKillTool() ToolExecutor {
 	return &taskKillTool{}
 }
 
-func (t *taskKillTool) Name() string { return "task_kill" }
+func (t *taskKillTool) Name() string { return "stop_task" }
 
 func (t *taskKillTool) PromptSnippet() string {
 	return FormatToolSnippet(t.Name(), "Terminate a running background task")
@@ -125,10 +125,10 @@ func (t *taskKillTool) PromptSnippet() string {
 
 func (t *taskKillTool) Definition() Tool {
 	return NewFunctionTool(
-		"task_kill",
-		FormatToolDescription("task_kill", "Terminate a running background task."),
+		"stop_task",
+		FormatToolDescription("stop_task", "Terminate a running background task."),
 		map[string]SchemaProp{
-			"task_id": StringProp(FormatParamDescription("task_kill", "task_id", "The ID of the task to terminate.")),
+			"task_id": StringProp(FormatParamDescription("stop_task", "task_id", "The ID of the task to terminate.")),
 		},
 		"task_id",
 	)

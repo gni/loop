@@ -16,15 +16,15 @@ type AuditSubagentTool struct {
 	mam *MultiAgentManager
 }
 
-func (s *AuditSubagentTool) Name() string { return "audit_subagent" }
+func (s *AuditSubagentTool) Name() string { return "inspect_subagent" }
 func (s *AuditSubagentTool) PromptSnippet() string {
-	return tool.FormatToolSnippet("audit_subagent", "Review a subagent's action, thought, and tool history")
+	return tool.FormatToolSnippet("inspect_subagent", "Review a subagent's action, thought, and tool history")
 }
 func (s *AuditSubagentTool) Definition() tool.Tool {
 	return singleNameToolDefinition(
-		"audit_subagent",
-		tool.FormatToolDescription("audit_subagent", "Audit the execution history of a spawned subagent to see exactly what actions, tool calls, thoughts, and results it produced. Essential for verifying subagent work."),
-		tool.FormatParamDescription("audit_subagent", "name", "The name of the subagent to audit."),
+		"inspect_subagent",
+		tool.FormatToolDescription("inspect_subagent", "Inspect a subagent execution history, including actions, tool calls, reasoning, and results. Reviewing history does not independently verify correctness."),
+		tool.FormatParamDescription("inspect_subagent", "name", "The name of the subagent to inspect."),
 	)
 }
 

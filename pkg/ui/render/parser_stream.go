@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui/style"
 )
 
@@ -83,14 +84,14 @@ func IsToolContentKey(key string, toolName string) bool {
 }
 
 var pathRequiredTools = map[string]bool{
-	"read": true, "write": true, "edit": true, "grep": true, "find": true,
-	"bash": true, "ls": true, "list": true, "create_subagent": true, "spawn_subagent": true,
-	"load_skill": true, "task_status": true, "task_kill": true,
-	"list_subagents": true, "audit_subagent": true,
+	"read": true, "write": true, "edit": true, "grep": true, "find_files": true,
+	"bash": true, "ls": true, "list_directory": true, "create_subagent": true, "spawn_subagent": true,
+	"load_skill": true, "get_task_status": true, "stop_task": true,
+	"list_subagents": true, "inspect_subagent": true,
 }
 
 func (p *JSONStreamParser) NeedsPath() bool {
-	return pathRequiredTools[p.ActiveToolName] || strings.HasPrefix(p.ActiveToolName, "subagent__")
+	return pathRequiredTools[domaintool.NormalizeName(p.ActiveToolName)] || strings.HasPrefix(p.ActiveToolName, "subagent__")
 }
 
 // A write preview can begin before its destination is known.

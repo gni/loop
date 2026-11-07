@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"loop/pkg/agent/tool"
@@ -137,12 +138,16 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 	case "read":
 		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], body)
 
-	case "grep", "find":
+	case "grep", "find_files":
 		argsMap["pattern"] = tool.FirstNonEmpty(attrs["pattern"], body)
 
-	case "list":
+	case "list_directory":
 		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], body, ".")
 
+	case "get_task_status", "stop_task":
+		argsMap["task_id"] = tool.FirstNonEmpty(attrs["task_id"], attrs["id"], body)
+	case "inspect_subagent", "remove_subagent", "load_skill", "load_mcp":
+		argsMap["name"] = tool.FirstNonEmpty(attrs["name"], body)
 	case "todo":
 		if taskMatches := reTaskTag.FindAllStringSubmatch(body, -1); len(taskMatches) > 0 {
 			var tasks []map[string]string
@@ -206,52 +211,74 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 
 // ParseFallbackToolCalls extracts XML-style fallback tool calls from plain assistant message content.
 func ParseFallbackToolCalls(content string) []db.ToolCall {
-	var toolCalls []db.ToolCall
-
-	// 1. Direct tool tags: <write path="...">content</write>, <edit path="...">content</edit>, <bash>cmd</bash>, etc.
-	for _, dt := range compiledDirectTools {
-		for _, match := range dt.selfClosing.FindAllStringSubmatch(content, -1) {
-			attrs := ParseXMLAttrs(match[1])
-			toolCalls = append(toolCalls, BuildXMLToolCall(dt.name, attrs, ""))
+	type candidate struct {
+		start, end int
+		calls      []db.ToolCall
+	}
+	var found []candidate
+	capture := func(match []int, index int) string {
+		if index*2+1 >= len(match) || match[index*2] < 0 {
+			return ""
 		}
-		for _, match := range dt.paired.FindAllStringSubmatch(content, -1) {
-			attrs := ParseXMLAttrs(match[1])
-			toolCalls = append(toolCalls, BuildXMLToolCall(dt.name, attrs, match[2]))
+		return content[match[index*2]:match[index*2+1]]
+	}
+	add := func(match []int, calls ...db.ToolCall) {
+		if len(calls) > 0 {
+			found = append(found, candidate{match[0], match[1], calls})
 		}
 	}
-
-	// 2. Match <tool_call ...>args</tool_call>
-	for _, match := range reToolCallBlock.FindAllStringSubmatch(content, -1) {
-		attrs := ParseXMLAttrs(match[1])
+	for _, direct := range compiledDirectTools {
+		for _, match := range direct.selfClosing.FindAllStringSubmatchIndex(content, -1) {
+			add(match, BuildXMLToolCall(direct.name, ParseXMLAttrs(capture(match, 1)), ""))
+		}
+		for _, match := range direct.paired.FindAllStringSubmatchIndex(content, -1) {
+			add(match, BuildXMLToolCall(direct.name, ParseXMLAttrs(capture(match, 1)), capture(match, 2)))
+		}
+	}
+	for _, match := range reToolCallBlock.FindAllStringSubmatchIndex(content, -1) {
+		attrs := ParseXMLAttrs(capture(match, 1))
+		body := capture(match, 2)
 		if name := attrs["name"]; name != "" {
-			toolCalls = append(toolCalls, BuildXMLToolCall(name, attrs, match[2]))
+			add(match, BuildXMLToolCall(name, attrs, body))
 		} else {
-			toolCalls = append(toolCalls, parseHermesFunctionCalls(match[2])...)
+			add(match, parseHermesFunctionCalls(body)...)
 		}
 	}
-
-	// 3. Match <tool:name ...>args</tool:name>
-	for _, match := range reToolColonAttrs.FindAllStringSubmatch(content, -1) {
-		if len(match) >= 5 && match[1] == match[4] {
-			attrs := ParseXMLAttrs(match[2])
-			toolCalls = append(toolCalls, BuildXMLToolCall(match[1], attrs, match[3]))
+	for _, match := range reToolColonAttrs.FindAllStringSubmatchIndex(content, -1) {
+		if capture(match, 1) == capture(match, 4) {
+			add(match, BuildXMLToolCall(capture(match, 1), ParseXMLAttrs(capture(match, 2)), capture(match, 3)))
 		}
 	}
-
-	// 4. Match <execute name="name">args</execute>
-	for _, match := range reExecuteAttrs.FindAllStringSubmatch(content, -1) {
-		attrs := ParseXMLAttrs(match[1])
+	for _, match := range reExecuteAttrs.FindAllStringSubmatchIndex(content, -1) {
+		attrs := ParseXMLAttrs(capture(match, 1))
 		if name := attrs["name"]; name != "" {
-			toolCalls = append(toolCalls, BuildXMLToolCall(name, attrs, match[2]))
+			add(match, BuildXMLToolCall(name, attrs, capture(match, 2)))
 		}
 	}
-
-	// 5. Bare Hermes functions if no tool calls parsed yet
-	if len(toolCalls) == 0 {
-		toolCalls = append(toolCalls, parseHermesFunctionCalls(content)...)
+	for _, match := range reFunc.FindAllStringSubmatchIndex(content, -1) {
+		add(match, parseHermesFunctionCalls(content[match[0]:match[1]])...)
 	}
-
-	return toolCalls
+	if len(found) == 0 {
+		return nil
+	}
+	// Tool families and aliases must not change execution order. Prefer an outer
+	// wrapper over tool-looking text inside its arguments, avoiding duplicate calls.
+	sort.SliceStable(found, func(i, j int) bool {
+		if found[i].start == found[j].start {
+			return found[i].end > found[j].end
+		}
+		return found[i].start < found[j].start
+	})
+	var calls []db.ToolCall
+	end := -1
+	for _, item := range found {
+		if item.start < end {
+			continue
+		}
+		calls = append(calls, item.calls...)
+		end = item.end
+	}
+	return calls
 }
 
 // BuildToolCall normalizes tool names and formats arguments into a db.ToolCall.
@@ -266,19 +293,19 @@ func BuildToolCall(name string, args string) db.ToolCall {
 		escapedArgsStr := string(escapedArgs)
 
 		switch {
-		case name == "bash" || name == "ls":
+		case name == "bash":
 			finalArgs = fmt.Sprintf(`{"command": %s}`, escapedArgsStr)
-		case name == "read":
+		case name == "read" || name == "list_directory":
 			finalArgs = fmt.Sprintf(`{"path": %s}`, escapedArgsStr)
 		case name == "write":
 			finalArgs = fmt.Sprintf(`{"content": %s}`, escapedArgsStr)
 		case name == "edit":
 			finalArgs = fmt.Sprintf(`{"content": %s}`, escapedArgsStr)
-		case name == "grep":
+		case name == "grep" || name == "find_files":
 			finalArgs = fmt.Sprintf(`{"pattern": %s}`, escapedArgsStr)
-		case name == "load_skill":
+		case name == "load_skill" || name == "load_mcp" || name == "inspect_subagent" || name == "remove_subagent":
 			finalArgs = fmt.Sprintf(`{"name": %s}`, escapedArgsStr)
-		case name == "task_status" || name == "task_kill":
+		case name == "get_task_status" || name == "stop_task":
 			finalArgs = fmt.Sprintf(`{"task_id": %s}`, escapedArgsStr)
 		case strings.HasPrefix(name, "subagent__"):
 			finalArgs = fmt.Sprintf(`{"prompt": %s}`, escapedArgsStr)

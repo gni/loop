@@ -29,14 +29,14 @@ func FormatDefensiveError(toolName string, err error) string {
 		strings.Contains(lowerErr, "targetcontent not found") {
 		detail = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.")
 	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||
-		toolName == "task_status" || toolName == "task_kill" {
+		toolName == "get_task_status" || toolName == "stop_task" {
 		detail = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.")
 	} else if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no such file") {
-		detail = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.")
+		detail = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find_files' or 'list_directory' or check the file path. Ensure the file actually exists before calling this tool.")
 	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "security violation") {
 		detail = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.")
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
-		detail = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find', 'list') instead of shell commands.")
+		detail = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find_files', 'list_directory') instead of shell commands.")
 	} else if strings.HasPrefix(lowerErr, "unknown tool:") {
 		detail = RuntimeMessage("suggestion_unknown_tool", "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.")
 	}

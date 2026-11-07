@@ -26,6 +26,9 @@ import (
 // are loaded only as needed.
 type ChatHistory struct {
 	previousSink                                    func(agent.Event) error
+	logoEnabled, logoVisible                        bool
+	logoFrame                                       int
+	logoStop, logoDone                              chan struct{}
 	sessionID                                       string
 	drawn                                           []string
 	drawnHint                                       string
@@ -104,6 +107,7 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 	writer.inner = &historyOutput{destination: writer.inner, history: h}
 	getUI().ChatHistory = h
 	fmt.Fprint(reader.W, "\x1b[?1000h\x1b[?1006h")
+	h.startChatLogo()
 	return h, err
 }
 
@@ -163,6 +167,7 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	TerminalMu.Lock()
 	h.closePagesLocked()
 	h.drawn, h.drawnHint = nil, ""
+	h.logoFrame = 0
 	h.buffer = buffer
 	h.source, h.historyErr = source, nil
 	h.turnMu.Lock()
@@ -179,7 +184,6 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	notice := h.notice
 	h.notice = ""
 	TerminalMu.Unlock()
-	PrintBanner(h.writer, h.a)
 	if notice != "" {
 		noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Success).Italic(true)
 		fmt.Fprintln(h.writer, noticeStyle.Render(notice))
@@ -257,7 +261,11 @@ func (h *ChatHistory) FinishTurn(messages []db.Message) {
 }
 
 func (h *ChatHistory) resizeLocked(width, height int) {
-	bottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
+	state := getUI()
+	state.StateMu.Lock()
+	pasteRows := state.PasteLinesOffset
+	state.StateMu.Unlock()
+	bottom := style.ConsoleScrollBottom(height, pasteRows)
 	if width == h.buffer.Width && bottom == h.buffer.Height {
 		return
 	}
@@ -296,6 +304,7 @@ func (h *ChatHistory) paintLocked() {
 	h.top = min(max(0, h.top), h.buffer.Base())
 	h.browsing = h.browsing && h.top < h.buffer.Base()
 	rows := h.buffer.View(h.top)
+	rows = h.decorateChatLocked(rows)
 	hint := ""
 	if h.browsing {
 		total := h.buffer.Base() + h.buffer.Height
@@ -607,6 +616,10 @@ func (h *ChatHistory) Close() {
 	if !h.closed.CompareAndSwap(false, true) {
 		return
 	}
+	if h.logoStop != nil {
+		close(h.logoStop)
+		<-h.logoDone
+	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1006l")
@@ -627,6 +640,9 @@ type historyOutput struct {
 
 func (w *historyOutput) Write(data []byte) (int, error) {
 	h := w.history
+	if !h.captureOnly {
+		h.clearChatLogoLocked()
+	}
 	dropped := h.buffer.Dropped()
 	h.buffer.Write(data)
 	if err := h.buffer.Err(); err != nil {

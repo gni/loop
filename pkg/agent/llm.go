@@ -76,7 +76,7 @@ type ContextLimitDetector interface {
 
 func (a *Agent) compatibleProvider(cfg *config.Config, previous *OpenAICompatibleProvider) *OpenAICompatibleProvider {
 	client := a.HTTPClient
-	if previous != nil && previous.HTTPClient != nil {
+	if client == nil && previous != nil && previous.HTTPClient != nil {
 		client = previous.HTTPClient
 	}
 	next := &OpenAICompatibleProvider{Config: cfg, HTTPClient: client, ChunkDropObserver: a.recordDroppedChunk,

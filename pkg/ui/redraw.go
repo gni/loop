@@ -125,7 +125,6 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		}
 	}
 
-	PrintBanner(cwBuf, a)
 	if notice != "" {
 		noticeStyle := style.NewStyle().Foreground(activeTheme.Success).Italic(true)
 		fmt.Fprintln(cwBuf, noticeStyle.Render(notice))

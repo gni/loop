@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"loop/pkg/agent"
-	"loop/pkg/agent/tool"
 	"loop/pkg/config"
 	"loop/pkg/resources"
 )
@@ -38,24 +37,12 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
-	plugins := tool.NewToolRegistry()
-	if cfg.LocalPlugins {
-		dirs := append(tool.PluginSearchDirs(s.Workspace), cfg.PluginDirectories...)
-		seen := make(map[string]bool)
-		for _, dir := range dirs {
-			if seen[dir] || !s.Agent.ProjectResourceAllowed(dir) {
-				continue
-			}
-			seen[dir] = true
-			if err := tool.RegisterPluginsContext(s.Agent.Context(), plugins, dir); err != nil {
-				return err
-			}
-		}
-	}
 	s.mu.Lock()
-	s.Agent.ApplyConfig(cfg)
+	applyErr := s.Agent.ApplyConfig(cfg)
 	s.mu.Unlock()
-	s.Agent.Registry.ReplacePrefix("plugin__", plugins.GetAllExecutors())
+	if applyErr != nil {
+		return applyErr
+	}
 	s.Agent.SetActiveSkills(skills)
 	s.mu.Lock()
 	s.hooks = loaded.Hooks

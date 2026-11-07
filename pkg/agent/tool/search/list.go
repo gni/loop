@@ -19,7 +19,7 @@ func NewListTool() domaintool.ToolExecutor {
 	return &listTool{}
 }
 
-func (t *listTool) Name() string { return "list" }
+func (t *listTool) Name() string { return "list_directory" }
 
 func (t *listTool) PromptSnippet() string {
 	return domaintool.FormatToolSnippet(t.Name(), "List directory contents")
@@ -27,18 +27,18 @@ func (t *listTool) PromptSnippet() string {
 
 func (t *listTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
-		"Use 'list' to inspect directories. Use 'find' or 'grep' to search recursively across subdirectories.",
+		"Use 'list_directory' to inspect directories. Use 'find_files' or 'grep' to search recursively across subdirectories.",
 	})
 }
 
 func (t *listTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
-		"list",
-		domaintool.FormatToolDescription("list", "List directory contents. Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue."),
+		"list_directory",
+		domaintool.FormatToolDescription("list_directory", "List directory contents. Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue."),
 		map[string]domaintool.SchemaProp{
-			"path":   domaintool.StringProp(domaintool.FormatParamDescription("list", "path", "Directory to list (default: current directory)")),
-			"depth":  domaintool.NumberProp(domaintool.FormatParamDescription("list", "depth", "Depth to list (1 for flat, 2+ for recursive, default: 1)")),
-			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("list", "offset", file.DefaultLimitTexts["list_param_offset"])),
+			"path":   domaintool.StringProp(domaintool.FormatParamDescription("list_directory", "path", "Directory to list (default: current directory)")),
+			"depth":  domaintool.NumberProp(domaintool.FormatParamDescription("list_directory", "depth", "Depth to list (1 for flat, 2+ for recursive, default: 1)")),
+			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("list_directory", "offset", file.DefaultLimitTexts["list_param_offset"])),
 		},
 	)
 }
@@ -89,7 +89,7 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 	if strings.ContainsAny(targetPath, "*?[") {
-		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'list' tool only accepts directory paths; use the 'find' tool instead to search files by glob pattern (e.g. find(pattern: '%s'))", targetPath, targetPath)
+		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'list_directory' tool only accepts directory paths; use the 'find_files' tool instead to search files by glob pattern (e.g. find_files(pattern: '%s'))", targetPath, targetPath)
 	}
 
 	info, err := os.Stat(safePath)
@@ -236,9 +236,9 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 
 	if limitReached || bytesReached {
 		next := shown + offset
-		notice := file.SearchLimitNotice("list", shown, total, next)
+		notice := file.SearchLimitNotice("list_directory", shown, total, next)
 		if bytesReached && !limitReached {
-			notice = file.OutputLimitNotice("list", limits.MaxOutputBytes()/1024, shown, total, next)
+			notice = file.OutputLimitNotice("list_directory", limits.MaxOutputBytes()/1024, shown, total, next)
 		}
 		rendered = append(rendered, strings.TrimRight(notice, "\n"))
 	}

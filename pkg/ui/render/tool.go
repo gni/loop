@@ -31,6 +31,7 @@ func RepairArgsJSON(js string) string {
 }
 
 func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSON string) {
+	toolName = domaintool.NormalizeName(toolName)
 	symbol := RenderToolSymbol(toolName, ToolStatusPending, theme)
 	pathVal := ExtractToolTarget(toolName, argsJSON)
 	if pathVal == "" && IsCommandLikeTool(toolName) && strings.TrimSpace(argsJSON) != "" && strings.TrimSpace(argsJSON) != "{}" {
@@ -44,6 +45,7 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 }
 
 func isCodeContentTool(toolName string) bool {
+	toolName = domaintool.NormalizeName(toolName)
 	if strings.Contains(toolName, "edit") || strings.Contains(toolName, "replace") {
 		return false
 	}
@@ -56,6 +58,7 @@ func isCodeContentTool(toolName string) bool {
 }
 
 func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed bool, theme style.UITheme) string {
+	toolName = domaintool.NormalizeName(toolName)
 	lang := "plaintext"
 	if isJSON {
 		lang = "json"
@@ -135,6 +138,7 @@ func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
+	toolName = domaintool.NormalizeName(toolName)
 	if !isError {
 		if toolName == "todo" && bodyWasStreamed {
 			// Task descriptions were already shown during generation. Keep
@@ -166,7 +170,7 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		if IsWriteLikeTool(toolName) {
 			renderWriteSummary(w, theme, toolName, argsJSON, output)
 		}
-		if toolName == "task_status" || toolName == "task_kill" {
+		if toolName == "get_task_status" || toolName == "stop_task" {
 			renderTaskSummary(w, theme, toolName, argsJSON, output, collapse)
 			return
 		}
@@ -265,6 +269,7 @@ func resolveAbsTargetPath(target string) string {
 }
 
 func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
+	toolName = domaintool.NormalizeName(toolName)
 	target := ExtractToolTarget(toolName, argsJSON)
 	sizeBytes := int64(-1)
 	firstLine, _, _ := strings.Cut(output, "\n")
@@ -347,6 +352,7 @@ func FormatDiffStats(added, deleted int, theme style.UITheme) string {
 }
 
 func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string) {
+	toolName = domaintool.NormalizeName(toolName)
 	target := ExtractToolTarget(toolName, argsJSON)
 	if target == "" {
 		return
@@ -367,6 +373,7 @@ func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 }
 
 func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string, collapse bool) {
+	toolName = domaintool.NormalizeName(toolName)
 	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
 	taskID := ExtractToolTarget(toolName, argsJSON)
 	if taskID == "" {
@@ -379,7 +386,7 @@ func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	}
 
 	idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
-	if toolName == "task_kill" {
+	if toolName == "stop_task" {
 		statusStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 		fmt.Fprintf(w, "%s%s: %s\n", branchStyle, idStyle.Render(taskID), statusStyle.Render("terminated"))
 		return

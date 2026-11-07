@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"loop/pkg/config"
 	"loop/pkg/ui"
 	"loop/pkg/ui/render"
 )
@@ -18,32 +19,31 @@ var configCmd = &cobra.Command{
 var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current configuration settings card",
-	Run:   runRenderCmd(render.RenderConfig),
+	RunE:  runRenderCmd(render.RenderConfig),
 }
 
 var configEditCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Open the interactive TUI configuration editor",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		theme := ui.GetConfiguredTheme(cfg)
 
 		newConfig, err := ui.RunInteractiveConfig(cfg, theme, os.Stdin, os.Stdout)
 		if err != nil {
-			fmt.Printf("Error editing configuration: %v\n", err)
-			return
+			return fmt.Errorf("edit configuration: %w", err)
 		}
 		if newConfig == nil {
-			fmt.Println("interactive configuration cancelled.")
-			return
+			return nil
 		}
-		if !saveConfigOrPrintErr(newConfig) {
-			return
+		if err := config.SaveConfig(configPath, newConfig); err != nil {
+			return err
 		}
 		fmt.Printf("Configuration successfully updated and saved to %s\n", configPath)
+		return nil
 	},
 }
 

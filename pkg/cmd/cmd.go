@@ -61,14 +61,14 @@ func applyPromptCatalog(cfg *config.Config) error {
 	return domaintool.LoadPromptCatalog(path)
 }
 
-func runRenderCmd(render func(io.Writer, *config.Config, ui.UITheme)) func(cmd *cobra.Command, args []string) {
-	return func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+func runRenderCmd(render func(io.Writer, *config.Config, ui.UITheme)) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
-		theme := ui.GetConfiguredTheme(cfg)
-		render(os.Stdout, cfg, theme)
+		render(cmd.OutOrStdout(), cfg, ui.GetConfiguredTheme(cfg))
+		return nil
 	}
 }
 

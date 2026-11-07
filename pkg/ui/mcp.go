@@ -36,13 +36,17 @@ func HandleMCPCommand(
 		return calculateActiveTokenUsage(a, msgs, activeToolAllowlist(kiReader), mam)
 	}
 
-	restartAndSyncMCP := func() {
-		_ = config.SaveConfig(a.ConfigPath, a.Config)
-		a.StopMCPServers()
-		if len(a.Config.MCPServers) > 0 {
-			_ = a.StartMCPServers(a.Config.MCPServers)
+	applyMCP := func(next *config.Config) bool {
+		if err := a.ApplyConfig(next); err != nil {
+			fmt.Fprintf(w, "MCP update failed: %v\n", err)
+			return false
+		}
+		if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+			fmt.Fprintf(w, "MCP settings applied in memory, but could not save: %v\n", err)
+			return false
 		}
 		syncAgentStatus(a, theme, calcHistoryTokens)
+		return true
 	}
 
 	if len(parts) < 2 {
@@ -54,9 +58,10 @@ func HandleMCPCommand(
 		ShutdownStatusBar(os.Stderr)
 		newConfig, errInteractive := RunInteractiveMCPConfig(a.Config, theme, input, output, a.ConfigPath)
 		InitStatusBar(os.Stderr)
-		if errInteractive == nil && newConfig != nil {
-			a.ApplyConfig(newConfig)
-			_ = config.SaveConfig(a.ConfigPath, a.Config)
+		if errInteractive != nil {
+			fmt.Fprintf(w, "MCP settings menu failed: %v\n", errInteractive)
+		} else if newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers) {
+			applyMCP(newConfig)
 		}
 
 		var rl *term.Terminal
@@ -65,14 +70,15 @@ func HandleMCPCommand(
 		}
 		RestoreAfterModal(w, a, kiReader, rl)
 
-		if errInteractive == nil && newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers) {
-			restartAndSyncMCP()
-		}
 		return
 	}
-
-	if a.Config.MCPServers == nil {
-		a.Config.MCPServers = make(map[string]config.MCPServerConfig)
+	next, err := config.Clone(a.Config)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	if next.MCPServers == nil {
+		next.MCPServers = make(map[string]config.MCPServerConfig)
 	}
 
 	sub := parts[1]
@@ -80,16 +86,16 @@ func HandleMCPCommand(
 	case "list":
 		render.RenderMCPServers(w, a.Config, theme)
 		mcpStatuses := a.GetMCPServersStatus()
-		if len(a.Config.MCPServers) > 0 {
+		if len(next.MCPServers) > 0 {
 			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("\nmcp connection status:"))
-			keys := make([]string, 0, len(a.Config.MCPServers))
-			for k := range a.Config.MCPServers {
+			keys := make([]string, 0, len(next.MCPServers))
+			for k := range next.MCPServers {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			for _, name := range keys {
 				status, active := mcpStatuses[name]
-				cfg := a.Config.MCPServers[name]
+				cfg := next.MCPServers[name]
 				if !cfg.Enabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
@@ -108,41 +114,47 @@ func HandleMCPCommand(
 			return
 		}
 		name, url := parts[2], parts[3]
-		a.Config.MCPServers[name] = config.MCPServerConfig{
+		next.MCPServers[name] = config.MCPServerConfig{
 			Enabled: true,
 			URL:     url,
 			Headers: config.ParseHeaderArgs(parts[4:]),
 		}
+		if !applyMCP(next) {
+			return
+		}
 		fmt.Fprintf(w, "MCP Server '%s' successfully added/updated.\n", name)
-		restartAndSyncMCP()
 	case "enable", "disable":
 		if len(parts) < 3 {
 			fmt.Fprintf(w, "usage: /mcp %s <name>\n", sub)
 			return
 		}
 		name := parts[2]
-		cfg, ok := a.Config.MCPServers[name]
+		cfg, ok := next.MCPServers[name]
 		if !ok {
 			fmt.Fprintf(w, "error: MCP server '%s' not found.\n", name)
 			return
 		}
 		cfg.Enabled = (sub == "enable")
-		a.Config.MCPServers[name] = cfg
+		next.MCPServers[name] = cfg
+		if !applyMCP(next) {
+			return
+		}
 		fmt.Fprintf(w, "MCP Server '%s' successfully %sd.\n", name, sub)
-		restartAndSyncMCP()
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /mcp remove <name>")
 			return
 		}
 		name := parts[2]
-		if _, ok := a.Config.MCPServers[name]; !ok {
+		if _, ok := next.MCPServers[name]; !ok {
 			fmt.Fprintf(w, "error: MCP server '%s' not found.\n", name)
 			return
 		}
-		delete(a.Config.MCPServers, name)
+		delete(next.MCPServers, name)
+		if !applyMCP(next) {
+			return
+		}
 		fmt.Fprintf(w, "MCP Server '%s' removed.\n", name)
-		restartAndSyncMCP()
 	case "tools":
 		mcpTools := a.GetMCPTools()
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("available mcp tools:"))

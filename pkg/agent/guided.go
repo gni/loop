@@ -132,7 +132,7 @@ func (gc *GuidedController) CheckPlanAllowed(todos []tool.TodoItem, toolName str
 		gc.mu.Lock()
 		gc.phase = GuidedPhaseExplore
 		gc.mu.Unlock()
-		return false, fmt.Errorf("guided mode: inspect files with read/grep/find/list and register a plan with 'todo' before calling '%s'", toolName)
+		return false, fmt.Errorf("guided mode: inspect files with read/grep/find_files/list_directory and register a plan with 'todo' before calling '%s'", toolName)
 	}
 
 	currentHash := hashTodos(todos)

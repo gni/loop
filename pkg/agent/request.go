@@ -42,6 +42,9 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		}
 
 		msg.ReasoningContent = ""
+		if msg.Role == "tool" && msg.Name != "" {
+			msg.Name = tool.NormalizeName(msg.Name)
+		}
 
 		if msg.Role == "assistant" {
 			msg.Content = StripFallbackToolMarkup(msg.Content)
@@ -49,6 +52,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				normalisedTCs := make([]db.ToolCall, len(msg.ToolCalls))
 				copy(normalisedTCs, msg.ToolCalls)
 				for i, tc := range normalisedTCs {
+					normalisedTCs[i].Function.Name = tool.NormalizeName(tc.Function.Name)
 					var dummy map[string]interface{}
 					if json.Unmarshal([]byte(tc.Function.Arguments), &dummy) != nil {
 						repaired := domaintool.RepairJSON(tc.Function.Arguments)

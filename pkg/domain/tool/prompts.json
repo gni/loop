@@ -26,9 +26,9 @@
         "options.description": "Optional explanation of the option."
       }
     },
-    "audit_subagent": {
-      "name": "audit_subagent",
-      "description": "Audit the execution history of a spawned subagent to see exactly what actions, tool calls, thoughts, and results it produced. Essential for verifying subagent work.",
+    "inspect_subagent": {
+      "name": "inspect_subagent",
+      "description": "Inspect a subagent execution history, including actions, tool calls, reasoning, and results. Reviewing history does not independently verify correctness.",
       "snippet": "Review a subagent's action, thought, and tool history",
       "guidelines": [],
       "param_descriptions": {
@@ -81,8 +81,8 @@
         "updates": "One or more targeted replacements."
       }
     },
-    "find": {
-      "name": "find",
+    "find_files": {
+      "name": "find_files",
       "description": "Find files by glob pattern across the workspace. Returns up to 500 results (max 2000).",
       "snippet": "Find files by glob pattern",
       "guidelines": [],
@@ -109,8 +109,8 @@
         "offset": "Match number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue."
       }
     },
-    "list": {
-      "name": "list",
+    "list_directory": {
+      "name": "list_directory",
       "description": "List directory contents. Lists up to 150 entries (max 1000).",
       "snippet": "List directory contents",
       "guidelines": [],
@@ -142,12 +142,12 @@
       "snippet": "Read file contents",
       "guidelines": [
         "Use 'read' to examine files instead of cat or sed. Use 'offset' and 'limit' to inspect specific line ranges in large files.",
-        "Use 'list' for directories."
+        "Use 'list_directory' for directories."
       ],
       "param_descriptions": {
         "limit": "Maximum number of lines to read. Optional",
         "offset": "Line number to start reading from (1-indexed). Optional",
-        "path": "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list' to inspect directory trees."
+        "path": "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list_directory' to inspect directory trees."
       }
     },
     "remove_subagent": {
@@ -159,8 +159,8 @@
         "name": "The name of the subagent to terminate."
       }
     },
-    "task_kill": {
-      "name": "task_kill",
+    "stop_task": {
+      "name": "stop_task",
       "description": "Terminate a running background task.",
       "snippet": "Terminate a running background task",
       "guidelines": [],
@@ -168,8 +168,8 @@
         "task_id": "The ID of the task to terminate."
       }
     },
-    "task_status": {
-      "name": "task_status",
+    "get_task_status": {
+      "name": "get_task_status",
       "description": "Retrieve the execution status and buffered stdout/stderr output of a background task.",
       "snippet": "Retrieve the execution status and output of a background task",
       "guidelines": [],
@@ -179,7 +179,7 @@
     },
     "todo": {
       "name": "todo",
-      "description": "Track a plan. Prefer markdown checklists for full plans; use actions for individual updates. At most one task may be in_progress.",
+      "description": "Manage the implementation checklist, separate from background processes. Prefer markdown for full plans and actions for individual steps. Keep at most one step in_progress.",
       "snippet": "Plan with markdown:\"- [ ] task-1: Work\"; [>] active, [x] done. Preserve IDs; one active task.",
       "guidelines": [
         "Keep todo current during multi-step work. Prefer markdown checklists for full plans; preserve task IDs."
@@ -241,9 +241,9 @@
     "suggestion_not_unique": "The oldText block matches multiple locations in the file. Include more surrounding lines in oldText to make it unique, or read the file again to copy the exact unique block.",
     "suggestion_old_text_miss": "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.",
     "suggestion_task_not_found": "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.",
-    "suggestion_path_not_found": "Inspect your immediate working directory structure using 'find' or 'list' or check the file path. Ensure the file actually exists before calling this tool.",
+    "suggestion_path_not_found": "Inspect your immediate working directory structure using 'find_files' or 'list_directory' or check the file path. Ensure the file actually exists before calling this tool.",
     "suggestion_workspace": "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.",
-    "suggestion_command": "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find', 'list') instead of shell commands.",
+    "suggestion_command": "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find_files', 'list_directory') instead of shell commands.",
     "suggestion_unknown_tool": "Inspect <tools> in system instructions for valid tool names. For example, use 'write' instead of 'write_path' or 'write_file', and 'edit' instead of 'edit_file'.",
     "suggestion_default": "Ensure arguments match the schema parameters exactly, and that any files/folders referred to exist and are spelled correctly.",
     "command_failed_header": "[Command Failed: %s]",
@@ -261,11 +261,11 @@
     "task_status_output": "Task %s is currently: %s\n\nOutput:\n%s",
     "task_status_cmd_output": "Task %s (%s) is currently: %s\n\nOutput:\n%s",
     "task_status_not_found": "task %q not found. The task may have already completed, was killed, or does not exist.",
-    "task_kill_success": "Task %s killed (custom catalog).",
+    "task_kill_success": "Background task %s stopped.",
     "task_kill_failed": "failed to terminate task %q: %w",
     "task_missing_arg_status": "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1').",
     "task_missing_arg_kill": "missing required argument 'task_id'. Provide the ID of the background task to kill (e.g. 'task_1').",
-    "task_spawned": "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'task_status') or stop with /stop (or 'task_kill'). Toggle live stream via Ctrl+O.",
+    "task_spawned": "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'get_task_status') or stop with /stop (or 'stop_task'). Toggle live stream via Ctrl+O.",
     "task_spawn_failed": "failed to spawn background task: %w",
     "user_directives_header": "\n\nUser Directives (%s):\nAdhere to these global preferences and personal mandates strictly:\n%s",
     "project_memory_header": "\n\nProject Architecture & Learnings (%s):\nFollow these repository conventions and architectural decisions strictly:\n%s",
@@ -280,7 +280,6 @@
     "spawning_disabled": "subagent spawning is disabled (max depth 0); set max_subagent_depth to allow it",
     "max_depth_reached": "maximum subagent nesting depth (%d) reached",
     "ad_hoc_skill_description": "Ad-hoc skill created for requested capability '%s'",
-    "alert_plain": "System Alert: Your execution of '%s' failed due to: %s",
     "audit_system_line": "[System] %s\n\n",
     "audit_prompt_line": "Prompt: %s\n\n",
     "audit_thought_line": "Thought:\n%s\n\n",
@@ -298,8 +297,8 @@
     "read_more_lines_notice": "\n[%d more lines in file (%d total lines). Use read with offset=%d to continue.]",
     "read_first_line_over_budget_notice": "\n[Line %d exceeds the byte budget (%d bytes); file may contain minified content or binary data. Use limit or specific offset.]",
     "search_result_limit_notice": "\n[Showing first %d results of %d total. Use %s with offset=%d to continue.]",
-    "find_result_limit_notice": "\n\n[Showing first %d results of %d total. Use find with offset=%d to continue.]",
-    "list_entry_limit_notice": "\n[Listing capped at %d entries of %d total. Use list with offset=%d to continue.]",
+    "find_result_limit_notice": "\n\n[Showing first %d results of %d total. Use find_files with offset=%d to continue.]",
+    "list_entry_limit_notice": "\n[Listing capped at %d entries of %d total. Use list_directory with offset=%d to continue.]",
     "grep_match_limit_notice": "\n[match limit reached: showing first %d matches of %d total matching lines. Use grep with offset=%d to continue.]",
     "grep_output_limit_notice": "\n[output size limit reached: %d KB from %d matches of %d total matching lines. Use grep with offset=%d to continue.]",
     "output_limit_notice": "\n[output size limit reached: %d KB from %d results of %d total. Use %s with offset=%d to continue.]",

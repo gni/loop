@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
@@ -18,7 +19,7 @@ func isReadLike(lower string) bool {
 }
 
 func isSubagentLike(lower string) bool {
-	return lower == "create_subagent" || lower == "spawn_subagent" ||
+	return lower == "create_subagent" || lower == "remove_subagent" || lower == "list_subagents" || lower == "inspect_subagent" || lower == "spawn_subagent" ||
 		strings.HasPrefix(lower, "subagent__") || strings.HasPrefix(lower, "swarm_") || lower == "delegate"
 }
 
@@ -35,29 +36,33 @@ func isSkillLike(lower string) bool {
 }
 
 func isTaskStatusLike(lower string) bool {
-	return lower == "task_status" || lower == "task_list" || lower == "ps"
+	return lower == "get_task_status" || lower == "task_list" || lower == "ps"
 }
 
 func isTaskKillLike(lower string) bool {
-	return lower == "task_kill" || lower == "kill"
+	return lower == "stop_task" || lower == "kill"
 }
 
 func IsWriteLikeTool(toolName string) bool {
+	toolName = domaintool.NormalizeName(toolName)
 	return toolName == "write" || strings.Contains(toolName, "write") || strings.Contains(toolName, "replace")
 }
 
 func IsEditLikeTool(toolName string) bool {
+	toolName = domaintool.NormalizeName(toolName)
 	lower := strings.ToLower(toolName)
 	return lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "patch")
 }
 
 func IsCommandLikeTool(toolName string) bool {
+	toolName = domaintool.NormalizeName(toolName)
 	lower := strings.ToLower(toolName)
 	return lower == "bash" || lower == "exec" || lower == "sh" ||
 		strings.Contains(lower, "command") || strings.Contains(lower, "shell") || strings.Contains(lower, "run")
 }
 
 func GetToolGlyph(toolName string) string {
+	toolName = domaintool.NormalizeName(toolName)
 	lower := strings.ToLower(toolName)
 	switch {
 	case isReadLike(lower):
@@ -118,6 +123,7 @@ func FormatThinkingSummary(theme style.UITheme, seconds float64, active bool, li
 }
 
 func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITheme) string {
+	toolName = domaintool.NormalizeName(toolName)
 	if status == ToolStatusError {
 		return style.NewStyle().Foreground(theme.Error).Bold(true).Render("!")
 	}
@@ -175,6 +181,7 @@ func FormatBashCommandLine(_ string, command string, theme style.UITheme) string
 }
 
 func GetActionStyle(toolName string, theme style.UITheme) style.Style {
+	toolName = domaintool.NormalizeName(toolName)
 	lower := strings.ToLower(toolName)
 	var c color.Color
 	switch {
@@ -193,6 +200,7 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 }
 
 func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
+	toolName = domaintool.NormalizeName(toolName)
 	toolStyle := GetActionStyle(toolName, theme)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 
@@ -215,8 +223,8 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 	if path != "" {
 		relPath := path
 		isNonFilePathTool := toolName == "create_subagent" || toolName == "spawn_subagent" ||
-			strings.HasPrefix(toolName, "subagent__") || toolName == "task_status" ||
-			toolName == "task_kill" || toolName == "load_skill" || toolName == "bash"
+			strings.HasPrefix(toolName, "subagent__") || toolName == "get_task_status" ||
+			toolName == "stop_task" || toolName == "load_skill" || toolName == "bash"
 		if toolName != "ls" && !isNonFilePathTool {
 			if wd, err := os.Getwd(); err == nil {
 				if rel, err := filepath.Rel(wd, path); err == nil {

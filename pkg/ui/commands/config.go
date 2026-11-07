@@ -11,7 +11,6 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
-	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/interceptor"
@@ -30,86 +29,67 @@ func handleConfigCommand(
 	calcHistoryTokens func() (int, int, bool),
 ) {
 	rl := terminalFromReader(kiReader)
-
-	if len(parts) <= 1 {
-		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
-		defer cleanup()
-
-		ui.ShutdownStatusBar(os.Stderr)
-		newConfig, errInteractive := interactive.RunInteractiveConfig(a.Config, *theme, input, output)
-		ui.InitStatusBar(os.Stderr)
-		if errInteractive != nil {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
-			fmt.Fprintf(w, "settings menu failed: %v\n", errInteractive)
-			return
-		}
-		if newConfig == nil || reflect.DeepEqual(a.Config, newConfig) {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
-			return
-		}
-
-		previous := *a.Config
-		if newConfig.GuidedMode && !previous.GuidedMode {
-			newConfig.AutoApprove = false
-
-			newConfig.ParallelToolCalls = false
-		}
-		if newConfig.PromptsFile != previous.PromptsFile {
-			if err := domaintool.LoadPromptCatalog(newConfig.PromptsFile); err != nil {
-				ui.RestoreAfterModal(w, a, kiReader, rl)
-				fmt.Fprintf(w, "prompt catalog not applied: %v\n", err)
-				return
-			}
-		}
-		a.ApplyConfig(newConfig)
-		limits.Set(a.Config.Limits)
-		ui.SetCollapseStatus(a.Config.CollapseResults)
-		saved := saveConfigUpdate(a, w)
-		if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), true) {
-			return
-		}
-		ui.RestoreAfterModal(w, a, kiReader, rl)
-		if saved {
-			fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
-		}
-		return
-	}
-
-	if cmdName == "/config" && parts[1] == "show" {
+	if len(parts) > 1 && cmdName == "/config" && parts[1] == "show" {
 		render.RenderConfig(w, a.Config, *theme)
 		return
 	}
-
-	startIndex := 1
-	if cmdName == "/config" && parts[1] == "set" {
-		if len(parts) < 4 {
+	next, err := config.Clone(a.Config)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	modal := len(parts) <= 1
+	if modal {
+		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
+		defer cleanup()
+		ui.ShutdownStatusBar(os.Stderr)
+		next, err = interactive.RunInteractiveConfig(a.Config, *theme, input, output)
+		ui.InitStatusBar(os.Stderr)
+		if err != nil {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+			fmt.Fprintf(w, "settings menu failed: %v\n", err)
+			return
+		}
+		if next == nil || reflect.DeepEqual(a.Config, next) {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+			return
+		}
+	} else {
+		index := 1
+		if cmdName == "/config" && parts[1] == "set" {
+			index = 2
+		}
+		if len(parts) < index+2 {
 			fmt.Fprintln(w, "usage: /config [set] <key> <value>")
 			return
 		}
-		startIndex = 2
-	} else if len(parts) < 3 {
-		if cmdName == "/set" {
-			fmt.Fprintln(w, "usage: /set <key> <value>")
-		} else {
-			fmt.Fprintln(w, "usage: /config <key> <value>")
+		key, value := parts[index], strings.Join(parts[index+1:], " ")
+		canonical, _, _ := config.CanonicalSetting(key, value)
+		if canonical == "context_window_limit" && strings.EqualFold(value, "auto") {
+			next.AutoAdaptContext = true
+		} else if !setConfigValue(next, key, value, w) {
+			return
 		}
-		return
 	}
-
-	key := parts[startIndex]
-	val := strings.Join(parts[startIndex+1:], " ")
-
 	previous := *a.Config
-	if (key == "context_window_limit" || key == "context_limit" || key == "context") && strings.EqualFold(val, "auto") {
-		a.Config.AutoAdaptContext = true
-	} else if !setConfigValue(a, key, val, theme, w) {
+	if err := a.ApplyConfig(next); err != nil {
+		if modal {
+			ui.RestoreAfterModal(w, a, kiReader, rl)
+		}
+		fmt.Fprintf(w, "settings update failed: %v\n", err)
 		return
 	}
-
-	a.ApplyConfig(a.Config)
+	limits.Set(a.Config.Limits)
+	ui.SetCollapseStatus(a.Config.CollapseResults)
+	if history := ui.GetUI().ChatHistory; history != nil {
+		history.SetPageSize(a.Config.HistoryPageSize)
+	}
 	saved := saveConfigUpdate(a, w)
-	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), false) {
+	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), modal) {
 		return
+	}
+	if modal {
+		ui.RestoreAfterModal(w, a, kiReader, rl)
 	}
 	if saved {
 		fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)

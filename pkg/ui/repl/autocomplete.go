@@ -23,7 +23,7 @@ var baseAutocompleteCandidates = []string{
 	"/session ", "/session list", "/session new", "/session load", "/session branch ", "/session clear",
 	"/help", "/commands", "/exit", "/quit", "/mcp",
 	"/task ", "/task list", "/task view ", "/task stream ", "/task kill ", "/task remove ", "/task clear",
-	"/task_kill ", "/task_status ", "/task_list", "/task_clear",
+	"/stop_task ", "/get_task_status ", "/task_list", "/task_clear",
 	"/kill ", "/stop", "/stop ", "/status", "/status ", "/taskstop ", "/tasks", "/ps",
 	"/toggle", "/collapse", "/expand",
 	"/provider ", "/provider list", "/provider add ", "/provider select ", "/provider model ", "/provider timeout ", "/provider remove ", "/p ",
@@ -191,7 +191,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 						map[string]bool{"disable": true, "enable": true, "toggle": true},
 					)
 				}
-			} else if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/task ", "/stop ", "/kill ", "/status ", "/taskstop ", "/task_kill ", "/task_status "); ok {
+			} else if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/task ", "/stop ", "/kill ", "/status ", "/taskstop ", "/task_kill ", "/task_status ", "/stop_task ", "/get_task_status "); ok {
 				filterPrefix := strings.TrimPrefix(prefixToPos, cmdPrefix)
 				appendTaskIDs := func(prefix, idFilter string) {
 					if a == nil {

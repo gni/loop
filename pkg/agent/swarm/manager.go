@@ -41,7 +41,7 @@ func NewMultiAgentManager(baseAgent *agent.Agent, w io.Writer, theme style.UIThe
 		baseAgent.Registry.Register(&ListSubagentsTool{mam: mam})
 		baseAgent.Registry.Register(&AuditSubagentTool{mam: mam})
 		if baseAgent.Config == nil || baseAgent.Config.MaxSubagentDepth <= 0 {
-			baseAgent.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "audit_subagent")
+			baseAgent.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "inspect_subagent")
 		}
 	}
 

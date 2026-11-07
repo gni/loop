@@ -14,8 +14,8 @@ import (
 var DefaultLimitTexts = map[string]string{
 	"read":              "Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete.",
 	"grep":              "Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue.",
-	"find":              "Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue.",
-	"list":              "Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
+	"find_files":        "Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue.",
+	"list_directory":    "Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
 	"bash":              "Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count.",
 	"read_param_offset": "Line number to start reading from (1-indexed). Optional",
 	"find_param_offset": "Result number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue.",
@@ -163,13 +163,14 @@ func ReadFirstLineOverBudgetNotice(maxBytes, lineNo int, path string) string {
 }
 
 func SearchLimitNotice(toolName string, shown, total, next int) string {
+	toolName = domaintool.NormalizeName(toolName)
 	switch toolName {
-	case "find":
+	case "find_files":
 		return domaintool.RuntimeMessagef("find_result_limit_notice",
-			"\n\n[Showing first %d results of %d total. Use find with offset=%d to continue.]", shown, total, next)
-	case "list":
+			"\n\n[Showing first %d results of %d total. Use find_files with offset=%d to continue.]", shown, total, next)
+	case "list_directory":
 		return domaintool.RuntimeMessagef("list_entry_limit_notice",
-			"\n[Listing capped at %d entries of %d total. Use list with offset=%d to continue.]", shown, total, next)
+			"\n[Listing capped at %d entries of %d total. Use list_directory with offset=%d to continue.]", shown, total, next)
 	default:
 		return domaintool.RuntimeMessagef("search_result_limit_notice",
 			"\n[Showing first %d results of %d total. Use %s with offset=%d to continue.]", shown, total, toolName, next)

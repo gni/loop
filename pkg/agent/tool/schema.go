@@ -83,6 +83,7 @@ func (r *ToolRegistry) Prepare(name, arguments string) (ToolExecutor, string, er
 }
 
 func normalizeToolArguments(name, arguments string, value any) any {
+	name = NormalizeName(name)
 	object, ok := value.(map[string]any)
 	if !ok {
 		return value
@@ -99,7 +100,7 @@ func normalizeToolArguments(name, arguments string, value any) any {
 		}
 	}
 	switch name {
-	case "read", "write", "edit", "list":
+	case "read", "write", "edit", "list_directory":
 		if path := filetool.ExtractFilePath(arguments); path != "" {
 			object["path"] = path
 		}
@@ -108,13 +109,18 @@ func normalizeToolArguments(name, arguments string, value any) any {
 				object["content"] = content
 			}
 		}
+	case "find_files":
+		copyAlias("pattern", "glob")
+		if path := filetool.ExtractFilePath(arguments); path != "" {
+			object["path"] = path
+		}
 	case "bash":
 		copyAlias("command", "cmd", "arguments")
 		copyAlias("dir", "cwd")
 	case "todo":
 		copyAlias("tasks", "actions")
 		delete(object, "actions")
-	case "task_status", "task_kill":
+	case "get_task_status", "stop_task":
 		copyAlias("task_id", "id", "task", "taskId")
 	case "load_skill":
 		copyAlias("name", "skill", "skill_name")

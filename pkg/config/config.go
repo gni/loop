@@ -421,7 +421,9 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 
 		conf.applyDefaults()
 		conf.ensureDefaultProvider()
-		conf.SyncActiveProvider()
+		if err := conf.SyncActiveProvider(); err != nil {
+			return nil, nil, err
+		}
 		if err := SaveConfig(path, conf); err != nil {
 			return nil, nil, err
 		}
@@ -443,10 +445,16 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 	dir := filepath.Dir(path)
 	mcpPath := filepath.Join(dir, "mcp.json")
 	if mcpData, err := os.ReadFile(mcpPath); err == nil {
-		var mcpMap map[string]MCPServerConfig
-		if err := json.Unmarshal(mcpData, &mcpMap); err == nil && mcpMap != nil {
-			cfg.MCPServers = mcpMap
+		var servers map[string]MCPServerConfig
+		if err := json.Unmarshal(mcpData, &servers); err != nil {
+			return nil, nil, fmt.Errorf("parse %s: %w", mcpPath, err)
 		}
+		if servers == nil {
+			return nil, nil, fmt.Errorf("%s must contain a JSON object", mcpPath)
+		}
+		cfg.MCPServers = servers
+	} else if !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("read %s: %w", mcpPath, err)
 	} else if len(cfg.MCPServers) > 0 {
 		if err := saveMCPFile(dir, cfg.MCPServers); err != nil {
 			return nil, nil, err
@@ -455,24 +463,39 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 
 	providersPath := filepath.Join(dir, "providers.json")
 	if provData, err := os.ReadFile(providersPath); err == nil {
-		var provFile ProvidersFile
-		if err := json.Unmarshal(provData, &provFile); err == nil && provFile.Providers != nil {
-			active := provFile.Active
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(provData, &fields); err != nil {
+			return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
+		}
+		if fields == nil {
+			return nil, nil, fmt.Errorf("%s must contain a JSON object", providersPath)
+		}
+		if _, wrapped := fields["providers"]; wrapped {
+			var file ProvidersFile
+			if err := json.Unmarshal(provData, &file); err != nil {
+				return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
+			}
+			if file.Providers == nil {
+				return nil, nil, fmt.Errorf("providers in %s must be a JSON object", providersPath)
+			}
+			active := file.Active
 			if active == "" {
-				active = provFile.ActiveProvider
+				active = file.ActiveProvider
 			}
 			if active != "" {
 				cfg.ActiveProvider = active
 			}
-			populateProviderNames(provFile.Providers)
-			cfg.Providers = provFile.Providers
+			cfg.Providers = file.Providers
 		} else {
-			var provMap map[string]ProviderConfig
-			if err := json.Unmarshal(provData, &provMap); err == nil && provMap != nil {
-				populateProviderNames(provMap)
-				cfg.Providers = provMap
+			var providers map[string]ProviderConfig
+			if err := json.Unmarshal(provData, &providers); err != nil {
+				return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
 			}
+			cfg.Providers = providers
 		}
+		populateProviderNames(cfg.Providers)
+	} else if !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("read %s: %w", providersPath, err)
 	} else if len(cfg.Providers) > 0 {
 		if err := saveProvidersFile(dir, cfg.ActiveProvider, cfg.Providers); err != nil {
 			return nil, nil, err
@@ -489,7 +512,9 @@ func loadConfigWithRaw(path string) (*Config, []byte, error) {
 		}
 	}
 
-	cfg.SyncActiveProvider()
+	if err := cfg.ActivateProvider(cfg.ActiveProvider); err != nil {
+		return nil, nil, err
+	}
 	cfg.NormalizeSafety()
 	if envTimeout := os.Getenv("LOOP_TIMEOUT"); envTimeout != "" {
 		if t, err := strconv.Atoi(envTimeout); err == nil && t >= 0 {
@@ -581,35 +606,35 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 func GetTLSConfig(cfg *Config) (*tls.Config, error) {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: !cfg.TLSVerify,
+	if cfg == nil {
+		return nil, fmt.Errorf("TLS configuration is unavailable")
 	}
-
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
-		_, errCert := os.Stat(cfg.CertFile)
-		_, errKey := os.Stat(cfg.KeyFile)
-		if errCert == nil && errKey == nil {
-			cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load client keypair: %w", err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
+	next := &tls.Config{InsecureSkipVerify: !cfg.TLSVerify}
+	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+		return nil, fmt.Errorf("cert_file and key_file must be configured together")
+	}
+	if cfg.CertFile != "" {
+		certificate, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate: %w", err)
 		}
+		next.Certificates = []tls.Certificate{certificate}
 	}
-
 	if cfg.CAFile != "" {
-		if _, err := os.Stat(cfg.CAFile); err == nil {
-			caCert, err := os.ReadFile(cfg.CAFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read CA certificate: %w", err)
-			}
-			caCertPool := x509.NewCertPool()
-			caCertPool.AppendCertsFromPEM(caCert)
-			tlsConfig.RootCAs = caCertPool
+		data, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read CA certificate: %w", err)
 		}
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(data) {
+			return nil, fmt.Errorf("ca_file contains no valid certificates")
+		}
+		next.RootCAs = roots
 	}
-
-	return tlsConfig, nil
+	return next, nil
 }
 
 func cloneStringMap(m map[string]string) map[string]string {

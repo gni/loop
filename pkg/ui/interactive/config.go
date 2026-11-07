@@ -73,7 +73,7 @@ func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Re
 		return runSettingsMenuLoop(sr, rlOutput, theme, "settings", func() []*settingItem { return items }, extraRender)
 	})
 	if !isTTY {
-		return cfg, nil
+		return nil, fmt.Errorf("settings editor requires an interactive terminal")
 	}
 	if err != nil {
 		return nil, err

@@ -32,10 +32,12 @@ func commitProviderConfig(a *agent.Agent, next *config.Config) error {
 			return err
 		}
 	}
-	if err := config.SaveConfig(a.ConfigPath, next); err != nil {
-		return fmt.Errorf("save provider configuration: %w", err)
+	if err := a.ApplyConfig(next); err != nil {
+		return err
 	}
-	a.ApplyConfig(next)
+	if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+		return fmt.Errorf("provider applied in memory, but could not save: %w", err)
+	}
 	return nil
 }
 

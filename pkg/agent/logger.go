@@ -45,24 +45,31 @@ func ResolveDebugTarget(customPath string) string {
 // NewDebugLogger enables metadata-only execution tracing for an explicit target.
 // Set debug_log_file or LOOP_DEBUG_FILE to a path to opt in.
 func NewDebugLogger(_ string, customPath string) *DebugLogger {
+	logger, err := openDebugLogger(customPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "debug logging disabled: %v\n", err)
+	}
+	return logger
+}
+
+func openDebugLogger(customPath string) (*DebugLogger, error) {
 	target := ResolveDebugTarget(customPath)
 	if target == "" {
-		return nil
+		return nil, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-		return nil
+		return nil, err
 	}
 
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "debug logging disabled: %v\n", err)
-		return nil
+		return nil, err
 	}
 
 	if err := f.Chmod(0600); err != nil {
 		_ = f.Close()
-		return nil
+		return nil, err
 	}
 	dl := &DebugLogger{
 		filePath:       target,
@@ -70,13 +77,12 @@ func NewDebugLogger(_ string, customPath string) *DebugLogger {
 		fileReadCounts: make(map[string]int),
 	}
 
-	dl.writeRaw(fmt.Sprintf("\n%s\n[SESSION START: %s]\nMetadata logging only\n%s\n",
-		strings.Repeat("=", 80),
-		nowDebugTimestamp(),
-		strings.Repeat("=", 80),
-	))
+	if _, err := f.WriteString(fmt.Sprintf("\n%s\n[SESSION START: %s]\nMetadata logging only\n%s\n", strings.Repeat("=", 80), nowDebugTimestamp(), strings.Repeat("=", 80))); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 
-	return dl
+	return dl, nil
 }
 
 func nowDebugTimestamp() string {

@@ -290,10 +290,11 @@ func isReadWindowNew(toolName, target, arguments string, windows map[string]map[
 }
 
 func (g *TurnExecutionGuard) ExtractTargetFile(toolName, arguments string) string {
+	toolName = tool.NormalizeName(toolName)
 	switch toolName {
 	case "read", "write", "edit":
 		return extractPathArg(arguments, "")
-	case "list", "ls":
+	case "list_directory", "ls":
 		return extractPathArg(arguments, ".")
 	case "bash":
 		cmd := extractBashCommand(arguments)

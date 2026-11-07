@@ -110,7 +110,14 @@ func (ki *KeyInterceptorReader) saveAgentConfigSnapshot() {
 	configPath := ki.Agent.ConfigPath
 	ki.Agent.LLMProviderMu.Unlock()
 	if err == nil && snapshot != nil {
-		_ = config.SaveConfig(configPath, snapshot)
+		err = config.SaveConfig(configPath, snapshot)
+	}
+	if err != nil {
+		output := ki.W
+		if output == nil {
+			output = os.Stderr
+		}
+		fmt.Fprintf(output, "\nview updated in memory, but settings could not be saved: %v\n", err)
 	}
 }
 

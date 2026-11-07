@@ -232,7 +232,9 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 
 	if a.Config != nil && a.Config.LocalPlugins {
 		for _, dir := range a.pluginDirs() {
-			_ = tool.RegisterPluginsContext(a.Context(), a.Registry, dir)
+			if err := tool.RegisterPluginsContext(a.Context(), a.Registry, dir); err != nil {
+				fmt.Fprintf(os.Stderr, "cannot load plugins: %v\n", err)
+			}
 		}
 	}
 
@@ -453,41 +455,6 @@ func (a *Agent) RefreshPlanStatus() {
 	a.UI.UpdatePlanStatus(completed, len(todos))
 }
 
-func (a *Agent) ApplyConfig(cfg *config.Config) {
-	if a == nil || cfg == nil {
-		return
-	}
-
-	a.LLMProviderMu.Lock()
-	defer a.LLMProviderMu.Unlock()
-
-	cfg.NormalizeSafety()
-	a.Config = cfg
-	if ui, ok := a.UI.(interface{ SetConfig(*config.Config) }); ok {
-		ui.SetConfig(cfg)
-	}
-	a.ensureGuided().SetEnabled(cfg.GuidedMode)
-	if a.FileObservations != nil {
-		a.FileObservations.SetDisabled(!cfg.FileObservationGuard)
-	}
-	a.syncOpenAIProviderLocked(cfg, true)
-
-	desiredDebugPath := ResolveDebugTarget(cfg.DebugLogFile)
-	if a.GetDebugLogPath() != desiredDebugPath {
-		if a.DebugLogger != nil {
-			a.DebugLogger.Close()
-		}
-		a.DebugLogger = NewDebugLogger(a.WorkspaceRoot, cfg.DebugLogFile)
-	}
-
-	a.stateMu.Lock()
-	a.emittedMemoryErrors = nil
-	a.stateMu.Unlock()
-
-	a.syncToolAvailability()
-	a.markSystemPromptDirty()
-}
-
 // syncToolAvailability keeps explicit permissions separate from disabled-by-feature
 // tools. Registry state is a derived view, never a source for DisabledTools.
 func (a *Agent) syncToolAvailability() {
@@ -583,7 +550,7 @@ func (a *Agent) EnableTools(names ...string) {
 		a.enableMCPDeferred()
 	}
 	if wasSubagentsDisabled && a.Config.MaxSubagentDepth > 0 {
-		for _, name := range []string{"create_subagent", "remove_subagent", "list_subagents", "audit_subagent"} {
+		for _, name := range []string{"create_subagent", "remove_subagent", "list_subagents", "inspect_subagent"} {
 			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
 				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
 			}
@@ -700,22 +667,29 @@ func (a *Agent) SessionMessagesSnapshot() ([]db.Message, bool) {
 }
 
 func (a *Agent) ConfiguredSkillDirs() []string {
-	if a == nil || a.Config == nil {
+	if a == nil {
 		return nil
 	}
-	trusted := a.Config.ProjectResources
-	dirs := SkillSearchDirsForWorkspace(a.Config.SkillsDir, a.WorkspaceRoot, trusted)
+	return a.skillDirsForConfig(a.Config)
+}
+
+func (a *Agent) skillDirsForConfig(cfg *config.Config) []string {
+	if a == nil || cfg == nil {
+		return nil
+	}
+	trusted := cfg.ProjectResources
+	dirs := SkillSearchDirsForWorkspace(cfg.SkillsDir, a.WorkspaceRoot, trusted)
 	seen := make(map[string]bool, len(dirs))
 	for _, d := range dirs {
 		seen[filepath.Clean(d)] = true
 	}
-	for _, raw := range a.Config.SkillDirectories {
+	for _, raw := range cfg.SkillDirectories {
 		resolved := resolveSkillDir(raw)
 		if resolved == "" {
 			continue
 		}
 		clean := filepath.Clean(resolved)
-		if seen[clean] || !a.ProjectResourceAllowed(clean) {
+		if seen[clean] || !a.resourceAllowed(cfg, clean) {
 			continue
 		}
 		seen[clean] = true
@@ -842,24 +816,28 @@ func (a *Agent) HasSubagent(name string) bool {
 	return a.SpawnedAgents[name]
 }
 
-func (a *Agent) ProjectResourceAllowed(path string) bool {
-	if a.Config == nil || a.Config.ProjectResources {
+func (a *Agent) ProjectResourceAllowed(path string) bool { return a.resourceAllowed(a.Config, path) }
+
+func (a *Agent) resourceAllowed(cfg *config.Config, path string) bool {
+	if cfg == nil || cfg.ProjectResources {
 		return true
 	}
 	rel, err := filepath.Rel(a.WorkspaceRoot, path)
 	return err == nil && (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func (a *Agent) pluginDirs() []string {
+func (a *Agent) pluginDirs() []string { return a.pluginDirsForConfig(a.Config) }
+
+func (a *Agent) pluginDirsForConfig(cfg *config.Config) []string {
 	var allowed []string
 	seen := make(map[string]bool)
-	for _, dir := range append(getPluginDirs(a.WorkspaceRoot), a.Config.PluginDirectories...) {
+	for _, dir := range append(getPluginDirs(a.WorkspaceRoot), cfg.PluginDirectories...) {
 		dir = filepath.Clean(dir)
 		if seen[dir] {
 			continue
 		}
 		seen[dir] = true
-		if a.ProjectResourceAllowed(dir) {
+		if a.resourceAllowed(cfg, dir) {
 			allowed = append(allowed, dir)
 		}
 	}
@@ -908,7 +886,7 @@ func (a *Agent) enforceOptionalTools() {
 		}
 	}
 	if a.Config.MaxSubagentDepth <= 0 {
-		a.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "audit_subagent")
+		a.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "inspect_subagent")
 		for name := range a.Registry.GetAllExecutors() {
 			if strings.HasPrefix(name, "subagent__") {
 				a.Registry.Disable(name)

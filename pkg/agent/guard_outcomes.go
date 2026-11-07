@@ -44,7 +44,8 @@ func (g *TurnExecutionGuard) recordOutcome(name, key, arguments, output string, 
 }
 
 func isStatusPollingTool(name string) bool {
-	return name == "task_status" || name == "audit_subagent" || name == "list_subagents"
+	name = tool.NormalizeName(name)
+	return name == "get_task_status" || name == "inspect_subagent" || name == "list_subagents"
 }
 
 func (g *TurnExecutionGuard) outcomeRejection(name, key string) error {

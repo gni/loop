@@ -63,7 +63,10 @@ func handleNostopCommand(a *agent.Agent, parts []string, theme *style.UITheme, w
 		return
 	}
 	cfg.Nostop = next
-	a.ApplyConfig(cfg)
+	if err := a.ApplyConfig(cfg); err != nil {
+		fmt.Fprintf(w, "nostop update failed: %v\n", err)
+		return
+	}
 	saveConfigUpdate(a, w)
 	printNostopStatus(w, next)
 }

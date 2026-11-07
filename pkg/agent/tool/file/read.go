@@ -40,7 +40,7 @@ func (t *readTool) PromptSnippet() string {
 func (t *readTool) PromptGuidelines() []string {
 	return domaintool.FormatToolGuidelines(t.Name(), []string{
 		"Use 'read' to examine files instead of cat or sed. Use 'offset' and 'limit' to inspect specific line ranges in large files.",
-		"Use 'list' for directories.",
+		"Use 'list_directory' for directories.",
 	})
 }
 
@@ -49,7 +49,7 @@ func (t *readTool) Definition() domaintool.Tool {
 		"read",
 		domaintool.FormatToolDescription("read", "Read text or image files. Text files return up to 2000 lines (or 50KB) by default; use offset and limit to paginate. Image files (.png, .jpg, .gif, .webp) return visual content blocks."),
 		map[string]domaintool.SchemaProp{
-			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list' to inspect directory trees.")),
+			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list_directory' to inspect directory trees.")),
 			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),
 			"limit":  domaintool.NumberProp(domaintool.FormatParamDescription("read", "limit", "Maximum number of lines to read. Optional")),
 		},
@@ -128,7 +128,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if strings.ContainsAny(targetPath, "*?[") {
-		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'read' tool requires a specific file path; use the 'find' tool instead to search files matching this pattern (e.g. find(pattern: '%s'))", targetPath, targetPath)
+		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'read' tool requires a specific file path; use the 'find_files' tool instead to search files matching this pattern (e.g. find_files(pattern: '%s'))", targetPath, targetPath)
 	}
 
 	safePath, err := ctx.SafePath(targetPath)
@@ -161,9 +161,9 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				if treeErr != nil {
 					return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, treeErr)
 				}
-				return fmt.Sprintf("[Path '%s' is a directory. Use 'list' to view directories, or call 'read' with a specific file path to view its content:]\n\n%s", targetPath, tree), nil
+				return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n%s", targetPath, tree), nil
 			}
-			return fmt.Sprintf("[Path '%s' is a directory. Use 'list' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", targetPath), nil
+			return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", targetPath), nil
 		}
 		safePath = resolvedPath
 		info = resolvedInfo

@@ -19,17 +19,17 @@ var providerCmd = &cobra.Command{
 var providerListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured endpoint providers",
-	Run:   runRenderCmd(render.RenderProviders),
+	RunE:  runRenderCmd(render.RenderProviders),
 }
 
 var providerAddCmd = &cobra.Command{
 	Use:   "add <name> <url> [key] [model]",
 	Short: "Add a new endpoint provider profile",
 	Args:  cobra.MinimumNArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		name := args[0]
 		url := args[1]
@@ -50,10 +50,16 @@ var providerAddCmd = &cobra.Command{
 			APIKey:   key,
 			Model:    model,
 		}
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if cfg.ActiveProvider == name {
+			if err := cfg.ActivateProvider(name); err != nil {
+				return err
+			}
+		}
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		fmt.Printf("Provider '%s' successfully added/updated.\n", name)
+		return nil
 	},
 }
 
@@ -61,32 +67,33 @@ var providerSelectCmd = &cobra.Command{
 	Use:   "select <name>",
 	Short: "Select active endpoint provider",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		name := args[0]
 		if name == "none" || name == "default" {
 			cfg.ActiveProvider = ""
-			if !saveConfigOrPrintErr(cfg) {
-				return
+			if err := config.SaveConfig(configPath, cfg); err != nil {
+				return err
 			}
 			fmt.Println("Switched active provider to default settings.")
-			return
+			return nil
 		}
 
 		if _, ok := cfg.Providers[name]; !ok {
-			fmt.Printf("Error: provider '%s' not found.\n", name)
-			return
+			return fmt.Errorf("provider %q not found", name)
 		}
 
-		cfg.ActiveProvider = name
-		cfg.SyncActiveProvider()
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := cfg.ActivateProvider(name); err != nil {
+			return err
+		}
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		fmt.Printf("Switched active provider to '%s'.\n", name)
+		return nil
 	},
 }
 
@@ -94,22 +101,23 @@ var providerModelCmd = &cobra.Command{
 	Use:   "model <model>",
 	Short: "Set model for the currently active endpoint provider",
 	Args:  cobra.MinimumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		model := strings.Join(args, " ")
 		cfg.Model = model
 		cfg.UpdateActiveProvider()
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		if cfg.ActiveProvider != "" {
 			fmt.Printf("Updated model for provider '%s' to '%s'.\n", cfg.ActiveProvider, model)
 		} else {
 			fmt.Printf("Updated default model to '%s'.\n", model)
 		}
+		return nil
 	},
 }
 
@@ -117,25 +125,25 @@ var providerRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
 	Short: "Remove an endpoint provider profile",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		name := args[0]
 		if _, ok := cfg.Providers[name]; !ok {
-			fmt.Printf("Error: provider '%s' not found.\n", name)
-			return
+			return fmt.Errorf("provider %q not found", name)
 		}
 
 		delete(cfg.Providers, name)
 		if cfg.ActiveProvider == name {
 			cfg.ActiveProvider = ""
 		}
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		fmt.Printf("Provider '%s' removed.\n", name)
+		return nil
 	},
 }
 
@@ -143,26 +151,26 @@ var providerTimeoutCmd = &cobra.Command{
 	Use:   "timeout <seconds>",
 	Short: "Set timeout in seconds for the currently active endpoint provider",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
 		}
 		sec, err := strconv.Atoi(args[0])
 		if err != nil || sec < 0 {
-			fmt.Printf("Error: timeout must be a non-negative integer\n")
-			return
+			return fmt.Errorf("timeout must be a non-negative integer")
 		}
 		cfg.Timeout = sec
 		cfg.UpdateActiveProvider()
-		if !saveConfigOrPrintErr(cfg) {
-			return
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			return err
 		}
 		if cfg.ActiveProvider != "" {
 			fmt.Printf("Updated timeout for provider '%s' to %ds.\n", cfg.ActiveProvider, sec)
 		} else {
 			fmt.Printf("Updated default timeout to %ds.\n", sec)
 		}
+		return nil
 	},
 }
 

@@ -22,15 +22,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func hasDisplayHistory(messages []db.Message) bool {
-	for _, m := range messages {
-		if m.Role != "system" {
-			return true
-		}
-	}
-	return false
-}
-
 func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
 	ui.IsInteractive = true
 	defer func() { ui.IsInteractive = false }()
@@ -159,14 +150,7 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 	if len(a.MCPStartErrors) > 0 {
 		render.RenderMCPStartupErrors(ppWriter, a.MCPStartErrors, theme)
 	}
-	ui.PrintBanner(ppWriter, a)
-	if hasDisplayHistory(messages) {
-		stopLoading := ui.StartResumeLoadingIndicator(os.Stderr, theme, currentSessionID, true)
-		chatHistory.PrintInitialHistory()
-		stopLoading()
-	} else {
-		chatHistory.PrintInitialHistory()
-	}
+	chatHistory.PrintInitialHistory()
 
 	ui.SetCollapseStatus(a.Config.CollapseResults)
 	initialEffLimit := a.GetEffectiveContextLimit(initialPromptTokens)

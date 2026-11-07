@@ -134,11 +134,11 @@ func (c *Config) ActivateProvider(name string) error {
 	return nil
 }
 
-func (c *Config) SyncActiveProvider() {
+func (c *Config) SyncActiveProvider() error {
 	if c == nil || c.ActiveProvider == "" {
-		return
+		return nil
 	}
-	_ = c.ActivateProvider(c.ActiveProvider)
+	return c.ActivateProvider(c.ActiveProvider)
 }
 
 func (c *Config) UpdateActiveProvider() {

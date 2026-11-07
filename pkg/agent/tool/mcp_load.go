@@ -25,7 +25,7 @@ func (t *loadMCPTool) PromptSnippet() string {
 func (t *loadMCPTool) Definition() Tool {
 	return NewFunctionTool(
 		"load_mcp",
-		FormatToolDescription("load_mcp", "Connect an MCP server that was configured without alwaysLoad and register its tools. Omit the name to list the servers that are still deferred."),
+		FormatToolDescription("load_mcp", "Connect an MCP server that was configured without always_load and register its tools. Omit the name to list the servers that are still deferred."),
 		map[string]SchemaProp{
 			"name": StringProp(FormatParamDescription("load_mcp", "name", "The configured MCP server name to connect. Optional: empty lists the deferred servers.")),
 		},

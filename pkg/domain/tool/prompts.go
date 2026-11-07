@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,7 @@ func AgentTemplatesSnapshot() AgentToolTemplates {
 }
 
 func ToolGuidelines(name string) []string {
+	name = NormalizeName(name)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[name]; ok && p.Guidelines != nil {
@@ -158,6 +160,7 @@ func LoadPromptCatalog(path string) error {
 
 // hasToolPromptOverride protects explicit catalog instructions from compaction.
 func hasToolPromptOverride(name string) bool {
+	name = NormalizeName(name)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	return customToolPrompts[name]
@@ -183,6 +186,24 @@ func decodeCatalog(data []byte) (PromptCatalog, error) {
 	if c.ToolPrompts == nil {
 		c.ToolPrompts = map[string]ToolPrompt{}
 	}
+	normalized := make(map[string]ToolPrompt, len(c.ToolPrompts))
+	names := make([]string, 0, len(c.ToolPrompts))
+	for name := range c.ToolPrompts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		prompt := c.ToolPrompts[name]
+		canonical := NormalizeName(name)
+		if canonical != name {
+			if _, explicit := c.ToolPrompts[canonical]; explicit {
+				continue
+			}
+		}
+		prompt.Name = canonical
+		normalized[canonical] = prompt
+	}
+	c.ToolPrompts = normalized
 	if c.RuntimeMessages == nil {
 		c.RuntimeMessages = RuntimeMessages{}
 	}
@@ -290,6 +311,7 @@ func DefaultPromptCatalogPath() string {
 }
 
 func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
+	toolName = NormalizeName(toolName)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok {
@@ -301,6 +323,7 @@ func FormatParamDescription(toolName, paramName, fallbackDesc string) string {
 }
 
 func FormatToolDescription(toolName, fallbackDesc string) string {
+	toolName = NormalizeName(toolName)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Description != "" {
@@ -310,6 +333,7 @@ func FormatToolDescription(toolName, fallbackDesc string) string {
 }
 
 func FormatToolSnippet(toolName, fallbackSnippet string) string {
+	toolName = NormalizeName(toolName)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && p.Snippet != "" {
@@ -319,6 +343,7 @@ func FormatToolSnippet(toolName, fallbackSnippet string) string {
 }
 
 func FormatToolGuidelines(toolName string, fallbackGuidelines []string) []string {
+	toolName = NormalizeName(toolName)
 	catalogMu.RLock()
 	defer catalogMu.RUnlock()
 	if p, ok := MasterToolPrompts[toolName]; ok && len(p.Guidelines) > 0 {

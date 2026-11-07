@@ -13,10 +13,13 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/resources"
-	"loop/pkg/ui/render"
 )
 
-type ExtensionInfo = render.ExtensionInfo
+type ExtensionInfo struct {
+	Name     string
+	Path     string
+	Location string
+}
 
 const extensionListCacheTTL = time.Second
 
@@ -29,15 +32,6 @@ var (
 	extensionCacheMu sync.Mutex
 	extensionCache   = make(map[string]cachedExtensionList)
 )
-
-func init() {
-	render.ExtensionCounter = func(workspaceRoot string) int {
-		if ui := getUI(); ui != nil && ui.Config != nil && (!ui.Config.ProjectResources || !ui.Config.LocalPlugins) {
-			workspaceRoot = ""
-		}
-		return len(ListExtensions(workspaceRoot))
-	}
-}
 
 func ListExtensions(workspaceRoot string, additional ...string) []ExtensionInfo {
 	cacheKey := workspaceRoot + "\x00" + strings.Join(additional, "\x00")

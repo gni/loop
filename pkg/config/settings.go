@@ -112,7 +112,17 @@ func SettingKeys() []string {
 // CanonicalSetting validates booleans before any setting or side effect changes.
 func CanonicalSetting(key, value string) (string, string, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
-	aliases := map[string]string{"yes": "auto_approve", "yolo": "auto_approve", "guided": "guided_mode", "always_answer": "auto_approve", "thinking": "show_thinking", "markdown": "markdown_render", "collapse": "collapse_results", "tokens": "show_tokens", "microseconds": "show_microseconds", "auto_adapt": "auto_adapt_context", "direct": "direct_commands", "stream": "stream_writes", "stream_write": "stream_writes", "persistent_shell": "persistent_bash", "atomic_write": "atomic_writes", "file_guard_off": "disable_file_observation_guard", "skip": "skip_verify"}
+	aliases := map[string]string{
+		"yes": "auto_approve", "yolo": "auto_approve", "guided": "guided_mode", "always_answer": "auto_approve",
+		"thinking": "show_thinking", "markdown": "markdown_render", "collapse": "collapse_results", "tokens": "show_tokens", "microseconds": "show_microseconds",
+		"auto_adapt": "auto_adapt_context", "direct": "direct_commands", "stream": "stream_writes", "stream_write": "stream_writes", "persistent_shell": "persistent_bash", "atomic_write": "atomic_writes", "file_guard_off": "disable_file_observation_guard", "skip": "skip_verify",
+		"url": "endpoint", "key": "api_key", "temp": "temperature", "reasoning": "reasoning_effort", "before_hook": "before_tool_hook", "after_hook": "after_tool_hook",
+		"page_size": "history_page_size", "history_chunk": "history_page_size", "history_lines": "history_page_size", "syntax": "syntax_theme",
+		"context_limit": "context_window_limit", "context": "context_window_limit", "min_context": "min_context_window", "compress_threshold": "compression_threshold", "compression_ratio": "compression_threshold",
+		"compaction_reserve": "compaction_reserve_tokens", "reserve_tokens": "compaction_reserve_tokens", "max_tokens": "max_completion_tokens", "output_tokens": "max_completion_tokens", "max_steps": "max_reasoning_steps", "steps": "max_reasoning_steps",
+		"cert": "cert_file", "client_key": "key_file", "ca": "ca_file", "debug": "debug_log_file", "paste_lines": "max_paste_lines", "paste_threshold": "max_paste_lines", "paste_chars": "max_paste_chars", "llm_timeout": "timeout", "spill_limit": "max_tool_output_bytes", "guard_limit": "repeat_guard_limit",
+		"prompts": "prompts_file", "ask_user": "ask_user_mode", "disable_tools": "disabled_tools", "disable_tool": "disabled_tools",
+	}
 	if alias, ok := aliases[key]; ok {
 		key = alias
 	}
@@ -174,6 +184,9 @@ func (cfg *Config) SetValue(key, value string) error {
 		enabled, err := ParseBoolValue(value)
 		if err != nil {
 			return err
+		}
+		if key == "auto_approve" && enabled {
+			cfg.GuidedMode = false
 		}
 		target.Elem().SetBool(enabled)
 	case reflect.Int:

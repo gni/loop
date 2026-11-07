@@ -94,6 +94,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer s.Close(context.Background())
+	if err := cmd.Context().Err(); err != nil {
+		return err
+	}
 	if sessionName != "" && s.Store != nil {
 		if err := s.Store.SetName(s.ID, sessionName); err != nil {
 			return err
