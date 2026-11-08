@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -147,11 +148,17 @@ func New(options Options) (*Session, error) {
 		id = db.NewUUID()
 	}
 	var todos []tool.TodoItem
-	if store != nil {
-		todos, err = restoreSettings(store, id, cfg, &options.Tools, options.KeepSelection)
+	var restoredMessages []db.Message
+	if store != nil && store.HasMessages(id) {
+		entries, readErr := store.Entries(id)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return nil, readErr
+		}
+		todos, err = restoreSettingsFromEntries(entries, cfg, &options.Tools, options.KeepSelection)
 		if err != nil {
 			return nil, err
 		}
+		restoredMessages = db.ProjectMessages(entries)
 	}
 	client := options.HTTPClient
 	if client == nil {
@@ -215,7 +222,7 @@ func New(options Options) (*Session, error) {
 		return nil, err
 	}
 	if store != nil {
-		s.messages, err = s.Agent.LoadSessionMessages(id)
+		s.messages, err = s.Agent.RecoverSessionMessages(id, restoredMessages)
 		if err != nil {
 			return nil, err
 		}

@@ -24,6 +24,13 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 	fmt.Fprintln(w)
 
 	commands := [][]string{
+		{"/find <text> | next | prev | clear", "search this conversation, including older history"},
+		{"/latest", "return to the latest output"},
+		{"/changes [diff]", "review recorded file edits and Git working-tree changes"},
+		{"/doctor [offline]", "check settings, provider connection and local tools"},
+		{"/config logo false", "hide the logo; use true to show it"},
+		{"/config reduced_motion true", "keep the logo still"},
+		{"/config logo_brightness <10-100>", "adjust logo contrast"},
 		{"/nostop (or /loop)", "configure Eco, Balanced, or Continuous pacing with a required pause"},
 		{"/nostop <mode> <seconds>|off|status", "set pacing, disable nonstop, or inspect its settings"},
 		{"/guided [on|off|status|approve]", "toggle or inspect guided execution mode (Explore -> Plan -> Execute)"},
@@ -38,9 +45,9 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/thinking [level]", "view or set reasoning effort (off/low/medium/high/max)"},
 		{"/model [name]", "view or set active AI model"},
 		{"/new", "start a new conversation session"},
-		{"/resume [id]", "select a conversation with ↑/↓ and Enter, or load by id"},
+		{"/resume [id]", "filter conversations by typing, then choose with ↑/↓ and Enter"},
 		{"/hotkeys", "display all interactive keyboard shortcuts"},
-		{"/config [show|set <k> <v>]", "view or modify runtime settings"},
+		{"/config [show|set <k> <v>]", "everyday settings, with an advanced-settings toggle"},
 		{"/session [list|new|load|tree|branch|rename|clear]", "manage persistent conversation sessions"},
 		{"/provider", "manage ai endpoints, keys, and model profiles"},
 		{"/skills [load <name>]", "list or load reference skills"},
@@ -81,10 +88,13 @@ func RenderHotkeys(w io.Writer, theme style.UITheme) {
 
 	shortcuts := [][]string{
 		{"Enter", "send prompt"},
+		{"Ctrl+F", "search conversation; Enter finds, Esc cancels"},
+		{"Ctrl+N / Ctrl+P (search active)", "next / previous search match"},
 		{"PageUp / PageDown", "scroll chat output when it exceeds the visible area"},
 		{"Home / End (browsing)", "oldest output / latest output"},
-		{"Mouse wheel", "scroll replies and command output; Shift+drag selects text"},
-		{"Esc or typing (browsing)", "return to live output with your draft preserved"},
+		{"Mouse wheel", "scroll replies and command output"},
+		{"Shift+drag", "select text directly when supported by your terminal"},
+		{"Esc (browsing)", "return to live output with your draft preserved"},
 		{"Alt+Enter", "insert a newline"},
 		{"Ctrl+Enter / Shift+Enter", "insert a newline when the terminal reports the modifier"},
 		{"Ctrl+N / Ctrl+J", "newline alternatives"},

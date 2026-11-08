@@ -169,6 +169,11 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 		return nil, fmt.Errorf("failed to open session file: %w", err)
 	}
 
+	return ProjectMessages(entries), nil
+}
+
+// ProjectMessages restores model context from an already loaded record snapshot.
+func ProjectMessages(entries []session.Record) []message.Message {
 	projected := session.Project(entries)
 	messages := make([]message.Message, 0, len(projected))
 	for _, msg := range projected {
@@ -176,8 +181,7 @@ func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
 			messages = append(messages, msg)
 		}
 	}
-
-	return messages, nil
+	return messages
 }
 
 func (s *JSONLStore) HasMessages(sessionID string) bool {

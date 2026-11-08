@@ -63,12 +63,21 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	ui.SetScrollRegionOffset(style.ConsoleScrollRegionOffset())
 	ui.InitStatusBar(os.Stderr)
 	a.RefreshPlanStatus()
-	defer ui.ShutdownStatusBar(os.Stderr)
-	defer ui.ForceExitAlternateScreen(os.Stderr)
+	// Registered before history and resize cleanup so they stop drawing first.
+	defer func() {
+		cancel()
+		ui.ShutdownStatusBar(os.Stderr)
+		ui.TerminalMu.Lock()
+		defer ui.TerminalMu.Unlock()
+		ui.ForceExitAlternateScreen(os.Stderr)
+		fmt.Fprint(os.Stderr, "\x1b[?2026l\x1b[<u\x1b[>4m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m\x1b[?7h\x1b[?25h\x1b[2J\x1b[H")
+		if !a.Ephemeral {
+			fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\r\n", render.SanitizeTerminalText(currentSessionID))
+		}
+	}()
 	// Request modified Enter reporting where supported; legacy terminals ignore
 	// these sequences and retain Ctrl+N/Alt+Enter/Ctrl+J as newline shortcuts.
 	fmt.Fprint(os.Stderr, "\x1b[>4;2m\x1b[>1u")
-	defer fmt.Fprint(os.Stderr, "\x1b[<u\x1b[>4m\x1b[?25h\x1b[?2004l")
 
 	_, height := ui.GetTerminalSize()
 	ppWriter := ui.NewPromptPreservingWriter(os.Stderr, height)
@@ -78,14 +87,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 
 	fd := int(os.Stdin.Fd())
 
-	var historyLines []string
-	if !a.Ephemeral {
-		historyLines, _ = db.GetUserHistory()
-	}
 	hist := ui.NewCustomHistory()
-	for _, hLine := range historyLines {
-		hist.Add(hLine)
-	}
 
 	mam, hadMAM := a.MultiAgentManager.(*swarm.MultiAgentManager)
 	if mam == nil {
@@ -164,6 +166,14 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		render.RenderMCPStartupErrors(ppWriter, a.MCPStartErrors, theme)
 	}
 	chatHistory.PrintInitialHistory()
+	if !a.Ephemeral {
+		go func() {
+			historyLines, err := db.GetUserHistory()
+			if err == nil && ctx.Err() == nil {
+				hist.RestoreOlder(historyLines)
+			}
+		}()
+	}
 
 	ui.SetCollapseStatus(a.Config.CollapseResults)
 	initialEffLimit := a.GetEffectiveContextLimit(initialPromptTokens)
@@ -431,11 +441,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
 	}
 
-	fmt.Fprint(os.Stderr, "\x1b[?2004l")
-	ui.ShutdownStatusBar(os.Stderr)
-	ui.ForceExitAlternateScreen(os.Stderr)
 	if !a.Ephemeral {
 		_ = db.SetLatestSessionID(currentSessionID)
-		fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\n", currentSessionID)
 	}
 }

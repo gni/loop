@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"image/color"
 	"io"
 	"os"
 	"path/filepath"
@@ -188,15 +187,14 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			}
 		}
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(fmt.Sprintf("⎿  %s %s", finalDot, message)))
+		fmt.Fprintln(w, "   "+FailureAdvice(output))
 		return
 	}
 
 	if isError {
-		finalDot := RenderToolSymbol(toolName, ToolStatusError, theme)
-		titleStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-		fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("⎿  %s Error", finalDot)))
+		renderActionableFailure(w, output, collapse, theme)
+		return
 	}
-
 	body := output
 	isJSON := false
 	if !isError {
@@ -207,6 +205,10 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) || (strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
 			var temp interface{}
 			if json.Unmarshal([]byte(trimmedBody), &temp) == nil {
+				if collapse && toolName != "bash" && !isCodeContentTool(toolName) {
+					renderStructuredSummary(w, temp, theme)
+					return
+				}
 				if pretty, err := json.MarshalIndent(temp, "", "  "); err == nil {
 					body = string(pretty)
 					isJSON = true
@@ -375,84 +377,39 @@ func renderEditSummary(w io.Writer, theme style.UITheme, toolName string, argsJS
 	}
 }
 
-func renderTaskSummary(w io.Writer, theme style.UITheme, toolName string, argsJSON string, output string, collapse bool) {
-	toolName = domaintool.NormalizeName(toolName)
-	branchStyle := style.NewStyle().Foreground(theme.Border).Render("⎿  ")
-	taskID := ExtractToolTarget(toolName, argsJSON)
-	if taskID == "" {
-		if fields := strings.Fields(output); len(fields) >= 2 && strings.EqualFold(fields[0], "Task") {
-			taskID = fields[1]
+func renderTaskSummary(w io.Writer, theme style.UITheme, toolName, argsJSON, output string, collapse bool) {
+	id := ExtractToolTarget(toolName, argsJSON)
+	if id == "" {
+		fields := strings.Fields(output)
+		if len(fields) > 1 && fields[0] == "Task" {
+			id = fields[1]
 		}
 	}
-	if taskID == "" {
-		taskID = "task"
+	if id == "" {
+		id = "task"
 	}
-
-	idStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
-	if toolName == "stop_task" {
-		statusStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-		fmt.Fprintf(w, "%s%s: %s\n", branchStyle, idStyle.Render(taskID), statusStyle.Render("terminated"))
-		return
-	}
-
-	statusStr := "running"
+	status := "running"
 	lower := strings.ToLower(output)
-	switch {
-	case strings.Contains(lower, "currently: completed"), strings.Contains(lower, "status: completed"), strings.Contains(lower, "status: done"):
-		statusStr = "completed"
-	case strings.Contains(lower, "currently: killed"), strings.Contains(lower, "status: killed"):
-		statusStr = "killed"
-	case strings.Contains(lower, "currently: failed"), strings.Contains(lower, "status: failed"):
-		statusStr = "failed"
-	}
-
-	var statusColor color.Color
-	switch statusStr {
-	case "running":
-		statusColor = theme.Success
-	case "completed":
-		statusColor = theme.Primary
-	default:
-		statusColor = theme.Error
-	}
-
-	statusStyle := style.NewStyle().Foreground(statusColor).Bold(true)
-
-	cmdDesc := ""
-	firstLine := strings.SplitN(output, "\n", 2)[0]
-	if openParen := strings.Index(firstLine, "("); openParen != -1 {
-		if closeParen := strings.LastIndex(firstLine, ")"); closeParen > openParen {
-			rawCmd := firstLine[openParen+1 : closeParen]
-			if len(rawCmd) > 40 {
-				rawCmd = rawCmd[:37] + "..."
-			}
-			cmdDesc = fmt.Sprintf(" (%s)", rawCmd)
-		}
-	}
-
-	cmdStyle := style.NewStyle().Foreground(theme.TextMuted)
-	fmt.Fprintf(w, "%s%s: %s%s\n",
-		branchStyle,
-		idStyle.Render(taskID),
-		statusStyle.Render(statusStr),
-		cmdStyle.Render(cmdDesc),
-	)
-
-	var outBody string
-	if idx := strings.Index(output, "Output:\n"); idx != -1 {
-		outBody = strings.TrimSpace(output[idx+8:])
-	} else if idx := strings.Index(output, "\n\n"); idx != -1 {
-		outBody = strings.TrimSpace(output[idx+2:])
-	}
-	if outBody != "" && outBody != "(no output)" {
-		lines := strings.Split(outBody, "\n")
-		if collapse && len(lines) > 5 {
-			renderCollapsedNotice(w, len(lines), theme)
-		} else {
-			bodyStyle := style.NewStyle().Foreground(theme.Text)
-			for _, line := range lines {
-				fmt.Fprintf(w, "   %s\n", bodyStyle.Render(line))
+	if toolName == "stop_task" {
+		status = "killed"
+	} else {
+		for _, candidate := range []string{"completed", "killed", "failed"} {
+			if strings.Contains(lower, "currently: "+candidate) || strings.Contains(lower, "status: "+candidate) {
+				status = candidate
+				break
 			}
 		}
 	}
+	command := ""
+	first, _, _ := strings.Cut(output, "\n")
+	if start := strings.Index(first, "("); start >= 0 {
+		if end := strings.LastIndex(first, ")"); end > start {
+			command = first[start+1 : end]
+		}
+	}
+	body := ""
+	if _, tail, ok := strings.Cut(output, "Output:\n"); ok {
+		body = tail
+	}
+	RenderBackgroundTask(w, id, command, status, body, collapse, theme)
 }

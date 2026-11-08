@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -132,7 +133,15 @@ func runSessionPicker(sr *SessionReader, signals chan os.Signal, rlOutput io.Wri
 				label = session.SessionID
 			}
 			preview := strings.Join(strings.Fields(session.Preview), " ")
-			items = append(items, fmt.Sprintf("%s · %d messages · %s", label, session.MsgCount, preview))
+			date := session.Timestamp
+			if len(date) > 16 {
+				date = date[:16]
+			}
+			workspace := filepath.Base(session.Cwd)
+			if session.Cwd == "" {
+				workspace = "unknown workspace"
+			}
+			items = append(items, fmt.Sprintf("%s · %s · %s · %d messages · %s", label, date, workspace, session.MsgCount, preview))
 		}
 		labels := append([]string(nil), items...)
 		items = append(items, "Start a new session")

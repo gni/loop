@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"golang.org/x/term"
 
@@ -27,6 +28,21 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	if impl, ok := a.UI.(*AgentUIImpl); ok && impl.PPWriter != nil {
 		impl.PPWriter.ResizeLocked(height)
 	}
+	state := getUI()
+	id := a.ActiveSessionID()
+	state.StateMu.Lock()
+	if state.SessionID != id {
+		state.SessionID = id
+		state.State.SessionLabel = id
+		if len(id) > 8 {
+			state.State.SessionLabel = id[:8]
+		}
+	}
+	if id == "" {
+		state.State.SessionLabel = "unsaved"
+	}
+	state.State.Workspace = filepath.Base(a.WorkspaceRoot)
+	state.StateMu.Unlock()
 	activeTheme := GetConfiguredTheme(a.Config)
 
 	promptPrefix := GetPromptSymbol(a.Config)

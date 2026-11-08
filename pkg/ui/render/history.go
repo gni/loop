@@ -75,7 +75,9 @@ func PrintSessionHistory(
 		hooks.RenderReasoning = RenderReasoningMarkdownContent
 	}
 	if hooks.RenderError == nil {
-		hooks.RenderError = RenderGenerationError
+		hooks.RenderError = func(w io.Writer, message string, theme style.UITheme) {
+			RenderFailure(w, message, collapseResults, theme)
+		}
 	}
 
 	borderStyle := style.NewStyle().Foreground(theme.Border)

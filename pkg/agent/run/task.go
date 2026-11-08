@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,9 +16,10 @@ import (
 
 type taskKey struct{}
 type taskState struct {
-	mu       sync.Mutex
-	state    task.State
-	reminded bool
+	mu            sync.Mutex
+	state         task.State
+	reminded      bool
+	processOutput map[string]processOutputCursor
 }
 
 func reopenTask(ctx context.Context) {
@@ -169,7 +171,7 @@ func TaskBrief(state *task.State) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Task outcome: %s (%s assessment). Tool observations are execution facts, not proof that the whole task is correct.\n", state.Status, state.Source)
+	fmt.Fprintf(&b, "Request status: %s (%s assessment).\n", state.Status, state.Source)
 	if state.ExpectedOutcome != "" {
 		fmt.Fprintf(&b, "Expected outcome (model interpretation): %s\n", boundedTaskText(state.ExpectedOutcome, 512))
 	}
@@ -183,34 +185,8 @@ func TaskBrief(state *task.State) string {
 		}
 		fmt.Fprintf(&b, "Remaining: %s\n", boundedTaskText(item, 256))
 	}
-	start := max(0, len(state.Observations)-4)
-	for _, entry := range state.Observations[start:] {
-		if entry.Evidence == nil {
-			continue
-		}
-		r := entry.Evidence
-		fmt.Fprintf(&b, "Observed %s [%s]: %s", entry.Tool, entry.CallID, r.Outcome)
-		if r.Target != "" {
-			fmt.Fprintf(&b, " target=%s", boundedTaskText(r.Target, 160))
-		}
-		if r.Changed != nil {
-			fmt.Fprintf(&b, " changed=%t", *r.Changed)
-		}
-		if r.ExitCode != nil {
-			fmt.Fprintf(&b, " exit_code=%d", *r.ExitCode)
-		}
-		if r.HasErrors() || entry.Failed {
-			b.WriteString("; error reported")
-		}
-		b.WriteByte('\n')
-		for i, d := range r.Diagnostics {
-			if i == 2 {
-				break
-			}
-			fmt.Fprintf(&b, "Diagnostic line %d: %s\n", d.Line, boundedTaskText(d.Message, 180))
-		}
-	}
-	return boundedTaskText(b.String(), 4096)
+
+	return boundedTaskText(b.String(), 2048)
 }
 
 func boundedTaskText(s string, n int) string {
@@ -221,4 +197,46 @@ func boundedTaskText(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
+}
+
+type processOutputCursor struct {
+	size    int
+	hash    [32]byte
+	version int64
+}
+
+// NewBackgroundOutput avoids resending cumulative stdout on every poll.
+// The full buffer remains owned by the process and available in /task view.
+func NewBackgroundOutput(ctx context.Context, id, output string, versions ...int64) string {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return output
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.processOutput == nil {
+		state.processOutput = make(map[string]processOutputCursor)
+	}
+	if !utf8.ValidString(output) {
+		delete(state.processOutput, id)
+		return output
+	}
+	version := int64(0)
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+	previous, exists := state.processOutput[id]
+	next := processOutputCursor{size: len(output), hash: sha256.Sum256([]byte(output)), version: version}
+	state.processOutput[id] = next
+	// Identical text can still be new data after a rolling buffer fills.
+	if exists && version != previous.version && next.size == previous.size && next.hash == previous.hash {
+		return output
+	}
+	if exists && len(output) >= previous.size && sha256.Sum256([]byte(output[:previous.size])) == previous.hash {
+		if len(output) == previous.size {
+			return "(no new output)"
+		}
+		return "[New output since previous status]\n" + output[previous.size:]
+	}
+	return output
 }

@@ -11,6 +11,7 @@ import (
 
 // StatusBarState represents the snapshot of metrics displayed in the status bar.
 type StatusBarState struct {
+	Workspace, SessionLabel string
 	Model                   string
 	PromptTokens            int
 	CompletionTokens        int
@@ -153,13 +154,13 @@ func FormatStatusBarRight(state StatusBarState, theme style.UITheme, width int) 
 		if state.Model == "" {
 			return rightInfo
 		}
-		modelName := style.TruncateRunes(state.Model, 13)
+		modelName := style.TruncateCells(state.Model, 13)
 		return rightInfo + modelStyle.Render(modelName) + " "
 	} else {
 		if state.Model == "" {
 			return rightInfo
 		}
-		return rightInfo + modelStyle.Render(state.Model) + " "
+		return rightInfo + modelStyle.Render(style.TruncateCells(state.Model, max(8, width/3))) + " "
 	}
 }
 
@@ -170,16 +171,25 @@ func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) s
 	}
 	available := width - 1
 	leftPart := FormatStatusBarLeft(state, theme, width)
+	if state.Workspace != "" || state.SessionLabel != "" {
+		budget := max(5, min(36, width/2))
+		sessionBudget := max(2, (budget-3)*2/3)
+		workspaceBudget := max(2, budget-3-sessionBudget)
+		workspace := style.TruncateCells(SanitizeTerminalText(state.Workspace), workspaceBudget)
+		session := style.TruncateCells(SanitizeTerminalText(state.SessionLabel), sessionBudget)
+		contextLabel := strings.Trim(workspace+" / "+session, " / ")
+		leftPart = " " + style.NewStyle().Foreground(theme.TextMuted).Render(contextLabel) + leftPart
+	}
 	rightPart := FormatStatusBarRight(state, theme, width)
-	leftLen := utf8.RuneCountInString(style.StripAnsi(leftPart))
-	rightLen := utf8.RuneCountInString(style.StripAnsi(rightPart))
+	leftLen := style.CellWidth(leftPart)
+	rightLen := style.CellWidth(rightPart)
 
 	if leftLen+rightLen+1 > available {
 		rightPart = ""
 		rightLen = 0
 	}
 	if leftLen > available {
-		return style.TruncateRunes(style.StripAnsi(leftPart), available)
+		return style.TruncateCells(style.StripAnsi(leftPart), available)
 	}
 	padding := available - leftLen - rightLen
 	return fmt.Sprintf("%s%s%s", leftPart, strings.Repeat(" ", padding), rightPart)

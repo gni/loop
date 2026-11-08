@@ -1,7 +1,9 @@
 package style
 
 import (
+	"golang.org/x/text/width"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -161,12 +163,12 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 			continue
 		}
 
-		if curWordVisible >= limit {
+		if curWordVisible+RuneWidth(r) > limit && curWordVisible > 0 {
 			flushWord()
 		}
 
 		curWord.WriteRune(r)
-		curWordVisible++
+		curWordVisible += RuneWidth(r)
 		i += size
 	}
 
@@ -176,4 +178,54 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 	}
 
 	return lines
+}
+
+// RuneWidth and CellWidth count terminal columns rather than Unicode code points.
+func RuneWidth(r rune) int {
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == '\u200d' || unicode.IsControl(r) {
+		return 0
+	}
+	switch width.LookupRune(r).Kind() {
+	case width.EastAsianWide, width.EastAsianFullwidth:
+		return 2
+	}
+	return 1
+}
+func CellWidth(text string) int {
+	n := 0
+	for _, r := range StripAnsi(text) {
+		n += RuneWidth(r)
+	}
+	return n
+}
+func TruncateCells(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if CellWidth(text) <= limit {
+		return text
+	}
+	var out strings.Builder
+	n := 0
+	for i := 0; i < len(text); {
+		if text[i] == 27 {
+			end := SkipAnsiEscape(text, i)
+			out.WriteString(text[i:end])
+			i = end
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[i:])
+		cells := RuneWidth(r)
+		if n+cells > limit-1 {
+			break
+		}
+		out.WriteRune(r)
+		n += cells
+		i += size
+	}
+	out.WriteRune('…')
+	if strings.Contains(text, "\x1b") {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
 }

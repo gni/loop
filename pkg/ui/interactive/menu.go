@@ -102,7 +102,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 	}
 
 	if utf8.RuneCountInString(nameStr) > keyColWidth-1 {
-		nameStr = style.TruncateRunes(nameStr, keyColWidth-1)
+		nameStr = style.TruncateCells(nameStr, keyColWidth-1)
 	}
 
 	if colWidth > 0 && !hasAnsiVal {
@@ -111,7 +111,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 			maxValRunes = 6
 		}
 		if utf8.RuneCountInString(valStr) > maxValRunes {
-			valStr = style.TruncateRunes(valStr, maxValRunes)
+			valStr = style.TruncateCells(valStr, maxValRunes)
 		}
 	}
 
@@ -147,7 +147,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 }
 
 func padAnsiCell(cell string, width int) string {
-	vis := utf8.RuneCountInString(style.StripAnsi(cell))
+	vis := style.CellWidth(cell)
 	if vis >= width {
 		return cell
 	}
@@ -195,6 +195,23 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			termH = 24
 		}
 
+		if termW < 24 || termH < 8 {
+			text := style.TruncateCells("Resize to 24×8 or larger; Esc exits", max(1, termW-1))
+			fmt.Fprint(rlOutput, "\x1b[H\x1b[J"+text)
+			if hasSessionReader {
+				key, resized, err := sr.ReadKeyOrResize(sigChan)
+				if err != nil {
+					return err
+				}
+				if resized {
+					continue
+				}
+				if string(key) == "\x1b" {
+					return nil
+				}
+				continue
+			}
+		}
 		// Provider profiles are contiguous groups of fields. Splitting the
 		// flattened list in half can separate a provider from its settings.
 		providerMenu := title == "endpoint providers config"
@@ -228,8 +245,8 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			if extraRender != nil && termH >= 22 {
 				maxVisibleRows = termH - 11
 			}
-			if maxVisibleRows < 5 {
-				maxVisibleRows = 5
+			if maxVisibleRows < 1 {
+				maxVisibleRows = 1
 			}
 
 			selectedRow := selectedIdx % rows
@@ -264,37 +281,37 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			}
 		} else {
 			start, end := 0, len(filtered)
-			if providerMenu {
-				// Leave room for the selected field's untruncated value and
-				// the description/navigation footer, even with many providers.
-				visibleRows := termH - 8
-				if termH >= 14 && len(filtered) > 0 {
-					valueWidth := termW - 8
-					if valueWidth < 1 {
-						valueWidth = 1
-					}
-					valueLen := utf8.RuneCountInString(filtered[selectedIdx].value())
-					if valueLen > 0 {
-						valueRows := (valueLen + valueWidth - 1) / valueWidth
-						if valueRows > 3 {
-							valueRows = 3
-						}
-						visibleRows -= valueRows + 1
-					}
+			// Keep the selected setting visible above the footer and preview.
+			visibleRows := termH - 8
+			if !providerMenu && extraRender != nil && termH >= 20 {
+				visibleRows -= 3
+			}
+			if providerMenu && termH >= 14 && len(filtered) > 0 {
+				valueWidth := termW - 8
+				if valueWidth < 1 {
+					valueWidth = 1
 				}
-				if visibleRows < 1 {
-					visibleRows = 1
-				}
-				if len(filtered) > visibleRows {
-					start = selectedIdx - visibleRows + 1
-					if start < 0 {
-						start = 0
+				valueLen := utf8.RuneCountInString(filtered[selectedIdx].value())
+				if valueLen > 0 {
+					valueRows := (valueLen + valueWidth - 1) / valueWidth
+					if valueRows > 3 {
+						valueRows = 3
 					}
-					if start+visibleRows > len(filtered) {
-						start = len(filtered) - visibleRows
-					}
-					end = start + visibleRows
+					visibleRows -= valueRows + 1
 				}
+			}
+			if visibleRows < 1 {
+				visibleRows = 1
+			}
+			if len(filtered) > visibleRows {
+				start = selectedIdx - visibleRows + 1
+				if start < 0 {
+					start = 0
+				}
+				if start+visibleRows > len(filtered) {
+					start = len(filtered) - visibleRows
+				}
+				end = start + visibleRows
 			}
 			for idx := start; idx < end; idx++ {
 				buf.WriteString(formatMenuCell(filtered[idx], idx == selectedIdx, termW-4, theme) + "\n")
@@ -342,7 +359,12 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("↑/↓/←/→ navigate · enter select/edit · type to search · esc save & exit")))
 		buf.WriteString("\x1b[J")
 
-		outputStr := strings.ReplaceAll(buf.String(), "\n", "\x1b[K\r\n")
+		var bounded strings.Builder
+		for _, line := range strings.Split(buf.String(), "\n") {
+			bounded.WriteString(style.TruncateCells(line, max(1, termW-1)))
+			bounded.WriteByte('\n')
+		}
+		outputStr := strings.ReplaceAll(strings.TrimSuffix(bounded.String(), "\n"), "\n", "\x1b[K\r\n")
 		_, _ = rlOutput.Write([]byte(outputStr))
 
 		var readBuf [16]byte
@@ -454,78 +476,98 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 
 var ErrSelectionCancelled = errors.New("selection cancelled")
 
-func RunInteractiveSelect(sr *SessionReader, sigChan chan os.Signal, rlOutput io.Writer, title string, items []string, theme style.UITheme) (int, error) {
+func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.Writer, title string, items []string, theme style.UITheme) (int, error) {
 	if len(items) == 0 {
 		return -1, fmt.Errorf("no items to select")
 	}
-	selectedIdx := 0
-
+	selected, query := 0, ""
 	for {
-		var buf strings.Builder
-		buf.WriteString("\x1b[H")
-		buf.WriteString(style.NewStyle().Foreground(theme.Primary).Bold(true).Render(title))
-		buf.WriteString("\n\n")
-
-		width, height := terminal.GetDimensions()
-		if width < 1 {
-			width = 80
-		}
-		if height < 1 {
-			height = 24
-		}
-		visible := height - 6
-		if visible < 1 {
-			visible = 1
-		}
-		start := selectedIdx - visible + 1
-		if start < 0 {
-			start = 0
-		}
-		end := start + visible
-		if end > len(items) {
-			end = len(items)
-		}
-		for idx := start; idx < end; idx++ {
-			item := style.TruncateRunes(strings.Join(strings.Fields(items[idx]), " "), max(1, width-8))
-			if idx == selectedIdx {
-				primaryBold := style.NewStyle().Foreground(theme.Primary).Bold(true)
-				buf.WriteString(fmt.Sprintf("    %s %s\n", primaryBold.Render("›"), primaryBold.Render(item)))
-			} else {
-				buf.WriteString(fmt.Sprintf("      %s\n", style.NewStyle().Foreground(theme.Text).Render(item)))
+		var indexes []int
+		for i, item := range items {
+			if query == "" || strings.Contains(strings.ToLower(style.StripAnsi(item)), strings.ToLower(query)) {
+				indexes = append(indexes, i)
 			}
 		}
-
-		buf.WriteString("\n")
-		buf.WriteString(fmt.Sprintf("  %s\n", style.NewStyle().Foreground(theme.Border).Render("↑/↓ navigate · enter select · esc cancel")))
-		buf.WriteString("\x1b[J")
-
-		outputStr := strings.ReplaceAll(buf.String(), "\n", "\x1b[K\r\n")
-		_, _ = rlOutput.Write([]byte(outputStr))
-
-		readBuf, resized, err := sr.ReadKeyOrResize(sigChan)
+		selected = max(0, min(selected, len(indexes)-1))
+		width, height := terminal.GetDimensions()
+		if width < 12 || height < 7 {
+			fmt.Fprint(output, "\x1b[H\x1b[J"+style.TruncateCells("Resize terminal; Esc exits", max(1, width-1)))
+			key, _, err := sr.ReadKeyOrResize(signals)
+			if err != nil {
+				return -1, err
+			}
+			switch string(key) {
+			case "\x1b", "\x03", "\x04":
+				return -1, ErrSelectionCancelled
+			}
+			continue
+		}
+		visible := max(1, height-7)
+		start := max(0, selected-visible+1)
+		end := min(len(indexes), start+visible)
+		var screen strings.Builder
+		screen.WriteString("\x1b[H" + style.NewStyle().Foreground(theme.Primary).Bold(true).Render(style.TruncateCells(title, max(1, width-1))) + "\n")
+		screen.WriteString(style.TruncateCells("  Search: "+query, max(1, width-1)) + "\n\n")
+		if len(indexes) == 0 {
+			screen.WriteString("  No matching items\n")
+		}
+		for row := start; row < end; row++ {
+			text := style.TruncateCells(strings.Join(strings.Fields(style.StripAnsi(items[indexes[row]])), " "), max(1, width-7))
+			prefix := "    "
+			tint := theme.Text
+			if row == selected {
+				prefix = "  › "
+				tint = theme.Primary
+			}
+			screen.WriteString(prefix + style.NewStyle().Foreground(tint).Render(text) + "\n")
+		}
+		screen.WriteString("\n" + style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)) + "\x1b[J")
+		fmt.Fprint(output, strings.ReplaceAll(screen.String(), "\n", "\x1b[K\r\n"))
+		key, resized, err := sr.ReadKeyOrResize(signals)
 		if err != nil {
 			return -1, err
 		}
 		if resized {
 			continue
 		}
-		n := len(readBuf)
-
-		if n == 1 {
-			switch readBuf[0] {
-			case 3, 27, 4:
-				return -1, ErrSelectionCancelled
-			case 13, 10:
-				return selectedIdx, nil
+		switch string(key) {
+		case "\x1b", "\x03", "\x04":
+			if query != "" && string(key) == "\x1b" {
+				query = ""
+				selected = 0
+				continue
 			}
-		}
-
-		if n >= 3 && readBuf[0] == 27 && (readBuf[1] == '[' || readBuf[1] == 'O') {
-			switch readBuf[2] {
-			case 'A':
-				selectedIdx = (selectedIdx - 1 + len(items)) % len(items)
-			case 'B':
-				selectedIdx = (selectedIdx + 1) % len(items)
+			return -1, ErrSelectionCancelled
+		case "\r", "\n":
+			if len(indexes) > 0 {
+				return indexes[selected], nil
+			}
+		case "\x1b[A", "\x1bOA":
+			if len(indexes) > 0 {
+				selected = (selected - 1 + len(indexes)) % len(indexes)
+			}
+		case "\x1b[B", "\x1bOB":
+			if len(indexes) > 0 {
+				selected = (selected + 1) % len(indexes)
+			}
+		case "\x1b[5~":
+			selected = max(0, selected-visible)
+		case "\x1b[6~":
+			selected = min(max(0, len(indexes)-1), selected+visible)
+		case "\x7f", "\x08":
+			if len(query) > 0 {
+				_, size := utf8.DecodeLastRuneInString(query)
+				query = query[:len(query)-size]
+			}
+			selected = 0
+		default:
+			if len(key) > 0 && key[0] != 27 {
+				for _, r := range string(key) {
+					if r >= 32 && r != 127 {
+						query += string(r)
+					}
+				}
+				selected = 0
 			}
 		}
 	}

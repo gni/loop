@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/term"
+	"loop/pkg/config"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -39,7 +40,7 @@ func (h *ChatHistory) startChatLogo() {
 					state.StateMu.Unlock()
 					if !modal {
 						rows := h.buffer.View(h.top)
-						if h.canShowLogoLocked(rows) {
+						if h.canShowLogoLocked(rows) && !h.logoConfig().ReducedMotion {
 							h.logoFrame++
 							if h.logoFrame >= 240 {
 								h.logoFrame = 60
@@ -57,7 +58,7 @@ func (h *ChatHistory) startChatLogo() {
 }
 
 func (h *ChatHistory) canShowLogoLocked(rows []string) bool {
-	if !h.logoEnabled || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
+	if !h.logoEnabled || !h.logoConfig().Logo || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
 		return false
 	}
 	for _, row := range rows {
@@ -74,7 +75,12 @@ func (h *ChatHistory) decorateChatLocked(rows []string) []string {
 		return rows
 	}
 	cols, height := min(47, max(1, h.buffer.Width)), min(15, len(rows))
-	logo := renderLoopLogo(cols, height, h.logoFrame)
+	cfg := h.logoConfig()
+	frame := h.logoFrame
+	if cfg.ReducedMotion {
+		frame = 60
+	}
+	logo := renderLoopLogo(cols, height, frame, logoAppearance{brightness: cfg.LogoBrightness, light: cfg.Theme == "light"})
 	top, left := (len(rows)-height)/2, max(0, (h.buffer.Width-cols)/2)
 	for row, line := range logo {
 		rows[top+row] = strings.Repeat(" ", left) + line
@@ -84,7 +90,23 @@ func (h *ChatHistory) decorateChatLocked(rows []string) []string {
 
 // The entrance plays once; subsequent frames animate the complete word.
 // Dense microdots describe smoothly rounded surfaces with normal-based lighting.
-func renderLoopLogo(cols, rows, frame int) []string {
+type logoAppearance struct {
+	brightness int
+	light      bool
+}
+
+func (h *ChatHistory) logoConfig() *config.Config {
+	state := getUI()
+	state.StateMu.Lock()
+	cfg := state.Config
+	state.StateMu.Unlock()
+	if cfg == nil {
+		return h.a.Config
+	}
+	return cfg
+}
+
+func renderLoopLogo(cols, rows, frame int, appearance ...logoAppearance) []string {
 	width, height := cols*2, rows*4
 	light := make([]float64, width*height)
 	depth := make([]float64, len(light))
@@ -153,9 +175,19 @@ func renderLoopLogo(cols, rows, frame int) []string {
 			plot(x, y, point.z*scale*magnification, brightness)
 		}
 	}
+	options := logoAppearance{brightness: 55}
+	if len(appearance) > 0 {
+		options = appearance[0]
+	}
+	if options.brightness <= 0 {
+		options.brightness = 55
+	}
 	var foreground [24]string
 	for i := range foreground {
-		shade := 35 + i*165/(len(foreground)-1)
+		shade := int(float64(35+i*165/(len(foreground)-1)) * float64(options.brightness) / 100)
+		if options.light {
+			shade = 255 - shade
+		}
 		foreground[i] = fmt.Sprintf("\x1b[38;2;%d;%d;%dm", shade, shade, shade)
 	}
 	bits := [4][2]rune{{1, 8}, {2, 16}, {4, 32}, {64, 128}}

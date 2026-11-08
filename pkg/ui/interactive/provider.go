@@ -191,6 +191,11 @@ func RunInteractiveProviderConfig(
 					if pName == "" {
 						return
 					}
+					if _, exists := cloned.Providers[pName]; exists {
+						fmt.Fprint(rlOutput, "  Provider already exists. Press enter to continue...")
+						_, _ = ReadInputRaw(sr, rlOutput)
+						return
+					}
 					fmt.Fprint(rlOutput, "  Base endpoint URL: ")
 					pURL, err := ReadInputRaw(sr, rlOutput)
 					if err != nil {
@@ -201,11 +206,17 @@ func RunInteractiveProviderConfig(
 						return
 					}
 					fmt.Fprint(rlOutput, "  Model identifier (optional): ")
-					pModel, _ := ReadInputRaw(sr, rlOutput)
+					pModel, err := ReadInputRaw(sr, rlOutput)
+					if err != nil {
+						return
+					}
 					pModel = strings.TrimSpace(pModel)
 
 					fmt.Fprint(rlOutput, "  API key or $ENV_VAR (optional): ")
-					pKey, _ := ReadInputRaw(sr, rlOutput)
+					pKey, err := ReadInputRaw(sr, rlOutput)
+					if err != nil {
+						return
+					}
 					pKey = strings.TrimSpace(pKey)
 
 					if cloned.Providers == nil {

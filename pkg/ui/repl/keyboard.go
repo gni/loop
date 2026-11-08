@@ -16,6 +16,8 @@ func normalizeKeyboardInput(input <-chan byte, historyInput func([]byte) []byte)
 		defer close(output)
 		pasted := false
 		var tail string
+		var searchPaste []byte
+		consumePaste := false
 		send := func(data []byte) {
 			if historyInput != nil {
 				data = historyInput(data)
@@ -26,19 +28,36 @@ func normalizeKeyboardInput(input <-chan byte, historyInput func([]byte) []byte)
 		}
 		for b := range input {
 			if pasted {
-				output <- b
+				if consumePaste {
+					searchPaste = append(searchPaste, b)
+				} else {
+					output <- b
+				}
 				tail += string([]byte{b})
 				if len(tail) > 6 {
 					tail = tail[len(tail)-6:]
 				}
 				if tail == "\x1b[201~" {
+					if consumePaste && historyInput != nil {
+						historyInput(append([]byte("\x1b[200~"), searchPaste...))
+					}
+					searchPaste = nil
+					consumePaste = false
 					pasted = false
 					tail = ""
 				}
 				continue
 			}
 			if b != 27 {
-				send([]byte{b})
+				key := []byte{b}
+				for b >= utf8.RuneSelf && !utf8.FullRune(key) && len(key) < utf8.UTFMax {
+					next, ok := readNextRawByte(input, 50*time.Millisecond)
+					if !ok {
+						break
+					}
+					key = append(key, next)
+				}
+				send(key)
 				continue
 			}
 			seq := []byte{b}
@@ -75,6 +94,14 @@ func normalizeKeyboardInput(input <-chan byte, historyInput func([]byte) []byte)
 			}
 			if string(seq) == "\x1b[200~" {
 				pasted = true
+				if historyInput != nil {
+					filtered := historyInput(seq)
+					consumePaste = len(filtered) == 0
+					for _, b := range filtered {
+						output <- b
+					}
+					continue
+				}
 			}
 			send(decodeKeyboardSequence(seq))
 		}

@@ -53,15 +53,14 @@ func taskContextMessages(ctx context.Context, messages []db.Message) []db.Messag
 	if brief == "" {
 		return messages
 	}
-	brief = "Runtime task state (completion assessments are not independent verification):\n" + brief
-	brief += "\nFor coding work, if task_state is available, use it to report the final outcome. Respect the user's validation restrictions. Inherited parent instructions constrain a delegated task; perform only the delegated scope."
+	brief = "Request progress (assessment, not proof):\n" + brief
 	for i := len(messages) - 1; i >= 0; i-- {
 		prior := messages[i].TaskState
 		if prior == nil || prior.ID == current.ID {
 			continue
 		}
 		if prior.Status != task.Completed {
-			brief += "\nPrevious task (context only; the current request defines scope): " + boundedContextText(prior.Objective, 384) + "\n" + boundedContextText(run.TaskBrief(prior), 1536)
+			brief += "\nPrevious task (context only; the current request defines scope): " + boundedContextText(prior.Objective, 384) + "\n" + boundedContextText(run.TaskBrief(prior), 768)
 		}
 		break
 	}

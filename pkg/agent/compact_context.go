@@ -20,6 +20,18 @@ func isContextSummary(msg db.Message) bool {
 // then fills the remaining budget from the newest execution evidence. Output
 // stays chronological, with explicit gaps instead of silently dropping the tail.
 func compactionTranscript(messages []db.Message, maxBytes int) string {
+	messages = compactRuntimeMessages(messages)
+	seenTasks := make(map[string]bool)
+	for i := len(messages) - 1; i >= 0; i-- {
+		if state := messages[i].TaskState; state != nil {
+			if seenTasks[state.ID] {
+				messages[i].TaskState = nil
+			} else {
+				seenTasks[state.ID] = true
+			}
+		}
+	}
+
 	selected := make(map[int]string)
 	remaining := max(0, maxBytes-512)
 	selectMessage := func(index, maxSegmentBytes int) {

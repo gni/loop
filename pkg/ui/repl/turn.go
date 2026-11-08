@@ -146,7 +146,14 @@ func executeREPLTurn(
 
 	if a.RunSession != nil {
 		if _, runErr := a.RunSession(ctx, ppWriter, messages, line, allowedTools, theme, currentSessionID); runErr != nil && ctx.Err() == nil {
-			render.RenderGenerationError(ppWriter, runErr.Error(), theme)
+			recorded := false
+			if messages != nil && len(*messages) > 0 {
+				last := (*messages)[len(*messages)-1]
+				recorded = last.Role == "error" && last.Content == runErr.Error()
+			}
+			if !recorded {
+				render.RenderFailure(ppWriter, runErr.Error(), a.Config.CollapseResults, theme)
+			}
 			width, _ := ui.GetTerminalSize()
 			label := style.TruncateRunes("Could not send prompt: "+runErr.Error(), max(1, width-1))
 			ui.DrawStaticStatsLine(os.Stderr, theme, "", style.NewStyle().Foreground(theme.Error).Render(label))

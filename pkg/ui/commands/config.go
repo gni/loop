@@ -115,7 +115,7 @@ func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.U
 }
 
 func configAppearanceChanged(before, after config.Config) bool {
-	return before.MarkdownRender != after.MarkdownRender ||
+	return before.Logo != after.Logo || before.ReducedMotion != after.ReducedMotion || before.LogoBrightness != after.LogoBrightness || before.MarkdownRender != after.MarkdownRender ||
 		before.Theme != after.Theme ||
 		before.SyntaxTheme != after.SyntaxTheme ||
 		before.CollapseResults != after.CollapseResults ||

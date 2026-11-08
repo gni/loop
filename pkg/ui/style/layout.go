@@ -4,7 +4,8 @@ package style
 // It controls the empty rows above the pinned stats bar and between agent activities.
 const ActivityGapLines = 1
 
-const scrollAreaControlRows = 5
+// History hints share the activity stats row above the prompt separator.
+const scrollAreaControlRows = 4
 
 // ConsoleScrollBottom is the last row reserved for scrollable output.
 func ConsoleScrollBottom(height, pasteRows int) int {

@@ -214,6 +214,11 @@ func (h *ChatHistory) restoreTurnLayoutLocked(index int, rows *render.Scrollback
 		later.start += delta + padding
 		later.end += delta + padding
 	}
+	if h.searchRow >= end {
+		h.searchRow += delta + padding
+	} else if h.searchRow >= start {
+		h.searchRow = start + padding + min(h.searchRow-start, max(0, turn.end-turn.start-1))
+	}
 	if h.top >= end {
 		h.top += delta + padding
 	} else if h.top >= start {

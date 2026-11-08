@@ -34,13 +34,25 @@ func (p *historyMessagesPresent) UnmarshalJSON(data []byte) error {
 // bodies. Previous reads one conversational turn from disk, newest turn first.
 // It is independent of the store's model-context projection and cache.
 type HistoryReader struct {
-	mu    sync.Mutex
-	store *JSONLStore
-	file  *os.File
-	path  []historySpan
+	mu      sync.Mutex
+	store   *JSONLStore
+	file    *os.File
+	path    []historySpan
+	indexed bool
+	size    int64
 }
 
 func (s *JSONLStore) OpenHistory(id string) (*HistoryReader, error) {
+	return s.openHistory(id, false)
+}
+
+// OpenHistoryLazy snapshots the file immediately; its index is built by the
+// background page reader on the first Previous call.
+func (s *JSONLStore) OpenHistoryLazy(id string) (*HistoryReader, error) {
+	return s.openHistory(id, true)
+}
+
+func (s *JSONLStore) openHistory(id string, lazy bool) (*HistoryReader, error) {
 	if err := s.checkReady(id); err != nil {
 		return nil, err
 	}
@@ -55,10 +67,18 @@ func (s *JSONLStore) OpenHistory(id string) (*HistoryReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &HistoryReader{store: s, file: f}
-	if err := r.index(); err != nil {
+	info, err := f.Stat()
+	if err != nil {
 		_ = f.Close()
 		return nil, err
+	}
+	r := &HistoryReader{store: s, file: f, size: info.Size()}
+	if !lazy {
+		if err := r.index(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		r.indexed = true
 	}
 	return r, nil
 }
@@ -84,7 +104,7 @@ func (r *HistoryReader) index() error {
 	ids := make(map[string]int)
 	var prev string
 	var offset int64
-	scanner := newJSONLScanner(r.file)
+	scanner := newJSONLScanner(io.NewSectionReader(r.file, 0, r.size))
 	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
 			return i + 1, data[:i], nil
@@ -173,9 +193,28 @@ func (r *HistoryReader) index() error {
 }
 
 func (r *HistoryReader) Previous() ([]message.Message, error) {
+	return r.previous(false)
+}
+
+// PreviousChunk reads the latest message block, keeping calls and their tool
+// results together, without decoding an entire long conversational turn.
+func (r *HistoryReader) PreviousChunk() ([]message.Message, error) {
+	return r.previous(true)
+}
+
+func (r *HistoryReader) previous(chunk bool) ([]message.Message, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.file == nil || len(r.path) == 0 {
+	if r.file == nil {
+		return nil, io.EOF
+	}
+	if !r.indexed {
+		if err := r.index(); err != nil {
+			return nil, err
+		}
+		r.indexed = true
+	}
+	if len(r.path) == 0 {
 		return nil, io.EOF
 	}
 	if r.store != nil {
@@ -187,8 +226,19 @@ func (r *HistoryReader) Previous() ([]message.Message, error) {
 	}
 	end := len(r.path)
 	start := end - 1
-	for start > 0 && r.path[start].role != "user" && !r.path[start].context {
-		start--
+	if chunk {
+		if r.path[start].role == "tool" {
+			for start > 0 && r.path[start].role == "tool" && !r.path[start].context {
+				start--
+			}
+		}
+		if start > 0 && r.path[start-1].role == "user" {
+			start--
+		}
+	} else {
+		for start > 0 && r.path[start].role != "user" && !r.path[start].context {
+			start--
+		}
 	}
 	var messages []message.Message
 	for _, span := range r.path[start:end] {
@@ -225,5 +275,5 @@ func (r *HistoryReader) Close() error {
 func (r *HistoryReader) HasMore() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.file != nil && len(r.path) > 0
+	return r.file != nil && ((!r.indexed && r.size > 0) || len(r.path) > 0)
 }

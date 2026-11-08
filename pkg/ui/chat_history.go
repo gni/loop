@@ -25,6 +25,14 @@ import (
 // viewport and writer positions. Older session turns and rendered row pages
 // are loaded only as needed.
 type ChatHistory struct {
+	searchQuery, searchNotice                       string
+	searchDraft                                     string
+	searchEditing                                   bool
+	initialLoading, initialOutput                   bool
+	initialFilling                                  bool
+	initialRows                                     int
+	searchRow, searchDirection                      int
+	searchPending                                   bool
 	previousSink                                    func(agent.Event) error
 	logoEnabled, logoVisible                        bool
 	logoFrame                                       int
@@ -106,13 +114,14 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 	h.appearance = h.appearanceKey()
 	writer.inner = &historyOutput{destination: writer.inner, history: h}
 	getUI().ChatHistory = h
-	fmt.Fprint(reader.W, "\x1b[?1000h\x1b[?1006h")
+	fmt.Fprint(reader.W, "\x1b[?1002l\x1b[?1003l\x1b[?1000h\x1b[?1006h")
+	h.setSessionContext(id)
 	h.startChatLogo()
 	return h, err
 }
 
-// PrintInitialHistory loads the newest display page. Earlier turns stay on disk
-// until navigation reaches the beginning of the loaded document.
+// PrintInitialHistory schedules the newest display block without blocking input.
+// Earlier blocks remain on disk until prefetch or navigation needs them.
 func (h *ChatHistory) PrintInitialHistory() {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -120,26 +129,12 @@ func (h *ChatHistory) PrintInitialHistory() {
 	if h.writer.pendingLineFeed {
 		h.historyStart++
 	}
-	added := h.loadOlderLocked()
-	if added > 0 {
-		end := h.historyStart + added
-		dropped := h.buffer.FinishRestore(end)
-		h.historyStart -= dropped
-		h.top = max(0, h.top-dropped)
-		for _, turn := range h.turns {
-			turn.start -= dropped
-			turn.end -= dropped
-		}
-		end -= dropped
-		transcript := []byte(strings.Join(h.buffer.View(h.buffer.Base()), "\r\n"))
-		if end <= h.buffer.Height {
-			transcript = []byte(strings.Join(h.buffer.View(0)[:end], "\r\n"))
-		}
-		h.writer.ResetAfterReplayLocked(h.writer.height, transcript)
-	}
 	h.captureOnly = false
-	h.paintLocked()
+	h.initialLoading = h.hasOlderLocked()
+	h.initialOutput = false
+	h.initialRows = 0
 	h.prefetchOlderLocked()
+	h.paintLocked()
 }
 
 func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
@@ -166,6 +161,11 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	_ = os.Remove(turnFile.Name())
 	TerminalMu.Lock()
 	h.closePagesLocked()
+	h.searchQuery, h.searchNotice = "", ""
+	h.searchEditing = false
+	h.searchDraft = ""
+	h.searchPending = false
+	h.searchRow = -1
 	h.drawn, h.drawnHint = nil, ""
 	h.logoFrame = 0
 	h.buffer = buffer
@@ -188,6 +188,7 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 		noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Success).Italic(true)
 		fmt.Fprintln(h.writer, noticeStyle.Render(notice))
 	}
+	h.setSessionContext(id)
 	h.PrintInitialHistory()
 	return err
 }
@@ -234,7 +235,20 @@ func (h *ChatHistory) appearanceKey() string {
 // changes. Scrolling, streaming and ordinary redraws use actual display rows.
 func (h *ChatHistory) BeginTurn() {
 	TerminalMu.Lock()
+	h.searchQuery, h.searchNotice = "", ""
+	h.searchEditing = false
+	h.searchDraft = ""
+	h.searchPending = false
+	h.searchRow = -1
 	defer TerminalMu.Unlock()
+	if h.browsing {
+		h.top = h.buffer.Base()
+		h.browsing = false
+		h.pendingUp = 0
+		h.pendingHome = false
+		h.layoutScroll = 0
+		h.paintLocked()
+	}
 	start := h.buffer.Base() + h.writer.printLine - 1
 	if h.writer.pendingLineFeed {
 		start++
@@ -278,6 +292,9 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 		}
 	}
 	anchors := []*int{&h.historyStart}
+	if h.searchQuery != "" && h.searchRow >= 0 {
+		anchors = append(anchors, &h.searchRow)
+	}
 	for _, turn := range h.turns {
 		anchors = append(anchors, &turn.start, &turn.end)
 	}
@@ -305,22 +322,48 @@ func (h *ChatHistory) paintLocked() {
 	h.browsing = h.browsing && h.top < h.buffer.Base()
 	rows := h.buffer.View(h.top)
 	rows = h.decorateChatLocked(rows)
+	rows = h.searchRowsLocked(rows)
 	hint := ""
 	if h.browsing {
 		total := h.buffer.Base() + h.buffer.Height
-		text := fmt.Sprintf("History · lines %d–%d of %d loaded", h.top+1, min(h.top+len(rows), total), total)
+		text := fmt.Sprintf("History · lines %d-%d of %d loaded", h.top+1, min(h.top+len(rows), total), total)
 		if h.hasOlderLocked() {
 			text += " · more above"
 		}
-		text += " · End: latest · Shift+drag: select"
-		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateRunes(text, max(1, width-1)))
+		text += " · [Back to latest: End] · Shift+drag: select"
+		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateCells(text, max(1, width-1)))
+	}
+	if h.searchNotice != "" {
+		notice := h.searchNotice
+		if strings.HasPrefix(notice, "Find: ") && h.searchRow >= 0 {
+			notice = h.searchMatchNoticeLocked()
+		}
+		hint = style.TruncateCells(notice, max(1, width-1))
+	}
+	if h.initialLoading {
+		hint = "Loading conversation…"
+	}
+	if h.searchPending {
+		hint = style.TruncateCells("Searching older messages… · Esc to cancel", max(1, width-1))
+	} else if h.pageJob != nil && (h.pendingUp > 0 || h.pendingHome) {
+		hint = style.TruncateCells("Loading older messages… · End: latest", max(1, width-1))
+	}
+	if h.searchEditing {
+		hint = style.TruncateCells("Search: "+h.searchDraft+" | Enter: find | Esc: cancel", max(1, width-1))
 	}
 	if err := errors.Join(h.historyErr, h.buffer.Err()); err != nil {
-		hint = style.TruncateRunes("history: "+err.Error(), max(1, width-1))
+		hint = style.TruncateCells("history: "+err.Error(), max(1, width-1))
 	}
 	render.DrawChatViewport(h.reader.W, rows, h.drawn, hint, h.drawnHint)
 	h.drawn = rows
 	h.drawnHint = hint
+	if hint == "" {
+		state := getUI()
+		state.StateMu.Lock()
+		stats := state.LastStatsText
+		state.StateMu.Unlock()
+		DrawStaticStatsLineLocked(h.reader.W, GetConfiguredTheme(h.a.Config), "", stats)
+	}
 	h.needsPaint = false
 	h.scheduleLayoutsLocked()
 }
@@ -428,6 +471,11 @@ func (h *ChatHistory) repaintTurnsLocked() {
 			later.start += delta + padding
 			later.end += delta + padding
 		}
+		if h.searchRow >= end {
+			h.searchRow += delta + padding
+		} else if h.searchRow >= start {
+			h.searchRow = start + padding + min(h.searchRow-start, max(0, turn.end-turn.start-1))
+		}
 		if h.top >= end {
 			h.top += delta + padding
 		} else if h.top >= start {
@@ -487,9 +535,19 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		}
 		return key
 	}
+	if handled := h.filterSearchInput(key); handled {
+		return nil
+	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	h.resizeLocked(GetTerminalSize())
+	wasSearching := h.searchPending
+	h.searchPending = false
+	if wasSearching {
+		h.searchNotice = "Search stopped"
+		h.needsPaint = true
+		h.queuePaintLocked()
+	}
 	delta := 0
 	navigation := true
 	switch action {
@@ -508,7 +566,7 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			navigation = false
 		}
 	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~", "\x1b":
-		if h.browsing {
+		if h.browsing || h.searchQuery != "" {
 			action = "latest"
 		} else {
 			navigation = false
@@ -520,6 +578,11 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			if len(fields) == 3 {
 				button, err := strconv.Atoi(fields[0])
 				if err == nil {
+					if button&0xc3 == 0 && h.browsing {
+						if y, e := strconv.Atoi(fields[2]); e == nil && y == h.buffer.Height+1 {
+							action = "latest"
+						}
+					}
 					switch button & 0xc3 {
 					case 64:
 						delta = -3
@@ -537,7 +600,7 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			}
 		}
 	}
-	if mouse && delta == 0 {
+	if mouse && delta == 0 && action != "latest" {
 		return nil
 	}
 	if !h.browsing {
@@ -575,6 +638,9 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	}
 	switch {
 	case action == "latest":
+		h.searchQuery, h.searchNotice = "", ""
+		h.searchEditing = false
+		h.searchDraft = ""
 		h.top = h.buffer.Base()
 	case action == "top":
 		h.top = minimum
@@ -585,8 +651,6 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			h.pendingUp += max(0, minimum-(h.top+delta))
 		}
 		h.top = min(h.buffer.Base(), max(minimum, h.top+delta))
-	case !navigation:
-		h.top = h.buffer.Base()
 	}
 	if delta != 0 {
 		h.top = h.limitLayoutScrollLocked(oldTop, h.top)
@@ -603,7 +667,11 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	if h.layoutScroll != 0 {
 		h.scheduleLayoutsLocked()
 	}
-	if h.top != oldTop {
+	if (h.pendingUp > 0 || h.pendingHome) && h.pageJob != nil {
+		h.needsPaint = true
+		h.queuePaintLocked()
+	}
+	if h.top != oldTop || action == "latest" {
 		if !h.browsing {
 			h.paintLocked()
 		} else {
@@ -626,7 +694,7 @@ func (h *ChatHistory) Close() {
 	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1006l")
+	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")
 	h.closePagesLocked()
 	h.a.EventSink = h.previousSink
 	if output, ok := h.writer.inner.(*historyOutput); ok && output.history == h {
@@ -644,6 +712,10 @@ type historyOutput struct {
 
 func (w *historyOutput) Write(data []byte) (int, error) {
 	h := w.history
+	if !h.captureOnly && (h.initialLoading || h.initialFilling) && strings.TrimSpace(style.StripAnsi(string(data))) != "" {
+		h.initialOutput = true
+		h.initialFilling = false
+	}
 	if !h.captureOnly {
 		h.clearChatLogoLocked()
 	}

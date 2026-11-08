@@ -190,8 +190,14 @@ func (a *Agent) LoadSessionMessages(id string) ([]db.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.RecoverSessionMessages(id, msgs)
+}
+
+// RecoverSessionMessages repairs a snapshot without loading it from disk again.
+func (a *Agent) RecoverSessionMessages(id string, msgs []db.Message) ([]db.Message, error) {
 	repaired, changed := message.RecoverToolHistory(msgs)
 	if changed {
+		var err error
 		if a.Store != nil {
 			err = a.Store.RewriteSession(id, repaired)
 		} else {

@@ -326,7 +326,7 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	t.items = append([]domaintool.TodoItem(nil), validated...)
 
-	return t.formatSummary(validated), nil
+	return t.formatCounts(validated), nil
 }
 
 // ReplayPlan applies saved todo arguments to a plan without executing any other
@@ -449,6 +449,21 @@ func parseMarkdownPlan(markdown string) ([]domaintool.TodoItem, error) {
 
 func invalidArguments(reason error) error {
 	return errors.New(domaintool.RuntimeMessagef("todo_invalid_args", "invalid todo arguments: %v. Use {\"tasks\":[{\"id\":\"1\",\"task\":\"Describe work\",\"status\":\"pending\"}]}.", reason))
+}
+
+func (t *todoTool) formatCounts(items []domaintool.TodoItem) string {
+	pending, active, completed := 0, 0, 0
+	for _, item := range items {
+		switch item.Status {
+		case "completed":
+			completed++
+		case "in_progress":
+			active++
+		default:
+			pending++
+		}
+	}
+	return fmt.Sprintf("Plan updated: %d pending, %d active, %d completed.", pending, active, completed)
 }
 
 func (t *todoTool) formatSummary(items []domaintool.TodoItem) string {

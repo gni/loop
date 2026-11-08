@@ -221,6 +221,7 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 		}
 		messages = transformed
 	}
+	messages = compactRuntimeMessages(messages)
 	messages = taskInstructionMessages(ctx, messages)
 	messages = taskContextMessages(ctx, messages)
 	release, err := a.acquireInference(ctx)

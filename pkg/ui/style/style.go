@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
-	"unicode/utf8"
 )
 
 const (
@@ -188,8 +187,8 @@ func (s Style) Render(args ...string) string {
 			contentMaxWidth -= 2
 		}
 		contentMaxWidth -= s.paddingLeft + s.paddingRight + s.marginLeft + s.marginRight
-		if contentMaxWidth < 10 {
-			contentMaxWidth = 10
+		if contentMaxWidth < 1 {
+			contentMaxWidth = 1
 		}
 
 		var wrappedLines []string
@@ -204,7 +203,7 @@ func (s Style) Render(args ...string) string {
 
 	maxWidth := 0
 	for _, line := range lines {
-		if w := utf8.RuneCountInString(StripAnsi(line)); w > maxWidth {
+		if w := CellWidth(line); w > maxWidth {
 			maxWidth = w
 		}
 	}
@@ -213,7 +212,7 @@ func (s Style) Render(args ...string) string {
 	padL := strings.Repeat(" ", s.paddingLeft)
 	formattedLines := make([]string, len(lines))
 	for i, line := range lines {
-		runeCount := utf8.RuneCountInString(StripAnsi(line))
+		runeCount := CellWidth(line)
 		padRCount := s.paddingRight
 		if s.bg != nil || s.borderType != noBorder {
 			padRCount += maxWidth - runeCount
@@ -293,7 +292,7 @@ func JoinHorizontal(_ int, strs ...string) string {
 		}
 		maxW := 0
 		for _, l := range lines {
-			if w := utf8.RuneCountInString(StripAnsi(l)); w > maxW {
+			if w := CellWidth(l); w > maxW {
 				maxW = w
 			}
 		}
@@ -308,7 +307,7 @@ func JoinHorizontal(_ int, strs ...string) string {
 			if i < len(lines) {
 				lineVal = lines[i]
 			}
-			visibleW := utf8.RuneCountInString(StripAnsi(lineVal))
+			visibleW := CellWidth(lineVal)
 			lineBuilder.WriteString(lineVal)
 			if pad := widths[idx] - visibleW; pad > 0 {
 				lineBuilder.WriteString(strings.Repeat(" ", pad))

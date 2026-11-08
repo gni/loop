@@ -198,6 +198,11 @@ func RunInteractiveMCPConfig(
 					}
 					sName = strings.TrimSpace(sName)
 					if sName != "" {
+						if _, exists := cloned.MCPServers[sName]; exists {
+							fmt.Fprint(rlOutput, "  Server already exists. Press enter to continue...")
+							_, _ = ReadInputRaw(sr, rlOutput)
+							return
+						}
 						fmt.Fprint(rlOutput, "  Enter SSE endpoint URL: ")
 						sURL, err := ReadInputRaw(sr, rlOutput)
 						if err != nil {

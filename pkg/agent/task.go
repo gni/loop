@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	bashtool "loop/pkg/agent/tool/bash"
 	"loop/pkg/process"
@@ -273,6 +274,15 @@ func (a *Agent) ResolveTaskID(id string) string {
 }
 
 func (a *Agent) GetTaskStatus(id string) (string, string, error) {
+	return a.taskStatus(id, 4000)
+}
+
+// GetFullTaskStatus returns all output still retained by the task buffers.
+func (a *Agent) GetFullTaskStatus(id string) (string, string, error) {
+	return a.taskStatus(id, 0)
+}
+
+func (a *Agent) taskStatus(id string, maxBytes int) (string, string, error) {
 	_, task, err := a.lookupTask(id)
 	if err != nil {
 		return "", "", err
@@ -282,21 +292,25 @@ func (a *Agent) GetTaskStatus(id string) (string, string, error) {
 	defer task.mu.Unlock()
 
 	var sb bytes.Buffer
-	writeTail := func(b []byte, maxLen int) {
-		if len(b) == 0 {
-			return
+	writeTail := func(b []byte) {
+		start := 0
+		if maxBytes > 0 {
+			start = max(0, len(b)-maxBytes)
 		}
-		if len(b) > maxLen {
-			fmt.Fprintf(&sb, "...(truncated %d bytes)...\n", len(b)-maxLen)
-			sb.Write(b[len(b)-maxLen:])
-		} else {
-			sb.Write(b)
+		// A byte limit must not split the first UTF-8 character in the tail.
+		for start > 0 && start < len(b) && !utf8.RuneStart(b[start]) {
+			start++
 		}
-		sb.WriteString("\n")
+		if start > 0 {
+			fmt.Fprintf(&sb, "...(truncated %d bytes)...\n", start)
+		}
+		sb.Write(b[start:])
 	}
-
-	writeTail(task.Stdout.Bytes(), 4000)
-	writeTail(task.Stderr.Bytes(), 4000)
+	writeTail(task.Stdout.Bytes())
+	if task.Stdout.Len() > 0 && task.Stderr.Len() > 0 && !bytes.HasSuffix(task.Stdout.Bytes(), []byte{'\n'}) {
+		sb.WriteByte('\n')
+	}
+	writeTail(task.Stderr.Bytes())
 
 	output := sb.String()
 	if output == "" {
@@ -471,4 +485,21 @@ func (a *Agent) pruneFinishedTasksLocked() {
 			a.StreamingTask = ""
 		}
 	}
+}
+
+// GetTaskOutputVersion distinguishes unchanged output from identical new data
+// in a full rolling buffer. The process writer updates LastOutputTime per write.
+func (a *Agent) GetTaskOutputVersion(id string) int64 {
+	a.TasksMu.Lock()
+	_, t := a.findTaskLocked(id)
+	a.TasksMu.Unlock()
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.LastOutputTime.IsZero() {
+		return 0
+	}
+	return t.LastOutputTime.UnixNano()
 }

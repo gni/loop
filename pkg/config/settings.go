@@ -185,6 +185,9 @@ func (cfg *Config) SetValue(key, value string) error {
 		if err != nil {
 			return fmt.Errorf("%s must be an integer", key)
 		}
+		if key == "logo_brightness" && (n < 10 || n > 100) {
+			return fmt.Errorf("logo_brightness must be between 10 and 100")
+		}
 		if key != "recap_interval" && n < 0 {
 			return fmt.Errorf("%s must be non-negative", key)
 		}

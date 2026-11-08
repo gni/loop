@@ -1,10 +1,9 @@
 package render
 
 import (
+	"loop/pkg/ui/style"
 	"strings"
 	"unicode"
-
-	"golang.org/x/text/width"
 )
 
 // PromptRow retains source rune positions so navigation and drawing agree.
@@ -18,16 +17,7 @@ type PromptLayout struct {
 	CursorRow, CursorColumn int
 }
 
-func promptRuneWidth(r rune) int {
-	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == '\u200d' {
-		return 0
-	}
-	switch width.LookupRune(r).Kind() {
-	case width.EastAsianWide, width.EastAsianFullwidth:
-		return 2
-	}
-	return 1
-}
+func promptRuneWidth(r rune) int { return style.RuneWidth(r) }
 
 func LayoutPrompt(text string, position, columns int) PromptLayout {
 	columns = max(1, columns)

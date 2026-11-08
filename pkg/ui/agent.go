@@ -251,7 +251,10 @@ func (ui *AgentUIImpl) GetPPWriter() io.Writer {
 }
 
 func (ui *AgentUIImpl) RenderGenerationError(w io.Writer, message string, theme style.UITheme) {
-	render.RenderGenerationError(w, message, theme)
+	ui.StateMu.Lock()
+	collapse := ui.CollapseResults
+	ui.StateMu.Unlock()
+	render.RenderFailure(w, message, collapse, theme)
 }
 
 // SetPromptHint sets a transient hint message to be displayed at the prompt,

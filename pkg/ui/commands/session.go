@@ -249,6 +249,9 @@ func handleSessionCommand(
 			fmt.Fprintf(w, "cannot rename session: %v\n", err)
 			return
 		}
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().State.SessionLabel = newName
+		ui.GetUI().StateMu.Unlock()
 		fmt.Fprintf(w, "session named %q.\n", newName)
 
 	case "load":

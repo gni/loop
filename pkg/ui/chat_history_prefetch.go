@@ -50,13 +50,17 @@ func (h *ChatHistory) prefetchMarginLocked() int {
 // One page is prepared ahead of navigation. The worker owns the source until
 // completion; reset/close cancels it without waiting on disk or formatting.
 func (h *ChatHistory) prefetchOlderLocked() {
-	if h.closed.Load() || (!h.hasOlderLocked()) || h.pageJob != nil || h.readyPage != nil {
+	if h.closed.Load() || h.captureOnly || (!h.hasOlderLocked()) || h.pageJob != nil || h.readyPage != nil {
 		return
 	}
 	cfg, err := config.Clone(h.a.Config)
 	if err != nil {
 		h.historyErr = err
 		return
+	}
+	if h.initialLoading || h.initialFilling {
+		// First paint needs a screenful, not a full background prefetch page.
+		cfg.HistoryPageSize = min(h.getPageSize(), max(1, h.buffer.Height))
 	}
 	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile}
 	h.pageJob = job
@@ -65,15 +69,17 @@ func (h *ChatHistory) prefetchOlderLocked() {
 	pending := h.pendingOlderRows
 	h.pendingOlderRows = nil
 	theme, appearance := GetConfiguredTheme(cfg), h.appearanceKey()
+	initial := h.initialLoading || h.initialFilling
 	go func() {
-		prepared := h.prepareOlderPage(job, source, page, pending, cfg, theme, appearance)
+		prepared := h.prepareOlderPage(job, source, page, pending, cfg, theme, appearance, initial)
 		TerminalMu.Lock()
 		defer TerminalMu.Unlock()
 		h.finishPreparedPageLocked(job, source, prepared)
 	}()
 }
 
-func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, pending *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string) *preparedHistoryPage {
+func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, pending *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string, firstPage ...bool) *preparedHistoryPage {
+	initial := len(firstPage) > 0 && firstPage[0]
 	p := &preparedHistoryPage{rows: page, more: true, appearance: appearance}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
@@ -153,7 +159,11 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 			_ = chunk.Close()
 			break
 		}
-		chunk.FinishHistoryPage()
+		if initial {
+			chunk.FinishTurnLayout()
+		} else {
+			chunk.FinishHistoryPage()
+		}
 		if err := chunk.Err(); err != nil {
 			p.err = err
 			_ = chunk.Close()
@@ -195,6 +205,9 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 			break
 		}
 
+		if initial {
+			break
+		}
 		if remaining, ok := source.(interface{ HasMore() bool }); ok && !remaining.HasMore() {
 			p.more = false
 			break
@@ -202,6 +215,9 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 		if p.err != nil {
 			break
 		}
+	}
+	if initial {
+		page.FinishTurnLayout()
 	}
 	p.pending = pending
 	select {
@@ -258,6 +274,9 @@ func (h *ChatHistory) applyOlderPageLocked() int {
 	}
 	h.turns = append(p.turns, h.turns...)
 	h.top += added
+	if h.searchRow >= 0 {
+		h.searchRow += added
+	}
 	if h.pendingHome {
 		h.top = 0
 		if h.hasOlderLocked() {

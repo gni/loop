@@ -14,6 +14,7 @@ import (
 )
 
 var baseAutocompleteCandidates = []string{
+	"/find ", "/find next", "/find prev", "/find clear", "/latest", "/changes", "/changes diff", "/doctor", "/doctor offline",
 	"/nostop", "/nostop setup", "/nostop eco ", "/nostop balanced ", "/nostop continuous ", "/nostop off", "/nostop status", "/loop",
 	"/guided", "/guided on", "/guided off", "/guided status", "/guided plan", "/guided approve",
 	"/plan", "/rollback", "/undo",

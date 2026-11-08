@@ -37,10 +37,10 @@ Use `/config` to change settings. Configuration is saved in `~/.loop/config.json
 
 Conversations save automatically once they have content. Empty drafts aren't saved.
 
-- `/resume` — choose a conversation with **↑/↓**, then press **Enter** to load it.
-- `/new` — start a fresh conversation.
-- `/clear` — clear the current conversation.
-- `/plan` — view task progress.
+- `/resume` - choose a conversation with **↑/↓**, then press **Enter** to load it.
+- `/new` - start a fresh conversation.
+- `/clear` - clear the current conversation.
+- `/plan` - view task progress.
 
 To reopen your latest conversation when starting Loop:
 

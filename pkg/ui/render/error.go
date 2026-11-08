@@ -1,13 +1,11 @@
 package render
 
 import (
-	"fmt"
 	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -50,24 +48,10 @@ func SanitizeTerminalText(input string) string {
 
 // RenderGenerationError renders an error box with rounded borders and styled title.
 func RenderGenerationError(w io.Writer, message string, theme style.UITheme) {
-	message = strings.TrimSpace(SanitizeTerminalText(message))
-	if message == "" {
-		message = "generation failed without an error message"
-	}
+	renderActionableFailure(w, message, false, theme)
+}
 
-	termWidth, _ := terminal.GetDimensions()
-	if termWidth < 20 {
-		termWidth = 20
-	}
-
-	boxStyle := style.NewStyle().
-		Border(style.RoundedBorder()).
-		BorderForeground(theme.Error).
-		Padding(1, 2).
-		MaxWidth(termWidth)
-	titleStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-	bodyStyle := style.NewStyle().Foreground(theme.Text)
-
-	content := fmt.Sprintf("%s\n\n%s", titleStyle.Render("error during generation:"), bodyStyle.Render(message))
-	fmt.Fprintln(w, boxStyle.Render(content))
+// RenderFailure keeps diagnostic details available through history expansion.
+func RenderFailure(w io.Writer, message string, collapse bool, theme style.UITheme) {
+	renderActionableFailure(w, message, collapse, theme)
 }

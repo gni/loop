@@ -181,6 +181,7 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
+	messages = compactRuntimeMessages(messages)
 	// The status bar displays the estimated context for the *next* request,
 	// not the input count of the last completed request. A provider-reported
 	// prompt count anchors the estimate; its response and later tool/user

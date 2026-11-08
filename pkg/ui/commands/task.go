@@ -3,7 +3,7 @@ package commands
 import (
 	"fmt"
 	"io"
-	"time"
+	"loop/pkg/ui/render"
 
 	"loop/pkg/agent"
 	"loop/pkg/ui"
@@ -13,16 +13,7 @@ import (
 
 func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
 	if len(parts) < 2 || parts[1] == "list" {
-		tasks := a.ListTasks()
-		if len(tasks) == 0 {
-			fmt.Fprintln(w, "no background tasks registered.")
-			return
-		}
-		fmt.Fprintln(w, "background tasks:")
-		for _, t := range tasks {
-			fmt.Fprintf(w, "  - %s: %s (duration: %v, output size: %d bytes) - `%s`\n",
-				t.ID, t.Status, t.Duration.Round(time.Millisecond), t.BytesOut, t.Command)
-		}
+		render.RenderBackgroundTasks(w, a.ListTasks(), *theme)
 		return
 	}
 
@@ -38,15 +29,11 @@ func handleTaskCommand(a *agent.Agent, parts []string, theme *style.UITheme, w i
 
 	printTaskView := func(id string) error {
 		id = a.ResolveTaskID(id)
-		status, output, err := a.GetTaskStatus(id)
+		status, output, err := a.GetFullTaskStatus(id)
 		if err != nil {
 			return err
 		}
-		if cmd := a.GetTaskCommand(id); cmd != "" {
-			fmt.Fprintf(w, "task %s (%s) status: %s\noutput:\n%s\n", id, cmd, status, output)
-		} else {
-			fmt.Fprintf(w, "task %s status: %s\noutput:\n%s\n", id, status, output)
-		}
+		render.RenderBackgroundTask(w, id, a.GetTaskCommand(id), status, output, false, *theme)
 		return nil
 	}
 

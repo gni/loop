@@ -2,6 +2,7 @@ package ui
 
 import (
 	"io"
+	"strings"
 
 	"loop/pkg/config"
 	"loop/pkg/ui/render"
@@ -118,6 +119,61 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 	}
 	if p.err == nil && p.appearance != h.appearanceKey() {
 		h.refreshStalePageLocked()
+		return
+	}
+	if h.initialLoading {
+		h.initialLoading = false
+		h.initialFilling = !h.initialOutput && !h.searchPending
+		added := h.applyOlderPageLocked()
+		h.initialRows = added
+		if added > 0 && !h.initialOutput {
+			end := h.historyStart + added
+			dropped := h.buffer.FinishRestore(end)
+			h.historyStart -= dropped
+			h.top = max(0, h.top-dropped)
+			if h.searchRow >= 0 {
+				h.searchRow -= dropped
+			}
+			for _, turn := range h.turns {
+				turn.start -= dropped
+				turn.end -= dropped
+			}
+			end -= dropped
+			transcript := []byte(strings.Join(h.buffer.View(h.buffer.Base()), "\r\n"))
+			if end <= h.buffer.Height {
+				transcript = []byte(strings.Join(h.buffer.View(0)[:end], "\r\n"))
+			}
+			h.writer.ResetAfterReplayLocked(h.writer.height, transcript)
+		}
+		h.initialFilling = added > 0 && added < h.buffer.Height && !h.initialOutput && !h.searchPending && h.hasOlderLocked()
+		if !h.browsing {
+			h.top = h.buffer.Base()
+		}
+		if h.searchPending && p.err == nil {
+			h.continueSearchLocked()
+		} else {
+			h.searchPending = false
+		}
+		h.needsPaint = true
+		h.queuePaintLocked()
+		return
+	}
+	if h.initialFilling {
+		if h.readyPage != nil {
+			h.initialRows += h.applyOlderPageLocked()
+			if !h.browsing {
+				h.top = h.buffer.Base()
+			}
+			h.needsPaint = true
+			h.queuePaintLocked()
+		}
+		h.initialFilling = h.initialRows < h.buffer.Height && !h.initialOutput && !h.searchPending && h.hasOlderLocked()
+	}
+	if h.searchPending && p.err != nil {
+		h.searchPending = false
+	}
+	if h.searchPending && p.err == nil {
+		h.continueSearchLocked()
 		return
 	}
 	applied := false

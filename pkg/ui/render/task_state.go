@@ -15,12 +15,17 @@ import (
 
 // Presentation only: the tool's JSON stays unchanged in model and saved history.
 func renderTaskState(w io.Writer, output string, collapse bool, theme style.UITheme) bool {
-	var state task.State
-	if json.Unmarshal([]byte(output), &state) != nil || state.Status == "" {
+	var report struct {
+		task.State
+		StepsCompleted int `json:"steps_completed"`
+		StepsTotal     int `json:"steps_total"`
+	}
+	if json.Unmarshal([]byte(output), &report) != nil || report.Status == "" {
 		return false
 	}
+	state := report.State
 	label, symbol, tint := taskStateAppearance(state.Status, theme)
-	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  "+symbol+" "+label))
+	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  Request: "+symbol+" "+label))
 	width, _ := terminal.GetDimensions()
 	text := func(content, prefix string, tint color.Color) {
 		content = strings.Map(func(r rune) rune {
@@ -49,6 +54,9 @@ func renderTaskState(w io.Writer, output string, collapse bool, theme style.UITh
 	if strings.TrimSpace(summary) != "" {
 		text(summary, "", theme.Text)
 	}
+	if report.StepsTotal > 0 {
+		text(fmt.Sprintf("%d/%d steps completed", report.StepsCompleted, report.StepsTotal), "", theme.TextMuted)
+	}
 	if len(state.Plan) > 0 {
 		completed := 0
 		for _, item := range state.Plan {
@@ -56,7 +64,9 @@ func renderTaskState(w io.Writer, output string, collapse bool, theme style.UITh
 				completed++
 			}
 		}
-		text(fmt.Sprintf("%d/%d steps completed", completed, len(state.Plan)), "", theme.TextMuted)
+		if report.StepsTotal == 0 {
+			text(fmt.Sprintf("%d/%d steps completed", completed, len(state.Plan)), "", theme.TextMuted)
+		}
 		if !collapse {
 			for _, item := range state.Plan {
 				_, mark, tint := taskStateAppearance(item.Status, theme)
@@ -93,7 +103,7 @@ func taskStateAppearance(status string, theme style.UITheme) (string, string, co
 	case task.Failed:
 		return "Failed", "✗", theme.Error
 	case task.Cancelled:
-		return "Cancelled", "–", theme.TextMuted
+		return "Cancelled", "-", theme.TextMuted
 	case task.LimitReached:
 		return "Limit reached", "!", theme.Warning
 	case task.Unfinished:

@@ -1,8 +1,11 @@
 package tool
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"loop/pkg/agent/run"
+	"loop/pkg/agent/tool/file"
 	"strings"
 )
 
@@ -68,15 +71,16 @@ func NewTaskStatusTool() ToolExecutor {
 func (t *taskStatusTool) Name() string { return "get_task_status" }
 
 func (t *taskStatusTool) PromptSnippet() string {
-	return FormatToolSnippet(t.Name(), "Retrieve the execution status and output of a background task")
+	return FormatToolSnippet(t.Name(), "Poll background command status and new output; full=true rereads its buffer")
 }
 
 func (t *taskStatusTool) Definition() Tool {
 	return NewFunctionTool(
 		"get_task_status",
-		FormatToolDescription("get_task_status", "Retrieve the execution status and buffered stdout/stderr output of a background task."),
+		FormatToolDescription("get_task_status", "Retrieve background command status and new stdout/stderr since the previous poll. Use full=true to reread the complete buffer."),
 		map[string]SchemaProp{
 			"task_id": StringProp(FormatParamDescription("get_task_status", "task_id", "The ID of the background task (e.g. 'task_1').")),
+			"full":    {Type: "boolean", Description: "Return the full buffered output instead of only new output."},
 		},
 		"task_id",
 	)
@@ -88,9 +92,32 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 		return "", err
 	}
 
-	status, output, err := ctx.GetTaskStatus(taskID)
+	var options struct {
+		Full bool `json:"full"`
+	}
+	_ = json.Unmarshal([]byte(arguments), &options)
+	readStatus := ctx.GetTaskStatus
+	if options.Full {
+		if full, ok := ctx.(interface {
+			GetFullTaskStatus(string) (string, string, error)
+		}); ok {
+			readStatus = full.GetFullTaskStatus
+		}
+	}
+	status, output, err := readStatus(taskID)
 	if err != nil {
 		return "", errors.New(RuntimeMessagef("task_status_not_found", "task %q not found. The task may have already completed, was killed, or does not exist.", taskID))
+	}
+
+	fullOutput := output
+	if versioned, ok := ctx.(interface{ GetTaskOutputVersion(string) int64 }); ok {
+		output = run.NewBackgroundOutput(ctx.Context(), taskID, output, versioned.GetTaskOutputVersion(taskID))
+	} else {
+		output = run.NewBackgroundOutput(ctx.Context(), taskID, output)
+	}
+
+	if options.Full {
+		output = fullOutput
 	}
 
 	var cmdStr string
@@ -103,7 +130,7 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 			displayCmd = strings.TrimSpace(displayCmd[:idx])
 		}
 		if len(displayCmd) > 50 {
-			displayCmd = displayCmd[:47] + "..."
+			displayCmd = file.UTF8SafePrefix(displayCmd, 47) + "..."
 		}
 		return RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, displayCmd, status, output), nil
 	}

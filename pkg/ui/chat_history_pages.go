@@ -2,11 +2,11 @@ package ui
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
 )
@@ -23,7 +23,12 @@ func (s *sliceHistorySource) Previous() ([]db.Message, error) {
 		return nil, io.EOF
 	}
 	start := len(s.messages) - 1
-	for start > 0 && s.messages[start].Role != "user" {
+	if s.messages[start].Role == "tool" {
+		for start > 0 && s.messages[start].Role == "tool" {
+			start--
+		}
+	}
+	if start > 0 && s.messages[start-1].Role == "user" {
 		start--
 	}
 	batch := s.messages[start:]
@@ -41,11 +46,19 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 	var r *db.HistoryReader
 	var err error
 	if store, ok := h.a.Store.(interface {
+		OpenHistoryLazy(string) (*db.HistoryReader, error)
+	}); ok && store != nil {
+		r, err = store.OpenHistoryLazy(id)
+	} else if store, ok := h.a.Store.(interface {
 		OpenHistory(string) (*db.HistoryReader, error)
 	}); ok && store != nil {
 		r, err = store.OpenHistory(id)
 	} else {
-		r, err = db.OpenHistory(id)
+		store, storeErr := db.DefaultStore()
+		if storeErr != nil {
+			return fallback, storeErr
+		}
+		r, err = store.OpenHistoryLazy(id)
 	}
 	if err != nil || r == nil {
 		return fallback, err
@@ -54,7 +67,13 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 		_ = r.Close()
 		return fallback, nil
 	}
-	return r, nil
+	return &chunkedHistoryReader{r}, nil
+}
+
+type chunkedHistoryReader struct{ *db.HistoryReader }
+
+func (r *chunkedHistoryReader) Previous() ([]db.Message, error) {
+	return r.PreviousChunk()
 }
 
 // Finished turns keep only disk offsets. Only an active turn or the turn being
@@ -64,7 +83,7 @@ func (h *ChatHistory) archiveTurn(turn *displayTurn) error {
 }
 
 func (h *ChatHistory) archiveTurnTo(turn *displayTurn, file *os.File) error {
-	if len(turn.messages) == 0 {
+	if len(turn.messages) == 0 || file == nil {
 		return nil
 	}
 	data, err := json.Marshal(turn.messages)
@@ -153,122 +172,41 @@ func (h *ChatHistory) getPageSize() int {
 	return render.HistoryPageSize
 }
 
-// Read whole turns for correct tool/result pairing, but page their rendered
-// rows even when a turn exceeds the display page size.
+// Synchronous callers share the same page builder as the background loader.
 func (h *ChatHistory) loadOlderLocked() int {
-	pageSize := h.getPageSize()
-	added := 0
-	for (h.source != nil || (h.pendingOlderRows != nil && h.pendingOlderRows.HistoryRowCount() > 0)) && added < pageSize {
-		needed := pageSize - added
-
-		if h.pendingOlderRows != nil && h.pendingOlderRows.HistoryRowCount() > 0 {
-			avail := h.pendingOlderRows.HistoryRowCount()
-			at := h.historyStart
-			if avail <= needed {
-				delta := h.buffer.InsertPrepared(at, h.pendingOlderRows)
-				_ = h.pendingOlderRows.Close()
-				h.pendingOlderRows = nil
-				for _, turn := range h.turns {
-					turn.start += delta
-					turn.end += delta
-				}
-				turn := &displayTurn{start: at, end: at + delta - 1, appearance: h.appearanceKey()}
-				h.turns = append([]*displayTurn{turn}, h.turns...)
-				h.top += delta
-				added += delta
-			} else {
-				tail := h.pendingOlderRows.PopTailRows(needed)
-				delta := h.buffer.InsertPrepared(at, tail)
-				_ = tail.Close()
-				for _, turn := range h.turns {
-					turn.start += delta
-					turn.end += delta
-				}
-				turn := &displayTurn{start: at, end: at + delta - 1, appearance: h.appearanceKey()}
-				h.turns = append([]*displayTurn{turn}, h.turns...)
-				h.top += delta
-				added += delta
-				break
-			}
-			continue
-		}
-
-		if h.source == nil {
-			break
-		}
-		messages, err := h.source.Previous()
-		if errors.Is(err, io.EOF) {
-			if err := h.source.Close(); err != nil {
-				h.historyErr = err
-			}
-			h.source = nil
-			break
-		}
-		if err != nil {
-			h.historyErr = err
-			_ = h.source.Close()
-			h.source = nil
-			break
-		}
-		if remaining, ok := h.source.(interface{ HasMore() bool }); ok && !remaining.HasMore() {
-			if err := h.source.Close(); err != nil {
-				h.historyErr = err
-			}
-			h.source = nil
-		}
-
-		chunk := h.buffer.NewHistoryPage()
-		render.PrintSessionHistory(chunk, messages, GetConfiguredTheme(h.a.Config), h.a.Config, false, h.a.Config.CollapseResults, render.HistoryRenderHooks{})
-		chunk.FinishHistoryPage()
-		if err := chunk.Err(); err != nil {
-			h.historyErr = err
-			_ = chunk.Close()
-			break
-		}
-		if chunk.EmptyHistoryPage() {
-			_ = chunk.Close()
-			continue
-		}
-
-		chunkRows := chunk.HistoryRowCount()
-		at := h.historyStart
-		if chunkRows <= needed {
-			delta := h.buffer.InsertPrepared(at, chunk)
-			_ = chunk.Close()
-			for _, turn := range h.turns {
-				turn.start += delta
-				turn.end += delta
-			}
-			turn := &displayTurn{start: at, end: at + delta - 1, messages: messages, appearance: h.appearanceKey()}
-			if err := h.archiveTurn(turn); err != nil {
-				h.historyErr = err
-			}
-			h.turns = append([]*displayTurn{turn}, h.turns...)
-			h.top += delta
-			added += delta
-		} else {
-			tail := chunk.PopTailRows(needed)
-			delta := h.buffer.InsertPrepared(at, tail)
-			_ = tail.Close()
-			for _, turn := range h.turns {
-				turn.start += delta
-				turn.end += delta
-			}
-			turn := &displayTurn{start: at, end: at + delta - 1, messages: messages, appearance: h.appearanceKey()}
-			if err := h.archiveTurn(turn); err != nil {
-				h.historyErr = err
-			}
-			h.turns = append([]*displayTurn{turn}, h.turns...)
-			h.top += delta
-			added += delta
-			h.pendingOlderRows = chunk
-			break
-		}
+	if h.pageJob != nil {
+		return 0
 	}
-	return added
+	if h.readyPage != nil {
+		return h.applyOlderPageLocked()
+	}
+	cfg, err := config.Clone(h.a.Config)
+	if err != nil {
+		h.historyErr = err
+		return 0
+	}
+	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile}
+	page := h.buffer.NewHistoryPage()
+	p := h.prepareOlderPage(job, h.source, page, h.pendingOlderRows, cfg, GetConfiguredTheme(cfg), h.appearanceKey(), false)
+	h.pendingOlderRows = p.pending
+	if !p.more {
+		h.source = nil
+	}
+	if p.err != nil {
+		h.historyErr = p.err
+	}
+	if len(p.turns) == 0 {
+		_ = p.rows.Close()
+		return 0
+	}
+	h.readyPage = p
+	return h.applyOlderPageLocked()
 }
 
 func (h *ChatHistory) closePagesLocked() {
+	h.initialLoading, h.initialOutput = false, false
+	h.initialFilling = false
+	h.initialRows = 0
 	if h.layoutJob != nil {
 		if !h.layoutJob.cancelled {
 			close(h.layoutJob.stop)

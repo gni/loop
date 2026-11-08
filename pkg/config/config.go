@@ -106,6 +106,9 @@ func (c *Config) NormalizeSafety() {
 }
 
 type Config struct {
+	Logo                     bool                       `json:"logo"`
+	ReducedMotion            bool                       `json:"reduced_motion"`
+	LogoBrightness           int                        `json:"logo_brightness"`
 	PromptMaxLines           int                        `json:"prompt_max_lines,omitempty"`
 	Nostop                   NostopConfig               `json:"nostop,omitempty"`
 	Sources                  map[string]string          `json:"-"`
@@ -289,6 +292,8 @@ func DefaultConfig() *Config {
 		MarkdownRender:           true,
 		CollapseResults:          false,
 		HistoryPageSize:          500,
+		Logo:                     true,
+		LogoBrightness:           55,
 		Theme:                    "plain",
 		DirectCommands:           false,
 		SkillsDir:                resolveDefaultSkillsDir(),
@@ -330,6 +335,12 @@ func (cfg *Config) defaultProviderProfile(name string) ProviderConfig {
 }
 
 func (cfg *Config) applyDefaults() {
+	if cfg.LogoBrightness <= 0 {
+		cfg.LogoBrightness = 55
+	}
+	if cfg.LogoBrightness > 100 {
+		cfg.LogoBrightness = 100
+	}
 	if cfg.PromptMaxLines <= 0 {
 		cfg.PromptMaxLines = 8
 	}

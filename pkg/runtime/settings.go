@@ -27,6 +27,10 @@ func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools 
 	if err != nil {
 		return nil, err
 	}
+	return restoreSettingsFromEntries(entries, cfg, tools, keepSelection)
+}
+
+func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
 	path := session.LeafPath(entries, "")
 	todos, err := restorePlan(path)
 	if err != nil {

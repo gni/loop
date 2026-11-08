@@ -2,6 +2,7 @@ package interactive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -147,6 +148,9 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 		timer := time.AfterFunc(limits.EscapeDisambiguation(), func() { timeout <- os.Interrupt })
 		defer timer.Stop()
 		next, expired, err := sr.readByte(timeout)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, false, err
+		}
 		if err != nil || expired {
 			return key, false, nil
 		}
@@ -157,6 +161,9 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 		key = append(key, next)
 		for {
 			next, expired, err = sr.readByte(timeout)
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, false, err
+			}
 			if err != nil || expired {
 				return key, false, nil
 			}
@@ -170,6 +177,9 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 		for !utf8.FullRune(key) && len(key) < utf8.UTFMax {
 			next, _, err := sr.readByte(nil)
 			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					return nil, false, err
+				}
 				break
 			}
 			key = append(key, next)
@@ -201,7 +211,11 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 	for {
 		buf, _, err := sr.ReadKeyOrResize(nil)
 		if err != nil {
-			return "", fmt.Errorf("read error")
+			return "", fmt.Errorf("read error: %w", err)
+		}
+		// Navigation and terminal reports are not editable text.
+		if len(buf) > 0 && buf[0] == 27 {
+			continue
 		}
 		done, lineErr := consumeLineBytes(buf, &line, rlOutput)
 		if lineErr != nil {
@@ -217,19 +231,23 @@ func ReadInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
 	fmt.Fprint(rlOutput, "\x1b[?25h")
 	defer fmt.Fprint(rlOutput, "\x1b[?25l")
 
+	if sr, ok := rlInput.(*SessionReader); ok {
+		return sr.ReadLine(rlOutput)
+	}
+
 	var sb strings.Builder
 	var buf [1024]byte
 	for {
 		n, err := rlInput.Read(buf[:])
-		if err != nil {
-			return "", err
-		}
 		done, lineErr := consumeLineBytes(buf[:n], &sb, rlOutput)
 		if lineErr != nil {
 			return "", lineErr
 		}
 		if done {
 			return sb.String(), nil
+		}
+		if err != nil {
+			return "", err
 		}
 	}
 }

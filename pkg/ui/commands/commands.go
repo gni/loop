@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
+	"loop/pkg/diagnostics"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
@@ -26,6 +28,16 @@ func IsHelpCommand(trimmed string) bool {
 	default:
 		return strings.HasPrefix(lower, "help ") || strings.HasPrefix(lower, "/help ")
 	}
+}
+
+func commandContext(a *agent.Agent, reader *interceptor.KeyInterceptorReader) context.Context {
+	if reader != nil && reader.InputContext != nil {
+		return reader.InputContext
+	}
+	if a != nil && a.Lifetime != nil {
+		return a.Lifetime
+	}
+	return context.Background()
 }
 
 func terminalFromReader(kiReader *interceptor.KeyInterceptorReader) *term.Terminal {
@@ -96,6 +108,48 @@ func HandleSlashCommand(
 	}
 
 	switch cmdName {
+	case "/doctor":
+		diagnostics.Run(commandContext(a, kiReader), a.Config, a.ConfigPath, a.WorkspaceRoot, len(parts) > 1 && (parts[1] == "offline" || parts[1] == "--offline")).Write(w)
+		return true, false
+	case "/changes":
+		handleChangesCommand(commandContext(a, kiReader), a, len(parts) > 1 && parts[1] == "diff", w, *theme)
+		return true, false
+
+	case "/find", "/latest":
+		history := ui.GetUI().ChatHistory
+		if history == nil {
+			fmt.Fprintln(w, "chat navigation is only available in an interactive conversation")
+			return true, false
+		}
+		if cmdName == "/latest" || (len(parts) == 2 && parts[1] == "clear") {
+			history.Latest()
+			return true, false
+		}
+		if len(parts) < 2 {
+			fmt.Fprintln(w, "usage: /find <text> | next | prev | clear")
+			return true, false
+		}
+		query := strings.Join(parts[1:], " ")
+		literal := parts[1] == "--"
+		if literal {
+			query = strings.Join(parts[2:], " ")
+			if query == "" {
+				fmt.Fprintln(w, "usage: /find -- <text>")
+				return true, false
+			}
+		}
+		direction := 0
+		if !literal && query == "next" {
+			query = ""
+			direction = 1
+		} else if !literal && query == "prev" {
+			query = ""
+			direction = -1
+		}
+		if err := history.Find(query, direction); err != nil {
+			fmt.Fprintln(w, err)
+		}
+		return true, false
 	case "/exit", "/quit":
 		if a != nil {
 			a.KillAllTasks()

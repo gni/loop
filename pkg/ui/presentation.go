@@ -23,7 +23,6 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 	hooks := render.HistoryRenderHooks{
 		RenderMarkdown:  render.RenderMarkdownContent,
 		RenderReasoning: render.RenderReasoningMarkdownContent,
-		RenderError:     render.RenderGenerationError,
 	}
 	if cfg != nil && !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
@@ -82,6 +81,10 @@ func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, 
 	pasteLinesOffset := getUI().PasteLinesOffset
 	getUI().StateMu.Unlock()
 
+	if history := getUI().ChatHistory; history != nil && !history.closed.Load() && history.drawnHint != "" {
+		textToDraw = history.drawnHint
+		spinnerFrame = ""
+	}
 	render.DrawStaticStatsLine(w, theme, spinnerFrame, textToDraw, height, pasteLinesOffset)
 }
 

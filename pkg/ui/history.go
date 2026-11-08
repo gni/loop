@@ -6,9 +6,10 @@ import (
 )
 
 type CustomHistory struct {
-	mu      sync.RWMutex
-	entries []string
-	fullMap map[string]string
+	mu                   sync.RWMutex
+	entries              []string
+	fullMap              map[string]string
+	restorationCancelled bool
 }
 
 func NewCustomHistory() *CustomHistory {
@@ -20,6 +21,7 @@ func (h *CustomHistory) Clear() {
 	defer h.mu.Unlock()
 	h.entries = nil
 	h.fullMap = nil
+	h.restorationCancelled = true
 }
 
 func Deduplicate(entries []string) []string {
@@ -77,4 +79,30 @@ func (h *CustomHistory) GetFull(line string) string {
 		return full
 	}
 	return line
+}
+
+// RestoreOlder merges saved prompt history without moving prompts typed while
+// the background read was running, or undoing an explicit history clear.
+func (h *CustomHistory) RestoreOlder(entries []string) {
+	var display []string
+	full := make(map[string]string)
+	for _, entry := range entries {
+		raw := strings.TrimSpace(entry)
+		if raw == "" {
+			continue
+		}
+		label := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", " ↵ "), "\n", " ↵ "))
+		display = append(display, label)
+		full[label], full[raw] = raw, raw
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.restorationCancelled {
+		return
+	}
+	for key, value := range h.fullMap {
+		full[key] = value
+	}
+	h.fullMap = full
+	h.entries = Deduplicate(append(display, h.entries...))
 }

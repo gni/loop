@@ -16,10 +16,10 @@ func (t *taskStateTool) PromptSnippet() string {
 	return "task_state: Inspect the coding objective or report its outcome and remaining work."
 }
 func (t *taskStateTool) PromptGuidelines() []string {
-	return []string{"Before the final reply on coding work, report completed, blocked, unfinished, or unverified with task_state. Resolve known pending work before declaring completed. A successful command or edit alone does not verify the task. Follow the user's restrictions on validation; never add tests merely to obtain a completed status."}
+	return []string{"Before the final reply on coding work, report completed, blocked, unfinished, or unverified with task_state. Resolve known pending work before declaring completed. A successful command or edit alone does not verify the task. Keep the final reply concise; do not repeat the full progress report. Follow the user's restrictions on validation; never add tests merely to obtain a completed status."}
 }
 func (t *taskStateTool) Definition() Tool {
-	return NewFunctionTool(t.Name(), "Inspect the current coding objective and tool evidence, or update its outcome assessment. This is separate from background process status (get_task_status) and the todo plan. This does not execute checks or prove correctness. Keep remaining work explicit. Completed is rejected while the active plan or remaining list has pending items.", map[string]SchemaProp{
+	return NewFunctionTool(t.Name(), "Read request progress or update its outcome. Separate from background commands (get_task_status). Does not execute checks. Completion requires no pending work. Returns a compact report; evidence stays internal.", map[string]SchemaProp{
 		"action":           {Type: "string", Enum: []string{"get", "update"}},
 		"status":           {Type: "string", Enum: []string{"running", "completed", "blocked", "unfinished", "unverified"}},
 		"expected_outcome": StringProp("Concise interpretation of the requested result; the original user objective is retained separately."),
@@ -51,6 +51,6 @@ func (t *taskStateTool) Execute(ctx AgentContext, arguments string) (string, err
 	if state == nil {
 		return "", fmt.Errorf("no active task")
 	}
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(task.ProgressReport(state, args.Action == "get"))
 	return string(data), err
 }

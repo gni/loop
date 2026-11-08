@@ -14,6 +14,9 @@ func buildConfigSettingItems(cloned *config.Config, formatBool func(v bool) stri
 	reasoningOptions := []string{"off", "low", "medium", "high", "max"}
 
 	items := []*settingItem{
+		boolConfigItem("logo", "logo", "Show the logo in an empty chat", &cloned.Logo, formatBool),
+		boolConfigItem("reduced_motion", "reduced motion", "Keep the logo still", &cloned.ReducedMotion, formatBool),
+		{id: "logo_brightness", name: "logo brightness", value: func() string { return strconv.Itoa(cloned.LogoBrightness) }, description: "Logo contrast, 10-100", onEdit: func(value string) error { return cloned.SetValue("logo_brightness", value) }},
 		intConfigItem("prompt_max_lines", "prompt max lines", "Maximum visible prompt rows; grows with text and scrolls beyond this limit (default 8)", &cloned.PromptMaxLines),
 		{
 			id:          "temperature",
