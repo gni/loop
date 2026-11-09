@@ -2,14 +2,13 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"loop/pkg/config"
+	transporthttp "loop/pkg/transport/http"
 )
 
 func (s *Store) Discover(ctx context.Context, resource string) (*config.OAuthConfig, error) {
@@ -72,11 +71,11 @@ func (s *Store) getJSON(ctx context.Context, endpoint string, destination any) e
 	}
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return err
+		return transporthttp.RedactError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("authentication discovery failed (HTTP %d)", response.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(destination)
+	return decodeResponse(response.Body, destination)
 }

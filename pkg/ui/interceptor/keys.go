@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"loop/pkg/agent"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -115,11 +116,13 @@ func (ki *KeyInterceptorReader) saveAgentConfigSnapshot() {
 }
 
 func (ki *KeyInterceptorReader) toggleCollapse() {
-	ki.Agent.LLMProviderMu.Lock()
-	collapsed := !ki.Agent.Config.CollapseResults
-	ki.Agent.Config.CollapseResults = collapsed
-	ki.Agent.LLMProviderMu.Unlock()
-	ki.saveAgentConfigSnapshot()
+	var collapsed bool
+	if !ki.updateLiveSettings(func(next *agent.LiveSettings) {
+		next.CollapseResults = !next.CollapseResults
+		collapsed = next.CollapseResults
+	}) {
+		return
+	}
 	if ki.Agent.UI != nil {
 		ki.Agent.UI.SetCollapseStatus(collapsed)
 	}
@@ -136,48 +139,51 @@ func (ki *KeyInterceptorReader) ApplyPendingCollapse() bool {
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlT() {
-	if ki.Agent == nil || ki.Agent.Config == nil {
+	if !ki.updateLiveSettings(func(next *agent.LiveSettings) { next.ShowThinking = !next.ShowThinking }) {
 		return
 	}
-	ki.Agent.LLMProviderMu.Lock()
-	ki.Agent.Config.ShowThinking = !ki.Agent.Config.ShowThinking
-	ki.Agent.LLMProviderMu.Unlock()
-	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlG() {
-	if ki.Agent == nil || ki.Agent.Config == nil {
+	if !ki.updateLiveSettings(func(next *agent.LiveSettings) { next.GuidedMode = !next.GuidedMode }) {
 		return
 	}
-	ki.Agent.LLMProviderMu.Lock()
-	ki.Agent.SetGuidedMode(!ki.Agent.IsGuidedMode())
-	ki.Agent.LLMProviderMu.Unlock()
-	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
 }
 
 func (ki *KeyInterceptorReader) HandleCtrlR() {
-	if ki.Agent == nil || ki.Agent.Config == nil {
+	if !ki.updateLiveSettings(func(next *agent.LiveSettings) {
+		switch strings.ToLower(strings.TrimSpace(next.ReasoningEffort)) {
+		case "low":
+			next.ReasoningEffort = "medium"
+		case "medium":
+			next.ReasoningEffort = "high"
+		case "high":
+			next.ReasoningEffort = "max"
+		case "max":
+			next.ReasoningEffort = "off"
+		default:
+			next.ReasoningEffort = "low"
+		}
+	}) {
 		return
 	}
-	ki.Agent.LLMProviderMu.Lock()
-	switch strings.ToLower(strings.TrimSpace(ki.Agent.Config.ReasoningEffort)) {
-	case "low":
-		ki.Agent.Config.ReasoningEffort = "medium"
-	case "medium":
-		ki.Agent.Config.ReasoningEffort = "high"
-	case "high":
-		ki.Agent.Config.ReasoningEffort = "max"
-	case "max":
-		ki.Agent.Config.ReasoningEffort = "off"
-	default:
-		ki.Agent.Config.ReasoningEffort = "low"
-	}
-	ki.Agent.LLMProviderMu.Unlock()
-
-	ki.saveAgentConfigSnapshot()
 	ki.redrawPromptSeparatorOrFallback()
+}
+
+func (ki *KeyInterceptorReader) updateLiveSettings(change func(*agent.LiveSettings)) bool {
+	if ki.Agent == nil {
+		return false
+	}
+	if err := ki.Agent.UpdateLiveSettings(change); err != nil {
+		if ki.W != nil {
+			fmt.Fprintf(ki.W, "settings update failed: %v\n", err)
+		}
+		return false
+	}
+	ki.saveAgentConfigSnapshot()
+	return true
 }
 
 func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback() {

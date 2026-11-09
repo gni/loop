@@ -50,7 +50,7 @@ func (r *InlineMarkdownWriter) WriteRune(ch rune) {
 	}
 	r.resolveDelimiter(ch)
 	if r.escape {
-		if !strings.ContainsRune("\\`*_~{}[]()#+-.!>", ch) {
+		if !strings.ContainsRune("\\`*_~{}[]()#+-.!>|", ch) {
 			r.plain.WriteRune('\\')
 		}
 		r.plain.WriteRune(ch)

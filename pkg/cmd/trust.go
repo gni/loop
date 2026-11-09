@@ -12,7 +12,7 @@ func promptWorkspaceTrust(cwd string) bool {
 	if config.WorkspaceTrusted(configPath, cwd) {
 		return true
 	}
-	fmt.Printf("\n\x1b[33m⚠️  Workspace Trust\x1b[0m: %s\n", cwd)
+	fmt.Printf("\n\x1b[33m!!!  Workspace Trust\x1b[0m: %s\n", cwd)
 	fmt.Print("Shell commands and local executable integrations can access your machine. Trust this workspace? [y/N]: ")
 	var resp string
 	_, _ = fmt.Scanln(&resp)

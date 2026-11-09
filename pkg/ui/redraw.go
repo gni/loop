@@ -103,9 +103,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	var buf bytes.Buffer
 	cwBuf := crnlWriter{W: &buf}
 
-	if len(a.MCPStartErrors) > 0 {
-		render.RenderMCPStartupErrors(cwBuf, a.MCPStartErrors, activeTheme)
-	}
+	render.RenderMCPStartupErrors(cwBuf, a.MCPStartupErrors(), activeTheme)
 
 	var activeMessages []db.Message
 	if kiReader != nil && kiReader.Messages != nil {

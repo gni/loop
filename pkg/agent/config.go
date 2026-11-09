@@ -36,6 +36,7 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	if err != nil {
 		return err
 	}
+	next.UpdateActiveProvider()
 	if err := next.ValidateSettings(); err != nil {
 		return err
 	}

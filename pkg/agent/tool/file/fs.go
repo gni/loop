@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,8 +158,8 @@ func DetectOmissionPlaceholders(text string) []string {
 }
 
 type refMutex struct {
-	mu   sync.Mutex
-	refs int
+	ready chan struct{}
+	refs  int
 }
 
 var (
@@ -167,7 +168,15 @@ var (
 )
 
 func LockPath(path string) func() {
-	fileLocksMu.Lock()
+	unlock, _ := LockPathContext(context.Background(), path)
+	return unlock
+}
+
+// LockPathContext allows queued file operations to stop before they own a path.
+func LockPathContext(ctx context.Context, path string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		absPath = path
@@ -175,17 +184,17 @@ func LockPath(path string) func() {
 	if resolved, errRes := filepath.EvalSymlinks(absPath); errRes == nil && resolved != "" {
 		absPath = resolved
 	}
+	fileLocksMu.Lock()
 	entry, exists := fileLocks[absPath]
 	if !exists {
-		entry = &refMutex{}
+		entry = &refMutex{ready: make(chan struct{}, 1)}
+		entry.ready <- struct{}{}
 		fileLocks[absPath] = entry
 	}
 	entry.refs++
 	fileLocksMu.Unlock()
 
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
+	dropReference := func() {
 		fileLocksMu.Lock()
 		entry.refs--
 		if entry.refs <= 0 {
@@ -193,6 +202,24 @@ func LockPath(path string) func() {
 		}
 		fileLocksMu.Unlock()
 	}
+	select {
+	case <-ctx.Done():
+		dropReference()
+		return nil, ctx.Err()
+	case <-entry.ready:
+	}
+	var once sync.Once
+	unlock := func() {
+		once.Do(func() {
+			entry.ready <- struct{}{}
+			dropReference()
+		})
+	}
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
 }
 
 func SplitBOM(data []byte) (bool, string) {

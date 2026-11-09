@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -445,8 +444,8 @@ func (s *Store) token(ctx context.Context, endpoint string, values url.Values) (
 	}
 	defer response.Body.Close()
 	var token tokenResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&token); err != nil {
-		return token, fmt.Errorf("invalid token response")
+	if err := decodeResponse(response.Body, &token); err != nil {
+		return tokenResponse{}, fmt.Errorf("invalid token response: %w", transporthttp.RedactError(err))
 	}
 	if token.Error != "" {
 		if values.Get("grant_type") == "refresh_token" && token.Error == "invalid_grant" {

@@ -29,8 +29,13 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 		return applyErr
 	}
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
-	return errors.Join(applyErr, s.persistSettings(), s.Agent.PersistenceError())
+	if err := errors.Join(applyErr, s.persistSettings(), s.Agent.PersistenceError()); err != nil {
+		return &agent.ConfigApplyError{Err: err}
+	}
+	return nil
 }
+
+var _ agent.ConfigurationController = (*Session)(nil)
 
 func (s *Session) SetTools(names []string) error {
 	if err := s.lockIdle(); err != nil {

@@ -73,6 +73,9 @@ func RunHook(ctx context.Context, hook Hook, event any) (HookResult, error) {
 	}
 	result, err := process.Run(ctx, process.Options{Executable: hook.Path, Directory: hook.Directory, Input: strings.NewReader(string(data)), Timeout: 15 * time.Second, Environment: os.Environ()})
 	if err != nil {
+		if details := strings.TrimSpace(result.Stderr); details != "" {
+			return HookResult{}, fmt.Errorf("extension %s failed: %w (details: %s)", filepath.Base(hook.Path), err, details)
+		}
 		return HookResult{}, fmt.Errorf("extension %s failed: %w", filepath.Base(hook.Path), err)
 	}
 	var response HookResult

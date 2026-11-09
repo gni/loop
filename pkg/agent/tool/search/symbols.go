@@ -14,6 +14,7 @@ import (
 	"loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 const (
@@ -154,7 +155,7 @@ func (t *symbolTool) Execute(ctx domaintool.AgentContext, arguments string) (str
 					entry.partial = true
 				} else if safe, safeErr := ctx.SafePath(path); safeErr != nil || safe != path {
 					entry.partial = true
-				} else if source, openErr := os.Open(path); openErr != nil {
+				} else if source, openErr := storage.OpenRegularFile(path); openErr != nil {
 					entry.partial = true
 				} else {
 					data, readErr := io.ReadAll(io.LimitReader(source, int64(maxBytes)+1))

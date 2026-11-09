@@ -11,6 +11,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/storage"
 )
 
 type GuidedPhase string
@@ -189,9 +190,13 @@ func (gc *GuidedController) HasSnapshot(absPath string) bool {
 	return exists
 }
 
-func (gc *GuidedController) CaptureFileSnapshot(absPath string) {
+func (gc *GuidedController) CaptureFileSnapshot(absPath string) error {
+	return gc.captureFileSnapshot(absPath, 20<<20)
+}
+
+func (gc *GuidedController) captureFileSnapshot(absPath string, maxBytes int64) error {
 	if gc == nil || absPath == "" {
-		return
+		return nil
 	}
 	clean := normalizeSnapshotPath(absPath)
 	gc.mu.Lock()
@@ -200,22 +205,28 @@ func (gc *GuidedController) CaptureFileSnapshot(absPath string) {
 		gc.snapshots = make(map[string]FileSnapshot)
 	}
 	if _, exists := gc.snapshots[clean]; exists {
-		return
+		return nil
 	}
 
 	mode := os.FileMode(0644)
 	existed := false
 	var data []byte
 
-	if info, err := os.Stat(clean); err == nil && !info.IsDir() {
+	if info, err := os.Stat(clean); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("cannot snapshot non-regular file %s", clean)
+		}
 		existed = true
 		mode = info.Mode().Perm()
 		if mode == 0 {
 			mode = 0644
 		}
-		if raw, readErr := os.ReadFile(clean); readErr == nil {
-			data = append([]byte(nil), raw...)
+		data, err = storage.ReadFile(clean, maxBytes)
+		if err != nil {
+			return fmt.Errorf("cannot snapshot file before mutation: %w", err)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot inspect file before mutation: %w", err)
 	}
 
 	gc.snapshots[clean] = FileSnapshot{
@@ -224,6 +235,7 @@ func (gc *GuidedController) CaptureFileSnapshot(absPath string) {
 		Data:    data,
 		Mode:    mode,
 	}
+	return nil
 }
 
 func (gc *GuidedController) DiscardSnapshot(absPath string) {
@@ -315,6 +327,15 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 	if a == nil {
 		return ""
 	}
+	ctx := a.Context()
+	if ctx.Err() != nil {
+		return ""
+	}
+	maxBytes := a.GetLimits().MaxReadFileBytes
+	// JSON escaping can expand a file body; bound argument parsing as well.
+	if len(arguments) > maxBytes*8 {
+		return ""
+	}
 	norm := tool.NormalizeName(toolName)
 	if norm != "write" && norm != "edit" {
 		return ""
@@ -328,7 +349,15 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 		return ""
 	}
 
-	existingBytes, readErr := os.ReadFile(safePath)
+	unlock, err := filetool.LockPathContext(ctx, safePath)
+	if err != nil {
+		return ""
+	}
+	existingBytes, readErr := storage.ReadFile(safePath, int64(maxBytes))
+	unlock()
+	if ctx.Err() != nil || (readErr != nil && !os.IsNotExist(readErr)) || filetool.IsBinary(existingBytes) {
+		return ""
+	}
 	oldContent := ""
 	if readErr == nil {
 		_, rawStr := filetool.SplitBOM(existingBytes)
@@ -337,7 +366,7 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 
 	if norm == "write" {
 		newContent, ok := filetool.ExtractFileContent(arguments)
-		if !ok {
+		if !ok || len(newContent) > maxBytes {
 			return ""
 		}
 		return filetool.GenerateDisplayDiff(oldContent, strings.ReplaceAll(newContent, "\r\n", "\n"), 3)
@@ -355,7 +384,7 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 	}
 
 	previewContent, changed := filetool.ApplyEditsPreview(oldContent, edits)
-	if !changed {
+	if !changed || len(previewContent) > maxBytes || ctx.Err() != nil {
 		return ""
 	}
 	return filetool.GenerateDisplayDiff(oldContent, previewContent, 3)

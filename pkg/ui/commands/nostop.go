@@ -57,13 +57,13 @@ func handleNostopCommand(a *agent.Agent, parts []string, theme *style.UITheme, w
 		fmt.Fprintln(w, err)
 		return
 	}
-	cfg, err := config.Clone(a.Config)
+	cfg, err := a.Configuration()
 	if err != nil {
 		fmt.Fprintf(w, "nostop configuration failed: %v\n", err)
 		return
 	}
 	cfg.Nostop = next
-	applyErr := a.ApplyConfig(cfg)
+	applyErr := a.UpdateConfig(cfg)
 	if !agent.ConfigApplied(applyErr) {
 		fmt.Fprintf(w, "nostop update failed: %v\n", applyErr)
 		return

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -13,6 +14,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -42,7 +44,7 @@ func HandleMCPCommand(
 	}
 
 	applyMCP := func(next *config.Config) bool {
-		applyErr := a.ApplyConfig(next)
+		applyErr := a.UpdateConfig(next)
 		if !agent.ConfigApplied(applyErr) {
 			fmt.Fprintf(w, "MCP update failed: %v\n", applyErr)
 			return false
@@ -59,14 +61,20 @@ func HandleMCPCommand(
 	}
 
 	if len(parts) < 2 {
+		snapshot, snapshotErr := a.Configuration()
+		if snapshotErr != nil {
+			fmt.Fprintln(w, snapshotErr)
+			return
+		}
 		input, output, cleanup := getInteractiveIO(kiReader)
 		defer cleanup()
 
 		ShutdownStatusBar(os.Stderr)
-		newConfig, errInteractive := RunInteractiveMCPConfig(a.Config, theme, input, output, func(next *config.Config) error {
+		newConfig, errInteractive := RunInteractiveMCPConfig(snapshot, theme, input, output, interactive.MCPConfigActions{Reconnect: func(next *config.Config) error {
 			changed := a.Config.MCP != next.MCP || !config.MCPServersEqual(a.Config.MCPServers, next.MCPServers)
+			var applyErr error
 			if changed {
-				applyErr := a.ApplyConfig(next)
+				applyErr = a.UpdateConfig(next)
 				if !agent.ConfigApplied(applyErr) {
 					return applyErr
 				}
@@ -74,10 +82,10 @@ func HandleMCPCommand(
 			reconnectErr := a.ReconnectMCPServers()
 			syncAgentStatus(a, theme, calcHistoryTokens)
 			if saveErr := a.SaveConfig(); saveErr != nil {
-				return errors.Join(reconnectErr, fmt.Errorf("MCP settings applied, but could not save: %w", saveErr))
+				return errors.Join(applyErr, reconnectErr, fmt.Errorf("MCP settings applied, but could not save: %w", saveErr))
 			}
-			return reconnectErr
-		})
+			return errors.Join(applyErr, reconnectErr)
+		}, Statuses: a.MCPServerStatuses, Configuration: a.Configuration})
 		InitStatusBar(os.Stderr)
 		if errInteractive != nil {
 			fmt.Fprintf(w, "MCP settings menu failed: %v\n", errInteractive)
@@ -93,7 +101,7 @@ func HandleMCPCommand(
 
 		return
 	}
-	next, err := config.Clone(a.Config)
+	next, err := a.Configuration()
 	if err != nil {
 		fmt.Fprintln(w, err)
 		return
@@ -106,11 +114,11 @@ func HandleMCPCommand(
 	switch sub {
 	case "list", "status":
 		state := "disabled"
-		if a.Config.MCP {
+		if next.MCP {
 			state = "enabled"
 		}
 		fmt.Fprintf(w, "MCP: %s\n", state)
-		render.RenderMCPServers(w, a.Config, theme)
+		render.RenderMCPServers(w, next, theme)
 		mcpStatuses := a.GetMCPServersStatus()
 		if len(next.MCPServers) > 0 {
 			fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("\nmcp connection status:"))
@@ -122,17 +130,15 @@ func HandleMCPCommand(
 			for _, name := range keys {
 				status, active := mcpStatuses[name]
 				cfg := next.MCPServers[name]
-				if !a.Config.MCP {
+				if !next.MCP {
 					status = "MCP disabled"
 				} else if !cfg.Enabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
-					if err, failed := a.MCPStartErrors[name]; failed {
-						status = fmt.Sprintf("failed to start (%v)", err)
-					} else {
-						status = "not connected"
-					}
+					status = "not connected"
 				}
+				name = strings.Join(strings.Fields(render.SanitizeTerminalText(name)), " ")
+				status = strings.Join(strings.Fields(render.SanitizeTerminalText(status)), " ")
 				fmt.Fprintf(w, "  - %-10s : %s\n", style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(name), status)
 			}
 		}

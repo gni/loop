@@ -31,6 +31,8 @@ type historyPageWriter struct {
 	stop <-chan struct{}
 }
 
+func (w historyPageWriter) MarkdownWidth() int { return w.rows.Width }
+
 func (w historyPageWriter) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {

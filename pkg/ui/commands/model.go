@@ -16,21 +16,22 @@ func handleModelCommand(
 	theme *style.UITheme,
 	w io.Writer,
 ) {
-	if a == nil || a.Config == nil {
-		fmt.Fprintln(w, "configuration unavailable.")
+	next, err := a.Configuration()
+	if err != nil {
+		fmt.Fprintln(w, err)
 		return
 	}
 
 	if len(parts) < 2 {
-		providerName := a.Config.ActiveProvider
+		providerName := next.ActiveProvider
 		if providerName == "" {
 			providerName = "default"
 		}
-		modelName := a.Config.Model
+		modelName := next.Model
 		if modelName == "" {
 			modelName = "not set"
 		}
-		limit := a.Config.ContextWindowLimit
+		limit := next.ContextWindowLimit
 		fmt.Fprintf(w, "Current model: %s (provider: %s, context limit: %d tokens)\n", modelName, providerName, limit)
 		fmt.Fprintln(w, "Usage: /model <model_name>")
 		return
@@ -42,8 +43,14 @@ func handleModelCommand(
 		return
 	}
 
-	a.Config.Model = newModel
-	a.Config.UpdateActiveProvider()
+	next.Model = newModel
+	next.UpdateActiveProvider()
+	if err := a.UpdateConfig(next); err != nil {
+		fmt.Fprintf(w, "model update: %v\n", err)
+		if !agent.ConfigApplied(err) {
+			return
+		}
+	}
 	if a.ConfigPath != "" {
 		saveConfigUpdate(a, w)
 	}

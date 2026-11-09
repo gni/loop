@@ -67,23 +67,37 @@ func handleContextCommand(
 		return
 	}
 
-	syncContextBar := func() {
+	next, err := a.Configuration()
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	applyContext := func() bool {
+		if err := a.UpdateConfig(next); err != nil {
+			fmt.Fprintf(w, "context update: %v\n", err)
+			if !agent.ConfigApplied(err) {
+				return false
+			}
+		}
 		saveConfigUpdate(a, w)
 		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
+		return true
 	}
 
 	switch strings.ToLower(parts[1]) {
 	case "auto", "on", "enable", "off", "disable":
 		arg := strings.ToLower(parts[1])
 		enable := arg == "auto" || arg == "on" || arg == "enable"
-		a.Config.AutoAdaptContext = enable
+		next.AutoAdaptContext = enable
+		if !applyContext() {
+			return
+		}
 		newLimit := a.GetEffectiveContextLimit(pTok)
 		if enable {
 			fmt.Fprintf(w, "context auto-adaptation enabled (active tier: %d tokens).\n", newLimit)
 		} else {
 			fmt.Fprintf(w, "context auto-adaptation disabled (ceiling: %d tokens).\n", newLimit)
 		}
-		syncContextBar()
 
 	default:
 		newLimit, err := strconv.Atoi(parts[1])
@@ -91,9 +105,11 @@ func handleContextCommand(
 			fmt.Fprintf(w, "Invalid context limit value: %v (must be positive integer or 'auto')\n", parts[1])
 			return
 		}
-		a.Config.ContextWindowLimit = newLimit
+		next.ContextWindowLimit = newLimit
+		if !applyContext() {
+			return
+		}
 		activeLimit := a.GetEffectiveContextLimit(pTok)
 		fmt.Fprintf(w, "context window limit set to %d tokens (active limit: %d tokens).\n", newLimit, activeLimit)
-		syncContextBar()
 	}
 }

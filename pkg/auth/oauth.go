@@ -7,20 +7,29 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"loop/pkg/config"
+	transporthttp "loop/pkg/transport/http"
 )
 
 func (s *Store) Login(ctx context.Context, name string, profile config.ProviderConfig, device bool, notify func(string)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if profile.OAuth == nil {
 		return fmt.Errorf("provider does not configure OAuth; configure an API key or OAuth endpoints")
+	}
+	if notify == nil {
+		notify = func(string) {}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -40,13 +49,18 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 	}
 	listenAddress := "127.0.0.1:0"
 	callbackPath := "/callback"
+	var callback *url.URL
 	if oauth.RedirectURI != "" {
-		callback, err := url.Parse(oauth.RedirectURI)
-		if err != nil || callback.Scheme != "http" || (callback.Hostname() != "localhost" && callback.Hostname() != "127.0.0.1" && callback.Hostname() != "::1") {
+		var err error
+		callback, err = url.Parse(oauth.RedirectURI)
+		if err != nil || callback.Scheme != "http" || callback.User != nil || callback.Fragment != "" || (callback.Hostname() != "localhost" && callback.Hostname() != "127.0.0.1" && callback.Hostname() != "::1") {
 			return fmt.Errorf("OAuth callback must be a loopback HTTP URL")
 		}
 		listenAddress = callback.Host
 		callbackPath = callback.Path
+		if callbackPath == "" {
+			callbackPath = "/"
+		}
 		if callback.Port() == "" {
 			listenAddress = net.JoinHostPort(callback.Hostname(), "0")
 		}
@@ -57,11 +71,11 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 	}
 	defer listener.Close()
 	redirectURI := "http://" + listener.Addr().String() + callbackPath
-	if oauth.RedirectURI != "" {
-		u, _ := url.Parse(oauth.RedirectURI)
-		if u.Port() != "" {
-			redirectURI = oauth.RedirectURI
+	if callback != nil {
+		if callback.Port() == "" || callback.Port() == "0" {
+			callback.Host = listener.Addr().String()
 		}
+		redirectURI = callback.String()
 	}
 	if oauth.ClientID == "" && oauth.RegistrationURL != "" {
 		oauth.ClientID, err = s.register(ctx, oauth.RegistrationURL, redirectURI)
@@ -89,33 +103,54 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 		query.Set(key, value)
 	}
 	endpoint.RawQuery = query.Encode()
-	codes := make(chan string, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
+	type authorizationResult struct {
+		code string
+		err  error
+	}
+	results := make(chan authorizationResult, 1)
+	var handled atomic.Bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != callbackPath {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != "GET" || subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("state")), []byte(state)) != 1 {
 			http.Error(w, "Invalid authorization state", http.StatusBadRequest)
 			return
 		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
+		result := authorizationResult{code: r.URL.Query().Get("code")}
+		if failure := r.URL.Query().Get("error"); failure != "" {
+			result.err = fmt.Errorf("authorization server: %s", transporthttp.RedactDiagnostic(failure))
+		} else if result.code == "" {
 			http.Error(w, "Authorization was not completed", http.StatusBadRequest)
 			return
 		}
-		select {
-		case codes <- code:
-			fmt.Fprint(w, "Authentication complete. You can close this window.")
-		default:
+		if !handled.CompareAndSwap(false, true) {
 			http.Error(w, "Callback already handled", http.StatusConflict)
+			return
 		}
+		if result.err != nil {
+			http.Error(w, "Authorization was declined. You can close this window.", http.StatusForbidden)
+		} else {
+			fmt.Fprint(w, "Authentication complete. You can close this window.")
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		results <- result
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	defer server.Close()
 	notify(endpoint.String())
 	var code string
 	select {
-	case code = <-codes:
+	case result := <-results:
+		if result.err != nil {
+			return result.err
+		}
+		code = result.code
 	case err := <-done:
 		return err
 	case <-ctx.Done():
@@ -133,6 +168,9 @@ func (s *Store) deviceLogin(ctx context.Context, name string, profile config.Pro
 	if err := secureURL(oauth.DeviceURL); err != nil {
 		return err
 	}
+	if err := secureURL(oauth.TokenURL); err != nil {
+		return err
+	}
 	request, err := http.NewRequestWithContext(ctx, "POST", oauth.DeviceURL, strings.NewReader(url.Values{"client_id": {oauth.ClientID}, "scope": {strings.Join(oauth.Scopes, " ")}}.Encode()))
 	if err != nil {
 		return err
@@ -140,7 +178,7 @@ func (s *Store) deviceLogin(ctx context.Context, name string, profile config.Pro
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return err
+		return transporthttp.RedactError(err)
 	}
 	var device struct {
 		DeviceCode           string `json:"device_code"`
@@ -150,22 +188,29 @@ func (s *Store) deviceLogin(ctx context.Context, name string, profile config.Pro
 		Interval             int    `json:"interval"`
 		ExpiresIn            int    `json:"expires_in"`
 	}
-	err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&device)
+	err = decodeResponse(response.Body, &device)
 	response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusOK || device.DeviceCode == "" {
+	if err != nil || response.StatusCode != http.StatusOK || device.DeviceCode == "" || device.UserCode == "" || device.ExpiresIn <= 0 || device.Interval < 0 {
 		return fmt.Errorf("invalid device authorization response")
 	}
 	verify := device.VerificationComplete
 	if verify == "" {
 		verify = device.VerificationURI
 	}
-	notify(verify + "\nCode: " + device.UserCode)
-	if device.ExpiresIn > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(device.ExpiresIn)*time.Second)
-		defer cancel()
+	if err := secureURL(verify); err != nil {
+		return fmt.Errorf("invalid device verification URL: %w", err)
 	}
-	interval := time.Duration(max(1, device.Interval)) * time.Second
+	const maxSeconds = int64(math.MaxInt64) / int64(time.Second)
+	if int64(device.ExpiresIn) > maxSeconds || int64(device.Interval) > maxSeconds {
+		return fmt.Errorf("device authorization duration exceeds supported range")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(device.ExpiresIn)*time.Second)
+	defer cancel()
+	interval := 5 * time.Second
+	if device.Interval > 0 {
+		interval = time.Duration(device.Interval) * time.Second
+	}
+	notify(verify + "\nCode: " + device.UserCode)
 	for {
 		timer := time.NewTimer(interval)
 		select {
@@ -174,15 +219,23 @@ func (s *Store) deviceLogin(ctx context.Context, name string, profile config.Pro
 			timer.Stop()
 			return ctx.Err()
 		}
-		token, err := s.token(ctx, oauth.TokenURL, url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {device.DeviceCode}, "client_id": {oauth.ClientID}})
+		token, err := s.token(ctx, oauth.TokenURL, url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {device.DeviceCode}, "client_id": {oauth.ClientID}, "client_secret": {oauth.ClientSecret}})
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if token.Error == "authorization_pending" {
 			continue
 		}
 		if token.Error == "slow_down" {
-			interval += 5 * time.Second
+			interval = min(interval, time.Duration(math.MaxInt64)-5*time.Second) + 5*time.Second
 			continue
 		}
 		if err != nil {
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				interval = min(interval, time.Duration(math.MaxInt64)/2) * 2
+				continue
+			}
 			return err
 		}
 		return s.SaveContext(ctx, name, Credential{Type: "oauth", Issuer: profile.Endpoint, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: tokenExpiry(token.ExpiresIn), ClientID: oauth.ClientID})
@@ -204,13 +257,13 @@ func (s *Store) register(ctx context.Context, endpoint, redirect string) (string
 	request.Header.Set("Content-Type", "application/json")
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return "", err
+		return "", transporthttp.RedactError(err)
 	}
 	defer response.Body.Close()
 	var registration struct {
 		ClientID string `json:"client_id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&registration); err != nil {
+	if err := decodeResponse(response.Body, &registration); err != nil {
 		return "", fmt.Errorf("invalid client registration response")
 	}
 	if response.StatusCode >= 300 || registration.ClientID == "" {

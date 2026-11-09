@@ -33,7 +33,7 @@ func commitProviderConfig(a *agent.Agent, next *config.Config) error {
 			return err
 		}
 	}
-	applyErr := a.ApplyConfig(next)
+	applyErr := a.UpdateConfig(next)
 	if !agent.ConfigApplied(applyErr) {
 		return applyErr
 	}

@@ -215,6 +215,9 @@ func boolConfigItem(id, name, desc string, cfg *config.Config) *settingItem {
 
 // Boolean settings go through onEdit so file, command and menu rules agree.
 func (item *settingItem) toggle() error {
+	if item.onAction != nil {
+		return item.onAction()
+	}
 	if item.isBool && item.onEdit != nil {
 		value, err := config.ParseBoolValue(item.value())
 		if err != nil {

@@ -33,7 +33,7 @@ func handleConfigCommand(
 		render.RenderConfig(w, a.Config, *theme)
 		return
 	}
-	next, err := config.Clone(a.Config)
+	next, err := a.Configuration()
 	if err != nil {
 		fmt.Fprintln(w, err)
 		return
@@ -72,7 +72,7 @@ func handleConfigCommand(
 		}
 	}
 	previous := *a.Config
-	applyErr := a.ApplyConfig(next)
+	applyErr := a.UpdateConfig(next)
 	if !agent.ConfigApplied(applyErr) {
 		if modal {
 			ui.RestoreAfterModal(w, a, kiReader, rl)

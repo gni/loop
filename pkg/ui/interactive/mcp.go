@@ -1,305 +1,241 @@
 package interactive
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"sort"
-	"strings"
+	"os"
+	"os/signal"
+	"unicode"
+	"unicode/utf8"
 
+	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/terminal"
+	transporthttp "loop/pkg/transport/http"
 	"loop/pkg/ui/style"
 )
 
-func RunInteractiveMCPConfig(
-	cfg *config.Config,
-	theme style.UITheme,
-	rlInput io.Reader,
-	rlOutput io.Writer,
-	reconnect func(*config.Config) error,
-) (*config.Config, error) {
-	clonedPtr, cloneErr := config.Clone(cfg)
-	if cloneErr != nil || clonedPtr == nil {
-		return nil, fmt.Errorf("mcp configuration is unavailable")
-	}
-	cloned := *clonedPtr
-	if cloned.MCPServers == nil {
-		cloned.MCPServers = make(map[string]config.MCPServerConfig)
-	}
+type MCPConfigActions struct {
+	Reconnect     func(*config.Config) error
+	Statuses      func() map[string]agent.MCPServerStatus
+	Configuration func() (*config.Config, error)
+}
 
-	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
-		sr := NewSessionReader(rlInput)
-		defer sr.Close()
+type mcpManager struct {
+	draft, saved *config.Config
+	selected     int
+	query        string
+	searching    bool
+	notice       string
+	failed       bool
+	busy         bool
+	actions      MCPConfigActions
+}
 
-		getFirstServer := func() string {
-			if len(cloned.MCPServers) == 0 {
-				return ""
-			}
-			var keys []string
-			for k := range cloned.MCPServers {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			return keys[0]
-		}
-
-		selectedServer := getFirstServer()
-		reconnectNotice := ""
-		reconnectFailed := false
-
-		itemsProvider := func() []*settingItem {
-			if selectedServer != "" {
-				if _, exists := cloned.MCPServers[selectedServer]; !exists {
-					selectedServer = getFirstServer()
-				}
-			} else if len(cloned.MCPServers) > 0 {
-				selectedServer = getFirstServer()
-			}
-
-			items := []*settingItem{
-				boolConfigItem("mcp", "MCP enabled (all servers)", "Space or Enter toggles all MCP connections and tools. Esc saves and applies. Server settings are kept.", &cloned),
-				{
-					id: "action_reconnect", name: "[ reconnect enabled servers ]",
-					value: func() string {
-						if reconnectNotice != "" {
-							return reconnectNotice
-						}
-						return "Enter to reconnect"
-					},
-					description: "Save current settings, reconnect enabled servers and refresh their tools.",
-					onToggle: func() {
-						reconnectFailed = true
-						if reconnect == nil {
-							reconnectNotice = "Reconnect is unavailable."
-							return
-						}
-						if !cloned.MCP {
-							reconnectNotice = "Enable MCP before reconnecting."
-							return
-						}
-						enabled := 0
-						for _, server := range cloned.MCPServers {
-							if server.Enabled {
-								enabled++
-							}
-						}
-						if enabled == 0 {
-							reconnectNotice = "Enable at least one server before reconnecting."
-							return
-						}
-						if err := writeMenuFrame(rlOutput, "\x1b[H\x1b[JReconnecting MCP servers...\r\n"); err != nil {
-							reconnectNotice = err.Error()
-							return
-						}
-						if err := reconnect(&cloned); err != nil {
-							reconnectNotice = err.Error()
-							return
-						}
-						reconnectFailed = false
-						reconnectNotice = fmt.Sprintf("Reconnected %d enabled server(s). Tools refreshed.", enabled)
-					},
-				},
-				{
-					id:   "selected_server",
-					name: "selected mcp server",
-					value: func() string {
-						if selectedServer == "" {
-							return "none"
-						}
-						return selectedServer
-					},
-					description: "Currently selected MCP server configuration to view/edit",
-					onToggle: func() {
-						if len(cloned.MCPServers) == 0 {
-							return
-						}
-						var keys []string
-						for k := range cloned.MCPServers {
-							keys = append(keys, k)
-						}
-						sort.Strings(keys)
-						selectedServer = cycleOption(keys, selectedServer)
-					},
-				},
-			}
-
-			if selectedServer != "" {
-				srvName := selectedServer
-				cfgServer := cloned.MCPServers[srvName]
-
-				items = append(items,
-					&settingItem{
-						id:          "server_url",
-						name:        "server url",
-						value:       func() string { return cloned.MCPServers[srvName].URL },
-						description: "The HTTP/SSE URL of the MCP server",
-						onEdit: func(newVal string) error {
-							if newVal == "" {
-								return fmt.Errorf("url cannot be empty")
-							}
-							curr := cloned.MCPServers[srvName]
-							curr.URL = newVal
-							cloned.MCPServers[srvName] = curr
-							return nil
-						},
-					},
-					&settingItem{
-						id:   "server_enabled",
-						name: "selected server enabled",
-						value: func() string {
-							if !cloned.MCPServers[srvName].Enabled {
-								return "\x1b[31mdisabled\x1b[0m"
-							}
-							return "\x1b[32menabled\x1b[0m"
-						},
-						isBool:      true,
-						description: fmt.Sprintf("Toggle to enable or disable MCP server '%s'. The master MCP switch must also be enabled.", srvName),
-						onToggle: func() {
-							curr := cloned.MCPServers[srvName]
-							curr.Enabled = !(curr.Enabled)
-							cloned.MCPServers[srvName] = curr
-						},
-					},
-				)
-
-				var hKeys []string
-				for h := range cfgServer.Headers {
-					hKeys = append(hKeys, h)
-				}
-				sort.Strings(hKeys)
-
-				for _, hk := range hKeys {
-					headerName := hk
-					items = append(items, &settingItem{
-						id:          "header_" + headerName,
-						name:        "  header: " + headerName,
-						value:       func() string { return cloned.MCPServers[srvName].Headers[headerName] },
-						description: fmt.Sprintf("HTTP Header '%s' value for '%s'", headerName, srvName),
-						onEdit: func(newVal string) error {
-							curr := cloned.MCPServers[srvName]
-							if newVal == "" {
-								delete(curr.Headers, headerName)
-							} else {
-								curr.Headers[headerName] = newVal
-							}
-							cloned.MCPServers[srvName] = curr
-							return nil
-						},
-					})
-				}
-
-				items = append(items,
-					&settingItem{
-						id:          "action_add_header",
-						name:        "  [ add HTTP header ]",
-						value:       func() string { return "" },
-						description: fmt.Sprintf("Add a custom HTTP header for '%s'", srvName),
-						onToggle: func() {
-							fmt.Fprint(rlOutput, "\r\n\r\n  === Add Header ===\r\n")
-							fmt.Fprint(rlOutput, "  Enter header name (e.g. Authorization, X-Api-Key): ")
-							hName, err := ReadInputRaw(sr, rlOutput)
-							if err != nil {
-								return
-							}
-							hName = strings.TrimSpace(hName)
-							if hName != "" {
-								fmt.Fprintf(rlOutput, "  Enter value for '%s': ", hName)
-								hVal, err := ReadInputRaw(sr, rlOutput)
-								if err != nil {
-									return
-								}
-								curr := cloned.MCPServers[srvName]
-								if curr.Headers == nil {
-									curr.Headers = make(map[string]string)
-								}
-								curr.Headers[hName] = strings.TrimSpace(hVal)
-								cloned.MCPServers[srvName] = curr
-							}
-						},
-					},
-					&settingItem{
-						id:          "action_remove_server",
-						name:        "[ remove selected server ]",
-						value:       func() string { return "" },
-						description: fmt.Sprintf("Delete the MCP server configuration for '%s'", srvName),
-						onToggle: func() {
-							delete(cloned.MCPServers, srvName)
-							selectedServer = getFirstServer()
-						},
-					},
-				)
-			}
-
-			items = append(items, &settingItem{
-				id:          "action_add_server",
-				name:        "[ add new mcp server ]",
-				value:       func() string { return "" },
-				description: "Add a new MCP server configuration by entering name and URL",
-				onToggle: func() {
-					fmt.Fprint(rlOutput, "\r\n\r\n  === Add New MCP Server ===\r\n")
-					fmt.Fprint(rlOutput, "  Enter server name: ")
-					sName, err := ReadInputRaw(sr, rlOutput)
-					if err != nil {
-						return
-					}
-					sName = strings.TrimSpace(sName)
-					if sName != "" {
-						if _, exists := cloned.MCPServers[sName]; exists {
-							fmt.Fprint(rlOutput, "  Server already exists. Press enter to continue...")
-							_, _ = ReadInputRaw(sr, rlOutput)
-							return
-						}
-						fmt.Fprint(rlOutput, "  Enter SSE endpoint URL: ")
-						sURL, err := ReadInputRaw(sr, rlOutput)
-						if err != nil {
-							return
-						}
-						sURL = strings.TrimSpace(sURL)
-						if sURL != "" {
-							if cloned.MCPServers == nil {
-								cloned.MCPServers = make(map[string]config.MCPServerConfig)
-							}
-							cloned.MCPServers[sName] = config.MCPServerConfig{
-								Enabled: true,
-								URL:     sURL,
-								Headers: make(map[string]string),
-							}
-							selectedServer = sName
-						}
-					}
-				},
-			})
-
-			return items
-		}
-
-		extraRender := func(buf *strings.Builder) {
-			state, tint := "OFF", theme.Warning
-			message := "Connections and tools are disabled. Server settings are kept."
-			if cloned.MCP {
-				state, tint = "ON", theme.Success
-				message = "Enabled servers can connect and expose tools."
-			}
-			buf.WriteString("  " + style.NewStyle().Foreground(tint).Bold(true).Render("MCP "+state) + "\n")
-			width, _ := terminal.GetDimensions()
-			if reconnectNotice != "" {
-				message = reconnectNotice
-				tint = theme.Success
-				if reconnectFailed {
-					tint = theme.Error
-				}
-			} else {
-				tint = theme.TextMuted
-			}
-			buf.WriteString("  " + style.NewStyle().Foreground(tint).Render(style.TruncateCells(message, max(1, width-3))) + "\n")
-		}
-		return runSettingsMenuLoop(sr, rlOutput, theme, "MCP", itemsProvider, extraRender)
-	})
-	if !isTTY {
-		return cfg, nil
-	}
+func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.Reader, output io.Writer, actions MCPConfigActions) (*config.Config, error) {
+	draft, err := config.Clone(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &cloned, nil
+	if draft.MCPServers == nil {
+		draft.MCPServers = make(map[string]config.MCPServerConfig)
+	}
+	manager := &mcpManager{draft: draft, saved: cfg, actions: actions}
+	cancelled := false
+	isTTY, err := withAltScreenTerminal(input, output, func() error {
+		sr := NewSessionReader(input)
+		defer sr.Close()
+		signals := make(chan os.Signal, 1)
+		terminal.NotifyResize(signals)
+		defer signal.Stop(signals)
+		for {
+			names := manager.names()
+			manager.selected = max(0, min(manager.selected, len(names)-1))
+			width, height := terminal.GetDimensions()
+			frame, page := renderMCPManager(manager, names, manager.statuses(), width, height, theme)
+			if err := writeMenuFrame(output, frame); err != nil {
+				return err
+			}
+			key, resized, err := sr.ReadKeyOrResize(signals)
+			if err != nil {
+				return err
+			}
+			if resized {
+				continue
+			}
+			value := string(key)
+			switch value {
+			case "\x03", "\x04":
+				cancelled = true
+				return nil
+			case "\x1b":
+				if manager.searching || manager.query != "" {
+					manager.searching, manager.query, manager.selected = false, "", 0
+					continue
+				}
+				return nil
+			}
+			if width < mcpMinWidth || height < mcpMinHeight {
+				continue
+			}
+			if manager.searching {
+				switch value {
+				case "\r", "\n":
+					manager.searching = false
+				case "\x7f", "\b":
+					if manager.query != "" {
+						_, size := utf8.DecodeLastRuneInString(manager.query)
+						manager.query = manager.query[:len(manager.query)-size]
+					}
+				default:
+					if len(key) > 0 && key[0] != 27 {
+						for _, char := range value {
+							if !unicode.IsControl(char) && len(manager.query) < 256 {
+								manager.query += string(char)
+							}
+						}
+					}
+				}
+				manager.selected = 0
+				continue
+			}
+			switch value {
+			case "/":
+				manager.searching = true
+			case "\x1b[A", "\x1bOA":
+				if len(names) > 0 {
+					manager.selected = (manager.selected - 1 + len(names)) % len(names)
+				}
+			case "\x1b[B", "\x1bOB":
+				if len(names) > 0 {
+					manager.selected = (manager.selected + 1) % len(names)
+				}
+			case "\x1b[5~":
+				manager.selected = max(0, manager.selected-page)
+			case "\x1b[6~":
+				manager.selected = min(max(0, len(names)-1), manager.selected+page)
+			case "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~":
+				manager.selected = 0
+			case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
+				manager.selected = max(0, len(names)-1)
+			case "m", "M":
+				manager.draft.MCP = !manager.draft.MCP
+				manager.notice, manager.failed = "", false
+			case " ":
+				if len(names) > 0 {
+					name := names[manager.selected]
+					server := manager.draft.MCPServers[name]
+					server.Enabled = !server.Enabled
+					manager.draft.MCPServers[name] = server
+					manager.notice, manager.failed = "", false
+				}
+			case "r", "R":
+				if err := manager.reconnect(output, width, height, theme); err != nil {
+					return err
+				}
+			case "a", "A":
+				name, err := addMCPServer(manager.draft, sr, signals, output, theme)
+				if err := manager.actionResult(err); err != nil {
+					return err
+				}
+				if name != "" {
+					manager.query = ""
+					for index, entry := range manager.names() {
+						if entry == name {
+							manager.selected = index
+						}
+					}
+					manager.notice = "Server added. Enter to configure."
+				}
+			case "d", "D":
+				if len(names) > 0 {
+					name := names[manager.selected]
+					delete(manager.draft.MCPServers, name)
+					manager.notice, manager.failed = "Server removed. Esc saves changes.", false
+				}
+			case "\r", "\n":
+				if len(names) > 0 {
+					err := editMCPServer(manager.draft, names[manager.selected], sr, output, theme)
+					if err := manager.actionResult(err); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cancelled {
+		return nil, nil
+	}
+	if !isTTY {
+		return cfg, nil
+	}
+	return draft, nil
+}
+
+func (m *mcpManager) actionResult(err error) error {
+	var inputErr *menuInputError
+	if errors.As(err, &inputErr) && !errors.Is(err, ErrSelectionCancelled) {
+		return err
+	}
+	m.notice, m.failed = "", false
+	if err != nil && !errors.Is(err, ErrSelectionCancelled) {
+		m.notice, m.failed = menuDisplayText(transporthttp.RedactDiagnostic(err.Error())), true
+	}
+	return nil
+}
+
+func (m *mcpManager) statuses() map[string]agent.MCPServerStatus {
+	if m.actions.Statuses != nil {
+		return m.actions.Statuses()
+	}
+	return nil
+}
+
+func (m *mcpManager) reconnect(output io.Writer, width, height int, theme style.UITheme) error {
+	m.failed = true
+	if !m.draft.MCP {
+		m.notice = "Enable MCP with M before reconnecting."
+		return nil
+	}
+	enabled := 0
+	for _, server := range m.draft.MCPServers {
+		if server.Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 || m.actions.Reconnect == nil {
+		m.notice = "Enable a server before reconnecting."
+		if m.actions.Reconnect == nil {
+			m.notice = "Reconnect is unavailable."
+		}
+		return nil
+	}
+	m.busy, m.failed, m.notice = true, false, "Reconnecting enabled servers..."
+	frame, _ := renderMCPManager(m, m.names(), m.statuses(), width, height, theme)
+	if err := writeMenuFrame(output, frame); err != nil {
+		m.busy = false
+		return err
+	}
+	draft, err := config.Clone(m.draft)
+	if err == nil {
+		err = m.actions.Reconnect(draft)
+	}
+	m.busy = false
+	m.failed = err != nil
+	m.notice = fmt.Sprintf("Reconnected %d enabled server(s).", enabled)
+	if err != nil {
+		m.notice = menuDisplayText(transporthttp.RedactDiagnostic(err.Error()))
+	}
+	if m.actions.Configuration != nil {
+		if saved, snapshotErr := m.actions.Configuration(); snapshotErr == nil {
+			m.saved = saved
+		}
+	} else if err == nil {
+		m.saved, _ = config.Clone(m.draft)
+	}
+	return nil
 }

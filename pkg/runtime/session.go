@@ -51,7 +51,7 @@ type State struct {
 	Closed    bool            `json:"closed"`
 	Model     string          `json:"model"`
 	Provider  string          `json:"provider"`
-	Messages  []db.Message    `json:"messages"`
+	Messages  []db.Message    `json:"messages,omitempty"`
 	Steering  []string        `json:"steering"`
 	FollowUp  []string        `json:"follow_up"`
 	Todos     []tool.TodoItem `json:"todos"`
@@ -200,6 +200,7 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
 	close(s.idle)
 	s.Agent = agent.NewAgentAt(cfg, options.ConfigPath, client, workspace)
+	s.Agent.ConfigControl = s
 	stopConstruction := context.AfterFunc(ctx, s.Agent.CancelLifetime)
 	defer stopConstruction()
 	s.Agent.SessionMessages = s.MessagesSnapshot
@@ -613,7 +614,7 @@ func (s *Session) Queue(prompt string, followUp bool) error {
 		s.steering = append(s.steering, prompt)
 	}
 	s.mu.Unlock()
-	return s.event(agent.Event{Type: "queue_update", SessionID: s.ID, Data: s.State()})
+	return s.event(agent.Event{Type: "queue_update", SessionID: s.ID, Data: s.Status()})
 }
 
 func (s *Session) takeSteering() []db.Message {
@@ -625,20 +626,6 @@ func (s *Session) takeSteering() []db.Message {
 	prompt := s.steering[0]
 	s.steering = s.steering[1:]
 	return []db.Message{{Role: "user", Content: prompt}}
-}
-
-func (s *Session) State() State {
-	s.mu.Lock()
-	state := State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed,
-		Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...)}
-	state.Name, _ = s.Agent.SessionNameSnapshot()
-	s.mu.Unlock()
-	s.Agent.LLMProviderMu.Lock()
-	state.Model, state.Provider = s.Agent.Config.Model, s.Agent.Config.ActiveProvider
-	s.Agent.LLMProviderMu.Unlock()
-	state.Messages = s.MessagesSnapshot()
-	state.Todos = s.Agent.GetTodos()
-	return state
 }
 
 func (s *Session) ClearQueue() error {

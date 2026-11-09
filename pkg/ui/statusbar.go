@@ -3,6 +3,7 @@ package ui
 import (
 	"io"
 
+	"loop/pkg/agent"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -93,5 +94,7 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	}
 	ui.LastStatusBarText = deltaKey
 
-	render.DrawStatusBar(w, theme, width, height, scrollBottom, indicator, newStatusBarText)
+	// Pinned controls bypass transcript writers, which acquire TerminalMu and
+	// would otherwise capture screen-control bytes as conversation output.
+	render.DrawStatusBar(agent.UnwrapWriter(w), theme, width, height, scrollBottom, indicator, newStatusBarText)
 }

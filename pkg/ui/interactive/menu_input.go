@@ -1,9 +1,11 @@
 package interactive
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
@@ -15,8 +17,26 @@ type menuInputError struct{ cause error }
 func (e *menuInputError) Error() string { return e.cause.Error() }
 func (e *menuInputError) Unwrap() error { return e.cause }
 
+func menuAction(action func() error) func() error {
+	return func() error {
+		err := action()
+		if errors.Is(err, ErrSelectionCancelled) {
+			return nil
+		}
+		return err
+	}
+}
+
 // Redraw the form on resize and keep cancellation distinct from input failures.
 func readMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
+	return readMenuInput(sr, signals, w, theme, title, description, label, initial, false, validate)
+}
+
+func readMenuSecretField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
+	return readMenuInput(sr, signals, w, theme, title, description, label, initial, true, validate)
+}
+
+func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, secret bool, validate func(string) error) (string, error) {
 	var input strings.Builder
 	input.WriteString(initial)
 	warning := ""
@@ -26,6 +46,9 @@ func readMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		muted := style.NewStyle().Foreground(theme.TextMuted)
 		value := menuDisplayText(input.String())
+		if secret {
+			value = strings.Repeat("•", min(width*2, utf8.RuneCountInString(input.String())))
+		}
 		// Long instructions remain editable without wrapping over the form controls.
 		visible := []rune(value)
 		start, cells := len(visible), 0
@@ -54,7 +77,7 @@ func readMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			frame.WriteString(style.TruncateCells(row, width) + "\x1b[K")
 		}
 		frame.WriteString("\x1b[J")
-		if _, err := io.WriteString(w, frame.String()); err != nil {
+		if err := writeMenuFrame(w, frame.String()); err != nil {
 			return "", &menuInputError{cause: err}
 		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
@@ -67,6 +90,10 @@ func readMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 		switch string(key) {
 		case "\x1b", "\x03", "\x04":
 			return "", ErrSelectionCancelled
+		case "\x15":
+			input.Reset()
+			warning = ""
+			continue
 		}
 		if width < 16 || height < 6 {
 			continue

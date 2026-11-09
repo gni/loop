@@ -86,6 +86,8 @@ func NewScrollback(width, height int) *Scrollback {
 	return b
 }
 
+func (b *Scrollback) MarkdownWidth() int { return b.Width }
+
 func (b *Scrollback) PageSize() int {
 	if b != nil && b.pageSize > 0 {
 		return b.pageSize

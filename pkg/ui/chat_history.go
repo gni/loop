@@ -129,7 +129,11 @@ func (h *ChatHistory) AppearanceKey() string {
 
 func (h *ChatHistory) appearanceKey() string {
 	c := h.a.Config
-	return fmt.Sprintf("%s/%s/%t/%t/%t/%s/%t", c.Theme, c.SyntaxTheme, c.MarkdownRender, c.ShowThinking, c.CollapseResults, c.ReasoningEffort, c.ShowMicroseconds)
+	width := 0
+	if c.MarkdownRender {
+		width = h.buffer.Width
+	}
+	return fmt.Sprintf("%s/%s/%t/%t/%t/%s/%t/%d", c.Theme, c.SyntaxTheme, c.MarkdownRender, c.ShowThinking, c.CollapseResults, c.ReasoningEffort, c.ShowMicroseconds, width)
 }
 
 // BeginTurn/FinishTurn retain semantic boundaries only for explicit appearance

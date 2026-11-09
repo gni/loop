@@ -142,7 +142,5 @@ func (s *Session) checkpointMessages(ctx context.Context) error {
 
 // Configuration returns an independent snapshot under the agent's config lock.
 func (s *Session) Configuration() (*config.Config, error) {
-	s.Agent.LLMProviderMu.Lock()
-	defer s.Agent.LLMProviderMu.Unlock()
-	return config.Clone(s.Agent.Config)
+	return s.Agent.Configuration()
 }

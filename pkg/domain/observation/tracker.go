@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"loop/pkg/domain/diagnostic"
+	"loop/pkg/storage"
 )
 
 type FileObservation struct {
@@ -120,7 +121,7 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 		}
 		return nil
 	}
-	diskData, err := os.ReadFile(cleanPath)
+	diskData, err := storage.ReadFile(cleanPath, 20<<20)
 	if err != nil {
 		return fmt.Errorf("cannot verify file '%s' before mutation: %w", base, err)
 	}

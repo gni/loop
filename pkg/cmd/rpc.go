@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"loop/pkg/config"
-	"loop/pkg/domain/message"
 	"loop/pkg/runtime"
 )
 
@@ -59,7 +58,7 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		var commandErr error
 		switch command.Type {
 		case "prompt":
-			if s.State().Running {
+			if s.Running() {
 				commandErr = runtime.ErrBusy
 			} else if command.Message == "" {
 				commandErr = fmt.Errorf("prompt is empty")
@@ -82,14 +81,14 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		case "clear_queue":
 			commandErr = s.ClearQueue()
 		case "get_state":
-			data = s.State()
+			data = s.Status()
 		case "get_messages":
-			data = s.State().Messages
+			data = s.MessagesSnapshot()
 		case "get_usage":
 			if s.Store != nil {
 				data, commandErr = s.Store.UsageContext(ctx, s.ID)
 			} else {
-				data = message.TotalUsage(s.State().Messages)
+				data = s.Usage()
 			}
 		case "get_models":
 			data = s.Agent.Config.Models()
@@ -136,7 +135,7 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		case "compact":
 			commandErr = s.Compact(ctx)
 		case "switch_session", "new_session", "fork":
-			if s.State().Running {
+			if s.Running() {
 				commandErr = runtime.ErrBusy
 				break
 			}

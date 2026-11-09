@@ -3,13 +3,14 @@ package file
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"loop/pkg/domain/diagnostic"
 	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 type editTool struct{}
@@ -148,7 +149,10 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 
 	observed.Target = safePath
 
-	unlock := LockPath(safePath)
+	unlock, err := LockPathContext(ctx.Context(), safePath)
+	if err != nil {
+		return "", err
+	}
 	defer unlock()
 
 	for i := range edits {
@@ -178,10 +182,14 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		return "", err
 	}
 
-	data, err := os.ReadFile(safePath)
+	data, err := storage.ReadFile(safePath, int64(limits.For(ctx).MaxReadFileBytes))
 	if err != nil {
 		discardIfUncommitted()
 		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+	if IsBinary(data) {
+		discardIfUncommitted()
+		return "", fmt.Errorf("cannot edit binary file; provide a text file")
 	}
 	hasBOM, rawStr := SplitBOM(data)
 	originalEnding := DetectLineEnding(rawStr)

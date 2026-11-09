@@ -94,6 +94,7 @@ type Agent struct {
 	LLMProvider         LLMProvider
 	LLMProviderMu       sync.RWMutex
 	Config              *config.Config
+	ConfigControl       ConfigurationController
 	ConfigPath          string
 	HTTPClient          *http.Client
 	ActiveSkills        []Skill
@@ -351,15 +352,7 @@ func (a *Agent) IsGuidedMode() bool {
 }
 
 func (a *Agent) SetGuidedMode(enabled bool) {
-	if a == nil {
-		return
-	}
-	if a.Config != nil {
-		a.Config.GuidedMode = enabled
-		a.Config.NormalizeSafety()
-	}
-	a.ensureGuided().SetEnabled(enabled)
-	a.markSystemPromptDirty()
+	_ = a.UpdateLiveSettings(func(next *LiveSettings) { next.GuidedMode = enabled })
 }
 
 func (a *Agent) RollbackChanges() ([]string, error) {
@@ -398,8 +391,7 @@ func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
 			return err
 		}
 	}
-	a.ensureGuided().CaptureFileSnapshot(absPath)
-	return nil
+	return a.ensureGuided().captureFileSnapshot(absPath, int64(a.GetLimits().MaxReadFileBytes))
 }
 
 // InvalidateCodeIndex refreshes declarations after committed native edits.
@@ -418,7 +410,6 @@ func (a *Agent) RecordMutation(absPath string, data []byte) {
 	if a == nil {
 		return
 	}
-	a.ensureGuided().CaptureFileSnapshot(absPath)
 	if a.FileObservations != nil {
 		a.FileObservations.RecordMutation(absPath, data)
 	}

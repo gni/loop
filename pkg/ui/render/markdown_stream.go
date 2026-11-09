@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/ui/style"
 )
@@ -24,6 +25,7 @@ const (
 	livePrefixQuote
 	livePrefixBullet
 	livePrefixNumbered
+	livePrefixTable
 )
 
 type livePrefixDecision struct {
@@ -47,7 +49,10 @@ type LiveMarkdownRenderer struct {
 	codeLine      strings.Builder
 	codeOverflow  bool
 
-	inline *InlineMarkdownWriter
+	inline           *InlineMarkdownWriter
+	table            liveMarkdownTable
+	tablePassthrough bool
+	utf8Pending      string
 
 	endedWithNewline bool
 }
@@ -65,14 +70,29 @@ func NewLiveMarkdownRenderer(w io.Writer, theme style.UITheme) *LiveMarkdownRend
 
 func (r *LiveMarkdownRenderer) Write(chunk string) {
 	var plain strings.Builder
-	for _, current := range chunk {
+	chunk = r.utf8Pending + chunk
+	r.utf8Pending = ""
+	for len(chunk) > 0 {
+		if !utf8.FullRuneInString(chunk) {
+			r.utf8Pending = chunk
+			break
+		}
+		current, size := utf8.DecodeRuneInString(chunk)
 		r.writeRune(current, &plain)
+		chunk = chunk[size:]
 	}
 	r.flushPlain(&plain)
 	r.inline.Flush()
 }
 
 func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
+	if r.writeTableRune(current, plain) {
+		return
+	}
+	r.writeMarkdownRune(current, plain)
+}
+
+func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Builder) {
 	if r.inFenceHeader {
 		r.writeFenceHeaderRune(current, plain)
 		return
@@ -84,6 +104,9 @@ func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
 	if r.atLineStart {
 		r.prefix.WriteRune(current)
 		decision := classifyLivePrefix(r.prefix.String())
+		if decision.kind == livePrefixTable && r.tablePassthrough {
+			decision.kind = livePrefixPlain
+		}
 		switch decision.kind {
 		case livePrefixPending:
 			return
@@ -119,6 +142,14 @@ func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
 			number := style.NewStyle().Foreground(r.theme.Primary).Render(decision.marker)
 			fmt.Fprintf(r.w, "  %s ", number)
 			r.endedWithNewline = false
+			return
+		case livePrefixTable:
+			r.flushPlain(plain)
+			r.inline.EndLine()
+			r.table.line.WriteString(r.prefix.String())
+			r.table.candidate = true
+			r.prefix.Reset()
+			r.atLineStart = false
 			return
 		case livePrefixPlain:
 			prefix := r.prefix.String()
@@ -257,6 +288,11 @@ func (r *LiveMarkdownRenderer) emitVisible(content string) {
 // Flush ensures all buffered content has been written out.
 func (r *LiveMarkdownRenderer) Flush() {
 	var plain strings.Builder
+	for _, ch := range strings.ToValidUTF8(r.utf8Pending, "�") {
+		r.writeRune(ch, &plain)
+	}
+	r.utf8Pending = ""
+	r.flushTable(&plain)
 
 	if r.inFenceHeader {
 		r.inline.EndLine()
@@ -305,6 +341,8 @@ func (r *LiveMarkdownRenderer) EnsureTrailingNewline() {
 
 // ResetAtLineStart resets the renderer state to the start of a fresh line.
 func (r *LiveMarkdownRenderer) ResetAtLineStart() {
+	r.table = liveMarkdownTable{}
+	r.utf8Pending = ""
 	r.prefix.Reset()
 	r.fenceHeader.Reset()
 	r.codeLine.Reset()
@@ -351,6 +389,8 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 	}
 
 	switch body[0] {
+	case '|':
+		return livePrefixDecision{kind: livePrefixTable}
 	case '`':
 		ticks := 0
 		for ticks < len(body) && body[ticks] == '`' {

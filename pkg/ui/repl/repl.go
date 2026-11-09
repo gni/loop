@@ -47,6 +47,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	defer func() { ui.IsInteractive = false }()
 
 	currentSessionID := initialSessionID
+	shell := &manualShell{directory: a.GetWorkspaceRoot()}
 	if a.Ephemeral {
 		currentSessionID = ""
 	}
@@ -170,9 +171,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	initialPromptTokens, initialCompletionTokens, initialTokensEstimated := interceptor.CalculateActiveTokenUsage(a, messages, allowedTools, mam)
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
 
-	if len(a.MCPStartErrors) > 0 {
-		render.RenderMCPStartupErrors(ppWriter, a.MCPStartErrors, theme)
-	}
+	render.RenderMCPStartupErrors(ppWriter, a.MCPStartupErrors(), theme)
 	chatHistory.PrintInitialHistory()
 	if !a.Ephemeral {
 		go func() {
@@ -366,7 +365,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			ui.TerminalMu.Lock()
 			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, false)
 			ui.TerminalMu.Unlock()
-			executeManualShellCommand(cmdStr, line, promptPrefix, a, ppWriter, &messages, currentSessionID, kiReader, theme)
+			shell.execute(cmdStr, line, promptPrefix, a, ppWriter, &messages, currentSessionID, kiReader, theme)
 			rl = createTerminal()
 			refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
 			continue

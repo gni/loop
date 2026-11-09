@@ -180,7 +180,10 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if ignore.HasComponent(safePath, workspaceRoot, false) {
 		return "", fmt.Errorf("cannot read ignored path %s", targetPath)
 	}
-	unlock := LockPath(safePath)
+	unlock, err := LockPathContext(ctx.Context(), safePath)
+	if err != nil {
+		return "", err
+	}
 	defer unlock()
 
 	maxReadBytes := limits.For(ctx).MaxReadFileBytes

@@ -30,12 +30,20 @@ func handleGuidedCommand(
 	}
 
 	switch sub {
-	case "toggle":
-		a.SetGuidedMode(!a.IsGuidedMode())
-	case "on", "enable", "true", "1":
-		a.SetGuidedMode(true)
-	case "off", "disable", "false", "0":
-		a.SetGuidedMode(false)
+	case "toggle", "on", "enable", "true", "1", "off", "disable", "false", "0":
+		if err := a.UpdateLiveSettings(func(next *agent.LiveSettings) {
+			switch sub {
+			case "toggle":
+				next.GuidedMode = !next.GuidedMode
+			case "on", "enable", "true", "1":
+				next.GuidedMode = true
+			default:
+				next.GuidedMode = false
+			}
+		}); err != nil {
+			fmt.Fprintln(w, err)
+			return
+		}
 	case "approve":
 		todos := a.GetTodos()
 		if len(todos) == 0 {

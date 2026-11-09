@@ -10,18 +10,19 @@ import (
 )
 
 func handleThinkingCommand(a *agent.Agent, parts []string, w io.Writer) {
-	if a == nil || a.Config == nil {
-		fmt.Fprintln(w, "configuration unavailable.")
+	next, err := a.Configuration()
+	if err != nil {
+		fmt.Fprintln(w, err)
 		return
 	}
 
-	currentEffort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
+	currentEffort := strings.ToLower(strings.TrimSpace(next.ReasoningEffort))
 	if currentEffort == "" {
 		currentEffort = "none"
 	}
 
 	if len(parts) < 2 {
-		fmt.Fprintf(w, "Current reasoning effort: %s (show thinking: %v)\nUsage: /thinking [off|low|medium|high|max]\n", currentEffort, a.Config.ShowThinking)
+		fmt.Fprintf(w, "Current reasoning effort: %s (show thinking: %v)\nUsage: /thinking [off|low|medium|high|max]\n", currentEffort, next.ShowThinking)
 		return
 	}
 
@@ -31,8 +32,14 @@ func handleThinkingCommand(a *agent.Agent, parts []string, w io.Writer) {
 		return
 	}
 
-	a.Config.ReasoningEffort = level
-	a.Config.ShowThinking = level != "off" && level != "none"
+	next.ReasoningEffort = level
+	next.ShowThinking = level != "off"
+	if err := a.UpdateConfig(next); err != nil {
+		fmt.Fprintf(w, "reasoning update: %v\n", err)
+		if !agent.ConfigApplied(err) {
+			return
+		}
+	}
 
 	saveConfigUpdate(a, w)
 	fmt.Fprintf(w, "Reasoning effort set to: %s (show thinking: %v)\n", level, a.Config.ShowThinking)

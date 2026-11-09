@@ -33,6 +33,7 @@ type settingItem struct {
 	options     []string
 	isBool      bool
 	onToggle    func()
+	onAction    func() error
 	onEdit      func(newVal string) error
 }
 
@@ -297,7 +298,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			case 13, 10:
 				if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 					item := filtered[selectedIdx]
-					if item.isBool || item.onToggle != nil {
+					if item.isBool || item.onToggle != nil || item.onAction != nil {
 						if err := item.toggle(); err != nil {
 							return err
 						}

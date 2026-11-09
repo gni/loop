@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 type grepTool struct{}
@@ -200,7 +201,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 		fInfo, err := os.Stat(validated)
-		if err != nil || fInfo.IsDir() || fInfo.Size() == 0 || fInfo.Size() > maxFileBytes {
+		if err != nil || !fInfo.Mode().IsRegular() || fInfo.Size() == 0 || fInfo.Size() > maxFileBytes {
 			return nil
 		}
 
@@ -221,7 +222,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 
-		data, err := os.ReadFile(validated)
+		data, err := storage.ReadFile(validated, maxFileBytes)
 		if err != nil || IsBinary(data) {
 			return nil
 		}

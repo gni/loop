@@ -33,7 +33,10 @@ func (t *readTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) 
 		return domaintool.ToolResult{IsError: true}, fmt.Errorf("cannot read ignored path %s", path)
 	}
 	// Match text-read limits and observe the exact bytes sent to the model.
-	unlock := LockPath(safePath)
+	unlock, err := LockPathContext(ctx.Context(), safePath)
+	if err != nil {
+		return domaintool.ToolResult{IsError: true}, err
+	}
 	block, err := message.ReadAttachment(safePath)
 	unlock()
 	if err != nil || block.Type != "image" {

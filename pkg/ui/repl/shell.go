@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/process"
 	"loop/pkg/ui"
@@ -34,9 +32,9 @@ func sanitizedCommandOutput(buffer *process.Buffer) string {
 }
 
 func parseManualCommand(line string, enabled bool) (bool, string) {
-	line = strings.TrimSpace(line)
+	line = strings.TrimLeft(line, " \t")
 	if strings.HasPrefix(line, "!") {
-		return true, strings.TrimSpace(strings.TrimPrefix(line, "!"))
+		return true, strings.TrimLeft(strings.TrimPrefix(line, "!"), " \t")
 	}
 	if !enabled {
 		return false, ""
@@ -48,7 +46,7 @@ func parseManualCommand(line string, enabled bool) (bool, string) {
 	return false, ""
 }
 
-func executeManualShellCommand(
+func (shell *manualShell) execute(
 	cmdStr string,
 	line string,
 	promptPrefix string,
@@ -63,56 +61,24 @@ func executeManualShellCommand(
 		fmt.Fprintln(ppWriter, "enter a command after !")
 		return
 	}
-	isPureCd := false
-	var target string
-	if cmdStr == "cd" {
-		isPureCd = true
-	} else if strings.HasPrefix(cmdStr, "cd ") {
-		rest := strings.TrimSpace(cmdStr[3:])
-		if !strings.Contains(rest, "&&") && !strings.Contains(rest, ";") && !strings.Contains(rest, "|") {
-			isPureCd = true
-			target = rest
-		}
-	}
+	target, isPureCd, directoryErr := directoryCommand(cmdStr)
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	ppWriter.BeginScrollEntry()
 	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
 
 	if isPureCd {
-		target = strings.Trim(target, "\"'")
-		if target == "" || target == "~" {
-			if home, err := os.UserHomeDir(); err == nil {
-				target = home
-			}
-		} else if strings.HasPrefix(target, "~/") || strings.HasPrefix(target, "~\\") {
-			if home, err := os.UserHomeDir(); err == nil {
-				target = filepath.Join(home, target[2:])
-			}
+		if directoryErr != nil {
+			fmt.Fprintf(ppWriter, "cd: %v\n", directoryErr)
+			return
 		}
-
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(a.WorkspaceRoot, target)
-		}
-		cleanTarget := filepath.Clean(target)
-		info, err := os.Stat(cleanTarget)
-		if err != nil || !info.IsDir() {
-			if err == nil {
-				err = fmt.Errorf("not a directory")
-			}
+		directory, err := shell.changeDirectory(target)
+		if err != nil {
 			fmt.Fprintf(ppWriter, "cd: %v\n", err)
 			return
 		}
-		if resolved, evalErr := filepath.EvalSymlinks(cleanTarget); evalErr == nil && resolved != "" {
-			cleanTarget = resolved
-		}
-		a.WorkspaceRoot = cleanTarget
-		if a.Config != nil {
-			trusted := config.WorkspaceTrusted(a.ConfigPath, cleanTarget)
-			a.Config.ProjectResources = trusted
-		}
-		fmt.Fprintf(ppWriter, "changed directory to: %s\n", cleanTarget)
-		contextMsg := fmt.Sprintf("[user manually changed working directory to: `%s`]", cleanTarget)
+		fmt.Fprintf(ppWriter, "changed directory to: %s\n", directory)
+		contextMsg := fmt.Sprintf("[user changed the shell directory for manual commands to: `%s`]", directory)
 		msg := db.Message{Role: "user", Content: contextMsg}
 		if err := a.AppendInteractiveMessage(messages, currentSessionID, msg); err != nil {
 			fmt.Fprintf(ppWriter, "could not save command history: %v\n", err)
@@ -152,8 +118,8 @@ func executeManualShellCommand(
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 	process.SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = a.WorkspaceRoot
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
+	cmd.Dir = shell.directory
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C.UTF-8")
 	for key, value := range a.GetExecutionEnv() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}

@@ -13,6 +13,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
 	"loop/pkg/diagnostics"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
@@ -208,13 +209,18 @@ func HandleSlashCommand(
 		render.RenderHotkeys(w, *theme)
 		return true, false
 	case "/toggle", "/collapse", "/expand":
-		switch cmdName {
-		case "/collapse":
-			a.Config.CollapseResults = true
-		case "/expand":
-			a.Config.CollapseResults = false
-		default:
-			a.Config.CollapseResults = !a.Config.CollapseResults
+		if err := a.UpdateLiveSettings(func(next *agent.LiveSettings) {
+			switch cmdName {
+			case "/collapse":
+				next.CollapseResults = true
+			case "/expand":
+				next.CollapseResults = false
+			default:
+				next.CollapseResults = !next.CollapseResults
+			}
+		}); err != nil {
+			fmt.Fprintln(w, err)
+			return true, false
 		}
 		saveConfigUpdate(a, w)
 		ui.SetCollapseStatus(a.Config.CollapseResults)
@@ -319,7 +325,12 @@ func HandleSlashCommand(
 		if HandlePromptTemplate(a, cmdName, strings.TrimSpace(strings.TrimPrefix(trimmed, cmdName)), messages, w) {
 			return true, false
 		}
-		handledExt, errExt := ui.RunExtension(a, cmdName, parts[1:], messages, w)
+		args, err := domaintool.SplitCommandArgs(strings.TrimSpace(strings.TrimPrefix(trimmed, cmdName)))
+		if err != nil {
+			fmt.Fprintln(w, err)
+			return true, false
+		}
+		handledExt, errExt := ui.RunExtension(a, cmdName, args, messages, w)
 		if handledExt {
 			if errExt != nil {
 				fmt.Fprintf(w, "extension error: %v\n", errExt)

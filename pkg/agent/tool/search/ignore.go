@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/ignore"
+	"loop/pkg/storage"
 )
 
 // RelSlashPath resolves targetPath relative to workspaceRoot and normalizes separators to forward slashes.
@@ -81,7 +81,7 @@ func IsIgnoredFileName(name string) bool {
 func LoadGitIgnore(workspaceRoot string) []string {
 	var patterns []string
 	gitIgnorePath := filepath.Join(workspaceRoot, ".gitignore")
-	data, err := os.ReadFile(gitIgnorePath)
+	data, err := storage.ReadFile(gitIgnorePath, 1<<20)
 	if err != nil {
 		return nil
 	}

@@ -11,6 +11,7 @@ import (
 
 	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 type writeTool struct{}
@@ -91,7 +92,10 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 
 	observed.Target = safePath
 
-	unlock := LockPath(safePath)
+	unlock, err := LockPathContext(ctx.Context(), safePath)
+	if err != nil {
+		return "", err
+	}
 	defer unlock()
 
 	if placeholders := DetectOmissionPlaceholders(content); len(placeholders) > 0 {
@@ -112,7 +116,7 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 
 	// Avoid changing timestamps or replacing a file when its bytes already match.
 	if info, statErr := os.Lstat(safePath); statErr == nil && info.Mode().IsRegular() && info.Size() == int64(len(content)) {
-		if current, openErr := os.Open(safePath); openErr == nil {
+		if current, openErr := storage.OpenRegularFile(safePath); openErr == nil {
 			data, readErr := io.ReadAll(io.LimitReader(current, int64(len(content))+1))
 			_ = current.Close()
 			if readErr == nil && bytes.Equal(data, []byte(content)) {

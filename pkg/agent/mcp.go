@@ -28,6 +28,7 @@ func mcpLog(format string, args ...interface{}) {
 
 type mcpConnectAttempt struct {
 	done   chan struct{}
+	cancel context.CancelFunc
 	client *mcpClient
 	err    error
 }
@@ -213,13 +214,24 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	if a.mcpConnecting == nil {
 		a.mcpConnecting = make(map[string]*mcpConnectAttempt)
 	}
-	attempt := &mcpConnectAttempt{done: make(chan struct{})}
+	client := a.newMCPClient(name, cfg)
+	attempt := &mcpConnectAttempt{done: make(chan struct{}), cancel: client.cancel}
 	a.mcpConnecting[name] = attempt
 	a.MCPClientsMu.Unlock()
 
-	client, err := a.startAndRegisterMCPServer(name, cfg, generation)
+	client, err := a.startAndRegisterMCPServer(client, generation)
+	err = transporthttp.RedactError(err)
 	a.MCPClientsMu.Lock()
+	if a.mcpGeneration != generation {
+		client, err = nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
+	}
 	attempt.client, attempt.err = client, err
+	if err != nil && a.mcpGeneration == generation {
+		if a.MCPStartErrors == nil {
+			a.MCPStartErrors = make(map[string]error)
+		}
+		a.MCPStartErrors[name] = err
+	}
 	if a.mcpConnecting[name] == attempt {
 		delete(a.mcpConnecting, name)
 	}
@@ -228,21 +240,24 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	return client, err
 }
 
-func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
+func (a *Agent) startAndRegisterMCPServer(client *mcpClient, generation int) (*mcpClient, error) {
+	name, cfg := client.name, client.config
+	published := false
+	defer func() {
+		if !published {
+			client.close()
+		}
+	}()
 	if strings.TrimSpace(cfg.Command) != "" && !a.IsShellExecutionAllowed() {
 		return nil, fmt.Errorf("local MCP executables require a trusted workspace")
 	}
-	client := a.newMCPClient(name, cfg)
 	if err := client.start(); err != nil {
-		a.recordMCPError(name, generation, err)
 		return nil, err
 	}
 
 	tools, err := client.listTools()
 	if err != nil {
-		client.close()
 		err = fmt.Errorf("MCP server '%s' failed to list tools: %w", name, err)
-		a.recordMCPError(name, generation, err)
 		return nil, err
 	}
 
@@ -275,15 +290,12 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 	a.MCPClientsMu.Lock()
 	if a.mcpGeneration != generation {
 		a.MCPClientsMu.Unlock()
-		client.close()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
 	if a.MCPClients == nil {
 		a.MCPClients = make(map[string]*mcpClient)
 	}
-	if previous := a.MCPClients[name]; previous != nil && previous != client {
-		previous.close()
-	}
+	previous := a.MCPClients[name]
 	a.Registry.UnregisterPrefix("mcp__" + name + "__")
 	a.MCPClients[name] = client
 	delete(a.mcpPending, name)
@@ -295,6 +307,10 @@ func (a *Agent) startAndRegisterMCPServer(name string, cfg config.MCPServerConfi
 		}
 	}
 	a.MCPClientsMu.Unlock()
+	published = true
+	if previous != nil && previous != client {
+		previous.close()
+	}
 	if len(executors) > 0 {
 		a.markSystemPromptDirty()
 	}
@@ -360,8 +376,14 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 		mcpHTTPClient.Jar = jar
 	}
 
+	lifetime := a.Lifetime
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	ctx, cancel := context.WithCancel(lifetime)
 	return &mcpClient{
-		ctx:            a.Lifetime,
+		ctx:            ctx,
+		cancel:         cancel,
 		name:           name,
 		config:         cfg,
 		requests:       make(map[int64]chan string),
@@ -378,18 +400,6 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 	}
 }
 
-func (a *Agent) recordMCPError(name string, generation int, err error) {
-	a.MCPClientsMu.Lock()
-	defer a.MCPClientsMu.Unlock()
-	if a.mcpGeneration != generation {
-		return
-	}
-	if a.MCPStartErrors == nil {
-		a.MCPStartErrors = make(map[string]error)
-	}
-	a.MCPStartErrors[name] = err
-}
-
 func (a *Agent) StopMCPServers() {
 	a.MCPClientsMu.Lock()
 	a.mcpGeneration++
@@ -399,12 +409,19 @@ func (a *Agent) StopMCPServers() {
 			clients = append(clients, client)
 		}
 	}
+	attempts := make([]*mcpConnectAttempt, 0, len(a.mcpConnecting))
+	for _, attempt := range a.mcpConnecting {
+		attempts = append(attempts, attempt)
+	}
 	a.MCPClients = make(map[string]*mcpClient)
 	a.mcpConnecting = make(map[string]*mcpConnectAttempt)
 	a.mcpPending = make(map[string]config.MCPServerConfig)
 	a.MCPStartErrors = make(map[string]error)
 	a.Registry.UnregisterPrefix("mcp__")
 	a.MCPClientsMu.Unlock()
+	for _, attempt := range attempts {
+		attempt.cancel()
+	}
 
 	// Network and process teardown must not hold the connection registry lock.
 	workers := min(len(clients), max(1, a.GetLimits().MCPServerWorkers))
@@ -424,6 +441,9 @@ func (a *Agent) StopMCPServers() {
 	}
 	close(jobs)
 	wg.Wait()
+	for _, attempt := range attempts {
+		<-attempt.done
+	}
 	a.markSystemPromptDirty()
 }
 
@@ -443,22 +463,20 @@ func (a *Agent) GetMCPTools() []Tool {
 }
 
 func (a *Agent) GetMCPServersStatus() map[string]string {
-	a.MCPClientsMu.Lock()
-	defer a.MCPClientsMu.Unlock()
-
-	status := make(map[string]string, len(a.MCPClients))
-	for name, client := range a.MCPClients {
-		if client == nil {
-			continue
-		}
-		if !client.initialized {
-			status[name] = "Initializing"
-			continue
-		}
-		if client.isStdio {
-			status[name] = fmt.Sprintf("Connected (stdio: %s)", strings.TrimSpace(client.config.Command+" "+strings.Join(client.config.Args, " ")))
-		} else {
-			status[name] = fmt.Sprintf("Connected (URL: %s)", client.config.URL)
+	statuses := a.MCPServerStatuses()
+	status := make(map[string]string, len(statuses))
+	for name, snapshot := range statuses {
+		switch snapshot.State {
+		case "connected":
+			status[name] = fmt.Sprintf("Connected (%d tools)", snapshot.Tools)
+		case "connecting":
+			status[name] = "Connecting"
+		case "deferred":
+			status[name] = "On demand"
+		case "failed":
+			status[name] = "Failed: " + snapshot.Error
+		default:
+			status[name] = "Not connected"
 		}
 	}
 	return status

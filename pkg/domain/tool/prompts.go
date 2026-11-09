@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 )
 
 type ToolPrompt struct {
@@ -372,34 +371,6 @@ type PromptTemplate struct {
 	Description string
 	Content     string
 	FilePath    string
-}
-
-func ParseCommandArgs(argsString string) []string {
-	var args []string
-	var current string
-	var inQuote rune
-	for _, c := range argsString {
-		if inQuote != 0 {
-			if c == inQuote {
-				inQuote = 0
-			} else {
-				current += string(c)
-			}
-		} else if c == '"' || c == '\'' {
-			inQuote = c
-		} else if unicode.IsSpace(c) {
-			if current != "" {
-				args = append(args, current)
-				current = ""
-			}
-		} else {
-			current += string(c)
-		}
-	}
-	if current != "" {
-		args = append(args, current)
-	}
-	return args
 }
 
 var argPattern = regexp.MustCompile(`\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)`)

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,9 +13,7 @@ import (
 )
 
 func (c *mcpClient) startStdio() error {
-	ctx, cancel := context.WithCancel(c.context())
-	c.ctx = ctx
-	c.cancel = cancel
+	ctx, cancel := c.context(), c.cancel
 
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
 	process.SetupProcessGroup(cmd)

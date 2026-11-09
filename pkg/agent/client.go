@@ -66,13 +66,13 @@ func (c *mcpClient) applyHeaders(req *http.Request, contentType string) {
 func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", c.postURL, bytes.NewBuffer(payload))
 	if err != nil {
-		return nil, err
+		return nil, transporthttp.RedactError(err)
 	}
 	c.applyHeaders(req, "application/json")
 	if c.resolveCredential != nil {
 		key, err := c.resolveCredential(ctx)
 		if err != nil {
-			return nil, err
+			return nil, transporthttp.RedactError(err)
 		}
 		if key != "" && req.Header.Get("Authorization") == "" {
 			req.Header.Set("Authorization", "Bearer "+key)
@@ -89,7 +89,8 @@ func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Respons
 		}
 		c.requestMu.Unlock()
 	}
-	return c.client.Do(req)
+	response, err := c.client.Do(req)
+	return response, transporthttp.RedactError(err)
 }
 
 func decodeRPCResponse(raw string, resultDest interface{}) error {
@@ -131,6 +132,9 @@ func (c *mcpClient) context() context.Context {
 }
 
 func (c *mcpClient) start() error {
+	if c.cancel == nil {
+		c.ctx, c.cancel = context.WithCancel(c.context())
+	}
 	if strings.EqualFold(c.config.Type, "stdio") || (c.config.URL == "" && c.config.Command != "") {
 		c.isStdio = true
 		return c.startStdio()
@@ -146,9 +150,7 @@ func (c *mcpClient) start() error {
 }
 
 func (c *mcpClient) startSSE() error {
-	ctx, cancel := context.WithCancel(c.context())
-	c.ctx = ctx
-	c.cancel = cancel
+	ctx, cancel := c.context(), c.cancel
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.config.URL, nil)
 	if err != nil {
@@ -227,6 +229,9 @@ func (c *mcpClient) startSSE() error {
 			return fmt.Errorf("MCP server '%s' supplied an invalid or cross-origin endpoint", c.name)
 		}
 		c.postURL = postURL
+	case <-ctx.Done():
+		c.close()
+		return ctx.Err()
 	case <-time.After(c.connectTimeout):
 		c.close()
 		return fmt.Errorf("timeout waiting for SSE endpoint initialization (%s)", c.connectTimeout)

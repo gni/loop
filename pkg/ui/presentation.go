@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 
+	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
@@ -85,7 +86,7 @@ func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, 
 		textToDraw = history.drawnHint
 		spinnerFrame = ""
 	}
-	render.DrawStaticStatsLine(w, theme, spinnerFrame, textToDraw, height, pasteLinesOffset)
+	render.DrawStaticStatsLine(agent.UnwrapWriter(w), theme, spinnerFrame, textToDraw, height, pasteLinesOffset)
 }
 
 func DrawStaticPromptSeparator(w io.Writer, showThinking bool, reasoningEffort string, theme UITheme) {
@@ -116,5 +117,5 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	pasteLinesOffset := getUI().PasteLinesOffset
 	getUI().StateMu.Unlock()
 	branch := CachedGitBranch()
-	render.DrawStaticPromptSeparator(w, showThinking, reasoningEffort, theme, width, height, pasteLinesOffset, branch)
+	render.DrawStaticPromptSeparator(agent.UnwrapWriter(w), showThinking, reasoningEffort, theme, width, height, pasteLinesOffset, branch)
 }

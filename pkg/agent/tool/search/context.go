@@ -3,7 +3,6 @@ package search
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 func (t *symbolTool) focusedContext(ctx domaintool.AgentContext, root string, files map[string]indexedFile, matches []symbolMatch) string {
@@ -123,7 +123,7 @@ func currentIndexedSource(ctx domaintool.AgentContext, path string, indexed inde
 	if safe != path {
 		return nil, fmt.Errorf("path changed")
 	}
-	source, err := os.Open(path)
+	source, err := storage.OpenRegularFile(path)
 	if err != nil {
 		return nil, err
 	}

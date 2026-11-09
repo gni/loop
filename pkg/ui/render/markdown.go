@@ -143,11 +143,12 @@ func PrintNormalMarkdownLine(w io.Writer, line string, theme style.UITheme) {
 	fmt.Fprint(w, RenderInlineMarkdown(line, false, theme))
 }
 
-func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, string), onTextLine func(string)) {
+func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, string), onTextLine func(string), onTable func([]string, []tableAlignment, []string)) {
 	lines := strings.Split(content, "\n")
 	inCodeBlock := false
 	language := "plaintext"
-	for i, line := range lines {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			if !inCodeBlock {
@@ -162,6 +163,23 @@ func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, s
 		if inCodeBlock {
 			onCodeLine(line, language)
 		} else {
+			if onTable != nil && i+1 < len(lines) {
+				if header, align, ok := markdownTableHeader(line, lines[i+1]); ok {
+					end := i + 2
+					for end < len(lines) {
+						if _, ok := markdownTableRow(lines[end]); !ok {
+							break
+						}
+						end++
+					}
+					onTable(header, align, lines[i+2:end])
+					i = end - 1
+					if i < len(lines)-1 {
+						fmt.Fprintln(w)
+					}
+					continue
+				}
+			}
 			// Let the terminal wrap completed logical lines. Splitting source
 			// before parsing can break emphasis spans across wrapped rows.
 			onTextLine(line)
@@ -188,6 +206,15 @@ func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
 			_ = HighlightWithoutTrailingNewline(w, line, language, theme.ChromaStyle)
 		},
 		func(line string) { PrintNormalMarkdownLine(w, line, theme) },
+		func(header []string, align []tableAlignment, rows []string) {
+			table := newMarkdownTable(w, header, align, theme)
+			table.start(w)
+			for _, row := range rows {
+				cells, _ := markdownTableRow(row)
+				table.writeRow(w, cells)
+			}
+			table.finish(w)
+		},
 	)
 }
 
@@ -199,5 +226,6 @@ func RenderReasoningMarkdownContent(w io.Writer, content string, theme style.UIT
 		content,
 		func(line, _ string) { fmt.Fprint(w, dimStyle.Render("  "+line)) },
 		func(line string) { fmt.Fprint(w, dimStyle.Render(line)) },
+		nil,
 	)
 }
