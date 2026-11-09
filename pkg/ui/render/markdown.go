@@ -208,7 +208,6 @@ func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
 		func(line string) { PrintNormalMarkdownLine(w, line, theme) },
 		func(header []string, align []tableAlignment, rows []string) {
 			table := newMarkdownTable(w, header, align, theme)
-			table.start(w)
 			for _, row := range rows {
 				cells, _ := markdownTableRow(row)
 				table.writeRow(w, cells)

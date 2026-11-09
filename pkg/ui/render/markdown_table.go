@@ -137,41 +137,24 @@ func markdownWidth(w io.Writer) int {
 }
 
 type markdownTable struct {
-	header  []string
-	align   []tableAlignment
-	widths  []int
-	width   int
-	stacked bool
-	rows    int
-	theme   style.UITheme
+	header    []string
+	align     []tableAlignment
+	widths    []int
+	preferred []int
+	minimum   []int
+	numeric   []bool
+	width     int
+	stacked   bool
+	started   bool
+	rows      int
+	theme     style.UITheme
 }
 
 func newMarkdownTable(w io.Writer, header []string, align []tableAlignment, theme style.UITheme) *markdownTable {
 	for i := range header {
 		header[i] = SanitizeTerminalText(header[i])
 	}
-	t := &markdownTable{header: header, align: align, width: markdownWidth(w), theme: theme}
-	budget := t.width - 3*len(header) - 1
-	t.stacked = budget < 6*len(header)
-	if !t.stacked {
-		t.widths = make([]int, len(header))
-		weights, total := make([]int, len(header)), 0
-		for i, label := range header {
-			weights[i] = min(24, max(6, style.CellWidth(RenderInlineMarkdown(label, false, theme))))
-			total += weights[i]
-		}
-		remaining := budget - 6*len(header)
-		used := 0
-		for i := range header {
-			t.widths[i] = 6 + remaining*weights[i]/total
-			used += t.widths[i]
-		}
-		for i := 0; used < budget; i = (i + 1) % len(header) {
-			t.widths[i]++
-			used++
-		}
-	}
-	return t
+	return &markdownTable{header: header, align: align, width: markdownWidth(w), theme: theme}
 }
 
 func (t *markdownTable) border(left, middle, right string) string {
@@ -182,7 +165,10 @@ func (t *markdownTable) border(left, middle, right string) string {
 	return style.NewStyle().Foreground(t.theme.Border).Render(left + strings.Join(parts, middle) + right)
 }
 
-func (t *markdownTable) start(w io.Writer) {
+func (t *markdownTable) start(w io.Writer, first []string) {
+	t.measure(first)
+	t.layout(markdownWidth(w))
+	t.started = true
 	if t.stacked {
 		heading := renderInlineMarkdownBlock(strings.Join(t.header, " · "), false, t.theme, MarkdownHeading, 2)
 		fmt.Fprint(w, strings.Join(wrapMarkdownCell(heading, t.width), "\n"))
@@ -194,7 +180,11 @@ func (t *markdownTable) start(w io.Writer) {
 }
 
 func (t *markdownTable) writeRow(w io.Writer, cells []string) {
-	t.reflow(w)
+	if !t.started {
+		t.start(w, cells)
+	} else {
+		t.reflow(w)
+	}
 	if t.stacked {
 		fmt.Fprint(w, "\n", style.NewStyle().Foreground(t.theme.Border).Render(strings.Repeat("─", t.width)))
 		for i, label := range t.header {
@@ -258,7 +248,11 @@ func (t *markdownTable) writeCells(w io.Writer, cells []string, heading bool) {
 }
 
 func (t *markdownTable) finish(w io.Writer) {
-	t.reflow(w)
+	if !t.started {
+		t.start(w, nil)
+	} else {
+		t.reflow(w)
+	}
 	if !t.stacked {
 		fmt.Fprint(w, "\n", t.border("╰", "┴", "╯"))
 	}
@@ -266,8 +260,6 @@ func (t *markdownTable) finish(w io.Writer) {
 
 func (t *markdownTable) reflow(w io.Writer) {
 	if markdownWidth(w) != t.width {
-		rows := t.rows
-		*t = *newMarkdownTable(w, t.header, t.align, t.theme)
-		t.rows = rows
+		t.layout(markdownWidth(w))
 	}
 }
