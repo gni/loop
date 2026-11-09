@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"loop/pkg/config"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -105,13 +104,7 @@ func (ki *KeyInterceptorReader) saveAgentConfigSnapshot() {
 	if ki.Agent == nil || ki.Agent.Config == nil {
 		return
 	}
-	ki.Agent.LLMProviderMu.Lock()
-	snapshot, err := config.Clone(ki.Agent.Config)
-	configPath := ki.Agent.ConfigPath
-	ki.Agent.LLMProviderMu.Unlock()
-	if err == nil && snapshot != nil {
-		err = config.SaveConfig(configPath, snapshot)
-	}
+	err := ki.Agent.SaveConfig()
 	if err != nil {
 		output := ki.W
 		if output == nil {

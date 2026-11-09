@@ -3,11 +3,13 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/spf13/cobra"
+
 	"loop/pkg/db"
 	"loop/pkg/domain/session"
-	"os"
-	"strings"
+	"loop/pkg/storage"
 )
 
 func sessionStore() (*db.JSONLStore, error) {
@@ -23,21 +25,21 @@ func init() {
 		if err != nil {
 			return err
 		}
-		return store.SetName(args[0], args[1])
+		return store.SetNameContext(cmd.Context(), args[0], args[1])
 	}})
 	sessionCmd.AddCommand(&cobra.Command{Use: "delete <session>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
 			return err
 		}
-		return store.ClearSession(args[0])
+		return store.ClearSessionContext(cmd.Context(), args[0])
 	}})
 	sessionCmd.AddCommand(&cobra.Command{Use: "search <query>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
 			return err
 		}
-		entries, err := store.GetSessions()
+		entries, err := store.GetSessionsContext(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -46,7 +48,7 @@ func init() {
 		for _, entry := range entries {
 			matches := strings.Contains(strings.ToLower(entry.Name+" "+entry.SessionID+" "+entry.Preview), query)
 			if !matches {
-				records, err := store.Entries(entry.SessionID)
+				records, err := store.EntriesContext(cmd.Context(), entry.SessionID)
 				if err != nil {
 					return err
 				}
@@ -77,7 +79,7 @@ func init() {
 		if err != nil {
 			return err
 		}
-		return store.Export(args[0], cmd.OutOrStdout())
+		return store.ExportContext(cmd.Context(), args[0], cmd.OutOrStdout())
 	}})
 	sessionCmd.AddCommand(&cobra.Command{Use: "import [file]", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
@@ -86,14 +88,16 @@ func init() {
 		}
 		input := cmd.InOrStdin()
 		if len(args) > 0 {
-			file, err := os.Open(args[0])
+			file, err := storage.OpenRegularFile(args[0])
 			if err != nil {
 				return err
 			}
 			defer file.Close()
 			input = file
 		}
-		id, err := store.Import(input)
+		input, stopInput := cancellableInput(cmd.Context(), input)
+		defer stopInput()
+		id, err := store.ImportContext(cmd.Context(), input)
 		if err != nil {
 			return err
 		}
@@ -105,7 +109,7 @@ func init() {
 		if err != nil {
 			return err
 		}
-		entries, err := store.Entries(args[0])
+		entries, err := store.EntriesContext(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
@@ -116,13 +120,13 @@ func init() {
 		if err != nil {
 			return err
 		}
-		return store.Branch(args[0], args[1])
+		return store.BranchContext(cmd.Context(), args[0], args[1])
 	}})
 	sessionCmd.AddCommand(&cobra.Command{Use: "repair-tail <session>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
 			return err
 		}
-		return store.RepairTail(args[0])
+		return store.RepairTailContext(cmd.Context(), args[0])
 	}})
 }

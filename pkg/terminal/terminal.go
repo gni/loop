@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 
 	"golang.org/x/term"
@@ -93,37 +94,34 @@ func (t *Terminal) InAltScreen() bool {
 	return t.altDepth > 0
 }
 
-// ForceExitAltScreen unconditionally exits the alternate screen buffer and makes the cursor visible.
-func (t *Terminal) ForceExitAltScreen() {
+// ForceExitAltScreen restores active screen modes without polluting redirected output.
+func (t *Terminal) ForceExitAltScreen() { t.restoreModes("") }
+
+func (t *Terminal) restoreModes(extra string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	altW := t.altWriter
 	t.altDepth = 0
 	t.altWriter = nil
-	if altW != nil && altW != t.writer {
-		fmt.Fprint(altW, ExitAlternateScreen)
+	same := altW != nil && reflect.TypeOf(altW).Comparable() && altW == t.writer
+	if altW != nil && !same {
+		fmt.Fprint(altW, ExitAlternateScreen+extra)
+	}
+	if file, ok := t.writer.(*os.File); ok && !term.IsTerminal(int(file.Fd())) && !same {
+		return
 	}
 	if t.writer != nil {
-		fmt.Fprint(t.writer, ExitAlternateScreen)
+		fmt.Fprint(t.writer, ExitAlternateScreen+extra)
 	}
 }
 
-// RecoverPanic restores terminal state if a panic occurs, invokes onPanic if non-nil,
-// and re-panics with the recovered value.
+// RecoverPanic restores terminal modes and preserves the original panic.
 func (t *Terminal) RecoverPanic(onPanic func()) {
 	if r := recover(); r != nil {
 		if onPanic != nil {
 			onPanic()
 		}
-		t.mu.Lock()
-		altW := t.altWriter
-		t.altDepth = 0
-		t.altWriter = nil
-		if altW != nil && altW != t.writer {
-			fmt.Fprint(altW, ExitAlternateScreen+DisableBracketedPaste)
-		}
-		fmt.Fprint(t.writer, ExitAlternateScreen+DisableBracketedPaste)
-		t.mu.Unlock()
+		t.restoreModes(DisableBracketedPaste)
 		panic(r)
 	}
 }

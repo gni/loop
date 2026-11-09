@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -41,16 +43,21 @@ func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorRe
 	if reader != nil {
 		reader.ClearQueue()
 	}
-	_ = a.SetTodos(nil)
 	a.ClearTasks()
 	resetSessionSnapshots(a)
-	if a.ClearAgentsFunc != nil {
-		a.ClearAgentsFunc()
-	}
 	a.CurrentStreamMu.Lock()
 	a.CurrentStreamBuffer = nil
 	a.CurrentStreamReplay = nil
 	a.CurrentStreamMu.Unlock()
+}
+
+func clearSessionWork(a *agent.Agent, w io.Writer) {
+	_ = a.SetTodos(nil)
+	if a.ClearAgentsFunc != nil {
+		if err := a.ClearAgentsFunc(); err != nil {
+			fmt.Fprintf(w, "could not clear saved subagents: %v\n", err)
+		}
+	}
 }
 
 func handleClearCommand(
@@ -63,12 +70,13 @@ func handleClearCommand(
 ) {
 	freshMessages := []db.Message{{Role: "system", Content: a.GetSystemPrompt()}}
 	if !a.Ephemeral {
-		if err := db.ClearSession(*currentSessionID); err != nil {
+		if err := db.ClearSessionContext(a.Context(), *currentSessionID); err != nil {
 			fmt.Fprintf(w, "cannot clear session: %v\n", err)
 			return
 		}
 	}
 	resetConversationState(a, kiReader)
+	clearSessionWork(a, w)
 	a.MessagesMu.Lock()
 	*messages = freshMessages
 	a.MessagesMu.Unlock()
@@ -100,6 +108,7 @@ func handleSessionCommand(
 		switch parts[1] {
 		case "new", "clear":
 			resetConversationState(a, kiReader)
+			clearSessionWork(a, w)
 			a.MessagesMu.Lock()
 			*messages = nil
 			a.MessagesMu.Unlock()
@@ -118,8 +127,15 @@ func handleSessionCommand(
 
 	resetToFreshSession := func() error {
 		nextID := db.NewUUID()
-		if err := db.SetLatestSessionID(nextID); err != nil {
+		if err := db.SetLatestSessionIDContext(a.Context(), nextID); err != nil {
 			return fmt.Errorf("activate new session: %w", err)
+		}
+		if a.SyncSessionState != nil {
+			if err := a.SyncSessionState(nil, a.ToolSelection, nextID, false); err != nil {
+				return err
+			}
+		} else {
+			_ = a.SetTodos(nil)
 		}
 		resetConversationState(a, kiReader)
 		*currentSessionID = nextID
@@ -151,7 +167,7 @@ func handleSessionCommand(
 		return
 
 	case "list":
-		sessions, err := db.GetSessions()
+		sessions, err := db.GetSessionsContext(a.Context())
 		if err != nil {
 			fmt.Fprintf(w, "cannot list sessions: %v\n", err)
 			return
@@ -188,7 +204,7 @@ func handleSessionCommand(
 		}
 		target := parts[2]
 		if currentSessionID != nil && *currentSessionID != "" {
-			if entries, err := db.Entries(*currentSessionID); err == nil && len(entries) > 0 {
+			if entries, err := db.EntriesContext(a.Context(), *currentSessionID); err == nil && len(entries) > 0 {
 				if matchedID, err := resolveEntryID(entries, target); err == nil {
 					handleBranchCommand(a, []string{"/branch", matchedID}, messages, currentSessionID, theme, w, kiReader)
 					return
@@ -196,7 +212,7 @@ func handleSessionCommand(
 			}
 		}
 		branchID := target
-		existing, err := db.LoadMessages(branchID)
+		existing, err := db.LoadMessagesContext(a.Context(), branchID)
 		if err != nil {
 			fmt.Fprintf(w, "cannot inspect session %q: %v\n", branchID, err)
 			return
@@ -205,21 +221,19 @@ func handleSessionCommand(
 			fmt.Fprintf(w, "error: session '%s' already exists.\n", branchID)
 			return
 		}
-		if err := db.ClearSession(branchID); err != nil {
-			fmt.Fprintf(w, "cannot prepare session %q: %v\n", branchID, err)
-			return
-		}
+		hasContent := false
 		for _, msg := range *messages {
-			if err := db.SaveMessage(branchID, msg); err != nil {
-				fmt.Fprintf(w, "cannot branch session %q: %v\n", branchID, err)
-				if cleanupErr := db.ClearSession(branchID); cleanupErr != nil {
-					fmt.Fprintf(w, "cannot remove incomplete branch %q: %v\n", branchID, cleanupErr)
-				}
-				return
+			if msg.HasConversationContent() {
+				hasContent = true
+				break
 			}
 		}
-		if err := db.SetLatestSessionID(branchID); err != nil {
-			fmt.Fprintf(w, "branch %q was saved, but could not be activated: %v\n", branchID, err)
+		if !hasContent {
+			fmt.Fprintln(w, "there is no conversation to branch yet.")
+			return
+		}
+		if err := db.RewriteSessionContext(a.Context(), branchID, *messages); err != nil {
+			fmt.Fprintf(w, "cannot branch session %q: %v\n", branchID, err)
 			return
 		}
 		*currentSessionID = branchID
@@ -241,11 +255,7 @@ func handleSessionCommand(
 			fmt.Fprintln(w, "error: target session name cannot be empty.")
 			return
 		}
-		store, err := db.DefaultStore()
-		if err == nil {
-			err = store.SetName(*currentSessionID, newName)
-		}
-		if err != nil {
+		if err := a.SetSessionName(commandContext(a, kiReader), newName); err != nil {
 			fmt.Fprintf(w, "cannot rename session: %v\n", err)
 			return
 		}
@@ -273,7 +283,7 @@ func handleSessionCommand(
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
-		selected, startNew, err := interactive.RunSessionExplorer(*theme, input, output)
+		selected, startNew, err := interactive.RunSessionExplorerContext(commandContext(a, kiReader), *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		sessionChanged := false
 		if err == nil {
@@ -305,7 +315,7 @@ func handleSessionCommand(
 		}
 
 	case "clear":
-		if err := db.ClearHistory(); err != nil {
+		if err := db.ClearHistoryContext(a.Context()); err != nil {
 			fmt.Fprintf(w, "error clearing sessions: %v\n", err)
 			return
 		}
@@ -347,6 +357,11 @@ func handleCompressCommand(
 		fmt.Fprintf(w, "cannot compact session: %v\n", err)
 		return
 	}
+	if a.SyncSessionState != nil {
+		if err := a.SyncSessionState(*messages, a.ToolSelection, sessionID, false); err != nil {
+			fmt.Fprintf(w, "compacted history is active, but could not save session state: %v\n", err)
+		}
+	}
 	pTok, cTok, estimated := calcHistoryTokens()
 	effLimit := a.GetEffectiveContextLimit(pTok)
 	ui.UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
@@ -354,8 +369,26 @@ func handleCompressCommand(
 }
 
 func applyLoadedSession(selected string, dbHistory []db.Message, currentSessionID *string, messages *[]db.Message, a *agent.Agent) error {
-	if err := db.SetLatestSessionID(selected); err != nil {
+	store, err := db.DefaultStore()
+	if err != nil {
 		return err
+	}
+	previousLatest, err := store.GetLatestSessionIDContext(a.Context())
+	if err != nil {
+		return err
+	}
+	if err := store.SetLatestSessionIDContext(a.Context(), selected); err != nil {
+		return err
+	}
+	if a.SyncSessionState != nil {
+		if err := a.SyncSessionState(dbHistory, nil, selected, false); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(a.Context()), 2*time.Second)
+			defer cancel()
+			return errors.Join(err, store.SetLatestSessionIDContext(cleanupCtx, previousLatest))
+		}
+		if restored, ok := a.SessionMessagesSnapshot(); ok {
+			dbHistory = restored
+		}
 	}
 	resetConversationState(a, nil)
 	*currentSessionID = selected

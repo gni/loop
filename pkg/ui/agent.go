@@ -142,12 +142,9 @@ func (ui *AgentUIImpl) ShutdownStatusBar(w io.Writer) {
 	_, height := GetTerminalSize()
 	var buf bytes.Buffer
 	if height > 0 {
-		// Clear stats line (height-4), prompt separator (height-3), prompt line (height-2), status bar border (height-1) and status bar (height)
-		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", height-4)
-		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", height-3)
-		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", height-2)
-		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", height-1)
-		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", height)
+		for row := max(1, height-4); row <= height; row++ {
+			fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", row)
+		}
 	}
 	// Reset scrolling region (moves cursor to 1,1) and show cursor
 	fmt.Fprint(&buf, "\x1b[r\x1b[?25h")

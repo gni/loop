@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,13 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"crypto/sha256"
 	"loop/pkg/config"
 	"loop/pkg/process"
 	"loop/pkg/storage"
-	"time"
 )
+
+const maxRegistryBytes = 1 << 20
 
 type Package struct {
 	Source    string `json:"source"`
@@ -42,15 +44,12 @@ type Manifest struct {
 type Manager struct{ Directory string }
 
 func (m Manager) List() ([]Package, error) {
-	data, err := os.ReadFile(filepath.Join(m.Directory, "packages.json"))
+	data, err := storage.ReadFile(filepath.Join(m.Directory, "packages.json"), maxRegistryBytes)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
-	}
-	if len(data) > 1<<20 {
-		return nil, fmt.Errorf("package registry exceeds 1 MiB")
 	}
 	var packages []Package
 	if err := json.Unmarshal(data, &packages); err != nil {
@@ -59,16 +58,33 @@ func (m Manager) List() ([]Package, error) {
 	return packages, nil
 }
 
-func (m Manager) save(packages []Package) error {
+func encodeRegistry(packages []Package) ([]byte, error) {
 	data, err := json.MarshalIndent(packages, "", "  ")
 	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRegistryBytes {
+		return nil, fmt.Errorf("package registry exceeds 1 MiB")
+	}
+	return data, nil
+}
+
+func (m Manager) save(ctx context.Context, packages []Package) error {
+	data, err := encodeRegistry(packages)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return config.WritePrivateFile(filepath.Join(m.Directory, "packages.json"), data)
 }
 
 func (m Manager) Install(ctx context.Context, source string) (Package, error) {
-	release, err := storage.Lock(filepath.Join(m.Directory, ".packages.lock"), true)
+	if source == "" {
+		return Package{}, fmt.Errorf("package source is empty")
+	}
+	release, err := storage.LockContext(ctx, filepath.Join(m.Directory, ".packages.lock"), true)
 	if err != nil {
 		return Package{}, err
 	}
@@ -77,13 +93,11 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
-	if source == "" {
-		return Package{}, fmt.Errorf("package source is empty")
-	}
 	sum := sha256.Sum256([]byte(source))
 	key := hex.EncodeToString(sum[:16])
 	destination := filepath.Join(m.Directory, "packages", key)
 	installed := Package{Source: source, Directory: destination}
+	preparedDirectory := ""
 	if strings.HasPrefix(source, "git:") || strings.HasPrefix(source, "https://") {
 		remote := strings.TrimPrefix(source, "git:")
 		remote, ref, _ := strings.Cut(remote, "#")
@@ -120,9 +134,7 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 			return installed, err
 		}
 		installed.Name, installed.Version = manifest.Name, manifest.Version
-		if err := replaceDirectory(staging, destination); err != nil {
-			return installed, err
-		}
+		preparedDirectory = staging
 	} else if strings.HasPrefix(source, "npm:") {
 		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 			return installed, err
@@ -154,9 +166,7 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 			return installed, err
 		}
 		installed.Name, installed.Version, installed.Revision = manifest.Name, manifest.Version, packed[0].Integrity
-		if err := replaceDirectory(filepath.Join(staging, "content"), destination); err != nil {
-			return installed, err
-		}
+		preparedDirectory = filepath.Join(staging, "content")
 	} else {
 		local := strings.TrimPrefix(source, "local:")
 		installed.Directory, err = config.CanonicalWorkspace(local)
@@ -169,18 +179,33 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 		}
 		installed.Name, installed.Version = manifest.Name, manifest.Version
 	}
+	found := false
 	for index, entry := range entries {
 		if entry.Source == source {
 			entries[index] = installed
-			return installed, m.save(entries)
+			found = true
+			break
 		}
 	}
-	entries = append(entries, installed)
-	return installed, m.save(entries)
+	if !found {
+		entries = append(entries, installed)
+	}
+	if err := ctx.Err(); err != nil {
+		return installed, err
+	}
+	return installed, m.publishInstall(ctx, entries, preparedDirectory, destination)
 }
 
 func (m Manager) Remove(source string) error {
-	release, err := storage.Lock(filepath.Join(m.Directory, ".packages.lock"), true)
+	return m.RemoveContext(context.Background(), source)
+}
+
+// RemoveContext allows cancellation while waiting for the package registry.
+func (m Manager) RemoveContext(ctx context.Context, source string) error {
+	if source == "" {
+		return fmt.Errorf("package source is empty")
+	}
+	release, err := storage.LockContext(ctx, filepath.Join(m.Directory, ".packages.lock"), true)
 	if err != nil {
 		return err
 	}
@@ -201,10 +226,16 @@ func (m Manager) Remove(source string) error {
 	if !found {
 		return fmt.Errorf("package %q is not installed", source)
 	}
-	return m.save(retained)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.save(ctx, retained)
 }
 
 func (m Manager) Update(ctx context.Context, source string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	entries, err := m.List()
 	if err != nil {
 		return err
@@ -328,34 +359,6 @@ func command(ctx context.Context, name string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s failed: %w", name, err)
 	}
 	return result.Stdout, nil
-}
-
-func replaceDirectory(source, destination string) error {
-	backup := destination + ".previous"
-	exists := false
-	if _, err := os.Stat(destination); err == nil {
-		exists = true
-		if err := os.RemoveAll(backup); err != nil {
-			return err
-		}
-		if err := os.Rename(destination, backup); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Rename(source, destination); err != nil {
-		if exists {
-			if restoreErr := os.Rename(backup, destination); restoreErr != nil {
-				return fmt.Errorf("install failed: %v; restore failed: %w", err, restoreErr)
-			}
-		}
-		return err
-	}
-	if exists {
-		return os.RemoveAll(backup)
-	}
-	return nil
 }
 
 func unpack(path, destination string) error {

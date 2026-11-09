@@ -35,7 +35,7 @@ func handleBranchCommand(
 	}
 
 	targetArg := strings.TrimSpace(parts[1])
-	entries, err := db.Entries(*currentSessionID)
+	entries, err := db.EntriesContext(a.Context(), *currentSessionID)
 	if err != nil {
 		fmt.Fprintf(w, "cannot inspect session entries: %v\n", err)
 		return
@@ -53,12 +53,12 @@ func handleBranchCommand(
 		return
 	}
 
-	if err := db.Branch(*currentSessionID, targetID); err != nil {
+	if err := db.BranchContext(a.Context(), *currentSessionID, targetID); err != nil {
 		fmt.Fprintf(w, "cannot branch session: %v\n", err)
 		return
 	}
 
-	updatedEntries, err := db.Entries(*currentSessionID)
+	updatedEntries, err := db.EntriesContext(a.Context(), *currentSessionID)
 	if err != nil {
 		fmt.Fprintf(w, "branch marker created, but failed to reload session entries: %v\n", err)
 		return
@@ -106,7 +106,7 @@ func handleForkCommand(
 	if len(parts) > 1 {
 		forkEntryID = parts[1]
 	}
-	newID, err := db.ForkSession(parentID, forkEntryID)
+	newID, err := db.ForkSessionContext(a.Context(), parentID, forkEntryID)
 	if err != nil {
 		fmt.Fprintf(w, "cannot fork session %s: %v\n", parentID, err)
 		return

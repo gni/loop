@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"sync/atomic"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/domain/task"
 )
 
 type contextKey string
@@ -88,9 +90,12 @@ func (a *Agent) compatibleProvider(cfg *config.Config, previous *OpenAICompatibl
 }
 
 func sameInferenceTarget(first, second *OpenAICompatibleProvider) bool {
-	return first != nil && second != nil && first.Config != nil && second.Config != nil &&
-		first.Config.Endpoint == second.Config.Endpoint && first.Config.Model == second.Config.Model &&
-		first.Config.ActiveProvider == second.Config.ActiveProvider
+	if first == nil || second == nil || first.Config == nil || second.Config == nil {
+		return false
+	}
+	a, b := first.Config, second.Config
+	firstProfile, secondProfile := a.Providers[a.ActiveProvider], b.Providers[b.ActiveProvider]
+	return a.Endpoint == b.Endpoint && a.Model == b.Model && a.ActiveProvider == b.ActiveProvider && firstProfile.API == secondProfile.API && maps.Equal(firstProfile.Headers, secondProfile.Headers)
 }
 
 func copyProviderCapabilities(destination, source *OpenAICompatibleProvider) {
@@ -163,6 +168,9 @@ func (a *Agent) SnapshotRun(ctx context.Context) (context.Context, *config.Confi
 	if err != nil {
 		return ctx, nil, err
 	}
+	if err := cfg.ValidateSettings(); err != nil {
+		return ctx, nil, err
+	}
 	a.syncOpenAIProviderLocked(a.Config, false)
 	provider := a.LLMProvider
 	if current, ok := provider.(*OpenAICompatibleProvider); ok {
@@ -221,9 +229,7 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 		}
 		messages = transformed
 	}
-	messages = compactRuntimeMessages(messages)
-	messages = taskInstructionMessages(ctx, messages)
-	messages = taskContextMessages(ctx, messages)
+	messages = inferenceMessages(ctx, messages)
 	release, err := a.acquireInference(ctx)
 	if err != nil {
 		return nil, 0, 0, err
@@ -234,13 +240,28 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 	var dropped atomic.Int64
 	ctx = context.WithValue(ctx, contextKeyGenerationDuration, func(d time.Duration) { duration = d })
 	ctx = context.WithValue(ctx, contextKeyChunkDropObserver, ChunkDropObserver(func() { dropped.Add(1) }))
-	var tools []tool.Tool
-	if a.Registry != nil && (allowlist == nil || len(allowlist) > 0) {
-		tools = a.Registry.GetAvailableTools(allowlist)
-	}
+	tools := a.inferenceTools(ctx, allowlist)
 	msg, err := provider.StreamChatCompletions(ctx, messages, tools, chunks)
 	a.retainProviderCapabilities(provider)
 	return msg, duration, dropped.Load(), err
+}
+
+// Use the same tool selection for generation and context estimates.
+func (a *Agent) inferenceTools(ctx context.Context, allowlist []string) []tool.Tool {
+	if a == nil || a.Registry == nil || (allowlist != nil && len(allowlist) == 0) {
+		return nil
+	}
+	tools := a.Registry.GetAvailableTools(allowlist)
+	if current := run.TaskSnapshot(ctx); current != nil && !task.NeedsProgress(current) {
+		available := make([]tool.Tool, 0, len(tools))
+		for _, definition := range tools {
+			if definition.Function.Name != "task_state" {
+				available = append(available, definition)
+			}
+		}
+		tools = available
+	}
+	return tools
 }
 
 func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {

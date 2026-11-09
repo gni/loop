@@ -138,7 +138,7 @@ func FormatStatusBarRight(state StatusBarState, theme style.UITheme, width int) 
 	}
 
 	planStr := ""
-	if state.PlanTotal > 0 {
+	if state.PlanTotal > 0 && state.PlanCompleted < state.PlanTotal {
 		planStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 		if width < 50 {
 			planStr = planStyle.Render(fmt.Sprintf("[%d/%d]", state.PlanCompleted, state.PlanTotal)) + " "

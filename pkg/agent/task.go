@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	bashtool "loop/pkg/agent/tool/bash"
+	"loop/pkg/domain/output"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/process"
 )
 
@@ -45,6 +48,8 @@ type taskWriter struct {
 	agent    *Agent
 	w        io.Writer
 	isStderr bool
+	filtered bytes.Buffer
+	filter   *output.SafeShellOutputWriter
 }
 
 func (a *Agent) resolveTaskOutputWriter(fallback io.Writer) io.Writer {
@@ -53,32 +58,59 @@ func (a *Agent) resolveTaskOutputWriter(fallback io.Writer) io.Writer {
 			return chatWriter
 		}
 	}
+	if fallback == nil {
+		return io.Discard
+	}
 	return fallback
 }
 
 func (tw *taskWriter) Write(p []byte) (n int, err error) {
+	tw.agent.TasksMu.Lock()
 	tw.task.mu.Lock()
-	const maxLen = 100 * 1024
 	targetBuf := tw.task.Stdout
 	if tw.isStderr {
 		targetBuf = tw.task.Stderr
 	}
-	targetBuf.Write(p)
-	if targetBuf.Len() > maxLen {
-		targetBuf.Next(targetBuf.Len() - maxLen)
+	appendTaskOutput(targetBuf, p)
+	if tw.filter == nil {
+		tw.filter = output.NewSafeShellOutputWriter(&tw.filtered)
 	}
+	_, _ = tw.filter.Write(p)
+	filtered := append([]byte(nil), tw.filtered.Bytes()...)
+	tw.filtered.Reset()
 	tw.task.LastOutputTime = time.Now()
 	tw.task.mu.Unlock()
 
-	tw.agent.TasksMu.Lock()
-	isStreaming := tw.agent.StreamingTask == tw.task.ID
+	drain := false
+	if tw.agent.StreamingTask == tw.task.ID && tw.agent.Tasks[tw.task.ID] == tw.task {
+		drain = tw.agent.queueTaskOutputLocked(tw.w, filtered)
+	}
 	tw.agent.TasksMu.Unlock()
-
-	if isStreaming {
-		return tw.agent.resolveTaskOutputWriter(tw.w).Write(p)
+	if drain {
+		tw.agent.drainTaskOutput()
 	}
 
 	return len(p), nil
+}
+
+func appendTaskOutput(buffer *bytes.Buffer, data []byte) {
+	const maxBytes = 100 * 1024
+	if len(data) >= maxBytes {
+		buffer.Reset()
+		data = data[len(data)-maxBytes:]
+	} else if keep := maxBytes - len(data); buffer.Len() > keep {
+		tail := buffer.Bytes()[buffer.Len()-keep:]
+		buffer.Reset()
+		_, _ = buffer.Write(tail)
+	}
+	_, _ = buffer.Write(data)
+	// Retention may cut through a rune, including one split across writes.
+	retained := buffer.Bytes()
+	start := 0
+	for start < len(retained) && !utf8.RuneStart(retained[start]) {
+		start++
+	}
+	buffer.Next(start)
 }
 
 func (a *Agent) findTaskLocked(id string) (string, *Task) {
@@ -116,14 +148,66 @@ func killTaskProcessLocked(task *Task) {
 }
 
 func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
+	return a.SpawnTaskContext(a.Context(), command, w)
+}
+
+// SpawnTaskContext uses caller cancellation up to process acceptance. Accepted
+// background work keeps the agent lifetime rather than the completed turn's.
+func (a *Agent) SpawnTaskContext(ctx context.Context, command string, w io.Writer) (string, error) {
+	return a.SpawnTaskWithOptions(ctx, command, w, domaintool.BackgroundTaskOptions{})
+}
+
+// SpawnTaskWithOptions preserves shell source while setting the process directory
+// and environment. It shares the same acceptance and teardown rules as SpawnTask.
+func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.Writer, options domaintool.BackgroundTaskOptions) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("background command is empty")
+	}
 	if !a.IsShellExecutionAllowed() {
 		return "", fmt.Errorf("background shell execution requires a trusted workspace")
 	}
 	if a.Lifetime != nil && a.Lifetime.Err() != nil {
 		return "", fmt.Errorf("agent already disposed: %w", a.Lifetime.Err())
 	}
-	sessionID := a.ActiveSessionID()
+	a.stateMu.Lock()
+	sessionID, generation := a.activeSessionID, a.sessionGeneration
+	a.stateMu.Unlock()
+	maxTasks := a.GetLimits().MaxTrackedTasks
+	shellCommand := command
+	environment := a.GetExecutionEnv()
+	workspace := environment["LOOP_WORKSPACE"]
+	directory := workspace
+	if options.Directory != "" {
+		var err error
+		directory, err = a.SafePath(options.Directory)
+		if err != nil {
+			return "", fmt.Errorf("invalid background working directory: %w", err)
+		}
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			return "", fmt.Errorf("background working directory is unavailable: %s", directory)
+		}
+	}
+	for key, value := range options.Environment {
+		environment[key] = value
+	}
+	if a.IsShellScanDefaultsEnabled() {
+		shellCommand = bashtool.WithScanDefaults(command, workspace)
+	}
+	cmd := bashtool.NewCommand(shellCommand)
+	cmd.Dir = directory
+	cmd.WaitDelay = 2 * time.Second
+	for key, value := range environment {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+
 	a.TasksMu.Lock()
+	if err := a.checkTaskContext(ctx, sessionID, generation); err != nil {
+		a.TasksMu.Unlock()
+		return "", err
+	}
 	id := fmt.Sprintf("task_%d", a.NextTaskID)
 	a.NextTaskID++
 
@@ -140,29 +224,29 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		a.Tasks = make(map[string]*Task)
 	}
 	a.Tasks[id] = task
-	a.pruneFinishedTasksLocked()
-	if len(a.Tasks) > a.GetLimits().MaxTrackedTasks {
+	a.pruneFinishedTasksLocked(maxTasks)
+	if len(a.Tasks) > maxTasks {
 		delete(a.Tasks, id)
 		a.TasksMu.Unlock()
-		return "", fmt.Errorf("maximum number of tracked tasks (%d) reached; remove or finish a task before spawning another", a.GetLimits().MaxTrackedTasks)
+		return "", fmt.Errorf("maximum number of tracked tasks (%d) reached; remove or finish a task before spawning another", maxTasks)
 	}
 	task.mu.Lock()
 	a.TasksMu.Unlock()
-
-	shellCommand := command
-	if a.IsShellScanDefaultsEnabled() {
-		shellCommand = bashtool.WithScanDefaults(command, a.WorkspaceRoot)
-	}
-	cmd := bashtool.NewCommand(shellCommand)
-	cmd.Dir = a.WorkspaceRoot
-	for key, value := range a.GetExecutionEnv() {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
 
 	task.Cmd = cmd
 	cmd.Stdout = &taskWriter{task: task, agent: a, w: w, isStderr: false}
 	cmd.Stderr = &taskWriter{task: task, agent: a, w: w, isStderr: true}
 
+	if err := a.checkTaskContext(ctx, sessionID, generation); err != nil {
+		task.Status, task.Err, task.EndTime = "failed", err, time.Now()
+		task.mu.Unlock()
+		a.TasksMu.Lock()
+		if a.Tasks[id] == task {
+			delete(a.Tasks, id)
+		}
+		a.TasksMu.Unlock()
+		return "", err
+	}
 	if err := cmd.Start(); err != nil {
 		task.Status = "failed"
 		task.EndTime = time.Now()
@@ -194,6 +278,9 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}()
 	go func() {
 		waitErr := cmd.Wait()
+		// Once the tracked command exits, descendants must not outlive it or
+		// keep inherited stdout/stderr pipes open indefinitely.
+		_ = process.KillProcessGroup(cmd)
 		close(stopWatcher)
 		task.mu.Lock()
 		task.EndTime = time.Now()
@@ -214,13 +301,16 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 		if wasStreaming {
 			a.StreamingTask = ""
 		}
-		a.TasksMu.Unlock()
+		drain := false
 		if wasStreaming {
-			dest := a.resolveTaskOutputWriter(w)
-			fmt.Fprintf(dest, "\n[task %s finished with status: %s]\n", task.ID, finalStatus)
+			drain = a.queueTaskOutputLocked(w, []byte(fmt.Sprintf("\n[task %s finished with status: %s]\n", task.ID, finalStatus)))
+		}
+		a.TasksMu.Unlock()
+		if drain {
+			a.drainTaskOutput()
 		}
 
-		if tracked && a.ActiveSessionID() == sessionID {
+		if tracked && a.checkTaskContext(context.Background(), sessionID, generation) == nil {
 			select {
 			case a.SystemEvents <- fmt.Sprintf("Background task %s finished: %s", task.ID, finalStatus):
 			default:
@@ -229,6 +319,24 @@ func (a *Agent) SpawnTask(command string, w io.Writer) (string, error) {
 	}()
 
 	return id, nil
+}
+
+func (a *Agent) checkTaskContext(ctx context.Context, sessionID string, generation uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.Lifetime != nil {
+		if err := a.Lifetime.Err(); err != nil {
+			return fmt.Errorf("agent already disposed: %w", err)
+		}
+	}
+	a.stateMu.Lock()
+	currentID, currentGeneration := a.activeSessionID, a.sessionGeneration
+	a.stateMu.Unlock()
+	if currentID != sessionID || currentGeneration != generation {
+		return fmt.Errorf("active session changed before background task started")
+	}
+	return nil
 }
 
 func (a *Agent) KillTask(id string) error {
@@ -263,6 +371,9 @@ func (a *Agent) RemoveTask(id string) error {
 	task.mu.Unlock()
 
 	delete(a.Tasks, resolvedID)
+	if a.StreamingTask == resolvedID {
+		a.StreamingTask = ""
+	}
 	return nil
 }
 
@@ -311,6 +422,16 @@ func (a *Agent) taskStatus(id string, maxBytes int) (string, string, error) {
 		sb.WriteByte('\n')
 	}
 	writeTail(task.Stderr.Bytes())
+	if task.Err != nil {
+		if sb.Len() > 0 && !bytes.HasSuffix(sb.Bytes(), []byte{'\n'}) {
+			sb.WriteByte('\n')
+		}
+		diagnostic := task.Err.Error()
+		if errors.Is(task.Err, exec.ErrWaitDelay) {
+			diagnostic = "command exited, but a child kept output pipes open; remaining child processes were stopped"
+		}
+		fmt.Fprintf(&sb, "[task error: %s]", diagnostic)
+	}
 
 	output := sb.String()
 	if output == "" {
@@ -379,17 +500,20 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 		errBytes = append([]byte(nil), task.Stderr.Bytes()...)
 		task.mu.Unlock()
 	}
-	a.TasksMu.Unlock()
-	// Terminal writers can query task status while rendering. Never call them
-	// while holding TasksMu or a task's mutex.
-	dest := a.resolveTaskOutputWriter(w)
-	fmt.Fprint(dest, notice)
+	var frame bytes.Buffer
+	frame.WriteString(notice)
 	if len(outBytes) > 0 {
-		_, _ = dest.Write(outBytes)
+		_, _ = output.NewSafeShellOutputWriter(&frame).Write(outBytes)
 	}
 	if len(errBytes) > 0 {
-		_, _ = dest.Write(errBytes)
+		_, _ = output.NewSafeShellOutputWriter(&frame).Write(errBytes)
 	}
+	drain := a.queueTaskOutputLocked(w, append([]byte(nil), frame.Bytes()...))
+	a.TasksMu.Unlock()
+	if drain {
+		a.drainTaskOutput()
+	}
+
 }
 
 func (a *Agent) GetLastRunningTaskId() string {
@@ -435,7 +559,11 @@ func (a *Agent) KillAllTasks() int {
 	}
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
+	return a.killAllTasksLocked()
+}
 
+// The registry lock prevents tasks from being added while they are stopped.
+func (a *Agent) killAllTasksLocked() int {
 	killed := 0
 	for _, t := range a.Tasks {
 		t.mu.Lock()
@@ -452,36 +580,49 @@ func (a *Agent) ClearTasks() int {
 	if a == nil {
 		return 0
 	}
-	killed := a.KillAllTasks()
 	a.TasksMu.Lock()
+	defer a.TasksMu.Unlock()
+	killed := a.killAllTasksLocked()
+	a.stateMu.Lock()
+	a.sessionGeneration++
+	a.stateMu.Unlock()
 	a.Tasks = make(map[string]*Task)
 	a.StreamingTask = ""
-	a.TasksMu.Unlock()
+	clear(a.taskOutput.queue)
+	a.taskOutput.queue = nil
+	a.taskOutput.bytes = 0
+	a.taskOutput.dropped = false
 	return killed
 }
 
-func (a *Agent) pruneFinishedTasksLocked() {
-	if a == nil || len(a.Tasks) <= a.GetLimits().MaxTrackedTasks {
+func (a *Agent) pruneFinishedTasksLocked(maxTasks int) {
+	if a == nil || len(a.Tasks) <= maxTasks {
 		return
 	}
 
-	terminal := make([]*Task, 0, len(a.Tasks))
+	// Wait can update EndTime after a task has been killed. Sort snapshots,
+	// rather than reading mutable task fields outside their lock.
+	type finishedTask struct {
+		id  string
+		end time.Time
+	}
+	terminal := make([]finishedTask, 0, len(a.Tasks))
 	for _, t := range a.Tasks {
 		t.mu.Lock()
 		switch t.Status {
 		case "completed", "failed", "killed":
-			terminal = append(terminal, t)
+			terminal = append(terminal, finishedTask{id: t.ID, end: t.EndTime})
 		}
 		t.mu.Unlock()
 	}
-	sort.Slice(terminal, func(i, j int) bool { return terminal[i].EndTime.Before(terminal[j].EndTime) })
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].end.Before(terminal[j].end) })
 
 	for _, t := range terminal {
-		if len(a.Tasks) <= a.GetLimits().MaxTrackedTasks {
+		if len(a.Tasks) <= maxTasks {
 			return
 		}
-		delete(a.Tasks, t.ID)
-		if a.StreamingTask == t.ID {
+		delete(a.Tasks, t.id)
+		if a.StreamingTask == t.id {
 			a.StreamingTask = ""
 		}
 	}

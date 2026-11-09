@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
-	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+	"loop/pkg/domain/message"
 )
 
 type AuditSubagentTool struct {
@@ -35,12 +36,15 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 	}
 
 	s.mam.mu.RLock()
-	subagent, exists := s.mam.Agents[name]
+	child, exists := s.mam.Agents[name]
 	s.mam.mu.RUnlock()
 
 	if !exists {
+		s.mam.mu.RLock()
 		agentsDir, err := s.mam.getAgentsDir()
-		if err != nil {
+		ephemeral := s.mam.ephemeral
+		s.mam.mu.RUnlock()
+		if err != nil || ephemeral {
 			return "", fmt.Errorf("subagent '%s' not found", name)
 		}
 		path := filepath.Join(agentsDir, name+"_state.json")
@@ -48,16 +52,19 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 			return "", fmt.Errorf("subagent '%s' not found", name)
 		}
 
-		subagent = &MultiAgent{Name: name}
-		if err := s.mam.LoadAgentState(subagent); err != nil {
+		store, err := subagent.NewStorage(agentsDir)
+		if err != nil {
+			return "", err
+		}
+		child = &MultiAgent{Name: name, stateStore: store}
+		if err := s.mam.LoadAgentState(child); err != nil {
 			return "", fmt.Errorf("failed to load subagent state: %w", err)
 		}
 	}
 
-	subagent.HistoryMu.RLock()
-	history := make([]db.Message, len(subagent.History))
-	copy(history, subagent.History)
-	subagent.HistoryMu.RUnlock()
+	child.HistoryMu.RLock()
+	history := message.CloneAll(child.History)
+	child.HistoryMu.RUnlock()
 
 	if len(history) == 0 {
 		return tool.RuntimeMessagef("audit_no_history", "No execution history found for subagent '%s'.", name), nil

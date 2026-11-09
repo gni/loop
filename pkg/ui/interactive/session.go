@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,19 @@ import (
 )
 
 func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
+	ctx := context.Background()
+	if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
+		if inputCtx := provider.GetInputContext(); inputCtx != nil {
+			ctx = inputCtx
+		}
+	}
+	return RunSessionExplorerContext(ctx, theme, rlInput, rlOutput)
+}
+
+func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
 	SetInInteractiveMenu(true)
 	defer SetInInteractiveMenu(false)
 
@@ -37,6 +51,7 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 
 	sr := NewSessionReader(rlInput)
 	defer sr.Close()
+	sr.context, sr.cancelled = ctx, ctx.Done()
 
 	if term.IsTerminal(fd) {
 		terminal.Default().EnterAltScreen(rlOutput)
@@ -44,10 +59,10 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 		signals := make(chan os.Signal, 1)
 		terminal.NotifyResize(signals)
 		defer signal.Stop(signals)
-		return runSessionPicker(sr, signals, rlOutput, theme)
+		return runSessionPickerContext(ctx, sr, signals, rlOutput, theme)
 	}
 	for {
-		sessions, err := db.GetSessions()
+		sessions, err := db.GetSessionsContext(ctx)
 		if err != nil {
 			return "", false, err
 		}
@@ -102,7 +117,7 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 				continue
 			}
 			sessionID := sessions[num-1].SessionID
-			err = db.ClearSession(sessionID)
+			err = db.ClearSessionContext(ctx, sessionID)
 			if err != nil {
 				fmt.Fprintf(rlOutput, "failed to delete session: %v\r\n", err)
 			} else {
@@ -121,8 +136,12 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 }
 
 func runSessionPicker(sr *SessionReader, signals chan os.Signal, rlOutput io.Writer, theme style.UITheme) (string, bool, error) {
+	return runSessionPickerContext(context.Background(), sr, signals, rlOutput, theme)
+}
+
+func runSessionPickerContext(ctx context.Context, sr *SessionReader, signals chan os.Signal, rlOutput io.Writer, theme style.UITheme) (string, bool, error) {
 	for {
-		sessions, err := db.GetSessions()
+		sessions, err := db.GetSessionsContext(ctx)
 		if err != nil {
 			return "", false, err
 		}
@@ -172,7 +191,7 @@ func runSessionPicker(sr *SessionReader, signals chan os.Signal, rlOutput io.Wri
 		if err != nil || confirmation != 1 {
 			continue
 		}
-		if err := db.ClearSession(sessions[index].SessionID); err != nil {
+		if err := db.ClearSessionContext(ctx, sessions[index].SessionID); err != nil {
 			return "", false, err
 		}
 	}

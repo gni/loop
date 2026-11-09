@@ -141,7 +141,7 @@ func handleUndoCommand(
 	}
 
 	if !a.Ephemeral && currentSessionID != nil && *currentSessionID != "" {
-		if err := db.RewriteSession(*currentSessionID, *messages); err != nil {
+		if err := db.RewriteSessionContext(a.Context(), *currentSessionID, *messages); err != nil {
 			fmt.Fprintf(w, "warning: failed to persist session after undo: %v\n", err)
 		}
 	}

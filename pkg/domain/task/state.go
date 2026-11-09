@@ -49,6 +49,12 @@ type Update struct {
 	Remaining       *[]string `json:"remaining"`
 }
 
+// HasWork distinguishes executor activity or an explicit plan from casual chat.
+// A generated assessment alone must not turn a greeting into a tracked task.
+func HasWork(state *State) bool {
+	return state != nil && (len(state.Observations) > 0 || len(state.Plan) > 0 || len(state.Remaining) > 0)
+}
+
 func Clone(input *State) *State {
 	if input == nil {
 		return nil

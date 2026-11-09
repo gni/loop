@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/process"
 	"loop/pkg/ui/style"
 )
 
@@ -85,11 +87,14 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		Arguments  string  `json:"arguments"`
 		Dir        string  `json:"dir"`
 		Cwd        string  `json:"cwd"`
-		Background bool    `json:"background"`
+		Background *bool   `json:"background"`
 		Timeout    float64 `json:"timeout"`
 	}
 	if err := domaintool.ParseToolArguments(arguments, &args, func(s string) { args.Command = s }); err != nil {
 		return "", err
+	}
+	if math.IsNaN(args.Timeout) || math.IsInf(args.Timeout, 0) || args.Timeout < 0 || args.Timeout >= float64(math.MaxInt64)/float64(time.Second) {
+		return "", fmt.Errorf("timeout must be a nonnegative number of seconds within the supported duration range")
 	}
 	args.Command = domaintool.FirstNonEmpty(args.Command, args.Cmd, args.Arguments)
 	observed.Target = args.Command
@@ -135,34 +140,40 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 			return "", fmt.Errorf("working directory '%s' does not exist or is not a directory", args.Dir)
 		}
 		workDir = safeDir
-		t.currentDir = safeDir
 	} else {
-		if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+		safeDir, safeErr := ctx.SafePath(workDir)
+		if info, err := os.Stat(safeDir); safeErr != nil || err != nil || !info.IsDir() {
 			workDir = workspaceRoot
 			t.currentDir = workspaceRoot
+		} else {
+			workDir = safeDir
 		}
 	}
 
-	isBgCmd := args.Background
-	trimmedCmd := strings.TrimSpace(args.Command)
-	if !isBgCmd {
-		if strings.HasPrefix(trimmedCmd, "nohup ") ||
-			strings.HasSuffix(trimmedCmd, "&") ||
-			strings.Contains(trimmedCmd, "& echo $!") ||
-			strings.Contains(trimmedCmd, "& echo $") {
-			isBgCmd = true
-			args.Command = CleanBackgroundCommand(args.Command)
-		}
+	normalized, isBgCmd := backgroundCommand(args.Command)
+	if args.Background != nil {
+		isBgCmd = *args.Background
 	}
 
 	if isBgCmd {
-		bgCmd := args.Command
-		if workDir != workspaceRoot {
-			bgCmd = "cd " + ShellQuote(workDir) + " && " + bgCmd
+		var id string
+		var err error
+		bgCmd := normalized
+		if spawner, ok := ctx.(interface {
+			SpawnTaskWithOptions(context.Context, string, io.Writer, domaintool.BackgroundTaskOptions) (string, error)
+		}); ok {
+			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir})
+		} else {
+			if workDir != workspaceRoot {
+				bgCmd = "cd -- " + ShellQuote(workDir) + " && {\n" + bgCmd + "\n}"
+			}
+			id, err = ctx.SpawnTask(bgCmd, os.Stderr)
 		}
-		id, err := ctx.SpawnTask(bgCmd, os.Stderr)
 		if err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("task_spawn_failed", "failed to spawn background task: %w"), err)
+		}
+		if persistentBash {
+			t.currentDir = workDir
 		}
 		observed.Outcome, observed.TaskID = evidence.Started, id
 		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'get_task_status') or stop with /stop (or 'stop_task'). Toggle live stream via Ctrl+O.", id, bgCmd), nil
@@ -220,14 +231,17 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		_ = stderrWriter.Close()
 		return "", fmt.Errorf("failed to start command: %w", err)
 	}
+	if persistentBash {
+		t.currentDir = workDir
+	}
 	observed.Outcome = evidence.Unknown
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 
 	pgid := cmd.Process.Pid
 
-	stdout := newCappedOutput(8 << 20)
-	stderr := newCappedOutput(8 << 20)
+	stdout := &process.Buffer{Limit: 8 << 20}
+	stderr := &process.Buffer{Limit: 8 << 20}
 	outWriter := io.Writer(stdout)
 	errWriter := io.Writer(stderr)
 	live := newLiveShellOutput(ctx)
@@ -323,10 +337,10 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 
 	output := cleanShellOutput(stdout.String())
 	errOutput := cleanShellOutput(stderr.String())
-	if stdout.overflow {
+	if stdout.Overflow {
 		output += "\n[stdout capture limit reached at 8 MiB; later bytes discarded]\n"
 	}
-	if stderr.overflow {
+	if stderr.Overflow {
 		errOutput += "\n[stderr capture limit reached at 8 MiB; later bytes discarded]\n"
 	}
 

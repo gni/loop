@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"loop/pkg/config"
 	"loop/pkg/domain/message"
@@ -26,15 +28,26 @@ type rpcCommand struct {
 	Tools     []string `json:"tools"`
 }
 
-func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, write func(any) error) error {
-	s, err := runtime.New(options)
+func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, write func(any) error) (runErr error) {
+	s, err := runtime.NewContext(ctx, options)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = s.Close(context.Background()) }()
+	stopLifetime := context.AfterFunc(ctx, s.Agent.CancelLifetime)
+	defer func() { stopLifetime() }()
+	defer func() {
+		if err := s.Close(context.Background()); err != nil && !errors.Is(runErr, err) {
+			runErr = errors.Join(runErr, err)
+		}
+	}()
+	input, stopInput := cancellableInput(ctx, input)
+	defer stopInput()
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var command rpcCommand
 		if err := json.Unmarshal(scanner.Bytes(), &command); err != nil {
 			if err := write(map[string]any{"type": "response", "command": "parse", "success": false, "error": err.Error()}); err != nil {
@@ -67,14 +80,14 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		case "abort":
 			commandErr = s.Abort(ctx)
 		case "clear_queue":
-			s.ClearQueue()
+			commandErr = s.ClearQueue()
 		case "get_state":
 			data = s.State()
 		case "get_messages":
 			data = s.State().Messages
 		case "get_usage":
 			if s.Store != nil {
-				data, commandErr = s.Store.Usage(s.ID)
+				data, commandErr = s.Store.UsageContext(ctx, s.ID)
 			} else {
 				data = message.TotalUsage(s.State().Messages)
 			}
@@ -92,7 +105,7 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 			if s.Store == nil {
 				commandErr = fmt.Errorf("session is ephemeral")
 			} else {
-				data, commandErr = s.Store.Entries(s.ID)
+				data, commandErr = s.Store.EntriesContext(ctx, s.ID)
 			}
 		case "set_model", "set_thinking_level", "set_tools":
 			if command.Type == "set_tools" {
@@ -117,11 +130,7 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 				}
 			}
 		case "set_session_name":
-			if s.Store == nil {
-				commandErr = fmt.Errorf("session is ephemeral")
-			} else {
-				commandErr = s.Store.SetName(s.ID, command.Name)
-			}
+			commandErr = s.SetName(ctx, command.Name)
 		case "reload":
 			commandErr = s.Reload()
 		case "compact":
@@ -137,44 +146,65 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 				break
 			}
 			next.SessionID = command.SessionID
+			next.SessionName = ""
 			next.Resume = false
 			if command.Type == "new_session" {
 				next.SessionID = ""
 			}
+			createdFork := ""
 			if command.Type == "fork" {
 				if s.Store == nil {
 					commandErr = fmt.Errorf("session is ephemeral")
 					break
 				}
-				next.SessionID, commandErr = s.Store.ForkSession(s.ID, command.EntryID)
+				next.SessionID, commandErr = s.Store.ForkSessionContext(ctx, s.ID, command.EntryID)
 				if commandErr != nil {
 					break
 				}
+				createdFork = next.SessionID
 			}
 			var replacement *runtime.Session
-			replacement, commandErr = runtime.New(next)
+			replacement, commandErr = runtime.NewContext(ctx, next)
 			if commandErr == nil {
-				_ = s.Close(ctx)
+				closeErr := s.Close(ctx)
+				stopLifetime()
 				s = replacement
+				stopLifetime = context.AfterFunc(ctx, s.Agent.CancelLifetime)
 				data = s.State()
+				if closeErr != nil {
+					commandErr = fmt.Errorf("switched to session %s, but closing the previous session failed: %w", s.ID, closeErr)
+				}
+			} else if createdFork != "" {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				commandErr = errors.Join(commandErr, s.Store.ClearSessionContext(cleanupCtx, createdFork))
+				cancel()
 			}
 		case "shutdown":
-			if err := write(map[string]any{"type": "response", "id": command.ID, "command": command.Type, "success": true}); err != nil {
-				return err
+			closeErr := s.Close(ctx)
+			response := map[string]any{"type": "response", "id": command.ID, "command": command.Type, "success": closeErr == nil}
+			if closeErr != nil {
+				response["error"] = closeErr.Error()
 			}
-			return nil
+			if err := write(response); err != nil {
+				return errors.Join(closeErr, err)
+			}
+			return closeErr
 		default:
 			commandErr = fmt.Errorf("unknown RPC command %q", command.Type)
 		}
 		response := map[string]any{"type": "response", "id": command.ID, "command": command.Type, "success": commandErr == nil}
 		if commandErr != nil {
 			response["error"] = commandErr.Error()
-		} else if data != nil {
+		}
+		if data != nil {
 			response["data"] = data
 		}
 		if err := write(response); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return scanner.Err()
 }

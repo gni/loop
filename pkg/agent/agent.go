@@ -68,36 +68,38 @@ type AgentUI interface {
 }
 
 type Agent struct {
-	ReloadResources  func() error
-	Lifetime         context.Context
-	CancelLifetime   context.CancelFunc
-	TransformContext func(context.Context, []db.Message) ([]db.Message, error)
-	RunSession       func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
-	SyncSessionState func([]db.Message, []string, string, bool) error
-	SessionMessages  func() []db.Message
-	MessagesMu       sync.RWMutex
-	Ephemeral        bool
-	ToolSelection    []string
-	Timing           *TimingRecorder
-	Bus              *EventBus
-	Credentials      *auth.Store
-	InputBlocks      []message.ContentBlock
-	Store            session.Store
-	Inquirer         func(string, []tool.AskUserOption, string) (string, error)
-	EventSink        func(Event) error
-	DisposeAgents    func()
-	persistenceErr   error
-	NextInput        func() []db.Message
-	UI               AgentUI
-	LLMProvider      LLMProvider
-	LLMProviderMu    sync.RWMutex
-	Config           *config.Config
-	ConfigPath       string
-	HTTPClient       *http.Client
-	ActiveSkills     []Skill
-	MCPClients       map[string]*mcpClient
-	MCPClientsMu     sync.Mutex
-	MCPStartErrors   map[string]error
+	ReloadResources     func() error
+	Lifetime            context.Context
+	CancelLifetime      context.CancelFunc
+	TransformContext    func(context.Context, []db.Message) ([]db.Message, error)
+	RunSession          func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
+	SyncSessionState    func([]db.Message, []string, string, bool) error
+	SessionMessages     func() []db.Message
+	MessagesMu          sync.RWMutex
+	Ephemeral           bool
+	ToolSelection       []string
+	Timing              *TimingRecorder
+	Bus                 *EventBus
+	Credentials         *auth.Store
+	InputBlocks         []message.ContentBlock
+	Store               session.Store
+	Inquirer            func(string, []tool.AskUserOption, string) (string, error)
+	EventSink           func(Event) error
+	DisposeAgents       func()
+	persistenceErr      error
+	persistenceFirstErr error
+	persistenceFailures uint64
+	NextInput           func() []db.Message
+	UI                  AgentUI
+	LLMProvider         LLMProvider
+	LLMProviderMu       sync.RWMutex
+	Config              *config.Config
+	ConfigPath          string
+	HTTPClient          *http.Client
+	ActiveSkills        []Skill
+	MCPClients          map[string]*mcpClient
+	MCPClientsMu        sync.Mutex
+	MCPStartErrors      map[string]error
 
 	mcpGeneration int
 	mcpPending    map[string]config.MCPServerConfig
@@ -110,6 +112,7 @@ type Agent struct {
 	TasksMu       sync.Mutex
 	NextTaskID    int
 	StreamingTask string
+	taskOutput    taskOutputState
 
 	CurrentStreamBuffer *bytes.Buffer
 	// CurrentHistorySnapshot supplies the history owned by the running loop.
@@ -123,12 +126,16 @@ type Agent struct {
 	// has been rendered. It may request a safe redraw of the active turn.
 	OnStreamProgress func() bool
 
-	stateMu         sync.Mutex
-	activeSessionID string
-	liveToolWriter  io.Writer
-	currentWriter   io.Writer
-	currentContext  context.Context
-	currentTheme    style.UITheme
+	stateMu           sync.Mutex
+	activeSessionID   string
+	sessionGeneration uint64
+	sessionName       string
+	sessionNameKnown  bool
+	sessionNameDirty  bool
+	liveToolWriter    io.Writer
+	currentWriter     io.Writer
+	currentContext    context.Context
+	currentTheme      style.UITheme
 
 	lastToolOutput         string
 	lastToolIsError        bool
@@ -148,7 +155,7 @@ type Agent struct {
 	SystemEvents       chan string
 	pendingSystemEvent string
 
-	ClearAgentsFunc   func()
+	ClearAgentsFunc   func() error
 	MultiAgentManager any
 	DebugLogger       *DebugLogger
 
@@ -773,6 +780,8 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 }
 
 func (a *Agent) IsPersistentBashEnabled() bool {
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
 		return true
 	}
@@ -780,10 +789,17 @@ func (a *Agent) IsPersistentBashEnabled() bool {
 }
 
 func (a *Agent) IsShellScanDefaultsEnabled() bool {
-	return a != nil && a.Config != nil && a.Config.ShellScanDefaults
+	if a == nil {
+		return false
+	}
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
+	return a.Config != nil && a.Config.ShellScanDefaults
 }
 
 func (a *Agent) IsAtomicWritesEnabled() bool {
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
 		return true
 	}
@@ -794,16 +810,22 @@ func getPluginDirs(workspaceRoot string) []string {
 	return tool.PluginSearchDirs(workspaceRoot)
 }
 
-func (a *Agent) ReloadPlugins() error {
+func (a *Agent) ReloadPlugins() error { return a.ReloadPluginsContext(a.Context()) }
+
+// ReloadPluginsContext cancels plugin discovery before replacing active tools.
+func (a *Agent) ReloadPluginsContext(ctx context.Context) error {
 	if a.Config != nil && !a.Config.LocalPlugins {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
 	staged := tool.NewToolRegistry()
 	for _, dir := range a.pluginDirs() {
-		if err := tool.RegisterPluginsContext(a.Context(), staged, dir); err != nil {
+		if err := tool.RegisterPluginsContext(ctx, staged, dir); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	a.Registry.ReplacePrefix("plugin__", staged.GetAllExecutors())
 	a.markSystemPromptDirty()
@@ -852,8 +874,12 @@ func (a *Agent) IsShellExecutionAllowed() bool {
 }
 
 func (a *Agent) GetShellTimeout() time.Duration {
-	if a != nil && a.Config != nil && a.Config.ShellTimeout > 0 {
-		return time.Duration(a.Config.ShellTimeout) * time.Second
+	if a != nil {
+		a.LLMProviderMu.RLock()
+		defer a.LLMProviderMu.RUnlock()
+		if a.Config != nil && a.Config.ShellTimeout > 0 {
+			return time.Duration(a.Config.ShellTimeout) * time.Second
+		}
 	}
 	return 120 * time.Second
 }

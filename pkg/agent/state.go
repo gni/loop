@@ -11,6 +11,10 @@ import (
 
 func (a *Agent) SetActiveSessionID(sessionID string) {
 	a.stateMu.Lock()
+	if a.activeSessionID != sessionID {
+		a.sessionGeneration++
+		a.sessionName, a.sessionNameKnown, a.sessionNameDirty = "", false, false
+	}
 	a.activeSessionID = sessionID
 	a.stateMu.Unlock()
 }
@@ -54,19 +58,20 @@ func (a *Agent) GetExecutionEnv() map[string]string {
 	}
 	a.stateMu.Lock()
 	sessionID := a.activeSessionID
-	cfg := a.Config
 	a.stateMu.Unlock()
 	if sessionID != "" {
 		env["LOOP_SESSION_ID"] = sessionID
 	}
-	if cfg != nil {
-		if model := cfg.Model; model != "" {
+	a.LLMProviderMu.RLock()
+	if a.Config != nil {
+		if model := a.Config.Model; model != "" {
 			env["LOOP_MODEL"] = model
 		}
-		if provider := cfg.ActiveProvider; provider != "" {
+		if provider := a.Config.ActiveProvider; provider != "" {
 			env["LOOP_PROVIDER"] = provider
 		}
 	}
+	a.LLMProviderMu.RUnlock()
 	return env
 }
 
@@ -77,7 +82,23 @@ func (a *Agent) Context() context.Context {
 	if ctx != nil {
 		return ctx
 	}
+	if a.Lifetime != nil {
+		return a.Lifetime
+	}
 	return context.Background()
+}
+
+// withLifetime lets both the caller and session shutdown stop an operation.
+func (a *Agent) withLifetime(ctx context.Context) (context.Context, context.CancelFunc) {
+	if a.Lifetime == nil {
+		return ctx, func() {}
+	}
+	linked, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(a.Lifetime, cancel)
+	if a.Lifetime.Err() != nil {
+		cancel()
+	}
+	return linked, func() { stop(); cancel() }
 }
 
 func (a *Agent) CurrentWriter() io.Writer {

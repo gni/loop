@@ -172,7 +172,10 @@ func (p *PromptPreservingWriter) Write(data []byte) (int, error) {
 
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
+	return p.writeLocked(data)
+}
 
+func (p *PromptPreservingWriter) writeLocked(data []byte) (int, error) {
 	p.ResizeLocked(getRealTerminalHeight())
 
 	var buf bytes.Buffer

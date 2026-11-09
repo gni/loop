@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"loop/pkg/domain/task"
 	"strings"
 	"time"
 
@@ -107,6 +108,12 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 		case "tool":
 			call, ok := calls[ev.index]
 			if !ok {
+				continue
+			}
+			if call.name == "task_state" {
+				if call.resultRecorded && (call.failed || task.ShowProgressNotice(call.output, call.arguments)) {
+					RenderToolOutput(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false)
+				}
 				continue
 			}
 			if i > 0 && events[i-1].kind != "reasoning" {

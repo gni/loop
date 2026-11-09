@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"loop/pkg/process"
+	"loop/pkg/storage"
 )
 
 const (
@@ -176,13 +176,8 @@ func RegisterPluginsContext(ctx context.Context, registry *ToolRegistry, dir str
 			if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxPluginDescriptorBytes {
 				continue
 			}
-			file, openErr := os.Open(descPath)
-			if openErr != nil {
-				continue
-			}
-			jsonBytes, err = io.ReadAll(io.LimitReader(file, maxPluginDescriptorBytes+1))
-			_ = file.Close()
-			if err != nil || len(jsonBytes) > maxPluginDescriptorBytes {
+			jsonBytes, err = storage.ReadFile(descPath, maxPluginDescriptorBytes)
+			if err != nil {
 				continue
 			}
 		}

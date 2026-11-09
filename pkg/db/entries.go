@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,17 +10,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"loop/pkg/domain/session"
 	"loop/pkg/storage"
 )
 
-func (s *JSONLStore) lock(exclusive bool) (func(), error) {
-	return storage.Lock(s.core.dir+"/.store.lock", exclusive)
+func (s *JSONLStore) entries(id string) ([]session.Record, error) {
+	return s.entriesContext(context.Background(), id)
 }
 
-func (s *JSONLStore) entries(id string) ([]session.Record, error) {
+func (s *JSONLStore) entriesContext(ctx context.Context, id string) ([]session.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	info, err := os.Stat(s.sessionPath(id))
 	if err != nil {
 		delete(s.core.cache, id)
@@ -28,7 +33,7 @@ func (s *JSONLStore) entries(id string) ([]session.Record, error) {
 	if cached, ok := s.cached(id, info); ok && cached.complete {
 		return cached.entries, nil
 	}
-	entries, err := readEntries(s.sessionPath(id))
+	entries, err := readEntriesContext(ctx, s.sessionPath(id))
 	if err != nil {
 		delete(s.core.cache, id)
 		return nil, err
@@ -39,17 +44,23 @@ func (s *JSONLStore) entries(id string) ([]session.Record, error) {
 }
 
 func (s *JSONLStore) Entries(id string) ([]session.Record, error) {
+	return s.EntriesContext(context.Background(), id)
+}
+
+// EntriesContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) EntriesContext(ctx context.Context, id string) ([]session.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.checkReady(id); err != nil {
 		return nil, err
 	}
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(false)
+	release, err := s.lockStore(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	entries, err := s.entries(id)
+	entries, err := s.entriesContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -60,25 +71,79 @@ func (s *JSONLStore) Entries(id string) ([]session.Record, error) {
 	}
 	copy := make([]session.Record, len(entries))
 	for i, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		copy[i] = cloneRecord(entry)
 	}
 	return copy, nil
 }
 
 func (s *JSONLStore) SetName(id, name string) error {
-	if len(name) > 256 {
-		return fmt.Errorf("session name exceeds 256 bytes")
+	return s.SetNameContext(context.Background(), id, name)
+}
+
+// ErrEmptySession prevents metadata from creating a conversation without input.
+var ErrEmptySession = errors.New("session has no conversation content")
+
+// SetNameContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) SetNameContext(ctx context.Context, id, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return s.AppendEntry(id, session.Record{Type: "name", Name: name})
+	name = strings.TrimSpace(name)
+	if err := session.ValidateName(name); err != nil {
+		return err
+	}
+	if err := s.checkReady(id); err != nil {
+		return err
+	}
+	release, err := s.lockStore(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	entries, err := s.entriesContext(ctx, id)
+	if os.IsNotExist(err) {
+		return ErrEmptySession
+	}
+	if err != nil {
+		return err
+	}
+	active := false
+	for _, msg := range ProjectMessages(entries) {
+		if isConversationMessage(msg) {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return ErrEmptySession
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Type == "name" {
+			if entries[i].Name == name {
+				return nil
+			}
+			break
+		}
+	}
+	return s.appendEntryLocked(ctx, id, session.Record{Type: "name", Name: name})
 }
 
 func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
+	return s.LatestForWorkspaceContext(context.Background(), workspace)
+}
+
+// LatestForWorkspaceContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) LatestForWorkspaceContext(ctx context.Context, workspace string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if s == nil || s.core == nil {
 		return "", nil
 	}
-	s.core.mu.RLock()
 	dir := s.core.dir
-	s.core.mu.RUnlock()
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -110,12 +175,15 @@ func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
 	})
 
 	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		filePath := filepath.Join(dir, candidate.id+".jsonl")
-		f, err := os.Open(filePath)
+		f, err := storage.OpenRegularFile(filePath)
 		if err != nil {
 			continue
 		}
-		scanner := newJSONLScanner(f)
+		scanner := newJSONLScanner(contextReader{ctx, f})
 		var sessionWorkspace string
 		for scanner.Scan() {
 			line := bytes.TrimSpace(scanner.Bytes())
@@ -135,7 +203,7 @@ func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
 		}
 
 		if sessionWorkspace != "" && matchesWorkspace(sessionWorkspace, workspace) {
-			messages, err := s.LoadMessages(candidate.id)
+			messages, err := s.LoadMessagesContext(ctx, candidate.id)
 			if err != nil {
 				continue
 			}
@@ -147,7 +215,7 @@ func (s *JSONLStore) LatestForWorkspace(workspace string) (string, error) {
 		}
 	}
 
-	return "", nil
+	return "", ctx.Err()
 }
 
 func matchesWorkspace(a, b string) bool {
@@ -165,11 +233,22 @@ func matchesWorkspace(a, b string) bool {
 }
 
 func (s *JSONLStore) Export(id string, w io.Writer) error {
-	entries, err := s.Entries(id)
+	return s.ExportContext(context.Background(), id, w)
+}
+
+// ExportContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) ExportContext(ctx context.Context, id string, w io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := s.EntriesContext(ctx, id)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := json.NewEncoder(w).Encode(entry); err != nil {
 			return err
 		}
@@ -178,10 +257,18 @@ func (s *JSONLStore) Export(id string, w io.Writer) error {
 }
 
 func (s *JSONLStore) Import(reader io.Reader) (string, error) {
+	return s.ImportContext(context.Background(), reader)
+}
+
+// ImportContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) ImportContext(ctx context.Context, reader io.Reader) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := s.checkReady(""); err != nil {
 		return "", err
 	}
-	data, err := io.ReadAll(io.LimitReader(reader, (64<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(contextReader{ctx, reader}, (64<<20)+1))
 	if err != nil {
 		return "", err
 	}
@@ -200,13 +287,25 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 	if err := f.Close(); err != nil {
 		return "", err
 	}
-	entries, err := readEntries(f.Name())
+	entries, err := readEntriesContext(ctx, f.Name())
 	if err != nil {
 		return "", err
 	}
 	if len(entries) == 0 {
 		return "", fmt.Errorf("session import is empty")
 	}
+	hasContent := false
+	for _, msg := range ProjectMessages(entries) {
+		if isConversationMessage(msg) {
+			hasContent = true
+			break
+		}
+	}
+	if !hasContent {
+		return "", fmt.Errorf("session import has no conversation content")
+	}
+	// Resolve positional legacy IDs before replacing or adding the header.
+	entries = session.NormalizeEntries(entries)
 	id := session.NewUUID()
 	original := ""
 	cwd := s.Workspace
@@ -218,18 +317,15 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 	}
 	header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: id, Cwd: cwd, ParentSession: original, Timestamp: nowTimestamp()}
 	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	if err := encoder.Encode(header); err != nil {
+	if err := writeJSONLine(&buffer, header); err != nil {
 		return "", err
 	}
 	for _, entry := range entries {
-		if err := encoder.Encode(entry); err != nil {
+		if err := writeJSONLine(&buffer, entry); err != nil {
 			return "", err
 		}
 	}
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return "", err
 	}
@@ -244,30 +340,46 @@ func (s *JSONLStore) Import(reader io.Reader) (string, error) {
 	if err := errors.Join(file.Sync(), file.Close()); err != nil {
 		return "", err
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := os.Rename(f.Name(), s.sessionPath(id)); err != nil {
 		return "", err
 	}
-	return id, s.setLatestSessionIDUnlocked(id)
+	if err := s.setLatestSessionIDUnlocked(id); err != nil {
+		// A failed import must not leave an unreported session behind.
+		return "", errors.Join(err, os.Remove(s.sessionPath(id)))
+	}
+	return id, nil
 }
 
 func (s *JSONLStore) RepairTail(id string) error {
+	return s.RepairTailContext(context.Background(), id)
+}
+
+// RepairTailContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) RepairTailContext(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.checkReady(id); err != nil {
 		return err
 	}
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
 	defer release()
 	path := s.sessionPath(id)
-	data, err := os.ReadFile(path)
+	data, err := readSessionFile(ctx, path)
 	if err != nil {
 		return err
 	}
-	if _, err := readEntries(path); err == nil {
+	if _, err := readEntriesContext(ctx, path); err == nil {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	end := bytes.LastIndexByte(bytes.TrimSuffix(data, []byte("\n")), '\n')
 	if end < 0 {
@@ -282,8 +394,11 @@ func (s *JSONLStore) RepairTail(id string) error {
 	if err := errors.Join(writeErr, temp.Sync(), temp.Close()); err != nil {
 		return err
 	}
-	if _, err := readEntries(temp.Name()); err != nil {
+	if _, err := readEntriesContext(ctx, temp.Name()); err != nil {
 		return fmt.Errorf("corruption precedes final record: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	backup := path + ".backup-" + time.Now().UTC().Format("20060102T150405.000000000")
 	if err := os.WriteFile(backup, data, 0600); err != nil {
@@ -292,8 +407,7 @@ func (s *JSONLStore) RepairTail(id string) error {
 	if err := os.Rename(temp.Name(), path); err != nil {
 		return err
 	}
-	delete(s.core.cache, id)
-	delete(s.core.summaryCache, id)
+	s.invalidateSessionCacheLocked(id)
 	return nil
 }
 

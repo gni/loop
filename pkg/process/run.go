@@ -43,6 +43,9 @@ func (b *Buffer) Write(data []byte) (int, error) {
 	return size, nil
 }
 
+// String returns the retained output, up to Limit bytes.
+func (b *Buffer) String() string { return b.data.String() }
+
 func Run(ctx context.Context, options Options) (Result, error) {
 	if options.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -67,7 +70,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
 	_ = KillProcessGroup(cmd)
-	result := Result{Stdout: output.data.String(), Stderr: diagnostics.data.String()}
+	result := Result{Stdout: output.String(), Stderr: diagnostics.String()}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
 	}

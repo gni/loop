@@ -36,7 +36,11 @@ func (h *ChatHistory) refreshStalePageLocked() {
 }
 
 func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHistoryPage, rows *render.Scrollback, cfg *config.Config, theme style.UITheme, key string) *preparedHistoryPage {
-	p := &preparedHistoryPage{rows: rows, more: old.more, appearance: key, pending: old.pending}
+	p := &preparedHistoryPage{rows: rows, more: old.more, appearance: key, pending: old.pending, pendingTurn: old.pendingTurn}
+	seed := rows.PopTailRows(1)
+	if seed != nil {
+		_ = seed.Close()
+	}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
@@ -51,6 +55,19 @@ func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHisto
 			break
 		}
 		previous := old.turns[i]
+		if previous.fragment != nil || (previous.messages == nil && previous.size == 0) {
+			chunk := old.rows.CopyHistoryRange(previous.start, previous.end)
+			count := rows.InsertPrepared(0, chunk)
+			_ = chunk.Close()
+			for _, turn := range p.turns {
+				turn.start += count
+				turn.end += count
+			}
+			turn := *previous
+			turn.start, turn.end = 0, count
+			p.turns = append([]*displayTurn{&turn}, p.turns...)
+			continue
+		}
 		messages := previous.messages
 		if messages == nil && previous.size > 0 {
 			decoded, readErr := h.readTurnMessagesFromFile(job.file, previous.offset, previous.size)
@@ -74,7 +91,7 @@ func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHisto
 			turn.start += count
 			turn.end += count
 		}
-		turn := &displayTurn{start: 0, end: max(1, count-1), offset: previous.offset, size: previous.size, messages: previous.messages, appearance: key}
+		turn := &displayTurn{start: 0, end: count, offset: previous.offset, size: previous.size, messages: previous.messages, appearance: key}
 		p.turns = append([]*displayTurn{turn}, p.turns...)
 	}
 	select {
@@ -98,6 +115,7 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 	}
 	h.pageJob = nil
 	h.pendingOlderRows = p.pending
+	h.pendingOlderTurn = p.pendingTurn
 	if p.err != nil {
 		h.historyErr = p.err
 		if p.more && source != nil {
@@ -107,6 +125,7 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 			_ = h.pendingOlderRows.Close()
 			h.pendingOlderRows = nil
 		}
+		h.pendingOlderTurn = nil
 		p.more = false
 	}
 	if !p.more && h.pendingOlderRows == nil {
@@ -153,6 +172,7 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 			h.continueSearchLocked()
 		} else {
 			h.searchPending = false
+			h.searchScan = nil
 		}
 		h.needsPaint = true
 		h.queuePaintLocked()
@@ -171,6 +191,7 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 	}
 	if h.searchPending && p.err != nil {
 		h.searchPending = false
+		h.searchScan = nil
 	}
 	if h.searchPending && p.err == nil {
 		h.continueSearchLocked()

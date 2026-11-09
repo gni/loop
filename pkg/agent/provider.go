@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 
 	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/tool"
+	"loop/pkg/buildinfo"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	transporthttp "loop/pkg/transport/http"
@@ -229,7 +229,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after ")
 		},
 		DescribeError: func(err error) error {
-			return fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", err, p.Config.Endpoint)
+			return fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", err, transporthttp.RedactURL(p.Config.Endpoint))
 		},
 	})
 
@@ -240,15 +240,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("loop", "v1.0.0")
+		req.Header.Set("loop", buildinfo.Version)
 		if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
-			for key, value := range profile.Headers {
-				req.Header.Set(key, os.ExpandEnv(value))
-			}
+			transporthttp.ApplyProviderHeaders(req.Header, profile.Headers)
 		}
-		if key := p.requestKey(streamCtx); key != "" {
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
-		}
+		transporthttp.ApplyProviderAuthHeaders(req.Header, "chat-completions", p.requestKey(streamCtx))
 		return req, nil
 	})
 	if err != nil {
@@ -329,9 +325,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				Message string `json:"message"`
 			}
 			if json.Unmarshal(chunk.Error, &upstream) == nil && upstream.Message != "" {
-				return nil, fmt.Errorf("model server returned a stream error: %s", upstream.Message)
+				return nil, fmt.Errorf("model server returned a stream error: %s", transporthttp.RedactDiagnostic(upstream.Message))
 			}
-			return nil, fmt.Errorf("model server returned a stream error: %.512s", string(chunk.Error))
+			return nil, fmt.Errorf("model server returned a stream error: %.512s", transporthttp.RedactDiagnostic(string(chunk.Error)))
 		}
 
 		if chunk.Usage != nil {

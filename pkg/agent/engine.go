@@ -12,6 +12,7 @@ import (
 	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
+	"loop/pkg/domain/task"
 	"loop/pkg/ui/style"
 )
 
@@ -27,18 +28,22 @@ type agentSink struct {
 }
 
 func (s *agentSink) Append(m db.Message) {
-	if s.a != nil {
-		s.a.MessagesMu.Lock()
-	}
-	*s.messages = append(*s.messages, m)
-	if s.a != nil {
-		s.a.MessagesMu.Unlock()
-		s.a.emit(Event{Type: "message_end", SessionID: s.sessionID, Message: &m})
-	}
+	appendHistoryMessage(s.a, s.messages, s.sessionID, m)
 	if s.sessionID != "" && s.a != nil {
 		if err := s.a.SaveMessage(s.sessionID, m); err != nil {
 			s.a.recordPersistenceError(err)
 		}
+	}
+}
+
+func appendHistoryMessage(a *Agent, messages *[]db.Message, id string, m db.Message) {
+	if a != nil {
+		a.MessagesMu.Lock()
+	}
+	*messages = append(*messages, m)
+	if a != nil {
+		a.MessagesMu.Unlock()
+		a.emit(Event{Type: "message_end", SessionID: id, Message: &m})
 	}
 }
 
@@ -70,6 +75,9 @@ func (r *mainRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, ar
 }
 
 func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
+	if toolName == "task_state" && !isError && !task.ShowProgressNotice(output, args) {
+		return
+	}
 	if r.a != nil && r.a.UI != nil {
 		collapse := r.a.Config != nil && r.a.Config.CollapseResults
 		var rendered bytes.Buffer
@@ -262,7 +270,7 @@ func (e *TurnEngine) canRunToolInParallel(tc db.ToolCall) bool {
 	if !policy.ReadOnly || !policy.Parallel {
 		return false
 	}
-	if e.guided != nil && e.guided.IsEnabled() && e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).RequiresPlan {
+	if e.guided != nil && e.guided.IsEnabled() && policy.RequiresPlan {
 		return false
 	}
 	return true
@@ -271,6 +279,12 @@ func (e *TurnEngine) canRunToolInParallel(tc db.ToolCall) bool {
 func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistantContent string, isParallel bool, sr StreamRenderer, w io.Writer, theme style.UITheme, render EngineRenderer) {
 	if e.policy.BeforeToolCall != nil {
 		e.policy.BeforeToolCall(idx, tc)
+	}
+	if tc.Function.Name == "task_state" {
+		if tracker, ok := sr.(interface{ TrackProgressCall(int) }); ok {
+			tracker.TrackProgressCall(idx)
+		}
+		return
 	}
 	if isParallel {
 		if sr.GetToolTitleLineNumber(idx) == -1 {
@@ -309,11 +323,12 @@ func (e *TurnEngine) HaltNotice() string {
 }
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
+	outcome := evidence.NotExecuted
+	if strings.Contains(reason, "during execution") {
+		outcome = evidence.Unknown
+	}
 	for _, tc := range calls {
-		outcome := "not_executed"
-		if strings.Contains(reason, "during execution") {
-			outcome = "unknown"
-		}
+		observed := &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome}
 		if e.policy.ToolBatch != nil {
 			e.policy.ToolBatch.CancelByProviderID(tc.ID)
 		}
@@ -323,8 +338,8 @@ func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, r
 			Name:        tc.Function.Name,
 			Content:     RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
 			ToolOutcome: outcome,
-			Evidence:    &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome},
-			TaskState:   e.observeTaskTool(tc, &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome}, true),
+			Evidence:    observed,
+			TaskState:   e.observeTaskTool(tc, observed, true),
 			IsError:     true,
 		})
 	}

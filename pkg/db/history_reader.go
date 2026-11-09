@@ -2,14 +2,17 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
+	"loop/pkg/storage"
 )
 
 type historySpan struct {
@@ -34,36 +37,68 @@ func (p *historyMessagesPresent) UnmarshalJSON(data []byte) error {
 // bodies. Previous reads one conversational turn from disk, newest turn first.
 // It is independent of the store's model-context projection and cache.
 type HistoryReader struct {
-	mu      sync.Mutex
-	store   *JSONLStore
-	file    *os.File
-	path    []historySpan
-	indexed bool
-	size    int64
+	cancelled atomic.Bool
+	mu        sync.Mutex
+	store     *JSONLStore
+	file      *os.File
+	path      []historySpan
+	indexed   bool
+	size      int64
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+// Cancel interrupts indexing and page reads without waiting for the reader lock.
+func (r *HistoryReader) Cancel() {
+	r.cancelled.Store(true)
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
+type cancellableHistoryInput struct {
+	io.Reader
+	cancelled *atomic.Bool
+}
+
+func (r cancellableHistoryInput) Read(data []byte) (int, error) {
+	if r.cancelled.Load() {
+		return 0, context.Canceled
+	}
+	return r.Reader.Read(data)
 }
 
 func (s *JSONLStore) OpenHistory(id string) (*HistoryReader, error) {
-	return s.openHistory(id, false)
+	return s.OpenHistoryContext(context.Background(), id)
+}
+
+func (s *JSONLStore) OpenHistoryContext(ctx context.Context, id string) (*HistoryReader, error) {
+	return s.openHistory(ctx, id, false)
 }
 
 // OpenHistoryLazy snapshots the file immediately; its index is built by the
 // background page reader on the first Previous call.
 func (s *JSONLStore) OpenHistoryLazy(id string) (*HistoryReader, error) {
-	return s.openHistory(id, true)
+	return s.OpenHistoryLazyContext(context.Background(), id)
 }
 
-func (s *JSONLStore) openHistory(id string, lazy bool) (*HistoryReader, error) {
+func (s *JSONLStore) OpenHistoryLazyContext(ctx context.Context, id string) (*HistoryReader, error) {
+	return s.openHistory(ctx, id, true)
+}
+
+func (s *JSONLStore) openHistory(ctx context.Context, id string, lazy bool) (*HistoryReader, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.checkReady(id); err != nil {
 		return nil, err
 	}
-	s.core.mu.RLock()
-	defer s.core.mu.RUnlock()
-	release, err := s.lock(false)
+	release, err := s.fileLock(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	f, err := os.Open(s.sessionPath(id))
+	f, err := storage.OpenRegularFile(s.sessionPath(id))
 	if err != nil {
 		return nil, err
 	}
@@ -72,15 +107,24 @@ func (s *JSONLStore) openHistory(id string, lazy bool) (*HistoryReader, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	r := &HistoryReader{store: s, file: f, size: info.Size()}
+	readerCtx, cancel := context.WithCancel(ctx)
+	r := &HistoryReader{store: s, file: f, size: info.Size(), ctx: readerCtx, cancel: cancel}
 	if !lazy {
 		if err := r.index(); err != nil {
+			cancel()
 			_ = f.Close()
 			return nil, err
 		}
 		r.indexed = true
 	}
 	return r, nil
+}
+
+func (r *HistoryReader) context() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
 }
 
 func (r *HistoryReader) index() error {
@@ -104,7 +148,7 @@ func (r *HistoryReader) index() error {
 	ids := make(map[string]int)
 	var prev string
 	var offset int64
-	scanner := newJSONLScanner(io.NewSectionReader(r.file, 0, r.size))
+	scanner := newJSONLScanner(contextReader{r.context(), cancellableHistoryInput{io.NewSectionReader(r.file, 0, r.size), &r.cancelled}})
 	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
 			return i + 1, data[:i], nil
@@ -116,6 +160,12 @@ func (r *HistoryReader) index() error {
 	})
 	line, record := 0, 0
 	for scanner.Scan() {
+		if r.cancelled.Load() {
+			return context.Canceled
+		}
+		if err := r.context().Err(); err != nil {
+			return err
+		}
 		data := scanner.Bytes()
 		start := offset
 		offset += int64(len(data)) + 1
@@ -136,7 +186,10 @@ func (r *HistoryReader) index() error {
 			continue
 		}
 		if m.ID == "" {
-			m.ID, m.Parent, m.Type = fmt.Sprintf("legacy-%d", index), prev, "message"
+			m.ID, m.Parent = fmt.Sprintf("legacy-%d", index), prev
+			if m.Type == "" {
+				m.Type = "message"
+			}
 		} else {
 			if _, ok := ids[m.ID]; ok {
 				return fmt.Errorf("duplicate session entry %q", m.ID)
@@ -156,6 +209,9 @@ func (r *HistoryReader) index() error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("index session history: %w", err)
 	}
+	if err := r.context().Err(); err != nil {
+		return err
+	}
 	// Match LeafPath, including branch markers and legacy parent IDs.
 	var reverse []int
 	for i := len(nodes) - 1; i >= 0; {
@@ -173,22 +229,27 @@ func (r *HistoryReader) index() error {
 			return fmt.Errorf("session has a cyclic entry path")
 		}
 	}
+	var spans []historySpan
 	hasMessages := false
 	for i := len(reverse) - 1; i >= 0; i-- {
 		n := nodes[reverse[i]]
 		switch n.Type {
 		case "", "message":
 			if n.span.role != "" {
-				r.path = append(r.path, n.span)
+				spans = append(spans, n.span)
 				hasMessages = true
 			}
 		case "context", "compaction":
 			if !hasMessages {
-				r.path = append(r.path, n.span)
+				spans = append(spans, n.span)
 				hasMessages = bool(n.Messages)
 			}
 		}
 	}
+	if err := r.context().Err(); err != nil {
+		return err
+	}
+	r.path = spans
 	return nil
 }
 
@@ -205,8 +266,21 @@ func (r *HistoryReader) PreviousChunk() ([]message.Message, error) {
 func (r *HistoryReader) previous(chunk bool) ([]message.Message, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.cancelled.Load() {
+		return nil, context.Canceled
+	}
+	if err := r.context().Err(); err != nil {
+		return nil, err
+	}
 	if r.file == nil {
 		return nil, io.EOF
+	}
+	if r.store != nil {
+		release, err := r.store.fileLock(r.context(), false)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	if !r.indexed {
 		if err := r.index(); err != nil {
@@ -216,13 +290,6 @@ func (r *HistoryReader) previous(chunk bool) ([]message.Message, error) {
 	}
 	if len(r.path) == 0 {
 		return nil, io.EOF
-	}
-	if r.store != nil {
-		release, err := r.store.lock(false)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
 	}
 	end := len(r.path)
 	start := end - 1
@@ -242,6 +309,12 @@ func (r *HistoryReader) previous(chunk bool) ([]message.Message, error) {
 	}
 	var messages []message.Message
 	for _, span := range r.path[start:end] {
+		if r.cancelled.Load() {
+			return nil, context.Canceled
+		}
+		if err := r.context().Err(); err != nil {
+			return nil, err
+		}
 		data := make([]byte, span.size)
 		if _, err := r.file.ReadAt(data, span.offset); err != nil {
 			return nil, fmt.Errorf("read session history: %w", err)
@@ -256,11 +329,15 @@ func (r *HistoryReader) previous(chunk bool) ([]message.Message, error) {
 			messages = append(messages, entry.Message)
 		}
 	}
+	if err := r.context().Err(); err != nil {
+		return nil, err
+	}
 	r.path = r.path[:start]
 	return messages, nil
 }
 
 func (r *HistoryReader) Close() error {
+	r.Cancel()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.file == nil {

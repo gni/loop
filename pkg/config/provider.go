@@ -122,6 +122,9 @@ func (c *Config) ActivateProvider(name string) error {
 		return fmt.Errorf("provider '%s' has an empty endpoint", name)
 	}
 
+	if err := validateTimeoutValue("provider "+name+" timeout", int64(provider.Timeout)); err != nil {
+		return err
+	}
 	c.ActiveProvider = name
 	c.Endpoint = provider.Endpoint
 	c.APIKey = provider.ResolvedAPIKey()

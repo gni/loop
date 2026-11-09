@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"math"
+	"strings"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -181,25 +182,18 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
-	messages = compactRuntimeMessages(messages)
-	// The status bar displays the estimated context for the *next* request,
-	// not the input count of the last completed request. A provider-reported
-	// prompt count anchors the estimate; its response and later tool/user
-	// messages must also be accounted for.
-	compacted := false
-	for _, m := range messages {
-		if (m.Role == "system" || m.Role == "user") && m.Usage != nil {
-			compacted = true
-			break
+	// Estimate the retained next-request input, not past billing totals.
+	// Reasoning tokens and evicted history are not resubmitted to the provider.
+	if a != nil {
+		messages = inferenceMessages(a.Context(), messages)
+		if a.Config == nil || a.Config.AutoAdaptContext {
+			messages = CompactHistoricalToolOutputs(messages)
 		}
+	} else {
+		messages = compactRuntimeMessages(messages)
 	}
-	if !compacted {
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-				return EstimateMessagesTokens(messages), 0, true
-			}
-		}
-	}
+	messages, _ = sanitizeRequestMessages(messages)
+	messages = EnforceToolPairingInvariance(messages)
 
 	chars := 0
 	for _, m := range messages {
@@ -208,9 +202,12 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 
 	toolTokens := 0
 	if a != nil && a.Registry != nil {
-		tools := a.Registry.GetAvailableTools(allowedTools)
+		tools := a.inferenceTools(a.Context(), allowedTools)
 		if a.Config != nil {
 			tools = prepareToolDefinitions(tools, a.Config.CompactPrompt)
+			if strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml") {
+				tools = nil
+			}
 		}
 		toolTokens = EstimateToolSchemaTokens(tools)
 	}

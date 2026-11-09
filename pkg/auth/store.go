@@ -3,8 +3,10 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"loop/pkg/config"
 	"loop/pkg/storage"
+	transporthttp "loop/pkg/transport/http"
 )
 
 type Credential struct {
@@ -27,7 +30,22 @@ type Credential struct {
 	ClientID     string    `json:"client_id,omitempty"`
 }
 
+const credentialCommitTimeout = 5 * time.Second
+
+type credentialRefresh struct {
+	done  chan struct{}
+	key   string
+	err   error
+	retry bool
+}
+
+type refreshRequestCanceled struct{ cause error }
+
+func (e *refreshRequestCanceled) Error() string { return e.cause.Error() }
+func (e *refreshRequestCanceled) Unwrap() error { return e.cause }
+
 type Store struct {
+	refreshing  map[string]*credentialRefresh
 	path        string
 	mu          sync.Mutex
 	Client      *http.Client
@@ -102,7 +120,7 @@ func (s *Store) read() (map[string]Credential, error) {
 	if info.Size() > 1<<20 {
 		return nil, fmt.Errorf("credential file exceeds 1 MiB")
 	}
-	data, err := os.ReadFile(s.path)
+	data, err := storage.ReadFile(s.path, 1<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -124,38 +142,77 @@ func (s *Store) read() (map[string]Credential, error) {
 	return credentials, nil
 }
 
-func (s *Store) loadCachedOrReadLocked() (map[string]Credential, error) {
+// Never hold the store mutex while waiting for another process's file lock.
+// When both are needed, the file lock is always acquired first.
+// On success, the caller owns s.mu and must unlock it.
+func (s *Store) lockCredentials(ctx context.Context) (map[string]Credential, error) {
+	if err := s.lock(ctx); err != nil {
+		return nil, err
+	}
 	info, statErr := os.Stat(s.path)
-	if os.IsNotExist(statErr) {
-		if s.cached && !s.cacheExists {
-			return cloneCredentialMap(s.cacheCreds), nil
-		}
-		s.cached = true
-		s.cacheExists = false
-		s.cacheMod = time.Time{}
-		s.cacheSize = 0
-		s.cacheCreds = make(map[string]Credential)
-		return make(map[string]Credential), nil
+	if os.IsNotExist(statErr) && s.cached && !s.cacheExists {
+		credentials := cloneCredentialMap(s.cacheCreds)
+		return credentials, nil
 	}
 	if statErr == nil && s.cached && s.cacheExists && info.ModTime().Equal(s.cacheMod) && info.Size() == s.cacheSize {
-		return cloneCredentialMap(s.cacheCreds), nil
+		credentials := cloneCredentialMap(s.cacheCreds)
+		return credentials, nil
 	}
-	release, err := storage.Lock(s.path+".lock", false)
+	s.mu.Unlock()
+	release, err := storage.LockContext(ctx, s.path+".lock", false)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return s.read()
+	if err := s.lock(ctx); err != nil {
+		return nil, err
+	}
+	credentials, err := s.read()
+	if err != nil {
+		s.mu.Unlock()
+	}
+	return credentials, err
+}
+
+func (s *Store) lock(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ctx.Done() == nil {
+		s.mu.Lock()
+		return nil
+	}
+	for !s.mu.TryLock() {
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Save(name string, credential Credential) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	release, err := storage.Lock(s.path+".lock", true)
+	return s.SaveContext(context.Background(), name, credential)
+}
+
+// SaveContext stores credentials while allowing cancellation of lock waits.
+func (s *Store) SaveContext(ctx context.Context, name string, credential Credential) error {
+	release, err := storage.LockContext(ctx, s.path+".lock", true)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if err := s.lock(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
 	credentials, err := s.read()
 	if err != nil {
 		return err
@@ -168,6 +225,9 @@ func (s *Store) write(credentials map[string]Credential) error {
 	data, err := json.MarshalIndent(credentials, "", "  ")
 	if err != nil {
 		return err
+	}
+	if len(data) > 1<<20 {
+		return fmt.Errorf("credential file exceeds 1 MiB")
 	}
 	if err := config.WritePrivateFile(s.path, data); err != nil {
 		s.cached = false
@@ -185,14 +245,19 @@ func (s *Store) write(credentials map[string]Credential) error {
 	return nil
 }
 
-func (s *Store) Logout(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	release, err := storage.Lock(s.path+".lock", true)
+func (s *Store) Logout(name string) error { return s.LogoutContext(context.Background(), name) }
+
+// LogoutContext removes credentials while allowing cancellation of lock waits.
+func (s *Store) LogoutContext(ctx context.Context, name string) error {
+	release, err := storage.LockContext(ctx, s.path+".lock", true)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if err := s.lock(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
 	credentials, err := s.read()
 	if err != nil {
 		return err
@@ -202,54 +267,99 @@ func (s *Store) Logout(name string) error {
 }
 
 func (s *Store) Resolve(ctx context.Context, name string, profile config.ProviderConfig) (string, error) {
-	s.mu.Lock()
-	credentials, err := s.loadCachedOrReadLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return "", err
-	}
-	credential, exists := credentials[name]
-	if !exists {
-		s.mu.Unlock()
-		return profile.ResolvedAPIKey(), profile.AuthStatus()
-	}
-	if credential.Issuer != "" && credential.Issuer != profile.Endpoint {
-		s.mu.Unlock()
-		return "", fmt.Errorf("credentials belong to a different endpoint; sign in again")
-	}
-	if credential.Type == "api_key" {
-		s.mu.Unlock()
-		if credential.Environment != "" {
-			value := os.Getenv(credential.Environment)
-			if value == "" {
-				return "", fmt.Errorf("credential environment variable %s is empty", credential.Environment)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		credentials, err := s.lockCredentials(ctx)
+		if err != nil {
+			return "", err
+		}
+		credential, exists := credentials[name]
+		if !exists {
+			s.mu.Unlock()
+			return profile.ResolvedAPIKey(), profile.AuthStatus()
+		}
+		if credential.Issuer != "" && credential.Issuer != profile.Endpoint {
+			s.mu.Unlock()
+			return "", fmt.Errorf("credentials belong to a different endpoint; sign in again")
+		}
+		if credential.Type == "api_key" {
+			s.mu.Unlock()
+			if credential.Environment != "" {
+				value := os.Getenv(credential.Environment)
+				if value == "" {
+					return "", fmt.Errorf("credential environment variable %s is empty", credential.Environment)
+				}
+				return value, nil
 			}
-			return value, nil
+			return credential.Key, nil
 		}
-		return credential.Key, nil
-	}
-	if credential.Type != "oauth" {
-		s.mu.Unlock()
-		return "", fmt.Errorf("unsupported credential type %q", credential.Type)
-	}
-	needsRefresh := !credential.ExpiresAt.IsZero() && time.Until(credential.ExpiresAt) < time.Minute
-	if !needsRefresh {
-		s.mu.Unlock()
-		if credential.AccessToken == "" {
-			return "", fmt.Errorf("stored OAuth credential has no access token")
+		if credential.Type != "oauth" {
+			s.mu.Unlock()
+			return "", fmt.Errorf("unsupported credential type %q", credential.Type)
 		}
-		return credential.AccessToken, nil
-	}
-	if profile.OAuth == nil || credential.RefreshToken == "" {
+		needsRefresh := !credential.ExpiresAt.IsZero() && time.Until(credential.ExpiresAt) < time.Minute
+		if !needsRefresh {
+			s.mu.Unlock()
+			if credential.AccessToken == "" {
+				return "", fmt.Errorf("stored OAuth credential has no access token")
+			}
+			return credential.AccessToken, nil
+		}
+		if profile.OAuth == nil || credential.RefreshToken == "" {
+			s.mu.Unlock()
+			return "", fmt.Errorf("credentials expired; sign in again")
+		}
+		attempt := s.refreshing[name]
+		start := attempt == nil
+		if start {
+			if s.refreshing == nil {
+				s.refreshing = make(map[string]*credentialRefresh)
+			}
+			attempt = &credentialRefresh{done: make(chan struct{})}
+			s.refreshing[name] = attempt
+		}
 		s.mu.Unlock()
-		return "", fmt.Errorf("credentials expired; sign in again")
+		if start {
+			// The worker can outlive this caller; own its OAuth settings.
+			oauth := *profile.OAuth
+			oauth.Scopes = append([]string(nil), profile.OAuth.Scopes...)
+			profile.OAuth = &oauth
+			go s.runCredentialRefresh(ctx, name, profile, credential, attempt)
+		}
+		select {
+		case <-attempt.done:
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			if attempt.retry {
+				continue
+			}
+			return attempt.key, attempt.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
+}
+
+func (s *Store) runCredentialRefresh(ctx context.Context, name string, profile config.ProviderConfig, credential Credential, attempt *credentialRefresh) {
+	key, err := s.refreshCredential(ctx, name, profile, credential)
+	s.mu.Lock()
+	attempt.key, attempt.err = key, err
+	var canceled *refreshRequestCanceled
+	attempt.retry = errors.As(err, &canceled)
+	delete(s.refreshing, name)
+	close(attempt.done)
+	s.mu.Unlock()
+}
+
+func (s *Store) refreshCredential(ctx context.Context, name string, profile config.ProviderConfig, credential Credential) (string, error) {
 	clientID := profile.OAuth.ClientID
 	if credential.ClientID != "" {
 		clientID = credential.ClientID
 	}
 	refreshToken := credential.RefreshToken
-	s.mu.Unlock()
 
 	response, err := s.token(ctx, profile.OAuth.TokenURL, url.Values{
 		"grant_type":    {"refresh_token"},
@@ -258,16 +368,25 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 		"client_secret": {profile.OAuth.ClientSecret},
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", &refreshRequestCanceled{cause: ctx.Err()}
+		}
 		return "", fmt.Errorf("refresh credentials: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	release, err := storage.Lock(s.path+".lock", true)
+	// A successful exchange may rotate the refresh token. Give its durable
+	// commit a short independent budget even if the initiating caller leaves.
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialCommitTimeout)
+	defer cancel()
+	release, err := storage.LockContext(commitCtx, s.path+".lock", true)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("save refreshed credentials: %w", err)
 	}
 	defer release()
+	if err := s.lock(commitCtx); err != nil {
+		return "", fmt.Errorf("save refreshed credentials: %w", err)
+	}
+	defer s.mu.Unlock()
 	latest, err := s.read()
 	if err != nil {
 		return "", err
@@ -284,7 +403,7 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 	updated.ExpiresAt = tokenExpiry(response.ExpiresIn)
 	latest[name] = updated
 	if err := s.write(latest); err != nil {
-		return "", err
+		return "", fmt.Errorf("save refreshed credentials: %w", err)
 	}
 	if updated.AccessToken == "" {
 		return "", fmt.Errorf("stored OAuth credential has no access token")
@@ -322,7 +441,7 @@ func (s *Store) token(ctx context.Context, endpoint string, values url.Values) (
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := s.Client.Do(request)
 	if err != nil {
-		return tokenResponse{}, err
+		return tokenResponse{}, transporthttp.RedactError(err)
 	}
 	defer response.Body.Close()
 	var token tokenResponse
@@ -330,7 +449,13 @@ func (s *Store) token(ctx context.Context, endpoint string, values url.Values) (
 		return token, fmt.Errorf("invalid token response")
 	}
 	if token.Error != "" {
-		return token, fmt.Errorf("authorization server: %s", token.Error)
+		if values.Get("grant_type") == "refresh_token" && token.Error == "invalid_grant" {
+			return token, fmt.Errorf("credentials expired or revoked; sign in again")
+		}
+		return token, fmt.Errorf("authorization server: %s", transporthttp.RedactDiagnostic(token.Error))
+	}
+	if token.ExpiresIn < 0 {
+		return token, fmt.Errorf("invalid token expiry")
 	}
 	if response.StatusCode != http.StatusOK || token.AccessToken == "" {
 		return token, fmt.Errorf("token exchange failed (HTTP %d)", response.StatusCode)
@@ -342,7 +467,7 @@ func tokenExpiry(seconds int) time.Time {
 	if seconds <= 0 {
 		return time.Time{}
 	}
-	return time.Now().Add(time.Duration(seconds) * time.Second)
+	return time.Now().Add(time.Duration(min(int64(seconds), int64(math.MaxInt64)/int64(time.Second))) * time.Second)
 }
 
 func secureURL(endpoint string) error {

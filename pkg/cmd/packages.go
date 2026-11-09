@@ -20,10 +20,19 @@ func init() {
 	}
 	for _, operation := range []string{"install", "remove", "update", "list"} {
 		var local bool
+		argsRule := cobra.MaximumNArgs(1)
+		usage := operation + " [source]"
+		if operation == "install" || operation == "remove" {
+			argsRule = cobra.ExactArgs(1)
+			usage = operation + " <source>"
+		} else if operation == "list" {
+			argsRule = cobra.NoArgs
+			usage = operation
+		}
 		command := &cobra.Command{
-			Use:   operation + " [source]",
+			Use:   usage,
 			Short: descriptions[operation],
-			Args:  cobra.MaximumNArgs(1),
+			Args:  argsRule,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				directory := filepath.Dir(configPath)
 				if local {
@@ -50,7 +59,7 @@ func init() {
 					}
 					return json.NewEncoder(cmd.OutOrStdout()).Encode(installed)
 				case "remove":
-					return manager.Remove(source)
+					return manager.RemoveContext(ctx, source)
 				default:
 					return manager.Update(ctx, source)
 				}

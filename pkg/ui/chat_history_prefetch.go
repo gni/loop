@@ -11,17 +11,19 @@ import (
 )
 
 type historyPageJob struct {
-	stop chan struct{}
-	file *os.File
+	stop        chan struct{}
+	file        *os.File
+	pendingTurn *displayTurn
 }
 
 type preparedHistoryPage struct {
-	rows       *render.Scrollback
-	appearance string
-	turns      []*displayTurn
-	more       bool
-	err        error
-	pending    *render.Scrollback
+	rows        *render.Scrollback
+	appearance  string
+	turns       []*displayTurn
+	more        bool
+	err         error
+	pending     *render.Scrollback
+	pendingTurn *displayTurn
 }
 
 type historyPageWriter struct {
@@ -30,12 +32,25 @@ type historyPageWriter struct {
 }
 
 func (w historyPageWriter) Write(data []byte) (int, error) {
-	select {
-	case <-w.stop:
-		return 0, io.ErrClosedPipe
-	default:
-		return w.rows.Write(data)
+	written := 0
+	for len(data) > 0 {
+		select {
+		case <-w.stop:
+			return written, io.ErrClosedPipe
+		default:
+		}
+		size := min(4096, len(data))
+		n, err := w.rows.Write(data[:size])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n != size {
+			return written, io.ErrShortWrite
+		}
+		data = data[size:]
 	}
+	return written, nil
 }
 
 func (h *ChatHistory) hasOlderLocked() bool {
@@ -62,12 +77,13 @@ func (h *ChatHistory) prefetchOlderLocked() {
 		// First paint needs a screenful, not a full background prefetch page.
 		cfg.HistoryPageSize = min(h.getPageSize(), max(1, h.buffer.Height))
 	}
-	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile}
+	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile, pendingTurn: h.pendingOlderTurn}
 	h.pageJob = job
 	source := h.source
 	page := h.buffer.NewHistoryPage()
 	pending := h.pendingOlderRows
 	h.pendingOlderRows = nil
+	h.pendingOlderTurn = nil
 	theme, appearance := GetConfiguredTheme(cfg), h.appearanceKey()
 	initial := h.initialLoading || h.initialFilling
 	go func() {
@@ -80,7 +96,12 @@ func (h *ChatHistory) prefetchOlderLocked() {
 
 func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistorySource, page *render.Scrollback, pending *render.Scrollback, cfg *config.Config, theme style.UITheme, appearance string, firstPage ...bool) *preparedHistoryPage {
 	initial := len(firstPage) > 0 && firstPage[0]
-	p := &preparedHistoryPage{rows: page, more: true, appearance: appearance}
+	// Prepared rows replace the empty page; its seed is not transcript content.
+	seed := page.PopTailRows(1)
+	if seed != nil {
+		_ = seed.Close()
+	}
+	p := &preparedHistoryPage{rows: page, more: true, appearance: appearance, pendingTurn: job.pendingTurn}
 	hooks := render.HistoryRenderHooks{}
 	if !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
@@ -110,8 +131,10 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 					turn.start += count
 					turn.end += count
 				}
-				turn := &displayTurn{start: 0, end: count - 1, appearance: appearance}
+				turn := &displayTurn{start: 0, end: count, appearance: appearance, fragment: p.pendingTurn}
+				turn.fragmentHead = true
 				p.turns = append([]*displayTurn{turn}, p.turns...)
+				p.pendingTurn = nil
 			} else {
 				tail := pending.PopTailRows(needed)
 				count := page.InsertPrepared(0, tail)
@@ -120,7 +143,7 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 					turn.start += count
 					turn.end += count
 				}
-				turn := &displayTurn{start: 0, end: count - 1, appearance: appearance}
+				turn := &displayTurn{start: 0, end: count, appearance: appearance, fragment: p.pendingTurn}
 				p.turns = append([]*displayTurn{turn}, p.turns...)
 				break
 			}
@@ -183,7 +206,7 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 				turn.start += count
 				turn.end += count
 			}
-			turn := &displayTurn{start: 0, end: count - 1, messages: messages, appearance: appearance}
+			turn := &displayTurn{start: 0, end: count, messages: messages, appearance: appearance}
 			if err := h.archiveTurnTo(turn, job.file); err != nil {
 				p.err = err
 			}
@@ -196,10 +219,12 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 				turn.start += count
 				turn.end += count
 			}
-			turn := &displayTurn{start: 0, end: count - 1, messages: messages, appearance: appearance}
-			if err := h.archiveTurnTo(turn, job.file); err != nil {
+			root := &displayTurn{messages: messages, appearance: appearance}
+			if err := h.archiveTurnTo(root, job.file); err != nil {
 				p.err = err
 			}
+			turn := &displayTurn{start: 0, end: count, fragment: root, fragmentTail: true, appearance: appearance}
+			p.pendingTurn = root
 			p.turns = append([]*displayTurn{turn}, p.turns...)
 			pending = chunk
 			break
@@ -227,6 +252,7 @@ func (h *ChatHistory) prepareOlderPage(job *historyPageJob, source displayHistor
 	}
 	if p.err != nil {
 		p.more = false
+		p.pendingTurn = nil
 		if pending != nil {
 			_ = pending.Close()
 			p.pending = nil
@@ -273,9 +299,13 @@ func (h *ChatHistory) applyOlderPageLocked() int {
 		turn.end += at
 	}
 	h.turns = append(p.turns, h.turns...)
+	h.mergeHistoryFragmentsLocked()
 	h.top += added
-	if h.searchRow >= 0 {
+	if h.searchRow >= at {
 		h.searchRow += added
+	}
+	if h.searchScan != nil && h.searchScan.next >= at {
+		h.searchScan.next += added
 	}
 	if h.pendingHome {
 		h.top = 0
@@ -298,4 +328,32 @@ func (h *ChatHistory) applyOlderPageLocked() int {
 	// Keep the next page ready, but never drain the full session in advance.
 	h.prefetchOlderLocked()
 	return added
+}
+
+// Adjacent pieces regain their semantic turn only once all its rows are here.
+// Reformatting a partial turn would duplicate rows still waiting in the next page.
+func (h *ChatHistory) mergeHistoryFragmentsLocked() {
+	merged := h.turns[:0]
+	for _, turn := range h.turns {
+		if len(merged) > 0 && turn.fragment != nil {
+			previous := merged[len(merged)-1]
+			if previous.fragment == turn.fragment && previous.end == turn.start {
+				previous.end = turn.end
+				previous.fragmentHead = previous.fragmentHead || turn.fragmentHead
+				previous.fragmentTail = previous.fragmentTail || turn.fragmentTail
+				continue
+			}
+		}
+		merged = append(merged, turn)
+	}
+	clear(h.turns[len(merged):])
+	h.turns = merged
+	for _, turn := range h.turns {
+		root := turn.fragment
+		if root != nil && turn.fragmentHead && turn.fragmentTail {
+			turn.messages, turn.offset, turn.size = root.messages, root.offset, root.size
+			turn.appearance = root.appearance
+			turn.fragment = nil
+		}
+	}
 }

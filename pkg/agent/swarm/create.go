@@ -105,6 +105,9 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 }
 
 func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	var args struct {
 		Name         string               `json:"name"`
 		AgentName    string               `json:"agent_name"`
@@ -203,7 +206,8 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		})
 	}
 
-	err := s.mam.spawnAgentWithSkills(
+	err := s.mam.spawnAgentWithSkillsFor(
+		ctx,
 		args.Name,
 		args.SystemPrompt,
 		parentName,

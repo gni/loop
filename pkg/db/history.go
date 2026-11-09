@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"os"
 	"sort"
 )
@@ -11,13 +12,19 @@ type sessionHistoryItem struct {
 }
 
 func (s *JSONLStore) GetUserHistory() ([]string, error) {
+	return s.GetUserHistoryContext(context.Background())
+}
+
+// GetUserHistoryContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) GetUserHistoryContext(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.checkReady(""); err != nil {
 		return nil, err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(false)
+	release, err := s.lockStore(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -33,11 +40,14 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 
 	items := make([]sessionHistoryItem, 0, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		sessionID, ok := validSessionEntry(entry)
 		if !ok {
 			continue
 		}
-		sum, ok := s.summarizeSessionLocked(sessionID, entry)
+		sum, ok := s.summarizeSessionLockedContext(ctx, sessionID, entry)
 		if !ok || len(sum.prompts) == 0 {
 			continue
 		}
@@ -47,6 +57,9 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 		})
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].startTime < items[j].startTime
 	})
@@ -62,9 +75,16 @@ func (s *JSONLStore) GetUserHistory() ([]string, error) {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return history, nil
 }
 
 func GetUserHistory() ([]string, error) {
-	return withStoreVal(func(s *JSONLStore) ([]string, error) { return s.GetUserHistory() })
+	return GetUserHistoryContext(context.Background())
+}
+
+func GetUserHistoryContext(ctx context.Context) ([]string, error) {
+	return withStoreVal(func(s *JSONLStore) ([]string, error) { return s.GetUserHistoryContext(ctx) })
 }

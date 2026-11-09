@@ -25,7 +25,7 @@ var mcpAddCmd = &cobra.Command{
 	Short: "Add a new MCP server configuration",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -41,7 +41,7 @@ var mcpAddCmd = &cobra.Command{
 			URL:     url,
 			Headers: headers,
 		}
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		fmt.Printf("MCP Server '%s' successfully added/updated.\n", name)
@@ -54,7 +54,7 @@ var mcpRemoveCmd = &cobra.Command{
 	Short: "Remove an MCP server configuration",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -64,7 +64,7 @@ var mcpRemoveCmd = &cobra.Command{
 		}
 
 		delete(cfg.MCPServers, name)
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		fmt.Printf("MCP Server '%s' removed.\n", name)

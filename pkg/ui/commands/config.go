@@ -72,11 +72,12 @@ func handleConfigCommand(
 		}
 	}
 	previous := *a.Config
-	if err := a.ApplyConfig(next); err != nil {
+	applyErr := a.ApplyConfig(next)
+	if !agent.ConfigApplied(applyErr) {
 		if modal {
 			ui.RestoreAfterModal(w, a, kiReader, rl)
 		}
-		fmt.Fprintf(w, "settings update failed: %v\n", err)
+		fmt.Fprintf(w, "settings update failed: %v\n", applyErr)
 		return
 	}
 	limits.Set(a.Config.Limits)
@@ -85,11 +86,18 @@ func handleConfigCommand(
 		history.SetPageSize(a.Config.HistoryPageSize)
 	}
 	saved := saveConfigUpdate(a, w)
-	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, configUpdateNotice(saved, a.ConfigPath), modal) {
+	notice := configUpdateNotice(saved, a.ConfigPath)
+	if applyErr != nil {
+		notice += "\n" + applyErr.Error()
+	}
+	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, notice, modal) {
 		return
 	}
 	if modal {
 		ui.RestoreAfterModal(w, a, kiReader, rl)
+	}
+	if applyErr != nil {
+		fmt.Fprintln(w, applyErr)
 	}
 	if saved {
 		fmt.Fprintf(w, "config updated. saved to %s\n", a.ConfigPath)
@@ -134,7 +142,7 @@ func configUpdateNotice(saved bool, path string) string {
 
 // saveConfigUpdate reports an applied-but-not-persisted setting rather than success.
 func saveConfigUpdate(a *agent.Agent, w io.Writer) bool {
-	if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+	if err := a.SaveConfig(); err != nil {
 		fmt.Fprintf(w, "config applied in memory, but could not save to %s: %v\n", a.ConfigPath, err)
 		return false
 	}

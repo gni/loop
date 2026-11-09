@@ -41,15 +41,14 @@ func handleSkillsCommand(a *agent.Agent, parts []string, messages *[]db.Message,
 				fmt.Fprintf(w, "skill '%s' is already loaded in this conversation.\n", name)
 				return
 			}
-			if !a.Ephemeral && currentSessionID != nil && *currentSessionID != "" {
-				if err := db.SaveMessage(*currentSessionID, msg); err != nil {
-					fmt.Fprintf(w, "could not load skill '%s': %v\n", name, err)
-					break
-				}
+			id := ""
+			if currentSessionID != nil {
+				id = *currentSessionID
 			}
-			a.MessagesMu.Lock()
-			*messages = append(*messages, msg)
-			a.MessagesMu.Unlock()
+			if err := a.AppendInteractiveMessage(messages, id, msg); err != nil {
+				fmt.Fprintf(w, "skill '%s' loaded in memory, but could not save: %v\n", name, err)
+				return
+			}
 			fmt.Fprintf(w, "loaded skill '%s' into the conversation context.\n", name)
 			break
 		}

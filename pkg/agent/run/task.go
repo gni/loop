@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -52,34 +53,43 @@ func TaskSnapshot(ctx context.Context) *task.State {
 }
 
 func UpdateTask(ctx context.Context, update task.Update) error {
+	_, _, err := UpdateTaskSnapshot(ctx, update)
+	return err
+}
+
+// UpdateTaskSnapshot commits an assessment and detects repeats under one lock.
+func UpdateTaskSnapshot(ctx context.Context, update task.Update) (*task.State, bool, error) {
 	status, summary, remaining := update.Status, update.Summary, update.Remaining
 	state, _ := ctx.Value(taskKey{}).(*taskState)
 	if state == nil {
-		return fmt.Errorf("no active task")
+		return nil, false, fmt.Errorf("no active task")
 	}
 	if len(update.ExpectedOutcome) > 2048 {
-		return fmt.Errorf("expected outcome exceeds 2048 bytes")
+		return nil, false, fmt.Errorf("expected outcome exceeds 2048 bytes")
 	}
 	if len(summary) > 2048 {
-		return fmt.Errorf("task summary exceeds 2048 bytes")
+		return nil, false, fmt.Errorf("task summary exceeds 2048 bytes")
 	}
 	if remaining != nil {
 		if len(*remaining) > 32 {
-			return fmt.Errorf("remaining work accepts up to 32 items")
+			return nil, false, fmt.Errorf("remaining work accepts up to 32 items")
 		}
 		for _, item := range *remaining {
 			if strings.TrimSpace(item) == "" || len(item) > 512 {
-				return fmt.Errorf("remaining work items must contain 1-512 bytes")
+				return nil, false, fmt.Errorf("remaining work items must contain 1-512 bytes")
 			}
 		}
 	}
 	switch status {
 	case task.Running, task.Completed, task.Blocked, task.Unfinished, task.Unverified:
 	default:
-		return fmt.Errorf("unsupported task status %q", status)
+		return nil, false, fmt.Errorf("unsupported task status %q", status)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	updated := task.Clone(&state.state)
 	updated.Status, updated.Source, updated.Summary = status, "model", strings.TrimSpace(summary)
 	if update.ExpectedOutcome != "" {
@@ -89,13 +99,14 @@ func UpdateTask(ctx context.Context, update task.Update) error {
 		updated.Remaining = append([]string(nil), (*remaining)...)
 	}
 	if status == task.Completed && len(updated.Pending()) > 0 {
-		return fmt.Errorf("task still has pending work; resolve the plan or report blocked, unfinished, or unverified")
+		return nil, false, fmt.Errorf("task still has pending work; resolve the plan or report blocked, unfinished, or unverified")
 	}
 	if status != task.Running && updated.Summary == "" {
-		return fmt.Errorf("a terminal task assessment requires a summary of results or blockers")
+		return nil, false, fmt.Errorf("a terminal task assessment requires a summary of results or blockers")
 	}
+	changed := !reflect.DeepEqual(&state.state, updated)
 	state.state = *updated
-	return nil
+	return task.Clone(updated), changed, nil
 }
 
 // ObserveTool records bounded executor facts. It never infers build/test success
@@ -135,6 +146,9 @@ func AssessCompletion(ctx context.Context, msg *message.Message) (reminder strin
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if !task.HasWork(&state.state) {
+		return ""
+	}
 	pending := state.state.Pending()
 	if state.state.Status == task.Running || (state.state.Status == task.Completed && len(pending) > 0) {
 		if len(pending) > 0 && !state.reminded {

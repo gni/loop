@@ -13,6 +13,7 @@ import (
 )
 
 func (c *mcpClient) startHTTP() error {
+	c.ctx, c.cancel = context.WithCancel(c.context())
 	c.isHTTP = true
 	c.postURL = c.config.URL
 	return c.completeHandshake()

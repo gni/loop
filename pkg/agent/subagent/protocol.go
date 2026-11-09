@@ -43,6 +43,16 @@ type AgentState struct {
 
 // ValidateAgentName verifies that an agent name is valid and adheres to naming conventions.
 func ValidateAgentName(name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if strings.HasSuffix(strings.ToLower(name), "_state") {
+		return fmt.Errorf("agent name cannot end with _state (reserved for saved state)")
+	}
+	return nil
+}
+
+func validateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("agent name cannot be empty")
 	}
@@ -71,7 +81,7 @@ func ValidateAgentLocalSkill(skill domaintool.Skill) (domaintool.Skill, error) {
 	skill.Content = strings.TrimSpace(skill.Content)
 	skill.Path = ""
 
-	if err := ValidateAgentName(skill.Name); err != nil {
+	if err := validateName(skill.Name); err != nil {
 		return domaintool.Skill{}, errors.New(domaintool.RuntimeMessagef("skill_invalid_name", "invalid agent-local skill name %q: %v", skill.Name, err))
 	}
 	maxDesc := limits.SkillDescMaxBytes()

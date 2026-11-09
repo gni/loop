@@ -15,13 +15,14 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
+	transporthttp "loop/pkg/transport/http"
 )
 
 var mcpDebugLogging = os.Getenv("LOOP_MCP_DEBUG") == "1"
 
 func mcpLog(format string, args ...interface{}) {
 	if mcpDebugLogging {
-		fmt.Fprintf(os.Stderr, format, args...)
+		fmt.Fprint(os.Stderr, transporthttp.RedactDiagnostic(fmt.Sprintf(format, args...)))
 	}
 }
 
@@ -360,6 +361,7 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 	}
 
 	return &mcpClient{
+		ctx:            a.Lifetime,
 		name:           name,
 		config:         cfg,
 		requests:       make(map[int64]chan string),
@@ -391,11 +393,10 @@ func (a *Agent) recordMCPError(name string, generation int, err error) {
 func (a *Agent) StopMCPServers() {
 	a.MCPClientsMu.Lock()
 	a.mcpGeneration++
-
-	for name, client := range a.MCPClients {
+	clients := make([]*mcpClient, 0, len(a.MCPClients))
+	for _, client := range a.MCPClients {
 		if client != nil {
-			client.close()
-			mcpLog("Stopped MCP server '%s'", name)
+			clients = append(clients, client)
 		}
 	}
 	a.MCPClients = make(map[string]*mcpClient)
@@ -405,6 +406,24 @@ func (a *Agent) StopMCPServers() {
 	a.Registry.UnregisterPrefix("mcp__")
 	a.MCPClientsMu.Unlock()
 
+	// Network and process teardown must not hold the connection registry lock.
+	workers := min(len(clients), max(1, a.GetLimits().MCPServerWorkers))
+	jobs := make(chan *mcpClient)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for client := range jobs {
+				client.close()
+			}
+		}()
+	}
+	for _, client := range clients {
+		jobs <- client
+	}
+	close(jobs)
+	wg.Wait()
 	a.markSystemPromptDirty()
 }
 

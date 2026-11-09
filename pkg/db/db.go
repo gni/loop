@@ -2,6 +2,8 @@ package db
 
 import (
 	"bufio"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +39,7 @@ type cachedSummary struct {
 
 type storeCore struct {
 	dir          string
-	mu           sync.RWMutex
+	mu           sync.Mutex
 	cache        map[string]cachedEntries
 	summaryCache map[string]cachedSummary
 	cacheClock   uint64
@@ -132,7 +134,11 @@ func writeJSONLine(w io.Writer, v any) error {
 	if len(jsonData)+1 >= maxJSONLLineBytes {
 		return fmt.Errorf("session record exceeds %d MiB", maxJSONLLineBytes>>20)
 	}
-	_, err = w.Write(append(jsonData, '\n'))
+	data := append(jsonData, '\n')
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -149,18 +155,34 @@ func (s *JSONLStore) checkReady(sessionID string) error {
 }
 
 func (s *JSONLStore) SaveMessage(sessionID string, msg message.Message) error {
+	return s.SaveMessageContext(context.Background(), sessionID, msg)
+}
+
+// SaveMessageContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) SaveMessageContext(ctx context.Context, sessionID string, msg message.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if isSkippedSlashRecord(msg) {
 		return nil
 	}
-	return s.AppendEntry(sessionID, session.Record{Type: "message", Message: msg})
+	return s.AppendEntryContext(ctx, sessionID, session.Record{Type: "message", Message: msg})
 }
 
 func (s *JSONLStore) LoadMessages(sessionID string) ([]message.Message, error) {
+	return s.LoadMessagesContext(context.Background(), sessionID)
+}
+
+// LoadMessagesContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) LoadMessagesContext(ctx context.Context, sessionID string) ([]message.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.checkReady(sessionID); err != nil {
 		return nil, err
 	}
 
-	entries, err := s.Entries(sessionID)
+	entries, err := s.EntriesContext(ctx, sessionID)
 
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -190,34 +212,69 @@ func (s *JSONLStore) HasMessages(sessionID string) bool {
 	}
 	filePath := s.sessionPath(sessionID)
 	info, err := os.Stat(filePath)
-	return err == nil && info.Size() > 0
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 func (s *JSONLStore) RewriteSession(sessionID string, messages []message.Message) error {
-	return s.AppendEntry(sessionID, session.Record{Type: "context", Messages: messages})
+	return s.RewriteSessionContext(context.Background(), sessionID, messages)
 }
 
-func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error {
+// RewriteSessionContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) RewriteSessionContext(ctx context.Context, sessionID string, messages []message.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.AppendEntryContext(ctx, sessionID, session.Record{Type: "context", Messages: messages})
+}
+
+func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) (err error) {
+	return s.AppendEntryContext(context.Background(), sessionID, record)
+}
+
+// AppendEntryContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) AppendEntryContext(ctx context.Context, sessionID string, record session.Record) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.checkReady(sessionID); err != nil {
 		return err
 	}
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
 	defer release()
-	cached, err := s.appendState(sessionID)
+	return s.appendEntryLocked(ctx, sessionID, record)
+}
+
+// The caller owns both the store file lock and cache mutex through commit.
+func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, record session.Record) (err error) {
+	cached, err := s.appendStateContext(ctx, sessionID)
 	if err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	created := os.IsNotExist(err)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Settings are snapshots. Repeating the active branch's current value
+	// must not grow history on every turn, sync, and shutdown.
+	var settingsHash *[sha256.Size]byte
+	if record.Type == "settings" {
+		hash := sha256.Sum256(record.Data)
+		if cached.settingsHash != nil && *cached.settingsHash == hash {
+			return nil
+		}
+		settingsHash = &hash
 	}
 	if cached.count > 0 && cached.lastType != "session" {
 		record.ParentID = cached.lastID
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// An interrupted append must never leave a reusable stale cache entry.
-	delete(s.core.cache, sessionID)
-	delete(s.core.summaryCache, sessionID)
+	s.invalidateSessionCacheLocked(sessionID)
 	record.ID = session.NewUUID()
 	record.Timestamp = nowTimestamp()
 	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -225,6 +282,17 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 		return err
 	}
 	defer f.Close()
+	infoBefore, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if err != nil && !committed {
+			err = rollbackSessionAppend(f, infoBefore.Size(), created, err)
+		}
+	}()
+
 	if cached.count == 0 {
 		header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: sessionID, Cwd: s.Workspace, Timestamp: nowTimestamp()}
 		if err := writeJSONLine(f, header); err != nil {
@@ -245,6 +313,7 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 	if err := s.setLatestSessionIDUnlocked(sessionID); err != nil {
 		return err
 	}
+	committed = true
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -252,6 +321,9 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 	cached.size, cached.modified = info.Size(), info.ModTime()
 	cached.count++
 	cached.lastID, cached.lastType = record.ID, record.Type
+	if settingsHash != nil {
+		cached.settingsHash = settingsHash
+	}
 	if cached.complete {
 		cached.entries = append(cached.entries, cloneRecord(record))
 	}
@@ -260,7 +332,11 @@ func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) error 
 }
 
 func AppendEntry(sessionID string, record session.Record) error {
-	return withStore(func(s *JSONLStore) error { return s.AppendEntry(sessionID, record) })
+	return AppendEntryContext(context.Background(), sessionID, record)
+}
+
+func AppendEntryContext(ctx context.Context, sessionID string, record session.Record) error {
+	return withStore(func(s *JSONLStore) error { return s.AppendEntryContext(ctx, sessionID, record) })
 }
 
 var (
@@ -313,11 +389,19 @@ func withStoreVal[T any](fn func(*JSONLStore) (T, error)) (T, error) {
 }
 
 func SaveMessage(sessionID string, msg Message) error {
-	return withStore(func(s *JSONLStore) error { return s.SaveMessage(sessionID, msg) })
+	return SaveMessageContext(context.Background(), sessionID, msg)
+}
+
+func SaveMessageContext(ctx context.Context, sessionID string, msg Message) error {
+	return withStore(func(s *JSONLStore) error { return s.SaveMessageContext(ctx, sessionID, msg) })
 }
 
 func LoadMessages(sessionID string) ([]Message, error) {
-	return withStoreVal(func(s *JSONLStore) ([]Message, error) { return s.LoadMessages(sessionID) })
+	return LoadMessagesContext(context.Background(), sessionID)
+}
+
+func LoadMessagesContext(ctx context.Context, sessionID string) ([]Message, error) {
+	return withStoreVal(func(s *JSONLStore) ([]Message, error) { return s.LoadMessagesContext(ctx, sessionID) })
 }
 
 func HasMessages(sessionID string) bool {
@@ -326,7 +410,11 @@ func HasMessages(sessionID string) bool {
 }
 
 func OpenHistory(sessionID string) (*HistoryReader, error) {
-	return withStoreVal(func(s *JSONLStore) (*HistoryReader, error) { return s.OpenHistory(sessionID) })
+	return OpenHistoryContext(context.Background(), sessionID)
+}
+
+func OpenHistoryContext(ctx context.Context, sessionID string) (*HistoryReader, error) {
+	return withStoreVal(func(s *JSONLStore) (*HistoryReader, error) { return s.OpenHistoryContext(ctx, sessionID) })
 }
 
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {

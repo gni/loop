@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -9,6 +10,12 @@ import (
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/task"
 )
+
+func inferenceMessages(ctx context.Context, messages []db.Message) []db.Message {
+	messages = compactRuntimeMessages(messages)
+	messages = taskInstructionMessages(ctx, messages)
+	return taskContextMessages(ctx, messages)
+}
 
 // compactRuntimeMessages changes only the inference view. Saved messages,
 // execution evidence, errors and the terminal transcript remain available.
@@ -49,10 +56,12 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 				_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
 				var state task.State
 				var report task.Report
-				if json.Unmarshal([]byte(msg.Content), &state) == nil && state.Status != "" {
-					_ = json.Unmarshal([]byte(msg.Content), &report)
+				if task.DecodeProgressReport(msg.Content, &state) == nil && state.Status != "" {
+					_ = task.DecodeProgressReport(msg.Content, &report)
 					if state.Objective != "" || len(state.Observations) > 0 || state.ID != "" {
+						advisory := report.Advisory
 						report = task.ProgressReport(&state, args.Action != "update")
+						report.Advisory = advisory
 					} else if args.Action == "update" {
 						report.Summary, report.Plan, report.Remaining = "", nil, nil
 					}

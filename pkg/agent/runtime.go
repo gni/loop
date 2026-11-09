@@ -11,7 +11,6 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	"loop/pkg/domain/session"
 	"loop/pkg/domain/task"
 )
 
@@ -32,6 +31,29 @@ type RunResult struct {
 	Turns     int          `json:"turns"`
 	Messages  []db.Message `json:"messages,omitempty"`
 	Error     string       `json:"error,omitempty"`
+}
+
+// Clone returns a result whose messages and task state can be changed independently.
+func (r RunResult) Clone() RunResult {
+	r.TaskState = task.Clone(r.TaskState)
+	r.Messages = message.CloneAll(r.Messages)
+	return r
+}
+
+// WithError records a failure, preserving specific stop reasons and classifying
+// both explicit cancellation and deadlines as cancelled runs.
+func (r RunResult) WithError(err error) RunResult {
+	if err == nil {
+		return r
+	}
+	r.Error = err.Error()
+	if r.Status == RunCompleted || r.Status == "" {
+		r.Status = RunFailed
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		r.Status = RunCancelled
+	}
+	return r
 }
 
 type Event struct {
@@ -74,9 +96,7 @@ func (a *Agent) sendEvent(event Event) error {
 		event.ToolCall = &snapshot
 	}
 	if event.Result != nil {
-		snapshot := *event.Result
-		snapshot.TaskState = task.Clone(snapshot.TaskState)
-		snapshot.Messages = message.CloneAll(snapshot.Messages)
+		snapshot := event.Result.Clone()
 		event.Result = &snapshot
 	}
 	return a.EventSink(event)
@@ -87,7 +107,16 @@ func (a *Agent) recordPersistenceError(err error) {
 		return
 	}
 	a.stateMu.Lock()
-	a.persistenceErr = errors.Join(a.persistenceErr, err)
+	a.persistenceFailures++
+	if a.persistenceFirstErr == nil {
+		a.persistenceFirstErr = err
+	}
+	if a.persistenceFailures == 1 {
+		a.persistenceErr = err
+	} else {
+		// Retain the first and latest causes without nesting the entire history.
+		a.persistenceErr = fmt.Errorf("%d persistence/output failures; first: %w; latest: %w", a.persistenceFailures, a.persistenceFirstErr, err)
+	}
 	a.stateMu.Unlock()
 }
 
@@ -95,39 +124,6 @@ func (a *Agent) persistenceError() error {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	return a.persistenceErr
-}
-
-func (a *Agent) SaveMessage(id string, message db.Message) error {
-	if id == "" {
-		return nil
-	}
-	if a.Store != nil {
-		return a.Store.SaveMessage(id, message)
-	}
-	return db.SaveMessage(id, message)
-}
-
-func (a *Agent) AppendEntry(id string, record session.Record) error {
-	if id == "" {
-		return nil
-	}
-	if a.Store != nil {
-		store, ok := a.Store.(interface {
-			AppendEntry(string, session.Record) error
-		})
-		if !ok {
-			return fmt.Errorf("session storage does not support durable context entries")
-		}
-		return store.AppendEntry(id, record)
-	}
-	return db.AppendEntry(id, record)
-}
-
-func (a *Agent) HasMessages(id string) bool {
-	if a.Store != nil {
-		return a.Store.HasMessages(id)
-	}
-	return db.HasMessages(id)
 }
 
 func (a *Agent) Dispose(ctx context.Context) error {
@@ -174,40 +170,6 @@ func (a *Agent) resolveCredentialForConfig(ctx context.Context, cfg *config.Conf
 		key = config.ProviderConfig{APIKey: cfg.APIKey}.ResolvedAPIKey()
 	}
 	return key, err
-}
-
-func (a *Agent) LoadSessionMessages(id string) ([]db.Message, error) {
-	if id == "" || a.Ephemeral {
-		return nil, nil
-	}
-	var msgs []db.Message
-	var err error
-	if a.Store != nil {
-		msgs, err = a.Store.LoadMessages(id)
-	} else {
-		msgs, err = db.LoadMessages(id)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return a.RecoverSessionMessages(id, msgs)
-}
-
-// RecoverSessionMessages repairs a snapshot without loading it from disk again.
-func (a *Agent) RecoverSessionMessages(id string, msgs []db.Message) ([]db.Message, error) {
-	repaired, changed := message.RecoverToolHistory(msgs)
-	if changed {
-		var err error
-		if a.Store != nil {
-			err = a.Store.RewriteSession(id, repaired)
-		} else {
-			err = db.RewriteSession(id, repaired)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("persist interrupted tool outcomes: %w", err)
-		}
-	}
-	return repaired, nil
 }
 
 // PageRecentMessages selects recent complete turns with an optional leading

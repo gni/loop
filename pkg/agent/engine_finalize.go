@@ -9,8 +9,24 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/task"
 	"loop/pkg/ui/style"
 )
+
+// Progress calls have no heading, but rejected and unpreviewed results still
+// need a semantic replay entry before their output is recorded.
+func recordRenderedToolResult(sr StreamRenderer, index int, call db.ToolCall, output string, failed bool) {
+	if call.Function.Name == "task_state" {
+		if tracker, ok := sr.(interface{ TrackProgressCall(int) }); ok {
+			tracker.TrackProgressCall(index)
+		}
+	}
+	if recorder, ok := sr.(interface {
+		RecordToolResult(int, string, string, bool)
+	}); ok {
+		recorder.RecordToolResult(index, call.Function.Arguments, output, failed)
+	}
+}
 
 func (e *TurnEngine) emitRejectedToolCall(
 	idx int,
@@ -23,10 +39,9 @@ func (e *TurnEngine) emitRejectedToolCall(
 	w io.Writer,
 	theme style.UITheme,
 	render EngineRenderer,
-	dependencySkipped ...bool,
+	dependencySkipped bool,
 ) {
-	deferred := len(dependencySkipped) > 0 && dependencySkipped[0]
-	if !deferred {
+	if !dependencySkipped {
 		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, fmt.Errorf("tool rejected: %s", output))
 		e.recordRejectedState(output)
 		if e.batchFailure == "" {
@@ -46,11 +61,7 @@ func (e *TurnEngine) emitRejectedToolCall(
 			_ = replacer.TryCompleteWriteResult(idx, label)
 		}
 	}
-	if recorder, ok := sr.(interface {
-		RecordToolResult(int, string, string, bool)
-	}); ok {
-		recorder.RecordToolResult(idx, tc.Function.Arguments, output, true)
-	}
+	recordRenderedToolResult(sr, idx, tc, output, true)
 	if completeHeader {
 		sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, true)
 	}
@@ -98,7 +109,11 @@ func (e *TurnEngine) finalizeToolCall(
 		e.guard.RecordObservedResult(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr, rich.Evidence)
 	}
 	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
-		rawOutput += "\n\n[" + reminder + "]"
+		if tc.Function.Name == "task_state" && toolErr == nil {
+			rawOutput = task.AddProgressAdvisory(rawOutput, reminder)
+		} else {
+			rawOutput += "\n\n[" + reminder + "]"
+		}
 	}
 	recovery := tool.RecoveryFor(tc.Function.Name, tc.Function.Arguments, toolErr)
 	if recovery != nil && recovery.Tool != "" {
@@ -134,11 +149,7 @@ func (e *TurnEngine) finalizeToolCall(
 		e.policy.ToolBatch.Finish(idx, toolErr != nil)
 	}
 
-	if recorder, ok := sr.(interface {
-		RecordToolResult(int, string, string, bool)
-	}); ok {
-		recorder.RecordToolResult(idx, tc.Function.Arguments, pruned, toolErr != nil)
-	}
+	recordRenderedToolResult(sr, idx, tc, pruned, toolErr != nil)
 
 	isSubagentCall := strings.HasPrefix(tc.Function.Name, "subagent__")
 	if !isSubagentCall && !approvalRendered {

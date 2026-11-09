@@ -19,6 +19,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	domainsession "loop/pkg/domain/session"
 	"loop/pkg/resources"
 	"loop/pkg/ui/style"
 )
@@ -30,6 +31,7 @@ type Options struct {
 	ConfigPath    string
 	Workspace     string
 	SessionID     string
+	SessionName   string
 	Resume        bool
 	NoSession     bool
 	KeepSelection bool
@@ -43,6 +45,7 @@ type Options struct {
 
 type State struct {
 	ID        string          `json:"id"`
+	Name      string          `json:"name,omitempty"`
 	Workspace string          `json:"workspace"`
 	Running   bool            `json:"running"`
 	Closed    bool            `json:"closed"`
@@ -67,6 +70,8 @@ type Session struct {
 	followUp  []string
 	cancel    context.CancelFunc
 	idle      chan struct{}
+	closeDone chan struct{}
+	closeErr  error
 	closed    bool
 	running   bool
 	options   Options
@@ -74,7 +79,25 @@ type Session struct {
 	loaded    resources.PackageResources
 }
 
-func New(options Options) (*Session, error) {
+func New(options Options) (*Session, error) { return NewContext(context.Background(), options) }
+
+// NewContext permits cancellation during configuration, plugin and MCP startup.
+// After construction, the session keeps its own lifetime until Close.
+func NewContext(ctx context.Context, options Options) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if options.SessionID != "" {
+		if err := domainsession.ValidateID(options.SessionID); err != nil {
+			return nil, err
+		}
+	}
+	if options.SessionName != "" && !options.NoSession {
+		options.SessionName = strings.TrimSpace(options.SessionName)
+		if err := domainsession.ValidateName(options.SessionName); err != nil {
+			return nil, err
+		}
+	}
 	options.Tools = slices.Clone(options.Tools)
 	if options.ConfigPath == "" {
 		options.ConfigPath = filepath.Join(resources.AgentDirectory(""), "config.json")
@@ -96,7 +119,7 @@ func New(options Options) (*Session, error) {
 	}
 	cfg := options.Config
 	if cfg == nil {
-		cfg, err = config.LoadWorkspaceConfig(options.ConfigPath, workspace, config.WorkspaceTrusted(options.ConfigPath, workspace))
+		cfg, err = config.LoadWorkspaceConfigContext(ctx, options.ConfigPath, workspace, config.WorkspaceTrusted(options.ConfigPath, workspace))
 	} else {
 		cfg, err = config.Clone(cfg)
 	}
@@ -118,10 +141,7 @@ func New(options Options) (*Session, error) {
 	if err := applyResources(cfg, resources.PackageResources{}, loaded); err != nil {
 		return nil, err
 	}
-	if err := cfg.ValidatePrompt(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Nostop.Validate(); err != nil {
+	if err := cfg.ValidateSettings(); err != nil {
 		return nil, err
 	}
 	store := options.Store
@@ -139,7 +159,7 @@ func New(options Options) (*Session, error) {
 	}
 	id := options.SessionID
 	if !options.NoSession && id == "" && options.Resume {
-		id, err = store.LatestForWorkspace(workspace)
+		id, err = store.LatestForWorkspaceContext(ctx, workspace)
 		if err != nil {
 			return nil, err
 		}
@@ -149,8 +169,9 @@ func New(options Options) (*Session, error) {
 	}
 	var todos []tool.TodoItem
 	var restoredMessages []db.Message
+	var restoredName string
 	if store != nil && store.HasMessages(id) {
-		entries, readErr := store.Entries(id)
+		entries, readErr := store.EntriesContext(ctx, id)
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return nil, readErr
 		}
@@ -159,6 +180,7 @@ func New(options Options) (*Session, error) {
 			return nil, err
 		}
 		restoredMessages = db.ProjectMessages(entries)
+		restoredName = sessionNameFromEntries(entries)
 	}
 	client := options.HTTPClient
 	if client == nil {
@@ -178,6 +200,8 @@ func New(options Options) (*Session, error) {
 	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
 	close(s.idle)
 	s.Agent = agent.NewAgentAt(cfg, options.ConfigPath, client, workspace)
+	stopConstruction := context.AfterFunc(ctx, s.Agent.CancelLifetime)
+	defer stopConstruction()
 	s.Agent.SessionMessages = s.MessagesSnapshot
 	if store != nil {
 		s.Agent.Store = store
@@ -189,7 +213,7 @@ func New(options Options) (*Session, error) {
 		}
 	}()
 	if cfg.LocalPlugins {
-		if err := s.Agent.ReloadPlugins(); err != nil {
+		if err := s.Agent.ReloadPluginsContext(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -197,6 +221,7 @@ func New(options Options) (*Session, error) {
 	s.Agent.ToolSelection = options.Tools
 	s.Agent.Ephemeral = options.NoSession
 	s.Agent.SetActiveSessionID(id)
+	s.Agent.RestoreSessionName(id, restoredName)
 	s.Agent.RunSession = s.RunInteractive
 	s.Agent.SyncSessionState = s.SyncInteractive
 	s.Agent.Bus = agent.NewEventBus()
@@ -215,12 +240,11 @@ func New(options Options) (*Session, error) {
 		output = io.Discard
 	}
 	s.Manager = swarm.NewMultiAgentManager(s.Agent, output, style.GetTheme("plain"))
-	s.Manager.SetSessionDirectory(filepath.Join(resources.AgentDirectory(options.ConfigPath), "agents", config.WorkspaceKey(workspace), id), options.NoSession)
-	s.Agent.MultiAgentManager = s.Manager
-	s.Agent.DisposeAgents = s.Manager.Close
-	if err := s.validateTools(options.Tools); err != nil {
+	if err := s.Manager.SetSessionDirectory(filepath.Join(resources.AgentDirectory(options.ConfigPath), "agents", config.WorkspaceKey(workspace), id), options.NoSession); err != nil {
 		return nil, err
 	}
+	s.Agent.MultiAgentManager = s.Manager
+	s.Agent.DisposeAgents = s.Manager.Close
 	if store != nil {
 		s.messages, err = s.Agent.RecoverSessionMessages(id, restoredMessages)
 		if err != nil {
@@ -241,10 +265,30 @@ func New(options Options) (*Session, error) {
 			return nil, err
 		}
 	}
-	if err := s.Agent.StartMCPServers(cfg.MCPServers); err != nil {
-		s.event(agent.Event{Type: "integration_error", Output: err.Error(), IsError: true})
+	if err := s.validateTools(options.Tools); err != nil {
+		return nil, err
 	}
-	if err := s.event(agent.Event{Type: "session_start", SessionID: s.ID}); err != nil {
+	if err := s.Agent.StartMCPServers(cfg.MCPServers); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if eventErr := s.eventContext(ctx, agent.Event{Type: "integration_error", Output: err.Error(), IsError: true}); eventErr != nil {
+			return nil, eventErr
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if options.SessionName != "" && store != nil {
+		if err := s.Agent.SetSessionName(ctx, options.SessionName); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.eventContext(ctx, agent.Event{Type: "session_start", SessionID: s.ID}); err != nil {
+		return nil, err
+	}
+	stopConstruction()
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	constructed = true
@@ -265,6 +309,14 @@ func (s *Session) MessagesSnapshot() []db.Message {
 }
 
 func (s *Session) event(event agent.Event) error {
+	ctx := s.Agent.Context()
+	if event.Type == "session_end" || event.Type == "agent_end" {
+		ctx = context.WithoutCancel(ctx)
+	}
+	return s.eventContext(ctx, event)
+}
+
+func (s *Session) eventContext(ctx context.Context, event agent.Event) error {
 	// A plan update must survive interruption before the model turn ends.
 	if event.Type == "tool_execution_end" && event.ToolCall != nil && event.ToolCall.Function.Name == "todo" && !event.IsError && !strings.HasPrefix(event.SessionID, "subagent:") {
 		if err := s.persistSettings(); err != nil {
@@ -283,7 +335,7 @@ func (s *Session) event(event agent.Event) error {
 	s.mu.Unlock()
 	for _, hook := range hooks {
 		if hook.Event == event.Type && hook.Event != "tool_call" && hook.Event != "tool_result" {
-			if _, err := resources.RunHook(s.Agent.Context(), hook, event); err != nil {
+			if _, err := resources.RunHook(ctx, hook, event); err != nil {
 				return err
 			}
 		}
@@ -315,6 +367,9 @@ func (s *Session) lockIdle() error {
 }
 
 func (s *Session) reserve(ctx context.Context) (context.Context, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !s.runMu.TryLock() {
 		return nil, ErrBusy
 	}
@@ -324,6 +379,10 @@ func (s *Session) reserve(ctx context.Context) (context.Context, error) {
 	if s.closed {
 		s.runMu.Unlock()
 		return nil, fmt.Errorf("session is closed")
+	}
+	if err := ctx.Err(); err != nil {
+		s.runMu.Unlock()
+		return nil, err
 	}
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.running = true
@@ -366,32 +425,72 @@ func (s *Session) RunInteractive(ctx context.Context, w io.Writer, messages *[]d
 	if err != nil {
 		return agent.RunResult{}, err
 	}
-	result, err := s.runPrepared(ctx, prompt, w, theme, false, func() error { return s.adoptInteractive(*messages, tools, id) })
+	result, err := s.runPrepared(ctx, prompt, w, theme, false, func() error { return s.adoptInteractiveContext(ctx, *messages, tools, id) })
 	*messages = s.MessagesSnapshot()
 	return result, err
 }
 
 func (s *Session) adoptInteractive(messages []db.Message, tools []string, id string) error {
-	if id != "" && id != s.ID {
+	return s.adoptInteractiveContext(s.Agent.Context(), messages, tools, id)
+}
+
+func (s *Session) adoptInteractiveContext(ctx context.Context, messages []db.Message, tools []string, id string) error {
+	if id != "" {
+		if err := domainsession.ValidateID(id); err != nil {
+			return err
+		}
+	}
+	switching := id != "" && id != s.ID
+	// Accepted foreground history still belongs to the current session during
+	// cancellation. Switching resources requires a live operation context.
+	if switching {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	var restoredName string
+	if switching {
+		if s.Agent.PersistenceError() != nil {
+			if err := s.checkpointMessages(ctx); err != nil {
+				return err
+			}
+		}
+		if err := s.persistSettingsIfActiveContext(ctx); err != nil {
+			return err
+		}
 		cfg, err := s.Configuration()
 		if err != nil {
 			return err
 		}
 		var todos []tool.TodoItem
 		if s.Store != nil {
-			todos, err = restoreSettings(s.Store, id, cfg, &tools, false)
+			var entries []domainsession.Record
+			if s.Store.HasMessages(id) {
+				entries, err = s.Store.EntriesContext(ctx, id)
+				if err != nil {
+					return err
+				}
+			}
+			todos, err = restoreSettingsFromEntries(entries, cfg, &tools, false)
 			if err != nil {
 				return err
 			}
+			restoredName = sessionNameFromEntries(entries)
 		}
-		if err := s.Manager.SwitchSessionDirectory(filepath.Join(resources.AgentDirectory(s.Agent.ConfigPath), "agents", config.WorkspaceKey(s.Workspace), id), s.options.NoSession); err != nil {
+		prepared, err := s.Manager.PrepareSessionDirectory(filepath.Join(resources.AgentDirectory(s.Agent.ConfigPath), "agents", config.WorkspaceKey(s.Workspace), id), s.options.NoSession)
+		if err != nil {
 			return err
 		}
-		s.mu.Lock()
+		defer prepared.Close()
 		applyErr := s.Agent.ApplyConfig(cfg)
-		s.mu.Unlock()
-		if applyErr != nil {
+		if !agent.ConfigApplied(applyErr) {
 			return applyErr
+		}
+		if applyErr != nil {
+			s.Agent.SetPendingSystemEvent(applyErr.Error())
+		}
+		if err := prepared.Commit(); err != nil {
+			return err
 		}
 		if err := s.Agent.SetTodos(todos); err != nil {
 			return err
@@ -401,6 +500,10 @@ func (s *Session) adoptInteractive(messages []db.Message, tools []string, id str
 	defer s.mu.Unlock()
 	if id != "" {
 		s.ID = id
+	}
+	s.Agent.SetActiveSessionID(s.ID)
+	if switching {
+		s.Agent.RestoreSessionName(s.ID, restoredName)
 	}
 	s.Agent.MessagesMu.Lock()
 	s.messages = message.CloneAll(messages)
@@ -415,16 +518,13 @@ func (s *Session) runWith(ctx context.Context, prompt string, w io.Writer, theme
 }
 
 func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, theme style.UITheme, noninteractive bool, setup func() error) (result agent.RunResult, runErr error) {
+	runID := s.ID
 	defer func() {
-		if err := s.persistSettingsIfActive(); err != nil {
+		if err := s.persistSettingsIfActiveContext(ctx); err != nil {
 			runErr = errors.Join(runErr, err)
-			result.Status = agent.RunFailed
-			result.Error = runErr.Error()
 		}
-		if runErr != nil && result.Status == "" {
-			result.Status = agent.RunFailed
-			result.Error = runErr.Error()
-		}
+		result = result.WithError(runErr)
+		snapshot := result.Clone()
 		s.mu.Lock()
 		if s.cancel != nil {
 			s.cancel()
@@ -435,16 +535,21 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		s.mu.Unlock()
 		s.runMu.Unlock()
 		close(idle)
-		if err := s.event(agent.Event{Type: "agent_settled", SessionID: s.ID, Result: &result}); err != nil {
+		if err := s.eventContext(context.WithoutCancel(ctx), agent.Event{Type: "agent_settled", SessionID: runID, Result: &snapshot}); err != nil {
 			runErr = errors.Join(runErr, err)
+			result = result.WithError(runErr)
 		}
 	}()
 	if setup != nil {
 		if err := setup(); err != nil {
 			return result, err
 		}
+		runID = s.ID
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return agent.RunResult{Status: agent.RunCancelled, Error: err.Error()}, err
+		}
 		attachmentSource, literal := resources.AttachmentSource(ctx, prompt)
 		preExpanded := resources.IsPreExpandedPrompt(ctx, prompt)
 		attached, blocks, err := resources.Attachments(attachmentSource, s.Workspace)
@@ -525,20 +630,27 @@ func (s *Session) takeSteering() []db.Message {
 func (s *Session) State() State {
 	s.mu.Lock()
 	state := State{ID: s.ID, Workspace: s.Workspace, Running: s.running, Closed: s.closed,
-		Model: s.Agent.Config.Model, Provider: s.Agent.Config.ActiveProvider,
 		Steering: append([]string(nil), s.steering...), FollowUp: append([]string(nil), s.followUp...)}
+	state.Name, _ = s.Agent.SessionNameSnapshot()
 	s.mu.Unlock()
+	s.Agent.LLMProviderMu.Lock()
+	state.Model, state.Provider = s.Agent.Config.Model, s.Agent.Config.ActiveProvider
+	s.Agent.LLMProviderMu.Unlock()
 	state.Messages = s.MessagesSnapshot()
 	state.Todos = s.Agent.GetTodos()
 	return state
 }
 
-func (s *Session) ClearQueue() {
+func (s *Session) ClearQueue() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("session is closed")
+	}
 	s.steering = nil
 	s.followUp = nil
 	s.mu.Unlock()
-	s.event(agent.Event{Type: "queue_update", SessionID: s.ID})
+	return s.event(agent.Event{Type: "queue_update", SessionID: s.ID})
 }
 
 func (s *Session) Wait(ctx context.Context) error {
@@ -563,19 +675,58 @@ func (s *Session) Abort(ctx context.Context) error {
 	return s.Wait(ctx)
 }
 
+// Close starts cleanup once. A caller timing out does not abandon cleanup,
+// and later callers can still wait for its completion and receive its result.
 func (s *Session) Close(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed && !s.running {
-		s.mu.Unlock()
-		return nil
+	if s.closeDone == nil {
+		s.closed = true
+		s.closeDone = make(chan struct{})
+		cancel := s.cancel
+		go s.finishClose()
+		if cancel != nil {
+			cancel()
+		}
 	}
-	s.closed = true
+	done := s.closeDone
 	s.mu.Unlock()
-	if err := s.Abort(ctx); err != nil {
-		return err
+	select {
+	case <-done:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.closeErr
+	default:
 	}
+	select {
+	case <-done:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Session) finishClose() {
+	if s.Agent.CancelLifetime != nil {
+		s.Agent.CancelLifetime()
+	}
+	_ = s.Wait(context.Background())
 	s.runMu.Lock()
-	settingsErr := s.persistSettingsIfActive()
+	// Storage contention must not keep processes alive or block exit forever.
+	disposeErr := s.Agent.Dispose(context.Background())
+	flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	var checkpointErr error
+	if s.Agent.PersistenceError() != nil {
+		checkpointErr = s.checkpointMessages(flushCtx)
+	}
+	settingsErr := s.persistSettingsIfActiveContext(flushCtx)
+	cancel()
 	s.runMu.Unlock()
-	return errors.Join(settingsErr, s.event(agent.Event{Type: "session_end", SessionID: s.ID}), s.Agent.Dispose(ctx))
+	// A blocked event consumer must not keep processes or connections alive.
+	err := errors.Join(checkpointErr, settingsErr, disposeErr, s.event(agent.Event{Type: "session_end", SessionID: s.ID}))
+	s.mu.Lock()
+	s.closeErr = err
+	close(s.closeDone)
+	s.mu.Unlock()
 }

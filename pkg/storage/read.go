@@ -3,11 +3,14 @@ package storage
 import (
 	"fmt"
 	"io"
-	"os"
+	"math"
 )
 
 func ReadFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	if limit < 0 {
+		return nil, fmt.Errorf("file size limit must not be negative")
+	}
+	file, err := OpenRegularFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -16,13 +19,14 @@ func ReadFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
 	if info.Size() > limit {
 		return nil, fmt.Errorf("%s exceeds %d bytes", path, limit)
 	}
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	readLimit := limit
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	data, err := io.ReadAll(io.LimitReader(file, readLimit))
 	if err != nil {
 		return nil, err
 	}

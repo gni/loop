@@ -14,16 +14,29 @@ import (
 )
 
 // Presentation only: the tool's JSON stays unchanged in model and saved history.
-func renderTaskState(w io.Writer, output string, collapse bool, theme style.UITheme) bool {
+func renderTaskState(w io.Writer, output, arguments string, collapse bool, theme style.UITheme) bool {
 	var report struct {
 		task.State
 		StepsCompleted int `json:"steps_completed"`
 		StepsTotal     int `json:"steps_total"`
+		Pending        int `json:"pending"`
 	}
-	if json.Unmarshal([]byte(output), &report) != nil || report.Status == "" {
+	if task.DecodeProgressReport(output, &report) != nil || report.Status == "" {
 		return false
 	}
 	state := report.State
+	if state.Summary == "" {
+		var args struct {
+			Summary string `json:"summary"`
+		}
+		if json.Unmarshal([]byte(arguments), &args) == nil {
+			state.Summary = args.Summary
+		}
+	}
+	if state.Status == task.Completed && (report.Pending > 0 || len(state.Pending()) > 0) {
+		state.Status = task.Unfinished
+		state.Summary = "Work remains in this task report."
+	}
 	label, symbol, tint := taskStateAppearance(state.Status, theme)
 	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  Request: "+symbol+" "+label))
 	width, _ := terminal.GetDimensions()

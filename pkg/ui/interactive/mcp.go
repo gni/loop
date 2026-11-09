@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"loop/pkg/config"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -15,7 +16,7 @@ func RunInteractiveMCPConfig(
 	theme style.UITheme,
 	rlInput io.Reader,
 	rlOutput io.Writer,
-	configPath string,
+	reconnect func(*config.Config) error,
 ) (*config.Config, error) {
 	clonedPtr, cloneErr := config.Clone(cfg)
 	if cloneErr != nil || clonedPtr == nil {
@@ -43,6 +44,8 @@ func RunInteractiveMCPConfig(
 		}
 
 		selectedServer := getFirstServer()
+		reconnectNotice := ""
+		reconnectFailed := false
 
 		itemsProvider := func() []*settingItem {
 			if selectedServer != "" {
@@ -54,6 +57,48 @@ func RunInteractiveMCPConfig(
 			}
 
 			items := []*settingItem{
+				boolConfigItem("mcp", "MCP enabled (all servers)", "Space or Enter toggles all MCP connections and tools. Esc saves and applies. Server settings are kept.", &cloned),
+				{
+					id: "action_reconnect", name: "[ reconnect enabled servers ]",
+					value: func() string {
+						if reconnectNotice != "" {
+							return reconnectNotice
+						}
+						return "Enter to reconnect"
+					},
+					description: "Save current settings, reconnect enabled servers and refresh their tools.",
+					onToggle: func() {
+						reconnectFailed = true
+						if reconnect == nil {
+							reconnectNotice = "Reconnect is unavailable."
+							return
+						}
+						if !cloned.MCP {
+							reconnectNotice = "Enable MCP before reconnecting."
+							return
+						}
+						enabled := 0
+						for _, server := range cloned.MCPServers {
+							if server.Enabled {
+								enabled++
+							}
+						}
+						if enabled == 0 {
+							reconnectNotice = "Enable at least one server before reconnecting."
+							return
+						}
+						if err := writeMenuFrame(rlOutput, "\x1b[H\x1b[JReconnecting MCP servers...\r\n"); err != nil {
+							reconnectNotice = err.Error()
+							return
+						}
+						if err := reconnect(&cloned); err != nil {
+							reconnectNotice = err.Error()
+							return
+						}
+						reconnectFailed = false
+						reconnectNotice = fmt.Sprintf("Reconnected %d enabled server(s). Tools refreshed.", enabled)
+					},
+				},
 				{
 					id:   "selected_server",
 					name: "selected mcp server",
@@ -100,14 +145,15 @@ func RunInteractiveMCPConfig(
 					},
 					&settingItem{
 						id:   "server_enabled",
-						name: "status",
+						name: "selected server enabled",
 						value: func() string {
 							if !cloned.MCPServers[srvName].Enabled {
 								return "\x1b[31mdisabled\x1b[0m"
 							}
 							return "\x1b[32menabled\x1b[0m"
 						},
-						description: fmt.Sprintf("Toggle to enable or disable MCP server '%s'", srvName),
+						isBool:      true,
+						description: fmt.Sprintf("Toggle to enable or disable MCP server '%s'. The master MCP switch must also be enabled.", srvName),
 						onToggle: func() {
 							curr := cloned.MCPServers[srvName]
 							curr.Enabled = !(curr.Enabled)
@@ -227,7 +273,27 @@ func RunInteractiveMCPConfig(
 			return items
 		}
 
-		return runSettingsMenuLoop(sr, rlOutput, theme, "mcp servers settings setup", itemsProvider, nil)
+		extraRender := func(buf *strings.Builder) {
+			state, tint := "OFF", theme.Warning
+			message := "Connections and tools are disabled. Server settings are kept."
+			if cloned.MCP {
+				state, tint = "ON", theme.Success
+				message = "Enabled servers can connect and expose tools."
+			}
+			buf.WriteString("  " + style.NewStyle().Foreground(tint).Bold(true).Render("MCP "+state) + "\n")
+			width, _ := terminal.GetDimensions()
+			if reconnectNotice != "" {
+				message = reconnectNotice
+				tint = theme.Success
+				if reconnectFailed {
+					tint = theme.Error
+				}
+			} else {
+				tint = theme.TextMuted
+			}
+			buf.WriteString("  " + style.NewStyle().Foreground(tint).Render(style.TruncateCells(message, max(1, width-3))) + "\n")
+		}
+		return runSettingsMenuLoop(sr, rlOutput, theme, "MCP", itemsProvider, extraRender)
 	})
 	if !isTTY {
 		return cfg, nil

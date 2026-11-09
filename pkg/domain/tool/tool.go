@@ -139,6 +139,12 @@ type AgentContext interface {
 	HasSubagent(name string) bool
 }
 
+// BackgroundTaskOptions carries process settings without rewriting shell input.
+type BackgroundTaskOptions struct {
+	Directory   string
+	Environment map[string]string
+}
+
 // LiveOutputWriter allows streaming tools (such as bash) to stream output directly to terminal.
 type LiveOutputWriter interface {
 	GetLiveWriter() io.Writer

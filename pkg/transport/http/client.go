@@ -90,21 +90,24 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 				backoff = retryDelay
 			}
 			retryDelay = 0
+			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
-			if c.config.BeforeAttempt != nil {
-				if err := c.config.BeforeAttempt(attempt); err != nil {
-					return nil, err
-				}
-			}
+
 			if c.config.OnAttempt != nil {
 				c.config.OnAttempt(attempt)
 			}
 		}
 
+		if c.config.BeforeAttempt != nil {
+			if err := c.config.BeforeAttempt(attempt); err != nil {
+				return nil, err
+			}
+		}
 		if err := retry.Claim(ctx); err != nil {
 			return nil, errors.Join(lastErr, err)
 		}
@@ -118,9 +121,10 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 				return nil, ctx.Err()
 			}
-			lastErr = fmt.Errorf("HTTP request failed: %w", err)
+			safeErr := RedactError(err)
+			lastErr = fmt.Errorf("HTTP request failed: %w", safeErr)
 			if c.config.DescribeError != nil {
-				lastErr = c.config.DescribeError(err)
+				lastErr = c.config.DescribeError(safeErr)
 			}
 			if IsNonRetryableError(err) {
 				return nil, lastErr

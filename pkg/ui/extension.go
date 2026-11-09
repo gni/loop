@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/resources"
 )
 
@@ -133,10 +134,10 @@ func RunExtension(
 	if messages != nil {
 		if a != nil {
 			a.MessagesMu.RLock()
-			history = append([]db.Message(nil), (*messages)...)
+			history = message.CloneAll(*messages)
 			a.MessagesMu.RUnlock()
 		} else {
-			history = *messages
+			history = message.CloneAll(*messages)
 		}
 	}
 	timeout := 15 * time.Second

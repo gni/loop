@@ -257,6 +257,16 @@ func (b *Scrollback) InsertPrepared(at int, page *Scrollback) int {
 
 func (b *Scrollback) HistoryRowCount() int { return len(b.rows) }
 
+// CopyHistoryRange retains a bounded set of immutable prepared rows.
+func (b *Scrollback) CopyHistoryRange(start, end int) *Scrollback {
+	start = min(max(0, start), len(b.rows))
+	end = min(max(start, end), len(b.rows))
+	page := b.NewHistoryPage()
+	page.rows = append([]*scrollRow(nil), b.rows[start:end]...)
+	page.base = max(0, len(page.rows)-1)
+	return page
+}
+
 // PopTailRows detaches the last n rows into a new Scrollback page.
 func (b *Scrollback) PopTailRows(n int) *Scrollback {
 	if b == nil || n <= 0 || len(b.rows) == 0 {

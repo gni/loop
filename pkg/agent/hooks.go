@@ -61,14 +61,7 @@ func (a *Agent) runExecBeforeHook(tc db.ToolCall) (bool, string) {
 	}
 	stdout, stderr, err := a.executeHookScript(a.Config.BeforeToolHook, payload)
 	if err != nil {
-		reason := strings.TrimSpace(stderr)
-		if reason == "" {
-			reason = strings.TrimSpace(stdout)
-		}
-		if reason == "" {
-			reason = err.Error()
-		}
-		return false, reason
+		return false, hookFailureReason(stdout, stderr, err)
 	}
 	return true, ""
 }
@@ -103,15 +96,22 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 	}
 	stdout, stderr, err := a.executeHookScript(a.Config.AfterToolHook, payload)
 	if err != nil {
-		reason := strings.TrimSpace(stderr)
-		if reason == "" {
-			reason = err.Error()
-		}
-		return output, errors.Join(toolErr, fmt.Errorf("after_tool_hook failed: %s", reason))
+		return output, errors.Join(toolErr, fmt.Errorf("after_tool_hook failed: %s", hookFailureReason(stdout, stderr, err)))
 	}
 
 	if stdout != "" {
 		return stdout, toolErr
 	}
 	return output, toolErr
+}
+
+// Scripts commonly explain a rejection on stdout rather than stderr.
+func hookFailureReason(stdout, stderr string, err error) string {
+	if reason := strings.TrimSpace(stderr); reason != "" {
+		return reason
+	}
+	if reason := strings.TrimSpace(stdout); reason != "" {
+		return reason
+	}
+	return err.Error()
 }

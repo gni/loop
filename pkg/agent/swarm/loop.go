@@ -71,7 +71,7 @@ func (ma *MultiAgent) recordTaskAndAgentState(taskID, taskStatus, agentStatus, r
 		return nil
 	}
 	if taskID != "" {
-		ma.Manager.UpdateTaskStatus(taskID, taskStatus, response, taskErr)
+		ma.supervisor.UpdateTaskStatus(taskID, taskStatus, response, taskErr)
 	}
 	if err := ma.Manager.SaveAgentState(ma, agentStatus); err != nil {
 		return fmt.Errorf("persist subagent %q status %q: %w", ma.Name, agentStatus, err)
@@ -89,7 +89,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 			case <-ma.Context.Done():
 				return
 			case msg, ok := <-ma.Input:
-				if !ok {
+				if !ok || ma.Context.Err() != nil {
 					return
 				}
 
@@ -119,7 +119,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 					response, err = ma.executeLoop(turnCtx, writer, theme)
 				}
 				if ma.Manager != nil && taskID != "" {
-					ma.Manager.UpdateTaskAssessment(taskID, response.TaskState)
+					ma.supervisor.UpdateTaskAssessment(taskID, response.TaskState)
 				}
 
 				turnCancel()
@@ -157,7 +157,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				}
 				if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", parentResult, nil); saveErr != nil {
 					if ma.Manager != nil && taskID != "" {
-						ma.Manager.UpdateTaskStatus(taskID, "failed", "", saveErr)
+						ma.supervisor.UpdateTaskStatus(taskID, "failed", "", saveErr)
 					}
 					response = db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", saveErr)}
 				}

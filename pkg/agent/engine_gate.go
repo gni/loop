@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -121,10 +120,12 @@ func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w i
 		loader.Resume()
 	}
 	if always && (e.guided == nil || !e.guided.IsEnabled()) {
+		e.agent.LLMProviderMu.Lock()
 		e.agent.Config.AutoApprove = true
+		e.agent.LLMProviderMu.Unlock()
 		e.config.AutoApprove = true
 		if e.agent.ConfigPath != "" {
-			if err := config.SaveConfig(e.agent.ConfigPath, e.agent.Config); err != nil {
+			if err := e.agent.SaveConfig(); err != nil {
 				e.agent.recordPersistenceError(fmt.Errorf("save automatic approval preference: %w", err))
 			}
 		}

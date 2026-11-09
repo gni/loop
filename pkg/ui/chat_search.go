@@ -2,8 +2,7 @@ package ui
 
 import (
 	"fmt"
-	"strings"
-	"unicode/utf8"
+	"time"
 
 	"loop/pkg/ui/style"
 )
@@ -16,6 +15,7 @@ func (h *ChatHistory) Find(query string, direction int) error {
 		return fmt.Errorf("history is closed")
 	}
 	h.searchPending = false
+	h.searchScan = nil
 	h.initialFilling = false
 	h.pendingUp = 0
 	h.pendingHome = false
@@ -33,17 +33,14 @@ func (h *ChatHistory) Find(query string, direction int) error {
 	}
 	h.searchDirection = direction
 	h.searchNotice = ""
-	row := h.buffer.FindRow(h.searchQuery, h.searchRow+direction, direction)
-	if row >= 0 {
-		h.showSearchRowLocked(row)
-		return nil
-	}
-	if h.hasOlderLocked() {
-		h.searchPending = true
-		h.continueSearchLocked()
-		return nil
-	}
-	h.wrapSearchLocked()
+	h.searchPending = true
+	h.scanSearchLocked(h.searchRow+direction, direction, func() {
+		if h.hasOlderLocked() {
+			h.continueSearchLocked()
+		} else {
+			h.wrapSearchLocked()
+		}
+	})
 	return nil
 }
 
@@ -57,6 +54,7 @@ func (h *ChatHistory) Latest() {
 	h.searchEditing = false
 	h.searchDraft = ""
 	h.searchPending = false
+	h.searchScan = nil
 	h.searchRow = -1
 	h.pendingUp = 0
 	h.pendingHome = false
@@ -69,6 +67,7 @@ func (h *ChatHistory) Latest() {
 func (h *ChatHistory) showSearchRowLocked(row int) {
 	h.searchRow = row
 	h.searchPending = false
+	h.searchScan = nil
 	// Keep nearby matches in place so moving between similar lines visibly
 	// moves the highlight instead of recentering identical-looking text.
 	if row < h.top || row >= h.top+h.buffer.Height {
@@ -84,27 +83,23 @@ func (h *ChatHistory) wrapSearchLocked() {
 	if h.searchDirection < 0 {
 		from = h.buffer.Base() + h.buffer.Height - 1
 	}
-	row := h.buffer.FindRow(h.searchQuery, from, h.searchDirection)
-	if row >= 0 {
-		h.showSearchRowLocked(row)
-		return
-	}
-	h.searchPending = false
-	h.searchNotice = "No matches: " + h.searchQuery
-	h.paintLocked()
+	h.scanSearchLocked(from, h.searchDirection, func() {
+		h.searchPending = false
+		h.searchScan = nil
+		h.searchNotice = "No matches: " + h.searchQuery
+		h.paintLocked()
+	})
 }
 
 func (h *ChatHistory) continueSearchLocked() {
-	if !h.searchPending {
+	if !h.searchPending || h.searchScan != nil {
 		return
 	}
 	if h.readyPage != nil {
 		added := h.applyOlderPageLocked()
 		if added > 0 && h.searchDirection < 0 {
-			if row := h.buffer.FindRow(h.searchQuery, added-1, -1); row >= 0 {
-				h.showSearchRowLocked(row)
-				return
-			}
+			h.scanSearchLocked(h.historyStart+added-1, -1, h.continueSearchLocked)
+			return
 		}
 	}
 	if !h.hasOlderLocked() {
@@ -115,88 +110,80 @@ func (h *ChatHistory) continueSearchLocked() {
 	h.paintLocked()
 }
 
+// Scan a bounded number of loaded rows per turn of the event loop. The
+// terminal lock is released between batches so typing and Escape stay usable.
+type historySearchScan struct {
+	next, direction int
+	exhausted       func()
+}
+
+func (h *ChatHistory) scanSearchLocked(start, direction int, exhausted func()) {
+	scan := &historySearchScan{next: start, direction: direction, exhausted: exhausted}
+	h.searchScan = scan
+	h.searchPending = true
+	h.stepSearchLocked(scan)
+	if h.searchScan == scan {
+		h.paintLocked()
+	}
+}
+
+func (h *ChatHistory) stepSearchLocked(scan *historySearchScan) {
+	if h.closed.Load() || h.searchScan != scan || !h.searchPending {
+		return
+	}
+	count := h.buffer.HistoryRowCount()
+	if scan.direction < 0 {
+		scan.next = min(scan.next, count-1)
+	} else {
+		scan.next = max(0, scan.next)
+	}
+	if scan.next < 0 || scan.next >= count {
+		h.searchScan = nil
+		scan.exhausted()
+		return
+	}
+	const batch = 512
+	if row := h.buffer.FindRow(h.searchQuery, scan.next, scan.direction, batch); row >= 0 {
+		h.searchScan = nil
+		h.showSearchRowLocked(row)
+		return
+	}
+	scan.next += scan.direction * batch
+	if scan.next < 0 || scan.next >= count {
+		h.searchScan = nil
+		scan.exhausted()
+		return
+	}
+	time.AfterFunc(time.Millisecond, func() {
+		TerminalMu.Lock()
+		defer TerminalMu.Unlock()
+		h.stepSearchLocked(scan)
+	})
+}
+
+func (h *ChatHistory) adjustSearchRowsLocked(start, end, newEnd, delta, padding int) {
+	anchors := []*int{&h.searchRow}
+	if h.searchScan != nil {
+		anchors = append(anchors, &h.searchScan.next)
+	}
+	for _, row := range anchors {
+		if *row < 0 {
+			continue
+		}
+		if *row >= end {
+			*row += delta + padding
+		} else if *row >= start {
+			*row = start + padding + min(*row-start, max(0, newEnd-start-1))
+		}
+	}
+}
+
 func (h *ChatHistory) searchRowsLocked(rows []string) []string {
 	if h.searchQuery != "" && h.searchRow >= h.top && h.searchRow < h.top+len(rows) {
 		index := h.searchRow - h.top
 		rows[index] = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Highlight).Underline(true).Render(style.StripAnsi(rows[index]))
 	}
 	return rows
-}
-
-// Search input stays out of the prompt so an unfinished message survives.
-func (h *ChatHistory) filterSearchInput(key []byte) bool {
-	if !h.reader.IsAtMainPrompt.Load() {
-		return false
-	}
-	TerminalMu.Lock()
-	action := string(key)
-	if action == "\x06" {
-		h.searchEditing = true
-		h.searchDraft = h.searchQuery
-		h.searchPending = false
-		h.paintLocked()
-		TerminalMu.Unlock()
-		return true
-	}
-	if !h.searchEditing {
-		query := h.searchQuery
-		TerminalMu.Unlock()
-		if query != "" && (action == "\x0e" || action == "\x10") {
-			direction := 1
-			if action == "\x10" {
-				direction = -1
-			}
-			_ = h.Find("", direction)
-			return true
-		}
-		return false
-	}
-	switch action {
-	case "\r", "\n":
-		query := h.searchDraft
-		h.searchEditing = false
-		h.paintLocked()
-		TerminalMu.Unlock()
-		if query != "" {
-			_ = h.Find(query, 0)
-		} else {
-			TerminalMu.Lock()
-			h.searchQuery, h.searchNotice = "", ""
-			h.searchRow = -1
-			h.searchPending = false
-			h.paintLocked()
-			TerminalMu.Unlock()
-		}
-		return true
-	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~", "\x1b[1;5F":
-		TerminalMu.Unlock()
-		h.Latest()
-		return true
-	case "\x1b", "\x03":
-		h.searchEditing = false
-	case "\x7f", "\x08":
-		if h.searchDraft != "" {
-			_, size := utf8.DecodeLastRuneInString(h.searchDraft)
-			h.searchDraft = h.searchDraft[:len(h.searchDraft)-size]
-		}
-	case "\x15":
-		h.searchDraft = ""
-	default:
-		if strings.HasPrefix(action, "\x1b[200~") && strings.HasSuffix(action, "\x1b[201~") {
-			action = strings.TrimSuffix(strings.TrimPrefix(action, "\x1b[200~"), "\x1b[201~")
-			action = strings.Join(strings.Fields(action), " ")
-		}
-		if !strings.HasPrefix(action, "\x1b") {
-			for _, r := range action {
-				if r >= 32 && r != 127 {
-					h.searchDraft += string(r)
-				}
-			}
-		}
-	}
-	h.paintLocked()
-	TerminalMu.Unlock()
-	return true
 }
 
 func (h *ChatHistory) searchMatchNoticeLocked() string {

@@ -5,7 +5,7 @@ package style
 const ActivityGapLines = 1
 
 // History hints share the activity stats row above the prompt separator.
-const scrollAreaControlRows = 4
+const scrollAreaControlRows = 5
 
 // ConsoleScrollBottom is the last row reserved for scrollable output.
 func ConsoleScrollBottom(height, pasteRows int) int {

@@ -18,6 +18,7 @@ type callPlan struct {
 	toolErr           error
 	skipped           bool
 	dependencySkipped bool
+	started           bool
 	guardHit          bool
 	approvalRendered  bool
 	rich              tool.ToolResult
@@ -115,7 +116,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 		plan.output = gateErr.Error()
 		plan.skipped = true
 		if strings.Contains(plan.output, "aborted by user") {
-			e.emitRejectedToolCall(idx, tc, plan.output, true, bodyStreamed, sink, sr, w, theme, render)
+			e.emitRejectedToolCall(idx, tc, plan.output, true, bodyStreamed, sink, sr, w, theme, render, false)
 			return plan, false, true
 		}
 		return plan, false, false
@@ -126,7 +127,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 	if !approved {
 		rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
 		if shouldAbort {
-			e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, bodyStreamed, sink, sr, w, theme, render)
+			e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, bodyStreamed, sink, sr, w, theme, render, false)
 			return plan, false, true
 		}
 		plan.toolErr = fmt.Errorf("rejected by user")

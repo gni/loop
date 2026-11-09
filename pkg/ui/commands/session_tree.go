@@ -120,7 +120,7 @@ func handleTreeCommand(
 		}
 	}
 
-	entries, err := db.Entries(*currentSessionID)
+	entries, err := db.EntriesContext(a.Context(), *currentSessionID)
 	if err != nil {
 		fmt.Fprintf(w, "cannot inspect session entries: %v\n", err)
 		return

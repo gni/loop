@@ -58,6 +58,11 @@ func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, er
 }
 
 func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Message, prompt string, allowlist []string, theme style.UITheme, isNonInteractive bool, sessionID string) (result RunResult, runErr error) {
+	ctx, releaseContext := a.withLifetime(ctx)
+	defer releaseContext()
+	if err := ctx.Err(); err != nil {
+		return RunResult{Status: RunCancelled, Error: err.Error()}, err
+	}
 	prompt = strings.TrimSpace(prompt)
 	ctx = run.WithObjective(ctx, prompt)
 	if prompt != "" {
@@ -66,6 +71,17 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	ctx, runConfig, snapshotErr := a.SnapshotRun(ctx)
 	if snapshotErr != nil {
 		return RunResult{Status: RunFailed, Error: snapshotErr.Error()}, snapshotErr
+	}
+	operationCtx := ctx
+	a.SetTurnState(w, ctx, theme)
+	defer a.ClearTurnState()
+	if a.persistenceError() != nil {
+		a.MessagesMu.RLock()
+		snapshot := message.CloneAll(*messages)
+		a.MessagesMu.RUnlock()
+		if err := a.CheckpointSession(ctx, sessionID, snapshot); err != nil {
+			return (RunResult{}).WithError(err), err
+		}
 	}
 	a.SetActiveSessionID(sessionID)
 	result.Status = RunCompleted
@@ -95,26 +111,40 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	startedAt := len(*messages)
 	a.stateMu.Lock()
 	a.persistenceErr = nil
+	a.persistenceFirstErr = nil
+	a.persistenceFailures = 0
 	a.stateMu.Unlock()
 	a.emit(Event{Type: "agent_start", SessionID: sessionID})
 	defer func() {
-		if runErr == nil {
-			runErr = a.persistenceError()
-		}
-		if runErr != nil {
-			result.Error = runErr.Error()
-			if result.Status == RunCompleted {
-				result.Status = RunFailed
+		if operationCtx.Err() != nil {
+			// Preserve completed work and partial output after cancellation, with
+			// one bounded checkpoint instead of abandoning it or waiting forever.
+			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(operationCtx), 2*time.Second)
+			a.MessagesMu.RLock()
+			snapshot := message.CloneAll(*messages)
+			a.MessagesMu.RUnlock()
+			if err := a.CheckpointSession(flushCtx, sessionID, snapshot); err != nil {
+				a.recordPersistenceError(fmt.Errorf("checkpoint cancelled turn: %w", err))
 			}
-			if errors.Is(runErr, context.Canceled) {
-				result.Status = RunCancelled
-			}
+			cancel()
 		}
+		if persistenceErr := a.persistenceError(); persistenceErr != nil && !errors.Is(runErr, persistenceErr) {
+			runErr = errors.Join(runErr, persistenceErr)
+		}
+		result = result.WithError(runErr)
 		result.TaskState = run.EndTask(ctx, result.Status)
+		a.MessagesMu.RLock()
 		if startedAt <= len(*messages) {
-			result.Messages = append([]db.Message(nil), (*messages)[startedAt:]...)
+			result.Messages = message.CloneAll((*messages)[startedAt:])
 		}
-		a.emit(Event{Type: "agent_end", SessionID: sessionID, Result: &result})
+		a.MessagesMu.RUnlock()
+		if err := a.sendEvent(Event{Type: "agent_end", SessionID: sessionID, Result: &result}); err != nil {
+			outputErr := fmt.Errorf("event output: %w", err)
+			a.recordPersistenceError(outputErr)
+			runErr = errors.Join(runErr, outputErr)
+			result = result.WithError(runErr)
+			result.TaskState = run.EndTask(ctx, result.Status)
+		}
 	}()
 	if prompt == "" {
 		return
@@ -130,8 +160,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	writerToUse := w
 	rawW := UnwrapWriter(writerToUse)
-	a.SetTurnState(writerToUse, ctx, theme)
-	defer a.ClearTurnState()
 
 	if a.Guided != nil {
 		a.Guided.ResetForNewUserTurn(a.GetTodos())
@@ -177,6 +205,9 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		a.CurrentStreamMu.Unlock()
 	}()
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	a.appendTurnInput(messages, prompt, sessionID)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -374,6 +405,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				assistantMsg.ReasoningContent = StripEchoedPrompt(assistantMsg.ReasoningContent, prompt)
 			}
 
+			toolStream.Reconcile(assistantMsg.ToolCalls)
 			batch.Seal(assistantMsg.ToolCalls)
 			assistantMsg.ReasoningDuration = sr.GetReasoningDuration()
 			a.DebugLogLLMResponse(sessionID, iter, assistantMsg, a.LastGenerationDuration())

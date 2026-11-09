@@ -20,7 +20,7 @@ func credentialCommand(mcp bool) *cobra.Command {
 	var environment string
 	var device bool
 	resolve := func(cmd *cobra.Command, args []string) (*auth.Store, string, config.ProviderConfig, error) {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return nil, "", config.ProviderConfig{}, err
 		}
@@ -39,7 +39,7 @@ func credentialCommand(mcp bool) *cobra.Command {
 				}
 				server.OAuth = profile.OAuth
 				cfg.MCPServers[key] = server
-				if err := config.SaveConfig(configPath, cfg); err != nil {
+				if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 					return nil, "", profile, err
 				}
 			}
@@ -60,7 +60,7 @@ func credentialCommand(mcp bool) *cobra.Command {
 			if os.Getenv(environment) == "" {
 				return fmt.Errorf("environment variable %s is empty", environment)
 			}
-			return store.Save(key, auth.Credential{Type: "api_key", Issuer: profile.Endpoint, Environment: environment})
+			return store.SaveContext(cmd.Context(), key, auth.Credential{Type: "api_key", Issuer: profile.Endpoint, Environment: environment})
 		}
 		return store.Login(cmd.Context(), key, profile, device, func(message string) { fmt.Fprintln(cmd.ErrOrStderr(), message) })
 	}}
@@ -71,7 +71,7 @@ func credentialCommand(mcp bool) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return store.Logout(key)
+		return store.LogoutContext(cmd.Context(), key)
 	}}
 	check := &cobra.Command{Use: "check <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		store, key, profile, err := resolve(cmd, args)

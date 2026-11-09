@@ -1,8 +1,9 @@
 package runtime
 
 import (
+	"errors"
+
 	"loop/pkg/agent"
-	"loop/pkg/config"
 	"loop/pkg/resources"
 )
 
@@ -19,7 +20,7 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Clone(s.Agent.Config)
+	cfg, err := s.Configuration()
 	if err != nil {
 		return err
 	}
@@ -37,10 +38,8 @@ func (s *Session) Reload() error {
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
 	applyErr := s.Agent.ApplyConfig(cfg)
-	s.mu.Unlock()
-	if applyErr != nil {
+	if !agent.ConfigApplied(applyErr) {
 		return applyErr
 	}
 	s.Agent.SetActiveSkills(skills)
@@ -49,5 +48,5 @@ func (s *Session) Reload() error {
 	s.loaded = loaded
 	s.mu.Unlock()
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
-	return s.Agent.PersistenceError()
+	return errors.Join(applyErr, s.Agent.PersistenceError())
 }

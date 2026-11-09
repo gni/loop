@@ -11,7 +11,6 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
-	"loop/pkg/config"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
@@ -69,7 +68,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 							a.DisableTools(toolName)
 						}
 						if a.ConfigPath != "" && a.Config != nil {
-							saveErr = config.SaveConfig(a.ConfigPath, a.Config)
+							saveErr = a.SaveConfig()
 						}
 					},
 				})

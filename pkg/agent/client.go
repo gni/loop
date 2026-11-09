@@ -17,10 +17,12 @@ import (
 
 	"loop/pkg/config"
 	"loop/pkg/process"
+	transporthttp "loop/pkg/transport/http"
 	"loop/pkg/transport/sse"
 )
 
 type mcpClient struct {
+	ctx               context.Context
 	closeOnce         sync.Once
 	processDone       chan struct{}
 	dirty             atomic.Bool
@@ -58,9 +60,7 @@ func (c *mcpClient) applyHeaders(req *http.Request, contentType string) {
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	for k, v := range c.config.Headers {
-		req.Header.Set(k, v)
-	}
+	transporthttp.ApplyProviderHeaders(req.Header, c.config.Headers)
 }
 
 func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Response, error) {
@@ -122,6 +122,14 @@ func (c *mcpClient) completeHandshake() error {
 	return nil
 }
 
+// A connection and all its RPCs stop when the owning agent is disposed.
+func (c *mcpClient) context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
 func (c *mcpClient) start() error {
 	if strings.EqualFold(c.config.Type, "stdio") || (c.config.URL == "" && c.config.Command != "") {
 		c.isStdio = true
@@ -138,7 +146,8 @@ func (c *mcpClient) start() error {
 }
 
 func (c *mcpClient) startSSE() error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.context())
+	c.ctx = ctx
 	c.cancel = cancel
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.config.URL, nil)
@@ -263,17 +272,20 @@ func (c *mcpClient) healthy() bool {
 
 func (c *mcpClient) close() {
 	c.closeOnce.Do(func() {
+		// Cancel and stop the child before waiting for a writer that may be
+		// blocked on the child's full stdin pipe.
+		if c.cancel != nil {
+			c.cancel()
+		}
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = process.TerminateProcessGroup(c.cmd, 300*time.Millisecond)
+		}
 		c.writeMu.Lock()
 		if c.stdin != nil {
 			_ = c.stdin.Close()
 		}
 		c.writeMu.Unlock()
-		if c.cmd != nil && c.cmd.Process != nil {
-			_ = process.TerminateProcessGroup(c.cmd, 300*time.Millisecond)
-		}
-		if c.cancel != nil {
-			c.cancel()
-		}
+
 		if c.sseBody != nil {
 			_ = c.sseBody.Close()
 		}
@@ -380,6 +392,8 @@ func (c *mcpClient) awaitRPCResponse(ctx context.Context, id int64, ch <-chan st
 func (c *mcpClient) requestWithTimeout(parent context.Context, method string, params interface{}, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	stop := context.AfterFunc(c.context(), cancel)
+	defer stop()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -387,7 +401,7 @@ func (c *mcpClient) requestWithTimeout(parent context.Context, method string, pa
 	if err != nil {
 		return "", err
 	}
-	mcpLog("[MCP Tx] %s\n", string(data))
+	mcpLog("[MCP Tx] method=%s bytes=%d [payload omitted]\n", method, len(data))
 
 	if c.isStdio {
 		if err := c.sendStdio(string(data)); err != nil {
@@ -426,7 +440,7 @@ func (c *mcpClient) requestWithTimeout(parent context.Context, method string, pa
 }
 
 func (c *mcpClient) request(method string, params interface{}) (string, error) {
-	return c.requestWithTimeout(context.Background(), method, params, c.requestTimeout())
+	return c.requestWithTimeout(c.context(), method, params, c.requestTimeout())
 }
 
 func (c *mcpClient) handshake() error {
@@ -455,7 +469,7 @@ func (c *mcpClient) handshake() error {
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
-	mcpLog("[MCP Tx Notification] %s\n", string(data))
+	mcpLog("[MCP Tx Notification] bytes=%d [payload omitted]\n", len(data))
 
 	if c.isStdio {
 		if err := c.sendStdio(string(data)); err != nil {
@@ -465,7 +479,7 @@ func (c *mcpClient) handshake() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.context(), 5*time.Second)
 	defer cancel()
 	resp, err := c.postJSON(ctx, data)
 	if err != nil {

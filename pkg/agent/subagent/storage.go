@@ -8,6 +8,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"loop/pkg/storage"
+)
+
+const (
+	maxDefinitionBytes = 8 << 20
+	maxStateBytes      = 64 << 20
 )
 
 // Storage manages on-disk persistence for subagent definitions and session states.
@@ -25,7 +32,11 @@ func NewStorage(dir string) (*Storage, error) {
 		}
 		dir = filepath.Join(home, ".loop", "agents")
 	}
-	return &Storage{dir: dir}, nil
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Storage{dir: abs}, nil
 }
 
 // EnsureDir guarantees the storage directory exists.
@@ -33,13 +44,16 @@ func (s *Storage) EnsureDir() error {
 	return os.MkdirAll(s.dir, 0700)
 }
 
-func (s *Storage) writeJSONFile(filename string, value interface{}) error {
+func (s *Storage) writeJSONFile(filename string, value any, limit int) error {
 	if err := s.EnsureDir(); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serialize %s: %w", filename, err)
+	}
+	if len(data) > limit {
+		return fmt.Errorf("%s exceeds %d MiB", filename, limit>>20)
 	}
 	file, err := os.CreateTemp(s.dir, "."+filename+".*.tmp")
 	if err != nil {
@@ -65,7 +79,7 @@ func (s *Storage) writeJSONFile(filename string, value interface{}) error {
 	if err := os.Rename(tempPath, filepath.Join(s.dir, filename)); err != nil {
 		return fmt.Errorf("replace %s: %w", filename, err)
 	}
-	return nil
+	return storage.SyncDirectory(s.dir)
 }
 
 // SaveDefinition serializes an AgentDef to disk.
@@ -73,7 +87,7 @@ func (s *Storage) SaveDefinition(def AgentDef) error {
 	if err := ValidateAgentName(def.Name); err != nil {
 		return err
 	}
-	return s.writeJSONFile(def.Name+".json", def)
+	return s.writeJSONFile(def.Name+".json", def, maxDefinitionBytes)
 }
 
 // LoadDefinition deserializes an AgentDef from disk by name.
@@ -82,7 +96,7 @@ func (s *Storage) LoadDefinition(name string) (*AgentDef, error) {
 		return nil, err
 	}
 	path := filepath.Join(s.dir, name+".json")
-	data, err := os.ReadFile(path)
+	data, err := storage.ReadFile(path, maxDefinitionBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read agent definition file: %w", err)
 	}
@@ -109,10 +123,13 @@ func (s *Storage) DeleteDefinition(name string) error {
 
 func (s *Storage) removeIfExists(filename string) error {
 	path := filepath.Join(s.dir, filename)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	return storage.SyncDirectory(s.dir)
 }
 
 // ListDefinitions loads all existing agent definitions from disk.
@@ -149,7 +166,7 @@ func (s *Storage) SaveState(name string, state AgentState) error {
 	if err := ValidateAgentName(name); err != nil {
 		return err
 	}
-	return s.writeJSONFile(name+"_state.json", state)
+	return s.writeJSONFile(name+"_state.json", state, maxStateBytes)
 }
 
 // LoadState deserializes the execution state of an agent.
@@ -158,7 +175,7 @@ func (s *Storage) LoadState(name string) (*AgentState, error) {
 		return nil, err
 	}
 	path := filepath.Join(s.dir, name+"_state.json")
-	data, err := os.ReadFile(path)
+	data, err := storage.ReadFile(path, maxStateBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

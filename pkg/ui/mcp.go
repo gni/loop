@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,10 @@ func HandleMCPCommand(
 	w io.Writer,
 	kiReader *keyInterceptorReader,
 ) {
+	if a == nil || a.Config == nil {
+		fmt.Fprintln(w, "MCP configuration is unavailable")
+		return
+	}
 	calcHistoryTokens := func() (int, int, bool) {
 		var mam *swarm.MultiAgentManager
 		if kiReader != nil {
@@ -37,15 +42,19 @@ func HandleMCPCommand(
 	}
 
 	applyMCP := func(next *config.Config) bool {
-		if err := a.ApplyConfig(next); err != nil {
-			fmt.Fprintf(w, "MCP update failed: %v\n", err)
+		applyErr := a.ApplyConfig(next)
+		if !agent.ConfigApplied(applyErr) {
+			fmt.Fprintf(w, "MCP update failed: %v\n", applyErr)
 			return false
 		}
-		if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
+		if applyErr != nil {
+			fmt.Fprintln(w, applyErr)
+		}
+		syncAgentStatus(a, theme, calcHistoryTokens)
+		if err := a.SaveConfig(); err != nil {
 			fmt.Fprintf(w, "MCP settings applied in memory, but could not save: %v\n", err)
 			return false
 		}
-		syncAgentStatus(a, theme, calcHistoryTokens)
 		return true
 	}
 
@@ -53,14 +62,26 @@ func HandleMCPCommand(
 		input, output, cleanup := getInteractiveIO(kiReader)
 		defer cleanup()
 
-		before := config.CopyMCPServers(a.Config.MCPServers)
-
 		ShutdownStatusBar(os.Stderr)
-		newConfig, errInteractive := RunInteractiveMCPConfig(a.Config, theme, input, output, a.ConfigPath)
+		newConfig, errInteractive := RunInteractiveMCPConfig(a.Config, theme, input, output, func(next *config.Config) error {
+			changed := a.Config.MCP != next.MCP || !config.MCPServersEqual(a.Config.MCPServers, next.MCPServers)
+			if changed {
+				applyErr := a.ApplyConfig(next)
+				if !agent.ConfigApplied(applyErr) {
+					return applyErr
+				}
+			}
+			reconnectErr := a.ReconnectMCPServers()
+			syncAgentStatus(a, theme, calcHistoryTokens)
+			if saveErr := a.SaveConfig(); saveErr != nil {
+				return errors.Join(reconnectErr, fmt.Errorf("MCP settings applied, but could not save: %w", saveErr))
+			}
+			return reconnectErr
+		})
 		InitStatusBar(os.Stderr)
 		if errInteractive != nil {
 			fmt.Fprintf(w, "MCP settings menu failed: %v\n", errInteractive)
-		} else if newConfig != nil && !config.MCPServersEqual(before, newConfig.MCPServers) {
+		} else if newConfig != nil && (a.Config.MCP != newConfig.MCP || !config.MCPServersEqual(a.Config.MCPServers, newConfig.MCPServers)) {
 			applyMCP(newConfig)
 		}
 
@@ -83,7 +104,12 @@ func HandleMCPCommand(
 
 	sub := parts[1]
 	switch sub {
-	case "list":
+	case "list", "status":
+		state := "disabled"
+		if a.Config.MCP {
+			state = "enabled"
+		}
+		fmt.Fprintf(w, "MCP: %s\n", state)
 		render.RenderMCPServers(w, a.Config, theme)
 		mcpStatuses := a.GetMCPServersStatus()
 		if len(next.MCPServers) > 0 {
@@ -96,7 +122,9 @@ func HandleMCPCommand(
 			for _, name := range keys {
 				status, active := mcpStatuses[name]
 				cfg := next.MCPServers[name]
-				if !cfg.Enabled {
+				if !a.Config.MCP {
+					status = "MCP disabled"
+				} else if !cfg.Enabled {
 					status = "\x1b[31mdisabled\x1b[0m"
 				} else if !active {
 					if err, failed := a.MCPStartErrors[name]; failed {
@@ -124,8 +152,18 @@ func HandleMCPCommand(
 		}
 		fmt.Fprintf(w, "MCP Server '%s' successfully added/updated.\n", name)
 	case "enable", "disable":
-		if len(parts) < 3 {
-			fmt.Fprintf(w, "usage: /mcp %s <name>\n", sub)
+		if len(parts) > 3 {
+			fmt.Fprintf(w, "usage: /mcp %s [name]\n", sub)
+			return
+		}
+		if len(parts) == 2 {
+			if err := next.SetValue("mcp", fmt.Sprint(sub == "enable")); err != nil {
+				fmt.Fprintln(w, err)
+				return
+			}
+			if applyMCP(next) {
+				fmt.Fprintf(w, "MCP %sd. Server settings kept.\n", sub)
+			}
 			return
 		}
 		name := parts[2]
@@ -139,7 +177,10 @@ func HandleMCPCommand(
 		if !applyMCP(next) {
 			return
 		}
-		fmt.Fprintf(w, "MCP Server '%s' successfully %sd.\n", name, sub)
+		fmt.Fprintf(w, "MCP Server '%s' %sd.\n", name, sub)
+		if cfg.Enabled && !a.Config.MCP {
+			fmt.Fprintln(w, "MCP is disabled globally. Use /mcp enable to activate enabled servers.")
+		}
 	case "remove", "delete":
 		if len(parts) < 3 {
 			fmt.Fprintln(w, "usage: /mcp remove <name>")
@@ -178,10 +219,10 @@ func printMCPHelp(w io.Writer, theme UITheme) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("Usage:"))
 	fmt.Fprintln(w, "  /mcp                                       Open the interactive MCP editor")
-	fmt.Fprintln(w, "  /mcp list                                  List all configured MCP servers and status")
+	fmt.Fprintln(w, "  /mcp list                                  Show MCP status and configured servers")
 	fmt.Fprintln(w, "  /mcp tools                                 List all registered MCP tools")
 	fmt.Fprintln(w, "  /mcp add <name> <url> [headerKey:val]...   Add or update an MCP server configuration")
-	fmt.Fprintln(w, "  /mcp enable <name>                         Enable an MCP server")
-	fmt.Fprintln(w, "  /mcp disable <name>                        Disable an MCP server")
+	fmt.Fprintln(w, "  /mcp enable [name]                         Enable MCP, or one named server")
+	fmt.Fprintln(w, "  /mcp disable [name]                        Disable MCP, or one named server")
 	fmt.Fprintln(w, "  /mcp remove <name>                         Remove an MCP server configuration")
 }

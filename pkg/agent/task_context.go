@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"loop/pkg/agent/run"
-	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/task"
@@ -35,12 +34,14 @@ func delegationUserInstructions(messages []db.Message) []string {
 	return instructions
 }
 
+// Keep meaningful work in the saved summary even when compaction happens
+// during casual chat. Historical metadata does not activate the current task.
 func taskSnapshotForHistory(ctx context.Context, messages []db.Message) *task.State {
-	if current := run.TaskSnapshot(ctx); current != nil {
+	if current := run.TaskSnapshot(ctx); task.HasWork(current) {
 		return current
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].TaskState != nil {
+		if task.HasWork(messages[i].TaskState) {
 			return task.Clone(messages[i].TaskState)
 		}
 	}
@@ -49,29 +50,15 @@ func taskSnapshotForHistory(ctx context.Context, messages []db.Message) *task.St
 
 func taskContextMessages(ctx context.Context, messages []db.Message) []db.Message {
 	current := run.TaskSnapshot(ctx)
+	if !task.NeedsProgress(current) {
+		return messages
+	}
 	brief := run.TaskBrief(current)
 	if brief == "" {
 		return messages
 	}
 	brief = "Request progress (assessment, not proof):\n" + brief
-	for i := len(messages) - 1; i >= 0; i-- {
-		prior := messages[i].TaskState
-		if prior == nil || prior.ID == current.ID {
-			continue
-		}
-		if prior.Status != task.Completed {
-			brief += "\nPrevious task (context only; the current request defines scope): " + boundedContextText(prior.Objective, 384) + "\n" + boundedContextText(run.TaskBrief(prior), 768)
-		}
-		break
-	}
 	return append(append([]db.Message(nil), messages...), db.Message{Role: "user", ContextKind: "task_context", Content: brief})
-}
-
-func boundedContextText(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return filetool.UTF8SafePrefix(s, n) + "…"
 }
 
 func isPinnedRequestContext(msg db.Message) bool {

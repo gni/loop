@@ -4,8 +4,11 @@ import (
 	"context"
 	"io"
 	"strings"
+	"time"
 
 	"loop/pkg/agent/tool"
+	bashtool "loop/pkg/agent/tool/bash"
+	"loop/pkg/domain/limits"
 )
 
 type multiAgentContext struct {
@@ -28,12 +31,59 @@ func (mac *multiAgentContext) GetExecutionEnv() map[string]string {
 	if env == nil {
 		env = make(map[string]string)
 	}
+	if provider, ok := mac.AgentContext.(interface{ GetExecutionEnv() map[string]string }); ok {
+		for key, value := range provider.GetExecutionEnv() {
+			env[key] = value
+		}
+	}
 	env["LOOP_SUBAGENT"] = mac.ma.Name
 	return env
 }
 
 func (mac *multiAgentContext) SpawnTask(command string, w io.Writer) (string, error) {
-	id, err := mac.AgentContext.SpawnTask(command, w)
+	return mac.SpawnTaskWithOptions(mac.Context(), command, w, tool.BackgroundTaskOptions{})
+}
+
+func (mac *multiAgentContext) SpawnTaskWithOptions(ctx context.Context, command string, w io.Writer, options tool.BackgroundTaskOptions) (string, error) {
+	ownerContext := mac.Context()
+	if err := ownerContext.Err(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(ownerContext, cancel)
+	defer stop()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var id string
+	var err error
+	if spawner, ok := mac.AgentContext.(interface {
+		SpawnTaskWithOptions(context.Context, string, io.Writer, tool.BackgroundTaskOptions) (string, error)
+	}); ok {
+		environment := mac.GetExecutionEnv()
+		for key, value := range options.Environment {
+			environment[key] = value
+		}
+		environment["LOOP_SUBAGENT"] = mac.ma.Name
+		options.Environment = environment
+		id, err = spawner.SpawnTaskWithOptions(ctx, command, w, options)
+	} else {
+		if options.Directory != "" && options.Directory != mac.GetWorkspaceRoot() {
+			directory, err := mac.SafePath(options.Directory)
+			if err != nil {
+				return "", err
+			}
+			command = "cd -- " + bashtool.ShellQuote(directory) + " && {\n" + command + "\n}"
+		}
+		if spawner, ok := mac.AgentContext.(interface {
+			SpawnTaskContext(context.Context, string, io.Writer) (string, error)
+		}); ok {
+			id, err = spawner.SpawnTaskContext(ctx, command, w)
+		} else {
+			id, err = mac.AgentContext.SpawnTask(command, w)
+		}
+	}
 	if err == nil && mac.ma != nil {
 		mac.ma.RecordTask(id)
 	}
@@ -48,6 +98,43 @@ func (mac *multiAgentContext) IsShellExecutionAllowed() bool {
 func (mac *multiAgentContext) IsShellScanDefaultsEnabled() bool {
 	settings, ok := mac.AgentContext.(interface{ IsShellScanDefaultsEnabled() bool })
 	return ok && settings.IsShellScanDefaultsEnabled()
+}
+
+func (mac *multiAgentContext) IsPersistentBashEnabled() bool {
+	settings, ok := mac.AgentContext.(interface{ IsPersistentBashEnabled() bool })
+	return !ok || settings.IsPersistentBashEnabled()
+}
+
+func (mac *multiAgentContext) IsAtomicWritesEnabled() bool {
+	settings, ok := mac.AgentContext.(interface{ IsAtomicWritesEnabled() bool })
+	return !ok || settings.IsAtomicWritesEnabled()
+}
+
+func (mac *multiAgentContext) GetShellTimeout() time.Duration {
+	if settings, ok := mac.AgentContext.(interface{ GetShellTimeout() time.Duration }); ok {
+		return settings.GetShellTimeout()
+	}
+	return 120 * time.Second
+}
+
+func (mac *multiAgentContext) GetLimits() limits.Limits {
+	return limits.For(mac.AgentContext)
+}
+
+func (mac *multiAgentContext) GetFullTaskStatus(id string) (string, string, error) {
+	if provider, ok := mac.AgentContext.(interface {
+		GetFullTaskStatus(string) (string, string, error)
+	}); ok {
+		return provider.GetFullTaskStatus(id)
+	}
+	return mac.AgentContext.GetTaskStatus(id)
+}
+
+func (mac *multiAgentContext) GetTaskOutputVersion(id string) int64 {
+	if provider, ok := mac.AgentContext.(interface{ GetTaskOutputVersion(string) int64 }); ok {
+		return provider.GetTaskOutputVersion(id)
+	}
+	return 0
 }
 
 func (mac *multiAgentContext) Context() context.Context {

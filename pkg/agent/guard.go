@@ -121,6 +121,9 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 	}
 
 	outcome := g.outcomes[key]
+	if toolName == "task_state" && !outcome.failed && (streak == thresholds[0] || (len(thresholds) > 1 && streak == thresholds[1])) {
+		return "Request progress is unchanged. Continue the work or give the final result instead of repeating this assessment."
+	}
 	if outcome.noProgress && (outcome.repeats == thresholds[0] || (len(thresholds) > 1 && outcome.repeats == thresholds[1])) {
 		return "This action has repeatedly left the file unchanged. Reuse the current contents or revise the requested change before trying again."
 	}

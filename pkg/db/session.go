@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -11,16 +12,23 @@ import (
 
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
+	"loop/pkg/storage"
 )
 
 func (s *JSONLStore) ClearSession(sessionID string) error {
+	return s.ClearSessionContext(context.Background(), sessionID)
+}
+
+// ClearSessionContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) ClearSessionContext(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.checkReady(sessionID); err != nil {
 		return err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -29,10 +37,9 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 	if err := os.Remove(s.sessionPath(sessionID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete session file: %w", err)
 	}
-	delete(s.core.cache, sessionID)
-	delete(s.core.summaryCache, sessionID)
+	s.invalidateSessionCacheLocked(sessionID)
 	latestPath := s.latestSessionPath()
-	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == sessionID {
+	if data, err := storage.ReadFile(latestPath, 4096); err == nil && strings.TrimSpace(string(data)) == sessionID {
 		if err := os.Remove(latestPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove latest-session pointer: %w", err)
 		}
@@ -41,13 +48,19 @@ func (s *JSONLStore) ClearSession(sessionID string) error {
 }
 
 func (s *JSONLStore) ClearHistory() error {
+	return s.ClearHistoryContext(context.Background())
+}
+
+// ClearHistoryContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) ClearHistoryContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.checkReady(""); err != nil {
 		return err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -66,9 +79,10 @@ func (s *JSONLStore) ClearHistory() error {
 		if !ok {
 			continue
 		}
-		if err := os.Remove(s.sessionPath(sessionID)); err != nil {
+		if err := os.Remove(s.sessionPath(sessionID)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove session file %s: %w", entry.Name(), err)
 		}
+		s.invalidateSessionCacheLocked(sessionID)
 	}
 
 	if err := os.Remove(s.latestSessionPath()); err != nil && !os.IsNotExist(err) {
@@ -80,9 +94,19 @@ func (s *JSONLStore) ClearHistory() error {
 }
 
 func (s *JSONLStore) SetLatestSessionID(sessionID string) error {
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	return s.SetLatestSessionIDContext(context.Background(), sessionID)
+}
+
+// SetLatestSessionIDContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) SetLatestSessionIDContext(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if err := s.checkReady(sessionID); err != nil {
+		return err
+	}
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -149,18 +173,29 @@ func (s *JSONLStore) writeLatestID(sessionID string) error {
 }
 
 func (s *JSONLStore) GetLatestSessionID() (string, error) {
+	return s.GetLatestSessionIDContext(context.Background())
+}
+
+// GetLatestSessionIDContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) GetLatestSessionIDContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := s.checkReady(""); err != nil {
 		return "", err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
+	release, err := s.lockStore(ctx, false)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
-	if data, err := os.ReadFile(s.latestSessionPath()); err == nil {
+	if data, err := storage.ReadFile(s.latestSessionPath(), 4096); err == nil {
 		id := strings.TrimSpace(string(data))
 		if id != "" && session.ValidateID(id) == nil {
-			if fi, err := os.Stat(s.sessionPath(id)); err == nil && !fi.IsDir() {
-				if sum, ok := s.summarizeSessionLocked(id, fs.FileInfoToDirEntry(fi)); ok && sum.hasVisible {
+			if fi, err := os.Stat(s.sessionPath(id)); err == nil && fi.Mode().IsRegular() {
+				if sum, ok := s.summarizeSessionLockedContext(ctx, id, fs.FileInfoToDirEntry(fi)); ok && sum.hasVisible {
 					return id, nil
 				}
 			}
@@ -179,11 +214,14 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 	var latestTime time.Time
 
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		name, ok := validSessionEntry(entry)
 		if !ok {
 			continue
 		}
-		if sum, ok := s.summarizeSessionLocked(name, entry); ok && sum.hasVisible {
+		if sum, ok := s.summarizeSessionLockedContext(ctx, name, entry); ok && sum.hasVisible {
 			if info, err := entry.Info(); err == nil && info.ModTime().After(latestTime) {
 				latestTime = info.ModTime()
 				latestFile = name
@@ -191,11 +229,22 @@ func (s *JSONLStore) GetLatestSessionID() (string, error) {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return latestFile, nil
 }
 
 func (s *JSONLStore) GetSessions() ([]session.SessionInfo, error) {
-	return s.GetSessionsSorted(false)
+	return s.GetSessionsContext(context.Background())
+}
+
+// GetSessionsContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) GetSessionsContext(ctx context.Context) ([]session.SessionInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.GetSessionsSortedContext(ctx, false)
 }
 
 func appendPreviewSnippet(builder *strings.Builder, runeCount *int, text string) {
@@ -218,6 +267,13 @@ func appendPreviewSnippet(builder *strings.Builder, runeCount *int, text string)
 }
 
 func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry) (cachedSummary, bool) {
+	return s.summarizeSessionLockedContext(context.Background(), sessionID, entry)
+}
+
+func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionID string, entry os.DirEntry) (cachedSummary, bool) {
+	if ctx.Err() != nil {
+		return cachedSummary{}, false
+	}
 	info, err := entry.Info()
 	if err != nil {
 		return cachedSummary{}, false
@@ -226,7 +282,7 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 		return sum, true
 	}
 
-	f, err := os.Open(s.sessionPath(sessionID))
+	f, err := storage.OpenRegularFile(s.sessionPath(sessionID))
 	if err != nil {
 		return cachedSummary{}, false
 	}
@@ -241,9 +297,12 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 	var prompts []string
 	var lastPrompt string
 
-	scanner := newJSONLScanner(f)
+	scanner := newJSONLScanner(contextReader{ctx, f})
 	lineNo := 0
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return cachedSummary{}, false
+		}
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
@@ -315,6 +374,10 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 		}
 	}
 
+	if scanner.Err() != nil || ctx.Err() != nil {
+		return cachedSummary{}, false
+	}
+
 	effectiveCount := msgCount
 	rawPreview := previewBuilder.String()
 	if effectiveCount == 0 && contextMsgCount > 0 {
@@ -360,13 +423,19 @@ func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry)
 }
 
 func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, error) {
+	return s.GetSessionsSortedContext(context.Background(), ascending)
+}
+
+// GetSessionsSortedContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) GetSessionsSortedContext(ctx context.Context, ascending bool) ([]session.SessionInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.checkReady(""); err != nil {
 		return nil, err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(false)
+	release, err := s.lockStore(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -382,16 +451,22 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 	var sessions []session.SessionInfo
 	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		sessionID, ok := validSessionEntry(entry)
 		if !ok {
 			continue
 		}
 		seen[sessionID] = true
-		sum, ok := s.summarizeSessionLocked(sessionID, entry)
+		sum, ok := s.summarizeSessionLockedContext(ctx, sessionID, entry)
 		if !ok || !sum.hasVisible {
 			continue
 		}
 		sessions = append(sessions, sum.info)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	for cachedID := range s.core.summaryCache {
 		if !seen[cachedID] {
@@ -410,6 +485,14 @@ func (s *JSONLStore) GetSessionsSorted(ascending bool) ([]session.SessionInfo, e
 }
 
 func (s *JSONLStore) RenameSession(oldID, newID string) error {
+	return s.RenameSessionContext(context.Background(), oldID, newID)
+}
+
+// RenameSessionContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) RenameSessionContext(ctx context.Context, oldID, newID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := session.ValidateID(oldID); err != nil {
 		return fmt.Errorf("invalid old session ID: %w", err)
 	}
@@ -417,9 +500,7 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 		return fmt.Errorf("invalid new session ID: %w", err)
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -438,12 +519,10 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
 
-	delete(s.core.cache, oldID)
-	delete(s.core.cache, newID)
-	delete(s.core.summaryCache, oldID)
-	delete(s.core.summaryCache, newID)
+	s.invalidateSessionCacheLocked(oldID)
+	s.invalidateSessionCacheLocked(newID)
 	latestPath := s.latestSessionPath()
-	if data, err := os.ReadFile(latestPath); err == nil && strings.TrimSpace(string(data)) == oldID {
+	if data, err := storage.ReadFile(latestPath, 4096); err == nil && strings.TrimSpace(string(data)) == oldID {
 		if err := s.writeLatestID(newID); err != nil {
 			return fmt.Errorf("session renamed, but latest pointer update failed: %w", err)
 		}
@@ -452,15 +531,22 @@ func (s *JSONLStore) RenameSession(oldID, newID string) error {
 }
 
 func readEntries(filePath string) ([]session.Record, error) {
-	f, err := os.Open(filePath)
+	return readEntriesContext(context.Background(), filePath)
+}
+
+func readEntriesContext(ctx context.Context, filePath string) ([]session.Record, error) {
+	f, err := storage.OpenRegularFile(filePath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	var entries []session.Record
-	scanner := newJSONLScanner(f)
+	scanner := newJSONLScanner(contextReader{ctx, f})
 	line := 0
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		line++
 		if len(scanner.Bytes()) == 0 {
 			continue
@@ -474,27 +560,39 @@ func readEntries(filePath string) ([]session.Record, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read session: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := session.ValidateEntries(entries); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	return entries, nil
 }
 
-func (s *JSONLStore) Branch(sessionID, entryID string) error {
+func (s *JSONLStore) Branch(sessionID, entryID string) (err error) {
+	return s.BranchContext(context.Background(), sessionID, entryID)
+}
+
+// BranchContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) BranchContext(ctx context.Context, sessionID, entryID string) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.checkReady(sessionID); err != nil {
 		return err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return err
 	}
 	defer release()
 
 	filePath := s.sessionPath(sessionID)
-	entries, err := readEntries(filePath)
+	entries, err := readEntriesContext(ctx, filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read session file: %w", err)
 	}
@@ -504,11 +602,24 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 		return fmt.Errorf("entry %s not found in session %s", entryID, sessionID)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open session file: %w", err)
 	}
 	defer f.Close()
+	infoBefore, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if err != nil && !committed {
+			err = rollbackSessionAppend(f, infoBefore.Size(), false, err)
+		}
+	}()
 
 	marker := session.Record{
 		ID:        session.NewUUID(),
@@ -529,25 +640,34 @@ func (s *JSONLStore) Branch(sessionID, entryID string) error {
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	delete(s.core.cache, sessionID)
-	delete(s.core.summaryCache, sessionID)
-	return s.setLatestSessionIDUnlocked(sessionID)
+	s.invalidateSessionCacheLocked(sessionID)
+	if err := s.setLatestSessionIDUnlocked(sessionID); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error) {
+	return s.ForkSessionContext(context.Background(), parentSessionID, entryID)
+}
+
+// ForkSessionContext allows cancellation while waiting for session storage.
+func (s *JSONLStore) ForkSessionContext(ctx context.Context, parentSessionID, entryID string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := s.checkReady(parentSessionID); err != nil {
 		return "", err
 	}
 
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
-	release, err := s.lock(true)
+	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return "", err
 	}
 	defer release()
 
-	entries, err := readEntries(s.sessionPath(parentSessionID))
+	entries, err := readEntriesContext(ctx, s.sessionPath(parentSessionID))
 	if err != nil {
 		return "", fmt.Errorf("failed to read parent session file: %w", err)
 	}
@@ -582,6 +702,10 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 
 	var prev string
 	for _, e := range path {
+		if err := ctx.Err(); err != nil {
+			f.Close()
+			return "", err
+		}
 		if e.ID == "" || strings.HasPrefix(e.ID, "legacy-") {
 			e.ID = session.NewUUID()
 		}
@@ -600,6 +724,9 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 	if err := f.Close(); err != nil {
 		return "", err
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := os.Rename(f.Name(), s.sessionPath(newID)); err != nil {
 		return "", fmt.Errorf("failed to finalize forked session file: %w", err)
 	}
@@ -607,39 +734,75 @@ func (s *JSONLStore) ForkSession(parentSessionID, entryID string) (string, error
 }
 
 func ForkSession(parentSessionID, entryID string) (string, error) {
-	return withStoreVal(func(s *JSONLStore) (string, error) { return s.ForkSession(parentSessionID, entryID) })
+	return ForkSessionContext(context.Background(), parentSessionID, entryID)
+}
+
+func ForkSessionContext(ctx context.Context, parentSessionID, entryID string) (string, error) {
+	return withStoreVal(func(s *JSONLStore) (string, error) { return s.ForkSessionContext(ctx, parentSessionID, entryID) })
 }
 
 func ClearHistory() error {
-	return withStore(func(s *JSONLStore) error { return s.ClearHistory() })
+	return ClearHistoryContext(context.Background())
+}
+
+func ClearHistoryContext(ctx context.Context) error {
+	return withStore(func(s *JSONLStore) error { return s.ClearHistoryContext(ctx) })
 }
 
 func ClearSession(sessionID string) error {
-	return withStore(func(s *JSONLStore) error { return s.ClearSession(sessionID) })
+	return ClearSessionContext(context.Background(), sessionID)
+}
+
+func ClearSessionContext(ctx context.Context, sessionID string) error {
+	return withStore(func(s *JSONLStore) error { return s.ClearSessionContext(ctx, sessionID) })
 }
 
 func SetLatestSessionID(sessionID string) error {
-	return withStore(func(s *JSONLStore) error { return s.SetLatestSessionID(sessionID) })
+	return SetLatestSessionIDContext(context.Background(), sessionID)
+}
+
+func SetLatestSessionIDContext(ctx context.Context, sessionID string) error {
+	return withStore(func(s *JSONLStore) error { return s.SetLatestSessionIDContext(ctx, sessionID) })
 }
 
 func GetSessions() ([]SessionInfo, error) {
-	return withStoreVal(func(s *JSONLStore) ([]SessionInfo, error) { return s.GetSessions() })
+	return GetSessionsContext(context.Background())
+}
+
+func GetSessionsContext(ctx context.Context) ([]SessionInfo, error) {
+	return withStoreVal(func(s *JSONLStore) ([]SessionInfo, error) { return s.GetSessionsContext(ctx) })
 }
 
 func Branch(sessionID, entryID string) error {
-	return withStore(func(s *JSONLStore) error { return s.Branch(sessionID, entryID) })
+	return BranchContext(context.Background(), sessionID, entryID)
+}
+
+func BranchContext(ctx context.Context, sessionID, entryID string) error {
+	return withStore(func(s *JSONLStore) error { return s.BranchContext(ctx, sessionID, entryID) })
 }
 
 func Entries(sessionID string) ([]session.Record, error) {
-	return withStoreVal(func(s *JSONLStore) ([]session.Record, error) { return s.Entries(sessionID) })
+	return EntriesContext(context.Background(), sessionID)
+}
+
+func EntriesContext(ctx context.Context, sessionID string) ([]session.Record, error) {
+	return withStoreVal(func(s *JSONLStore) ([]session.Record, error) { return s.EntriesContext(ctx, sessionID) })
 }
 
 func RenameSession(oldID, newID string) error {
-	return withStore(func(s *JSONLStore) error { return s.RenameSession(oldID, newID) })
+	return RenameSessionContext(context.Background(), oldID, newID)
+}
+
+func RenameSessionContext(ctx context.Context, oldID, newID string) error {
+	return withStore(func(s *JSONLStore) error { return s.RenameSessionContext(ctx, oldID, newID) })
 }
 
 func RewriteSession(sessionID string, messages []message.Message) error {
-	return withStore(func(s *JSONLStore) error { return s.RewriteSession(sessionID, messages) })
+	return RewriteSessionContext(context.Background(), sessionID, messages)
+}
+
+func RewriteSessionContext(ctx context.Context, sessionID string, messages []message.Message) error {
+	return withStore(func(s *JSONLStore) error { return s.RewriteSessionContext(ctx, sessionID, messages) })
 }
 
 // A stored system prompt or settings record is not a conversation.

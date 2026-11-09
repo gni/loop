@@ -2,7 +2,6 @@ package agent
 
 import (
 	"sync"
-	"time"
 
 	"loop/pkg/agent/run"
 	"loop/pkg/db"
@@ -98,56 +97,6 @@ var defaultEventBus = NewEventBus()
 // EventBusInstance returns the process-wide typed event bus consumed by hooks
 // and by pkg/ui/interceptor.go.
 func EventBusInstance() *EventBus { return defaultEventBus }
-
-// TimingRecorder records timings for the llm, tool and
-// compaction namespaces surfaced by the stats command.
-type TimingRecorder struct {
-	mu         sync.Mutex
-	Namespaces map[string][]struct {
-		Label string
-		Ms    int64
-	}
-	last map[string]time.Time
-}
-
-func NewTimingRecorder() *TimingRecorder {
-	return &TimingRecorder{Namespaces: map[string][]struct {
-		Label string
-		Ms    int64
-	}{}, last: map[string]time.Time{}}
-}
-
-var globalTimingRecorder = NewTimingRecorder()
-
-// GetTimingRecorder returns the process-wide recorder.
-func GetTimingRecorder() *TimingRecorder { return globalTimingRecorder }
-
-func (r *TimingRecorder) Time(namespace, label string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.last[namespace].IsZero() {
-		r.last[namespace] = time.Now()
-		return
-	}
-	now := time.Now()
-	r.Namespaces[namespace] = append(r.Namespaces[namespace], struct {
-		Label string
-		Ms    int64
-	}{label, now.Sub(r.last[namespace]).Milliseconds()})
-	r.last[namespace] = now
-}
-
-func (r *TimingRecorder) TotalMs(namespace string) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var total int64
-	for _, t := range r.Namespaces[namespace] {
-		if t.Ms >= 0 {
-			total += t.Ms
-		}
-	}
-	return total
-}
 
 // RunObserver forwards shared-runner lifecycle events to the session event sink.
 // Presentation adapters and headless consumers receive the same event contract.

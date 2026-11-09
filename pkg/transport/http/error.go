@@ -12,9 +12,9 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	if e.ReadError != nil {
-		return fmt.Sprintf("server returned non-200 status: %d. Body read failed: %v", e.Code, e.ReadError)
+		return fmt.Sprintf("server returned non-200 status: %d. Body read failed: %v", e.Code, RedactDiagnostic(e.ReadError.Error()))
 	}
-	body := e.Body
+	body := RedactDiagnostic(e.Body)
 	if body == "" {
 		body = "(empty)"
 	}

@@ -14,6 +14,7 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	transporthttp "loop/pkg/transport/http"
 )
 
 type cachedTokenCount struct {
@@ -81,9 +82,10 @@ func (p *OpenAICompatibleProvider) countRequestTokens(ctx context.Context, messa
 		return 0, false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if credential := p.requestKey(ctx); credential != "" {
-		req.Header.Set("Authorization", "Bearer "+credential)
+	if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
+		transporthttp.ApplyProviderHeaders(req.Header, profile.Headers)
 	}
+	transporthttp.ApplyProviderAuthHeaders(req.Header, "chat-completions", p.requestKey(ctx))
 	client := http.DefaultClient
 	if p.HTTPClient != nil {
 		client = p.HTTPClient

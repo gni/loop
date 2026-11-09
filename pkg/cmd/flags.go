@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -110,13 +108,7 @@ func parseAllowedTools(toolsStr string) []string {
 }
 
 func initRootFlags(cmd *cobra.Command) {
-	defaultConfig := "config/config.json"
-	if home, err := os.UserHomeDir(); err == nil {
-		defaultConfig = filepath.Join(home, ".loop", "config.json")
-	}
-	if dir := os.Getenv("LOOP_AGENT_DIR"); dir != "" {
-		defaultConfig = filepath.Join(dir, "config.json")
-	}
+	defaultConfig := config.DefaultConfigPath()
 	cmd.PersistentFlags().StringVar(&outputMode, "mode", "text", "Output interface: text, json, rpc")
 	cmd.PersistentFlags().BoolVarP(&printOnce, "print", "p", false, "Print the final answer and exit")
 	cmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Keep this conversation in memory")

@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -20,10 +22,14 @@ type savedSettings struct {
 }
 
 func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
+	return restoreSettingsContext(context.Background(), store, id, cfg, tools, keepSelection)
+}
+
+func restoreSettingsContext(ctx context.Context, store *db.JSONLStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
 	if !store.HasMessages(id) {
 		return nil, nil
 	}
-	entries, err := store.Entries(id)
+	entries, err := store.EntriesContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -67,16 +73,24 @@ func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, to
 func (s *Session) persistSettings() error { return s.persistSettingsFor(s.ID) }
 
 func (s *Session) persistSettingsIfActive() error {
+	return s.persistSettingsIfActiveContext(s.Agent.Context())
+}
+
+func (s *Session) persistSettingsIfActiveContext(ctx context.Context) error {
 	if s.Store == nil {
 		return nil
 	}
 	if !s.Store.HasMessages(s.ID) && len(s.Agent.GetTodos()) == 0 {
 		return nil
 	}
-	return s.persistSettingsFor(s.ID)
+	return s.persistSettingsForContext(ctx, s.ID)
 }
 
 func (s *Session) persistSettingsFor(id string) error {
+	return s.persistSettingsForContext(s.Agent.Context(), id)
+}
+
+func (s *Session) persistSettingsForContext(ctx context.Context, id string) error {
 	if s.Store == nil {
 		return nil
 	}
@@ -94,16 +108,41 @@ func (s *Session) persistSettingsFor(id string) error {
 	if !active {
 		return nil
 	}
+	if err := s.Agent.SavePendingSessionName(ctx, id); err != nil {
+		return err
+	}
+	s.Agent.LLMProviderMu.Lock()
 	cfg := s.Agent.Config
-	data, err := json.Marshal(savedSettings{Provider: cfg.ActiveProvider, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, DisabledTools: cfg.DisabledTools, Tools: s.options.Tools, Todos: s.Agent.GetTodos()})
+	saved := savedSettings{Provider: cfg.ActiveProvider, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, DisabledTools: slices.Clone(cfg.DisabledTools)}
+	s.Agent.LLMProviderMu.Unlock()
+	saved.Tools, saved.Todos = slices.Clone(s.options.Tools), s.Agent.GetTodos()
+	data, err := json.Marshal(saved)
 	if err != nil {
 		return err
 	}
-	return s.Store.AppendEntry(id, session.Record{Type: "settings", Data: data})
+	return s.Store.AppendEntryContext(ctx, id, session.Record{Type: "settings", Data: data})
 }
 
+func sessionNameFromEntries(entries []session.Record) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Type == "name" {
+			return entries[i].Name
+		}
+	}
+	return ""
+}
+
+func (s *Session) checkpointMessages(ctx context.Context) error {
+	if s.Store == nil {
+		return nil
+	}
+	messages := s.MessagesSnapshot()
+	return s.Agent.CheckpointSession(ctx, s.ID, messages)
+}
+
+// Configuration returns an independent snapshot under the agent's config lock.
 func (s *Session) Configuration() (*config.Config, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Agent.LLMProviderMu.Lock()
+	defer s.Agent.LLMProviderMu.Unlock()
 	return config.Clone(s.Agent.Config)
 }

@@ -2,12 +2,9 @@ package agent
 
 import (
 	"encoding/json"
-	"strconv"
+	"sort"
 	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 
-	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
 )
 
@@ -45,253 +42,6 @@ type toolStreamState struct {
 	editDiffShown bool
 	readyNotified bool
 	draft         streamedDraft
-}
-
-// streamedDraft decodes readable argument values and keeps bounded excerpts.
-// It does not require the filename to be known and never stores whole files.
-type streamedDraft struct {
-	toolName         string
-	unicodeDigits    string
-	unicodeRemaining int
-	highSurrogate    rune
-	inString         bool
-	escaped          bool
-	readingKey       bool
-	readingBody      bool
-	valueNext        bool
-	key              strings.Builder
-	lastKey          string
-	readingPath      bool
-	pathBuf          strings.Builder
-	path             string
-	edit             bool
-	linePrefix       string
-	lineStart        bool
-	tail             []rune
-	liveTail         []rune
-	liveHead         int
-	pending          strings.Builder
-}
-
-func (d *streamedDraft) appendVisible(r rune) {
-	// Edit previews are proposals, not applied changes. Prefix both sides of
-	// each replacement so a streaming edit is readable before execution.
-	if d.edit && d.readingBody && d.lineStart {
-		for _, prefixRune := range d.linePrefix {
-			d.appendPlain(prefixRune)
-		}
-		d.lineStart = false
-	}
-	if d.edit && r == '\n' {
-		d.lineStart = true
-	}
-	d.appendPlain(r)
-}
-
-func (d *streamedDraft) appendPlain(r rune) {
-	if r == '\r' || r == '\t' {
-		r = ' '
-	}
-	if (r < 32 && r != '\n') || r == 127 || r == '\x1b' {
-		return
-	}
-	if len(d.liveTail) < 4096 {
-		d.liveTail = append(d.liveTail, r)
-	} else {
-		d.liveTail[d.liveHead] = r
-		d.liveHead = (d.liveHead + 1) % len(d.liveTail)
-	}
-	d.pending.WriteRune(r)
-	if r == '\n' {
-		r = ' '
-	}
-	d.tail = append(d.tail, r)
-	if len(d.tail) > 96 {
-		d.tail = append([]rune(nil), d.tail[len(d.tail)-96:]...)
-	}
-}
-
-func (d *streamedDraft) appendJSON(fragment string) {
-	for _, r := range fragment {
-		if d.inString {
-			if d.unicodeRemaining > 0 {
-				d.unicodeDigits += string(r)
-				d.unicodeRemaining--
-				if d.unicodeRemaining == 0 {
-					value, err := strconv.ParseUint(d.unicodeDigits, 16, 16)
-					if err == nil {
-						d.appendUnicode(rune(value))
-					}
-				}
-				continue
-			}
-			if d.escaped {
-				d.escaped = false
-				if r != 'u' && d.highSurrogate != 0 {
-					d.appendDecoded(utf8.RuneError)
-					d.highSurrogate = 0
-				}
-				switch r {
-				case 'u':
-					d.unicodeRemaining = 4
-					d.unicodeDigits = ""
-				case 'n':
-					d.appendDecoded('\n')
-				case 't':
-					d.appendDecoded('\t')
-				case 'r':
-					d.appendDecoded('\r')
-				case '"', '\\', '/':
-					d.appendDecoded(r)
-				}
-
-				continue
-			}
-			if r == '\\' {
-				d.escaped = true
-				continue
-			}
-			if r == '"' {
-				if d.highSurrogate != 0 {
-					d.appendDecoded(utf8.RuneError)
-					d.highSurrogate = 0
-				}
-				if d.toolName == "todo" && d.readingBody && d.lastKey != "markdown" {
-					d.appendPlain('\n')
-				}
-				if d.edit && d.readingBody && !d.lineStart {
-					d.appendPlain('\n')
-					d.lineStart = true
-				}
-				d.inString = false
-				if d.readingKey {
-					d.lastKey = d.key.String()
-					d.key.Reset()
-				}
-				if d.readingPath {
-					d.path = d.pathBuf.String()
-					d.pathBuf.Reset()
-				}
-				d.readingPath = false
-				d.readingKey = false
-				d.readingBody = false
-				d.valueNext = false
-				continue
-			}
-			if d.highSurrogate != 0 {
-				d.appendDecoded(utf8.RuneError)
-				d.highSurrogate = 0
-			}
-			if d.readingKey {
-				d.key.WriteRune(r)
-			} else {
-				d.appendDecoded(r)
-			}
-			continue
-		}
-		switch r {
-		case '"':
-			d.inString = true
-			key := strings.ToLower(d.lastKey)
-			d.readingBody = d.valueNext && (key == "content" || key == "body" || key == "text" || key == "question" || key == "prompt")
-			if d.toolName == "bash" {
-				d.readingBody = d.valueNext && (key == "command" || key == "cmd" || key == "arguments")
-			}
-			if d.toolName == "todo" {
-				d.readingBody = d.valueNext && (key == "markdown" || key == "task" || key == "description" || key == "title" || key == "content" || key == "desc" || key == "summary")
-				if d.readingBody && key != "markdown" {
-					for _, prefix := range "  • " {
-						d.appendPlain(prefix)
-					}
-				}
-			}
-			if d.edit && d.valueNext {
-				switch d.lastKey {
-				case "oldText", "old_text", "old_string", "oldString":
-					d.readingBody = true
-					d.linePrefix = "- "
-					d.lineStart = true
-				case "newText", "new_text", "new_string", "newString":
-					d.readingBody = true
-					d.linePrefix = "+ "
-					d.lineStart = true
-				}
-			}
-			d.readingPath = d.valueNext && d.toolName != "todo" && (key == "path" || key == "file_path" || key == "filename" || key == "pattern" || key == "query" || key == "url" || key == "name" || key == "task_id")
-			if d.toolName == "write" || d.toolName == "edit" {
-				d.readingPath = d.valueNext && filetool.IsFilePathKey(key)
-			}
-			d.readingKey = !d.valueNext
-		case ':':
-			d.valueNext = true
-		case ',':
-			d.valueNext = false
-			// A later content field represents a different value.
-		case '{', '[':
-			// A nested object or array consumes its parent's value. Without
-			// resetting valueNext, keys inside edit.updates are mistaken for
-			// string values and no replacement text is ever previewed.
-			d.valueNext = false
-			d.lastKey = ""
-		}
-	}
-}
-
-func (d *streamedDraft) appendUnicode(r rune) {
-	if d.highSurrogate != 0 {
-		high := d.highSurrogate
-		d.highSurrogate = 0
-		if r >= 0xdc00 && r <= 0xdfff {
-			d.appendDecoded(utf16.DecodeRune(high, r))
-			return
-		}
-		d.appendDecoded(utf8.RuneError)
-	}
-	if r >= 0xd800 && r <= 0xdbff {
-		d.highSurrogate = r
-		return
-	}
-	if r >= 0xdc00 && r <= 0xdfff {
-		r = utf8.RuneError
-	}
-	d.appendDecoded(r)
-}
-
-func (d *streamedDraft) appendDecoded(r rune) {
-	if d.readingKey {
-		d.key.WriteRune(r)
-		return
-	}
-	if d.readingBody {
-		d.appendVisible(r)
-	}
-	if d.readingPath && d.pathBuf.Len() < 512 {
-		d.pathBuf.WriteRune(r)
-		d.path = d.pathBuf.String()
-	}
-}
-
-func (d *streamedDraft) preview() string { return string(d.tail) }
-
-// livePreview keeps a bounded tail of the generated body, including newlines.
-// It is a display value only, not a tool argument or executable source.
-func (d *streamedDraft) livePreview() string {
-	if d.liveHead == 0 {
-		return string(d.liveTail)
-	}
-	var b strings.Builder
-	b.Grow(4096)
-	b.WriteString(string(d.liveTail[d.liveHead:]))
-	b.WriteString(string(d.liveTail[:d.liveHead]))
-	return b.String()
-}
-
-// takeDelta emits each printable body character once, even when the JSON
-// content value is split at arbitrary SSE chunk boundaries.
-func (d *streamedDraft) takeDelta() string {
-	value := d.pending.String()
-	d.pending.Reset()
-	return value
 }
 
 // Track JSON completion in linear time. Validating the entire accumulated
@@ -385,12 +135,13 @@ func (s *toolStreamSequencer) SetEditDiffPreview(preview func(toolName, argument
 	s.editDiffPreview = preview
 }
 
+// SetBatch associates streaming previews with the execution batch.
+func (s *toolStreamSequencer) SetBatch(batch *ToolBatch) { s.batch = batch }
+
 // DeferFollowingCalls keeps later previews out of the terminal until their
 // corresponding tool is ready to execute. The first call still streams live.
 // This prevents stale completion placeholders when multiple previews scroll
 // beyond the terminal's redrawable region.
-func (s *toolStreamSequencer) SetBatch(batch *ToolBatch) { s.batch = batch }
-
 func (s *toolStreamSequencer) DeferFollowingCalls() {
 	s.deferFollowing = true
 }
@@ -620,6 +371,50 @@ func (s *toolStreamSequencer) Finish() {
 	}
 	if s.enabled && !s.livePreview {
 		s.advance(true)
+	}
+}
+
+// Reconcile assigns previews to finalized calls by provider order and arguments.
+// Arrival order is provisional: native content-block indices can have gaps,
+// and providers can send a later call's name before an earlier call's name.
+func (s *toolStreamSequencer) Reconcile(calls []db.ToolCall) {
+	sources := make([]int, 0, len(s.sourceIndexes))
+	for source := range s.sourceIndexes {
+		sources = append(sources, source)
+	}
+	sort.Ints(sources)
+	mapping := make(map[int]int, len(sources))
+	identity := len(sources) == len(calls)
+	for index, source := range sources {
+		old := s.sourceIndexes[source]
+		state := s.calls[old]
+		if index >= len(calls) || state == nil || state.name != calls[index].Function.Name || CanonicalizeArguments(state.arguments.String()) != CanonicalizeArguments(calls[index].Function.Arguments) {
+			identity = false
+			continue
+		}
+		mapping[old] = index
+		if old != index {
+			identity = false
+		}
+	}
+	if identity {
+		return
+	}
+	reordered := make(map[int]*toolStreamState, len(mapping))
+	for old, index := range mapping {
+		state := s.calls[old]
+		for i := range state.events {
+			state.events[i].ToolCallIndex = index
+		}
+		reordered[index] = state
+	}
+	s.calls = reordered
+	s.active = -1
+	if s.batch != nil {
+		s.batch.remap(mapping, len(calls))
+	}
+	if renderer, ok := s.renderer.(interface{ RemapToolCalls(map[int]int) }); ok {
+		renderer.RemapToolCalls(mapping)
 	}
 }
 

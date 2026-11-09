@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -16,7 +15,17 @@ import (
 	"loop/pkg/ui/style"
 )
 
+// Check short writes as well as explicit terminal errors before waiting on input.
+func writeMenuFrame(w io.Writer, frame string) error {
+	n, err := io.WriteString(w, frame)
+	if err == nil && n != len(frame) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
 type settingItem struct {
+	searchOnly  bool
 	id          string
 	name        string
 	value       func() string
@@ -168,13 +177,18 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 
 	for {
 		items := itemsProvider()
+		query := strings.ToLower(searchQuery)
 		var filtered []*settingItem
 		for _, item := range items {
+			if searchQuery == "" && item.searchOnly {
+				continue
+			}
 			valStr := item.value()
-			match := searchQuery == "" ||
-				strings.Contains(strings.ToLower(item.name), strings.ToLower(searchQuery)) ||
-				strings.Contains(strings.ToLower(valStr), strings.ToLower(searchQuery)) ||
-				strings.Contains(strings.ToLower(item.description), strings.ToLower(searchQuery))
+			match := query == "" ||
+				strings.Contains(strings.ToLower(item.id), query) ||
+				strings.Contains(strings.ToLower(item.name), query) ||
+				strings.Contains(strings.ToLower(valStr), query) ||
+				strings.Contains(strings.ToLower(item.description), query)
 			if match {
 				filtered = append(filtered, item)
 			}
@@ -195,177 +209,11 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			termH = 24
 		}
 
-		if termW < 24 || termH < 8 {
-			text := style.TruncateCells("Resize to 24×8 or larger; Esc exits", max(1, termW-1))
-			fmt.Fprint(rlOutput, "\x1b[H\x1b[J"+text)
-			if hasSessionReader {
-				key, resized, err := sr.ReadKeyOrResize(sigChan)
-				if err != nil {
-					return err
-				}
-				if resized {
-					continue
-				}
-				if string(key) == "\x1b" {
-					return nil
-				}
-				continue
-			}
+		frame, layout := renderSettingsMenu(title, searchQuery, filtered, selectedIdx, termW, termH, theme, extraRender)
+		if err := writeMenuFrame(rlOutput, frame); err != nil {
+			return err
 		}
-		// Provider profiles are contiguous groups of fields. Splitting the
-		// flattened list in half can separate a provider from its settings.
-		providerMenu := title == "endpoint providers config"
-		useTwoCols := !providerMenu && termW >= 72 && len(filtered) > 1
-		rows := len(filtered)
-		if useTwoCols {
-			rows = (len(filtered) + 1) / 2
-		}
-
-		var buf strings.Builder
-		buf.WriteString("\x1b[H")
-
-		titleStyled := style.NewStyle().Foreground(theme.Primary).Bold(true).Render(title)
-		searchLabel := style.NewStyle().Foreground(theme.Text).Render("  search: ")
-		searchVal := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(searchQuery)
-		underline := style.NewStyle().Foreground(theme.Border).Render("──────────")
-		if searchQuery == "" {
-			buf.WriteString(fmt.Sprintf("%s    %s%s\n\n", titleStyled, searchLabel, underline))
-		} else {
-			buf.WriteString(fmt.Sprintf("%s    %s%s\n\n", titleStyled, searchLabel, searchVal))
-		}
-
-		if len(filtered) == 0 {
-			buf.WriteString(style.NewStyle().Foreground(theme.Border).Italic(true).Render("  (no matching settings found)"))
-			buf.WriteString("\n")
-		} else if useTwoCols {
-			colWidth := (termW - 5) / 2
-			sep := style.NewStyle().Foreground(theme.Border).Render(" │ ")
-
-			maxVisibleRows := termH - 8
-			if extraRender != nil && termH >= 22 {
-				maxVisibleRows = termH - 11
-			}
-			if maxVisibleRows < 1 {
-				maxVisibleRows = 1
-			}
-
-			selectedRow := selectedIdx % rows
-			startRow := 0
-			if rows > maxVisibleRows {
-				if selectedRow >= startRow+maxVisibleRows {
-					startRow = selectedRow - maxVisibleRows + 1
-				}
-				if selectedRow < startRow {
-					startRow = selectedRow
-				}
-				if startRow+maxVisibleRows > rows {
-					startRow = rows - maxVisibleRows
-				}
-			}
-			endRow := rows
-			if endRow > startRow+maxVisibleRows {
-				endRow = startRow + maxVisibleRows
-			}
-
-			for r := startRow; r < endRow; r++ {
-				leftIdx := r
-				rightIdx := r + rows
-
-				leftCell := formatMenuCell(filtered[leftIdx], leftIdx == selectedIdx, colWidth, theme)
-				if rightIdx < len(filtered) {
-					rightCell := formatMenuCell(filtered[rightIdx], rightIdx == selectedIdx, colWidth, theme)
-					buf.WriteString(padAnsiCell(leftCell, colWidth) + sep + rightCell + "\n")
-				} else {
-					buf.WriteString(leftCell + "\n")
-				}
-			}
-		} else {
-			start, end := 0, len(filtered)
-			// Keep the selected setting visible above the footer and preview.
-			visibleRows := termH - 8
-			if !providerMenu && extraRender != nil && termH >= 20 {
-				visibleRows -= 3
-			}
-			if providerMenu && termH >= 14 && len(filtered) > 0 {
-				valueWidth := termW - 8
-				if valueWidth < 1 {
-					valueWidth = 1
-				}
-				valueLen := utf8.RuneCountInString(filtered[selectedIdx].value())
-				if valueLen > 0 {
-					valueRows := (valueLen + valueWidth - 1) / valueWidth
-					if valueRows > 3 {
-						valueRows = 3
-					}
-					visibleRows -= valueRows + 1
-				}
-			}
-			if visibleRows < 1 {
-				visibleRows = 1
-			}
-			if len(filtered) > visibleRows {
-				start = selectedIdx - visibleRows + 1
-				if start < 0 {
-					start = 0
-				}
-				if start+visibleRows > len(filtered) {
-					start = len(filtered) - visibleRows
-				}
-				end = start + visibleRows
-			}
-			for idx := start; idx < end; idx++ {
-				buf.WriteString(formatMenuCell(filtered[idx], idx == selectedIdx, termW-4, theme) + "\n")
-			}
-		}
-
-		if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
-			descStyle := style.NewStyle().Foreground(theme.Success)
-			buf.WriteString(fmt.Sprintf("\n  %s\n", descStyle.Render(filtered[selectedIdx].description)))
-		} else {
-			buf.WriteString("\n")
-		}
-
-		if providerMenu {
-			// The overview duplicates the provider fields and can push the
-			// next provider out of view. Show the complete selected value
-			// instead; formatMenuCell intentionally shortens long values.
-			if termH >= 14 && len(filtered) > 0 {
-				value := []rune(filtered[selectedIdx].value())
-				if len(value) > 0 {
-					valueWidth := termW - 8
-					if valueWidth < 1 {
-						valueWidth = 1
-					}
-					buf.WriteString("  " + style.NewStyle().Foreground(theme.Secondary).Render("value:") + "\n")
-					for row := 0; row < 3 && len(value) > 0; row++ {
-						n := valueWidth
-						if n > len(value) {
-							n = len(value)
-						}
-						line := string(value[:n])
-						value = value[n:]
-						if row == 2 && len(value) > 0 && n > 1 {
-							line = string([]rune(line)[:n-1]) + "…"
-						}
-						buf.WriteString("    " + style.NewStyle().Foreground(theme.Text).Render(line) + "\n")
-					}
-				}
-			}
-		} else if extraRender != nil && termH >= 20 {
-			extraRender(&buf)
-		}
-
-		navStyle := style.NewStyle().Foreground(theme.Border)
-		buf.WriteString(fmt.Sprintf("  %s\n", navStyle.Render("↑/↓/←/→ navigate · enter select/edit · type to search · esc save & exit")))
-		buf.WriteString("\x1b[J")
-
-		var bounded strings.Builder
-		for _, line := range strings.Split(buf.String(), "\n") {
-			bounded.WriteString(style.TruncateCells(line, max(1, termW-1)))
-			bounded.WriteByte('\n')
-		}
-		outputStr := strings.ReplaceAll(strings.TrimSuffix(bounded.String(), "\n"), "\n", "\x1b[K\r\n")
-		_, _ = rlOutput.Write([]byte(outputStr))
+		useTwoCols, rows := layout.twoColumns, layout.rows
 
 		var readBuf [16]byte
 		var n int
@@ -389,6 +237,24 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			continue
 		}
 
+		key := string(readBuf[:n])
+		if (termW < 18 || termH < 6) && key != "\x1b" && key != "\x03" && key != "\x04" {
+			continue
+		}
+		switch key {
+		case "\x1b[5~":
+			selectedIdx = max(0, selectedIdx-layout.pageSize)
+			continue
+		case "\x1b[6~":
+			selectedIdx = min(max(0, len(filtered)-1), selectedIdx+layout.pageSize)
+			continue
+		case "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~":
+			selectedIdx = 0
+			continue
+		case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
+			selectedIdx = max(0, len(filtered)-1)
+			continue
+		}
 		if n >= 3 && readBuf[0] == 27 && (readBuf[1] == '[' || readBuf[1] == 'O') {
 			if len(filtered) > 0 {
 				switch readBuf[2] {
@@ -421,22 +287,37 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			case ' ':
 				if searchQuery == "" && len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 					item := filtered[selectedIdx]
-					if item.isBool && item.onToggle != nil {
-						item.onToggle()
+					if item.isBool {
+						if err := item.toggle(); err != nil {
+							return err
+						}
 						continue
 					}
 				}
 			case 13, 10:
 				if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 					item := filtered[selectedIdx]
-					if item.onToggle != nil {
-						item.onToggle()
+					if item.isBool || item.onToggle != nil {
+						if err := item.toggle(); err != nil {
+							return err
+						}
 					} else if item.onEdit != nil {
-						fmt.Fprintf(rlOutput, "\r\n  edit %s (current: %s): ", item.name, item.value())
+						if hasSessionReader {
+							_, err := readMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.name, item.description, "Value", item.value(), item.onEdit)
+							if err != nil && !errors.Is(err, ErrSelectionCancelled) {
+								return err
+							}
+							continue
+						}
+						if err := writeMenuFrame(rlOutput, fmt.Sprintf("\r\n  edit %s (current: %s): ", item.name, item.value())); err != nil {
+							return err
+						}
 						newVal, err := ReadInputRaw(rlInput, rlOutput)
 						if err == nil {
 							if err = item.onEdit(strings.TrimSpace(newVal)); err != nil {
-								fmt.Fprintf(rlOutput, "\r\n  error: %v. press enter to continue...", err)
+								if err := writeMenuFrame(rlOutput, fmt.Sprintf("\r\n  error: %v. press enter to continue...", err)); err != nil {
+									return err
+								}
 								_, _ = ReadInputRaw(rlInput, rlOutput)
 							}
 						}
@@ -491,7 +372,9 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		selected = max(0, min(selected, len(indexes)-1))
 		width, height := terminal.GetDimensions()
 		if width < 12 || height < 7 {
-			fmt.Fprint(output, "\x1b[H\x1b[J"+style.TruncateCells("Resize terminal; Esc exits", max(1, width-1)))
+			if err := writeMenuFrame(output, "\x1b[H\x1b[J"+style.TruncateCells("Resize terminal; Esc exits", max(1, width-1))); err != nil {
+				return -1, err
+			}
 			key, _, err := sr.ReadKeyOrResize(signals)
 			if err != nil {
 				return -1, err
@@ -522,7 +405,9 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			screen.WriteString(prefix + style.NewStyle().Foreground(tint).Render(text) + "\n")
 		}
 		screen.WriteString("\n" + style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)) + "\x1b[J")
-		fmt.Fprint(output, strings.ReplaceAll(screen.String(), "\n", "\x1b[K\r\n"))
+		if err := writeMenuFrame(output, strings.ReplaceAll(screen.String(), "\n", "\x1b[K\r\n")); err != nil {
+			return -1, err
+		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
 		if err != nil {
 			return -1, err
@@ -571,16 +456,4 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			}
 		}
 	}
-}
-
-func parsePositiveInt(newVal string, target *int) error {
-	if newVal == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(newVal)
-	if err != nil || n <= 0 {
-		return fmt.Errorf("must be a positive integer")
-	}
-	*target = n
-	return nil
 }

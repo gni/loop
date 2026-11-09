@@ -148,6 +148,11 @@ func (a *Agent) CompressHistory(
 	w io.Writer,
 	instructions ...string,
 ) (compressionErr error) {
+	ctx, releaseContext := a.withLifetime(ctx)
+	defer releaseContext()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	a.emit(Event{Type: "compaction_start", SessionID: sessionID})
 	defer func() { a.emit(Event{Type: "compaction_end", SessionID: sessionID, IsError: compressionErr != nil}) }()
 
@@ -250,7 +255,7 @@ func (a *Agent) CompressHistory(
 	newMessages = EnforceToolPairingInvariance(newMessages)
 
 	if sessionID != "" {
-		if err := a.AppendEntry(sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
+		if err := a.AppendEntryContext(ctx, sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
 			a.recordPersistenceError(err)
 			return err
 		}

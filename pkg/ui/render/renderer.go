@@ -295,7 +295,7 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 func (sr *StreamRenderer) SafeToReplay() bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	return sr.parser == nil || sr.parser.ActiveToolName == ""
+	return sr.parser == nil || sr.parser.ActiveToolName == "" || sr.parser.ActiveToolName == "task_state"
 }
 
 func (sr *StreamRenderer) HasOutput() bool {
@@ -541,6 +541,11 @@ func (sr *StreamRenderer) flushLocked() {
 }
 
 func (sr *StreamRenderer) flushActiveToolLocked() {
+	if sr.parser != nil && sr.parser.ActiveToolName == "task_state" {
+		sr.parser.ActiveToolName = ""
+		sr.parser.ActiveToolIndex = -1
+		return
+	}
 	if sr.parser != nil && sr.parser.ActiveToolName != "" {
 		if !sr.parser.TitlePrinted && sr.parser.CanPrintTitle() {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
@@ -573,6 +578,17 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	if toolName == "task_state" {
+		sr.trackProgressCallLocked(toolCallIndex)
+		sr.endThinking()
+		sr.finishLiveTextLocked()
+		sr.flushActiveToolLocked()
+		if sr.parser != nil {
+			sr.parser.ActiveToolName = toolName
+			sr.parser.ActiveToolIndex = toolCallIndex
+		}
+		return
+	}
 
 	sr.endThinking()
 	if sr.pendingThoughtTextGap {
@@ -649,6 +665,9 @@ func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.parser != nil {
+		if sr.parser.ActiveToolName == "task_state" {
+			return
+		}
 		sr.parser.Path = target
 		sr.parser.IsRawStream = true
 		if sr.parser.GuessedLang == "" && target != "" {
@@ -667,6 +686,9 @@ func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
 func (sr *StreamRenderer) WriteToolCall(content string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	if sr.parser != nil && sr.parser.ActiveToolName == "task_state" {
+		return
+	}
 
 	if len(content) > 0 {
 		sr.checkFirstWrite()
@@ -719,6 +741,9 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 }
 
 func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs string, isError bool) {
+	if toolName == "task_state" {
+		return
+	}
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 

@@ -1,8 +1,8 @@
 package bash
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,51 +29,6 @@ func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-type cappedOutput struct {
-	buf      bytes.Buffer
-	limit    int
-	overflow bool
-}
-
-func newCappedOutput(limit int) *cappedOutput {
-	return &cappedOutput{limit: limit}
-}
-
-func (c *cappedOutput) Write(p []byte) (int, error) {
-	original := len(p)
-	remaining := c.limit - c.buf.Len()
-	if remaining <= 0 {
-		if original > 0 {
-			c.overflow = true
-		}
-		return original, nil
-	}
-	if len(p) > remaining {
-		p = p[:remaining]
-		c.overflow = true
-	}
-	_, _ = c.buf.Write(p)
-	return original, nil
-}
-
-func (c *cappedOutput) String() string { return c.buf.String() }
-
-// CleanBackgroundCommand strips nohup, background ampersand, and trailing echo syntax.
-func CleanBackgroundCommand(cmd string) string {
-	trimmed := strings.TrimSpace(cmd)
-	if idx := strings.Index(trimmed, "& echo"); idx != -1 {
-		trimmed = strings.TrimSpace(trimmed[:idx])
-	}
-	trimmed = strings.TrimSuffix(trimmed, "&")
-	trimmed = strings.TrimSpace(trimmed)
-	if strings.HasPrefix(trimmed, "nohup ") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "nohup "))
-	}
-	trimmed = strings.ReplaceAll(trimmed, "&& nohup ", "&& ")
-	trimmed = strings.ReplaceAll(trimmed, "; nohup ", "; ")
-	return trimmed
-}
-
 // FormatExitError formats an execution failure with signal and status details.
 func FormatExitError(err error, timeoutCtx context.Context) string {
 	return FormatExitErrorWithTimeout(err, timeoutCtx, 120*time.Second)
@@ -88,8 +43,8 @@ func FormatExitErrorWithTimeout(err error, timeoutCtx context.Context, timeout t
 		return "command cancelled by user"
 	}
 
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
 		return fmt.Sprintf("command failed: %v", err)
 	}
 

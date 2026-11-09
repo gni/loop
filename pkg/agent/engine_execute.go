@@ -187,6 +187,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 		}
 
 		if strings.HasPrefix(plan.call.Function.Name, "subagent__") {
+			plan.started = true
 			rich, err := tool.ExecutePreparedResult(executionContext(e, a), plan.executor, plan.call.Function.Arguments)
 			plan.rich = rich
 			plan.output, plan.toolErr = e.applyAfterHook(plan.call, rich.Output, err)
@@ -213,6 +214,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 				return
 			}
 
+			p.started = true
 			a.SetLiveBodyStreamed(false)
 			rich, err := tool.ExecutePreparedResult(executionContext(e, a), p.executor, p.call.Function.Arguments)
 			p.rich = rich
@@ -266,7 +268,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 			}
 			e.ensureToolHeaderRendered(callIndex, plan.call, assistantMsg.Content, false, sr, w, theme, render)
 			if plan.skipped {
-				e.emitRejectedToolCall(callIndex, plan.call, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render)
+				e.emitRejectedToolCall(callIndex, plan.call, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render, plan.dependencySkipped)
 			} else {
 				e.finalizeToolCall(callIndex, plan.call, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)
 			}
@@ -277,8 +279,15 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 		}
 	}
 	if ctx.Err() != nil {
-		remainingIndex := startIndex + next
-		e.RecordInterruption(sink, assistantMsg.ToolCalls[remainingIndex:endIndex], "cancelled during execution")
+		// All workers have completed, so their started flags are stable.
+		// Calls cancelled while queued must not claim an unknown side effect.
+		for i := next; i < len(plans); i++ {
+			reason := "cancelled before execution"
+			if plans[i].started {
+				reason = "cancelled during execution"
+			}
+			e.RecordInterruption(sink, assistantMsg.ToolCalls[startIndex+i:startIndex+i+1], reason)
+		}
 		e.RecordInterruption(sink, assistantMsg.ToolCalls[endIndex:], "cancelled before execution")
 		return true, false
 	}

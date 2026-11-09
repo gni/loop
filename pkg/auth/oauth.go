@@ -125,7 +125,7 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 	if err != nil {
 		return err
 	}
-	return s.Save(name, Credential{Type: "oauth", Issuer: profile.Endpoint, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: tokenExpiry(token.ExpiresIn), ClientID: oauth.ClientID})
+	return s.SaveContext(ctx, name, Credential{Type: "oauth", Issuer: profile.Endpoint, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: tokenExpiry(token.ExpiresIn), ClientID: oauth.ClientID})
 }
 
 func (s *Store) deviceLogin(ctx context.Context, name string, profile config.ProviderConfig, notify func(string)) error {
@@ -185,7 +185,7 @@ func (s *Store) deviceLogin(ctx context.Context, name string, profile config.Pro
 		if err != nil {
 			return err
 		}
-		return s.Save(name, Credential{Type: "oauth", Issuer: profile.Endpoint, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: tokenExpiry(token.ExpiresIn), ClientID: oauth.ClientID})
+		return s.SaveContext(ctx, name, Credential{Type: "oauth", Issuer: profile.Endpoint, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: tokenExpiry(token.ExpiresIn), ClientID: oauth.ClientID})
 	}
 }
 

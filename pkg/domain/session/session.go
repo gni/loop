@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"loop/pkg/domain/message"
 )
@@ -15,6 +18,19 @@ var sessionIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 func ValidateID(sessionID string) error {
 	if !sessionIDRegex.MatchString(sessionID) {
 		return fmt.Errorf("invalid session ID format")
+	}
+	return nil
+}
+
+func ValidateName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("session name cannot be empty")
+	}
+	if len(name) > 256 {
+		return fmt.Errorf("session name exceeds 256 bytes")
+	}
+	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+		return fmt.Errorf("session name must contain printable text")
 	}
 	return nil
 }
@@ -70,24 +86,40 @@ type Record struct {
 	ParentSession string            `json:"parentSession,omitempty"`
 }
 
-// LeafPath walks parent pointers from the leaf (or leafID) back to the root.
-// Legacy entries without IDs resolve to a linear chain.
-func LeafPath(entries []Record, leafID string) []Record {
-	norm := make([]Record, 0, len(entries))
-	byID := make(map[string]*Record, len(entries))
+// NormalizeEntries assigns stable IDs and parent links to legacy records without
+// changing the input. Headers are preserved so moving records cannot shift IDs.
+func NormalizeEntries(entries []Record) []Record {
+	norm := make([]Record, len(entries))
 	var prevID string
 	for i := range entries {
 		e := entries[i]
 		if e.Type == "session" {
+			norm[i] = e
 			continue
 		}
 		if e.ID == "" {
-			e = Record{ID: fmt.Sprintf("legacy-%d", i), ParentID: prevID, Type: "message", Timestamp: e.Timestamp, Message: e.Message}
+			e.ID = fmt.Sprintf("legacy-%d", i)
+			e.ParentID = prevID
+			if e.Type == "" {
+				e.Type = "message"
+			}
 		}
-		norm = append(norm, e)
-		byID[e.ID] = &norm[len(norm)-1]
+		norm[i] = e
 		if e.Type != "branch" {
 			prevID = e.ID
+		}
+	}
+	return norm
+}
+
+// LeafPath walks parent pointers from the leaf (or leafID) back to the root.
+// Legacy entries without IDs resolve to a linear chain.
+func LeafPath(entries []Record, leafID string) []Record {
+	norm := NormalizeEntries(entries)
+	byID := make(map[string]*Record, len(norm))
+	for i := range norm {
+		if norm[i].Type != "session" {
+			byID[norm[i].ID] = &norm[i]
 		}
 	}
 

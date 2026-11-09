@@ -60,17 +60,17 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	drainSubagentOutput(s.subagent.Output)
 
 	taskID := "subtask_" + db.NewUUID()
-	if err := s.subagent.Manager.RegisterTask(taskID, s.subagent.Name, prompt); err != nil {
+	if err := s.subagent.supervisor.RegisterTask(taskID, s.subagent.Name, prompt); err != nil {
 		return "", err
 	}
 
 	select {
 	case <-ctx.Context().Done():
-		s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
 		return "", ctx.Context().Err()
 	case <-s.subagent.Context.Done():
 		errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
-		s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errSub)
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
 		return "", errSub
 	case s.subagent.Input <- db.Message{
 		Role:                  "user",
@@ -91,7 +91,7 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	defer timeoutTimer.Stop()
 
 	checkTask := func() (string, bool, error) {
-		task, err := s.subagent.Manager.GetTask(taskID)
+		task, err := s.subagent.supervisor.GetTask(taskID)
 		if err != nil {
 			return "", true, err
 		}
@@ -115,23 +115,23 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		select {
 		case <-ctx.Context().Done():
 			s.subagent.CancelActiveTurn()
-			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
+			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
 			drainSubagentOutput(s.subagent.Output)
 			return "", ctx.Context().Err()
 		case <-s.subagent.Context.Done():
 			errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
-			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errSub)
+			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
 			return "", errSub
 		case <-timeoutTimer.C:
 			s.subagent.CancelActiveTurn()
 			errTimeout := fmt.Errorf("subagent '%s' execution timed out after %v", s.subagent.Name, timeout)
-			s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errTimeout)
+			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errTimeout)
 			drainSubagentOutput(s.subagent.Output)
 			return "", errTimeout
 		case _, ok := <-s.subagent.Output:
 			if !ok {
 				errClosed := fmt.Errorf("subagent '%s' output channel closed before task completion", s.subagent.Name)
-				s.subagent.Manager.UpdateTaskStatus(taskID, "failed", "", errClosed)
+				s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errClosed)
 				return "", errClosed
 			}
 			if res, done, err := checkTask(); done {
@@ -192,11 +192,14 @@ func (s *RemoveSubagentTool) Definition() tool.Tool {
 }
 
 func (s *RemoveSubagentTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+	if err := ctx.Context().Err(); err != nil {
+		return "", err
+	}
 	name, err := parseSubagentName(arguments)
 	if err != nil {
 		return "", err
 	}
-	if err := s.mam.RemoveAgent(name); err != nil {
+	if err := s.mam.removeAgentFor(ctx, name); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Subagent '%s' terminated.", name), nil

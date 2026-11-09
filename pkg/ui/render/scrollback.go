@@ -565,7 +565,7 @@ func (b *Scrollback) ReplaceRange(start, end int, text string) (delta, padding i
 }
 
 // FindRow scans archived and live rows without retaining the full transcript.
-func (b *Scrollback) FindRow(query string, start, direction int) int {
+func (b *Scrollback) FindRow(query string, start, direction int, limits ...int) int {
 	query = strings.ToLower(query)
 	if query == "" || direction == 0 {
 		return -1
@@ -575,7 +575,12 @@ func (b *Scrollback) FindRow(query string, start, direction int) int {
 	} else {
 		start = max(0, start)
 	}
-	for row := start; row >= 0 && row < len(b.rows); row += direction {
+	remaining := len(b.rows)
+	if len(limits) > 0 {
+		remaining = max(0, limits[0])
+	}
+	for row := start; row >= 0 && row < len(b.rows) && remaining > 0; row += direction {
+		remaining--
 		b.loadPage(row)
 		text := strings.ToLower(style.StripAnsi(b.rows[row].String()))
 		original := len(text)

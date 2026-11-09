@@ -30,16 +30,11 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	}
 	state := getUI()
 	id := a.ActiveSessionID()
+	label, known := sessionDisplayLabel(a, id)
 	state.StateMu.Lock()
-	if state.SessionID != id {
+	if state.SessionID != id || known {
 		state.SessionID = id
-		state.State.SessionLabel = id
-		if len(id) > 8 {
-			state.State.SessionLabel = id[:8]
-		}
-	}
-	if id == "" {
-		state.State.SessionLabel = "unsaved"
+		state.State.SessionLabel = label
 	}
 	state.State.Workspace = filepath.Base(a.WorkspaceRoot)
 	state.StateMu.Unlock()

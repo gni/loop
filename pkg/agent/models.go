@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"loop/pkg/db"
 	"loop/pkg/domain/model"
+	transporthttp "loop/pkg/transport/http"
 )
 
 func (p *OpenAICompatibleProvider) selectedModel() model.Model {
@@ -22,6 +22,9 @@ func (p *OpenAICompatibleProvider) selectedModel() model.Model {
 }
 
 func (p *OpenAICompatibleProvider) validateCapabilities(messages []db.Message) error {
+	if p == nil || p.Config == nil {
+		return fmt.Errorf("provider config is nil")
+	}
 	selected := p.selectedModel()
 	for _, msg := range messages {
 		for _, block := range msg.ContentBlocks {
@@ -34,14 +37,13 @@ func (p *OpenAICompatibleProvider) validateCapabilities(messages []db.Message) e
 }
 
 func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
-	profile := a.Config.Providers[a.Config.ActiveProvider]
-	base := strings.TrimRight(a.Config.Endpoint, "/")
-	endpoint := base + "/models"
-	if !strings.HasSuffix(base, "/v1") && !strings.HasSuffix(base, "/v1beta") {
-		endpoint = base + "/v1/models"
+	if a == nil || a.Config == nil {
+		return nil, fmt.Errorf("provider config is nil")
 	}
-	if profile.API == "generate-content" && !strings.HasSuffix(base, "/v1") && !strings.HasSuffix(base, "/v1beta") {
-		endpoint = base + "/v1beta/models"
+	profile := a.Config.Providers[a.Config.ActiveProvider]
+	endpoint, err := transporthttp.ModelDiscoveryURL(a.Config.Endpoint, profile.API)
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -53,21 +55,13 @@ func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch profile.API {
-	case "messages":
-		request.Header.Set("x-api-key", key)
-		request.Header.Set("anthropic-version", "2023-06-01")
-	case "generate-content":
-		request.Header.Set("x-goog-api-key", key)
-	default:
-		if key != "" {
-			request.Header.Set("Authorization", "Bearer "+key)
-		}
+	transporthttp.ApplyProviderAuthHeaders(request.Header, profile.API, key)
+	transporthttp.ApplyProviderHeaders(request.Header, profile.Headers)
+	client := a.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
 	}
-	for name, value := range profile.Headers {
-		request.Header.Set(name, os.ExpandEnv(value))
-	}
-	response, err := a.HTTPClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}

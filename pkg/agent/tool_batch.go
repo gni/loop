@@ -92,6 +92,37 @@ func (b *ToolBatch) Observe(index int, name, argumentDelta string) {
 	})
 }
 
+// remap retains stable call IDs when provisional arrival order changes.
+func (b *ToolBatch) remap(mapping map[int]int, count int) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	reordered := make([]*ToolCallView, count)
+	var cancelled []ToolLifecycleEvent
+	for old, call := range b.calls {
+		if call == nil {
+			continue
+		}
+		if index, ok := mapping[old]; ok && index >= 0 && index < count {
+			call.Index = index
+			reordered[index] = call
+		} else {
+			event := call.ToolLifecycleEvent
+			event.Phase = ToolPhaseCancelled
+			cancelled = append(cancelled, event)
+		}
+	}
+	b.calls = reordered
+	notify := b.notify
+	b.mu.Unlock()
+	if notify != nil {
+		for _, event := range cancelled {
+			notify(event)
+		}
+	}
+}
+
 // Seal reconciles streamed calls with authoritative final calls. In particular,
 // a missing or malformed preview must never change the execution order.
 func (b *ToolBatch) Seal(calls []db.ToolCall) {

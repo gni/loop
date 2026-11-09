@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,7 +46,15 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 	}
 	var r *db.HistoryReader
 	var err error
+	ctx := h.a.Lifetime
+	if ctx == nil {
+		ctx = h.a.Context()
+	}
 	if store, ok := h.a.Store.(interface {
+		OpenHistoryLazyContext(context.Context, string) (*db.HistoryReader, error)
+	}); ok && store != nil {
+		r, err = store.OpenHistoryLazyContext(ctx, id)
+	} else if store, ok := h.a.Store.(interface {
 		OpenHistoryLazy(string) (*db.HistoryReader, error)
 	}); ok && store != nil {
 		r, err = store.OpenHistoryLazy(id)
@@ -58,7 +67,7 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 		if storeErr != nil {
 			return fallback, storeErr
 		}
-		r, err = store.OpenHistoryLazy(id)
+		r, err = store.OpenHistoryLazyContext(ctx, id)
 	}
 	if err != nil || r == nil {
 		return fallback, err
@@ -185,10 +194,11 @@ func (h *ChatHistory) loadOlderLocked() int {
 		h.historyErr = err
 		return 0
 	}
-	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile}
+	job := &historyPageJob{stop: make(chan struct{}), file: h.turnFile, pendingTurn: h.pendingOlderTurn}
 	page := h.buffer.NewHistoryPage()
 	p := h.prepareOlderPage(job, h.source, page, h.pendingOlderRows, cfg, GetConfiguredTheme(cfg), h.appearanceKey(), false)
 	h.pendingOlderRows = p.pending
+	h.pendingOlderTurn = p.pendingTurn
 	if !p.more {
 		h.source = nil
 	}
@@ -204,6 +214,8 @@ func (h *ChatHistory) loadOlderLocked() int {
 }
 
 func (h *ChatHistory) closePagesLocked() {
+	h.searchPending = false
+	h.searchScan = nil
 	h.initialLoading, h.initialOutput = false, false
 	h.initialFilling = false
 	h.initialRows = 0
@@ -222,6 +234,9 @@ func (h *ChatHistory) closePagesLocked() {
 	}
 
 	if h.pageJob != nil {
+		if source, ok := h.source.(interface{ Cancel() }); ok {
+			source.Cancel()
+		}
 		close(h.pageJob.stop)
 		h.pageJob = nil
 		h.source = nil
@@ -234,6 +249,7 @@ func (h *ChatHistory) closePagesLocked() {
 		_ = h.pendingOlderRows.Close()
 		h.pendingOlderRows = nil
 	}
+	h.pendingOlderTurn = nil
 	h.pendingUp = 0
 	h.pendingHome = false
 	h.scrollDirection = 0

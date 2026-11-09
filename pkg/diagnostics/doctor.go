@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"loop/pkg/auth"
 	"loop/pkg/config"
+	transporthttp "loop/pkg/transport/http"
 )
 
 type Check struct{ Name, Status, Detail, Next string }
@@ -56,6 +58,17 @@ func Run(ctx context.Context, cfg *config.Config, path, workspace string, offlin
 	if cfg == nil {
 		add("Settings", "error", "configuration unavailable", "Check the config file.")
 		return report
+	}
+	if err := cfg.ValidateSettings(); err != nil {
+		add("Settings", "error", err.Error(), "Correct the invalid configuration value.")
+		return report
+	}
+	for _, directory := range []string{filepath.Dir(path), filepath.Join(filepath.Dir(path), "sessions")} {
+		if err := checkStorageDirectory(directory); err != nil {
+			add("Storage", "error", "cannot write and sync "+directory, "Check permissions and available disk space.")
+		} else {
+			add("Storage", "ok", directory+" is writable", "")
+		}
 	}
 	u, err := url.Parse(cfg.Endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -105,19 +118,18 @@ func Run(ctx context.Context, cfg *config.Config, path, workspace string, offlin
 		add("Authentication", "error", err.Error(), "Check your provider credentials or sign in again.")
 		return report
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/models"
-	u.RawPath = ""
-	request, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	endpoint, err := transporthttp.ModelDiscoveryURL(cfg.Endpoint, profile.API)
+	if err != nil {
+		add("Connection", "error", "invalid model discovery URL", "Check the endpoint address.")
+		return report
+	}
+	request, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		add("Connection", "error", "cannot construct endpoint request", "Check the endpoint address.")
 		return report
 	}
-	if key != "" {
-		request.Header.Set("Authorization", "Bearer "+key)
-	}
-	for k, v := range profile.Headers {
-		request.Header.Set(k, v)
-	}
+	transporthttp.ApplyProviderAuthHeaders(request.Header, profile.API, key)
+	transporthttp.ApplyProviderHeaders(request.Header, profile.Headers)
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
 	if base, ok := http.DefaultTransport.(*http.Transport); ok && base != nil {
 		transport = base.Clone()
@@ -154,6 +166,9 @@ func Run(ctx context.Context, cfg *config.Config, path, workspace string, offlin
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&models); err != nil {
 		add("Models", "warning", "discovery response could not be read", "Check that the endpoint points to an API, not a webpage.")
@@ -165,6 +180,25 @@ func Run(ctx context.Context, cfg *config.Config, path, workspace string, offlin
 			return report
 		}
 	}
+	for _, m := range models.Models {
+		if strings.TrimPrefix(m.Name, "models/") == strings.TrimPrefix(cfg.Model, "models/") {
+			add("Model", "ok", cfg.Model, "")
+			return report
+		}
+	}
 	add("Model", "warning", "configured model was not listed by the server", "Choose an available model with /model.")
 	return report
+}
+
+func checkStorageDirectory(directory string) error {
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(directory, ".loop-doctor-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, writeErr := file.WriteString("loop storage check\n")
+	return errors.Join(writeErr, file.Sync(), file.Close())
 }

@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"loop/pkg/domain/task"
 	"strings"
 	"time"
 
@@ -152,6 +153,20 @@ func PrintSessionHistory(
 			for _, tc := range msg.ToolCalls {
 				calls[tc.ID] = tc
 			}
+			reasoningVisible := cfg != nil && cfg.ShowThinking && strings.TrimSpace(msg.ReasoningContent) != ""
+			if cfg != nil {
+				effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+				reasoningVisible = reasoningVisible && effort != "off" && effort != "none"
+			}
+			onlyProgress := len(msg.ToolCalls) > 0 && strings.TrimSpace(agent.StripFallbackToolMarkup(msg.Content)) == "" && !reasoningVisible
+			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name != "task_state" {
+					onlyProgress = false
+				}
+			}
+			if onlyProgress {
+				continue
+			}
 			if lastRole == "tool" {
 				for line := 0; line < style.ActivityGapLines; line++ {
 					fmt.Fprintln(w)
@@ -199,6 +214,9 @@ func PrintSessionHistory(
 			}
 			printedUnrespondedToolCount := 0
 			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name == "task_state" {
+					continue
+				}
 				if responses[tc.ID] > i {
 					continue
 				}
@@ -237,6 +255,9 @@ func PrintSessionHistory(
 
 			lowerContent := strings.ToLower(msg.Content)
 			isError := msg.IsError || strings.HasPrefix(lowerContent, "error:") || strings.Contains(lowerContent, "command failed")
+			if toolName == "task_state" && !isError && !task.ShowProgressNotice(msg.Content, argsJSON) {
+				continue
+			}
 			status := ToolStatusSuccess
 			if isError {
 				status = ToolStatusError
@@ -247,7 +268,9 @@ func PrintSessionHistory(
 					fmt.Fprintln(w)
 				}
 			}
-			renderToolTitleLine(w, toolName, argsJSON, status, theme)
+			if toolName != "task_state" {
+				renderToolTitleLine(w, toolName, argsJSON, status, theme)
+			}
 			RenderToolOutput(w, msg.Content, isError, collapse, theme, toolName, argsJSON, false)
 
 		case "error":

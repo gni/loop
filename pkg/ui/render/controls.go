@@ -61,7 +61,7 @@ func DrawConsoleControls(w io.Writer, options ConsoleControls) {
 			options.OnScroll(-delta)
 		}
 	}
-	for row := max(1, height-4-max(offset, oldOffset)); row <= height-2; row++ {
+	for row := max(1, height-4-style.ActivityGapLines-max(offset, oldOffset)); row <= height-2; row++ {
 		fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", row)
 	}
 	bottom := style.ConsoleScrollBottom(height, offset)

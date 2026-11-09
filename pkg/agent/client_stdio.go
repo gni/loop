@@ -14,7 +14,8 @@ import (
 )
 
 func (c *mcpClient) startStdio() error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.context())
+	c.ctx = ctx
 	c.cancel = cancel
 
 	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
@@ -60,7 +61,7 @@ func (c *mcpClient) startStdio() error {
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
 		for scanner.Scan() {
-			mcpLog("[MCP Stderr %s] %s\n", c.name, scanner.Text())
+			mcpLog("[MCP Stderr %s] bytes=%d [content omitted]\n", c.name, len(scanner.Bytes()))
 		}
 	}()
 
@@ -74,7 +75,7 @@ func (c *mcpClient) startStdio() error {
 			if line == "" || !strings.HasPrefix(line, "{") {
 				continue
 			}
-			mcpLog("[MCP Rx] %s\n", line)
+			mcpLog("[MCP Rx] bytes=%d [payload omitted]\n", len(line))
 			c.handleMessage(line)
 		}
 		if err := scanner.Err(); err != nil {

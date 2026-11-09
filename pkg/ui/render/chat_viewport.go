@@ -71,7 +71,7 @@ func ChatHistoryRows(text string, width int) []string {
 	return rows
 }
 
-// DrawChatViewport updates changed rows and the counter in the reserved gap.
+// DrawChatViewport updates changed rows and the counter on the stats row.
 // Showing or hiding the counter never changes the chat area's height.
 func DrawChatViewport(w io.Writer, rows, previous []string, hint, previousHint string) {
 	var frame bytes.Buffer
@@ -90,7 +90,10 @@ func DrawChatViewport(w io.Writer, rows, previous []string, hint, previousHint s
 	}
 	if len(previous) != len(rows) || hint != previousHint {
 		begin()
-		fmt.Fprintf(&frame, "\x1b[%d;1H%s\x1b[0m\x1b[K", len(rows)+1, hint)
+		for row := len(rows) + 1; row <= len(rows)+style.ActivityGapLines; row++ {
+			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", row)
+		}
+		fmt.Fprintf(&frame, "\x1b[%d;1H%s\x1b[0m\x1b[K", len(rows)+style.ActivityGapLines+1, hint)
 	}
 	if frame.Len() == 0 {
 		return

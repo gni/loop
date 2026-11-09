@@ -11,6 +11,7 @@ import (
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui/style"
 )
 
@@ -24,6 +25,10 @@ type MultiAgentManager struct {
 	agentsDir   string
 	ephemeral   bool
 	Supervisor  *subagent.TaskSupervisor
+	staging     bool
+	closed      bool
+	clearing    bool
+	generation  uint64
 }
 
 func NewMultiAgentManager(baseAgent *agent.Agent, w io.Writer, theme style.UITheme) *MultiAgentManager {
@@ -73,8 +78,23 @@ func (mam *MultiAgentManager) spawnAgentWithSkills(
 	preloadedSkills []tool.Skill,
 	persistDef bool,
 ) error {
+	return mam.spawnAgentWithSkillsFor(nil, name, systemPrompt, parentName, skillNames, localSkills, inheritAllSkills, preloadedSkills, persistDef)
+}
+
+func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
+	ctx tool.AgentContext,
+	name, systemPrompt, parentName string,
+	skillNames []string,
+	localSkills []tool.Skill,
+	inheritAllSkills bool,
+	preloadedSkills []tool.Skill,
+	persistDef bool,
+) error {
 	mam.mu.Lock()
 	defer mam.mu.Unlock()
+	if err := mam.checkMutationContextLocked(ctx); err != nil {
+		return err
+	}
 
 	if mam.BaseAgent == nil || mam.BaseAgent.Config == nil || mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
 		return fmt.Errorf("subagents are disabled; set max_subagent_depth to a positive number")
@@ -184,9 +204,29 @@ func (mam *MultiAgentManager) spawnAgentWithSkills(
 		inheritAllSkills,
 	)
 	ma.Manager = mam
+	registered := false
+	defer func() {
+		if !registered {
+			ma.Cancel()
+		}
+	}()
+	if !mam.ephemeral {
+		store, err := mam.getStorage()
+		if err != nil {
+			return err
+		}
+		ma.stateStore = store
+	}
+	if mam.Supervisor == nil {
+		mam.Supervisor = subagent.NewTaskSupervisor()
+	}
+	ma.supervisor = mam.Supervisor
 
 	if err := mam.LoadAgentState(ma); err != nil {
 		return fmt.Errorf("load saved state for agent '%s': %w", name, err)
+	}
+	if err := mam.checkMutationContextLocked(ctx); err != nil {
+		return err
 	}
 	if persistDef {
 		if err := mam.saveAgentDef(ma); err != nil {
@@ -195,21 +235,27 @@ func (mam *MultiAgentManager) spawnAgentWithSkills(
 	}
 
 	mam.Agents[name] = ma
-	mam.BaseAgent.SpawnedAgentsMu.Lock()
-	if mam.BaseAgent.SpawnedAgents == nil {
-		mam.BaseAgent.SpawnedAgents = make(map[string]bool)
-	}
-	mam.BaseAgent.SpawnedAgents[name] = true
-	mam.BaseAgent.SpawnedAgentsMu.Unlock()
-
-	ma.Start(mam.w, mam.theme)
-
 	if parent != nil {
 		parent.SubagentsMu.Lock()
 		parent.Subagents[name] = ma
 		parent.SubagentsMu.Unlock()
 	}
+	if !mam.staging {
+		mam.BaseAgent.SpawnedAgentsMu.Lock()
+		if mam.BaseAgent.SpawnedAgents == nil {
+			mam.BaseAgent.SpawnedAgents = make(map[string]bool)
+		}
+		mam.BaseAgent.SpawnedAgents[name] = true
+		mam.BaseAgent.SpawnedAgentsMu.Unlock()
+		mam.BaseAgent.Registry.Register(subagentExecutor(ma))
+		ma.Start(mam.w, mam.theme)
+	}
+	registered = true
+	return nil
+}
 
+func subagentExecutor(ma *MultiAgent) *SubagentExecutor {
+	name := ma.Name
 	tpl := tool.AgentTemplatesSnapshot()
 	toolName := fmt.Sprintf("subagent__%s", name)
 	toolDef := tool.Tool{
@@ -229,15 +275,10 @@ func (mam *MultiAgentManager) spawnAgentWithSkills(
 			},
 		},
 	}
-	mam.BaseAgent.Registry.Register(&SubagentExecutor{
+	return &SubagentExecutor{
 		subagent: ma,
 		def:      toolDef,
-	})
-	if mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
-		mam.BaseAgent.Registry.Disable(toolName)
 	}
-
-	return nil
 }
 
 func (mam *MultiAgentManager) SendMessage(name string, content string) error {
@@ -246,6 +287,9 @@ func (mam *MultiAgentManager) SendMessage(name string, content string) error {
 	mam.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("agent '%s' not found", name)
+	}
+	if ma.Context.Err() != nil {
+		return fmt.Errorf("agent '%s' is no longer running", name)
 	}
 
 	select {
@@ -273,25 +317,28 @@ func (mam *MultiAgentManager) ListAgents() []string {
 }
 
 func (mam *MultiAgentManager) RemoveAgent(name string) error {
+	return mam.removeAgentFor(nil, name)
+}
+
+func (mam *MultiAgentManager) removeAgentFor(ctx tool.AgentContext, name string) error {
 	mam.mu.Lock()
-	defer mam.mu.Unlock()
+	if err := mam.checkMutationContextLocked(ctx); err != nil {
+		mam.mu.Unlock()
+		return err
+	}
 
 	ma, exists := mam.Agents[name]
 	if !exists {
+		mam.mu.Unlock()
 		return fmt.Errorf("agent '%s' not found", name)
 	}
 
 	// The persisted definition must be removed before changing in-memory state.
 	// Otherwise a failed disk removal would resurrect this agent on restart.
 	if err := mam.deleteAgentDef(name); err != nil {
+		mam.mu.Unlock()
 		return fmt.Errorf("remove saved subagent %q: %w", name, err)
 	}
-
-	ma.CancelActiveTurn()
-	if ma.Cancel != nil {
-		ma.Cancel()
-	}
-	ma.KillTasks()
 	delete(mam.Agents, name)
 
 	if mam.BaseAgent != nil {
@@ -327,7 +374,8 @@ func (mam *MultiAgentManager) RemoveAgent(name string) error {
 	if mam.ActiveAgent == ma {
 		mam.ActiveAgent = ma.Parent
 	}
-
+	mam.mu.Unlock()
+	ma.stop()
 	return nil
 }
 
@@ -352,7 +400,7 @@ func (mam *MultiAgentManager) ActiveHistorySnapshot() ([]db.Message, bool) {
 		return nil, false
 	}
 	active.HistoryMu.RLock()
-	history := append([]db.Message(nil), active.History...)
+	history := message.CloneAll(active.History)
 	active.HistoryMu.RUnlock()
 	return history, true
 }

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -387,21 +386,9 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", "text/event-stream")
-		switch p.api() {
-		case "messages":
-			request.Header.Set("x-api-key", p.requestKey(streamCtx))
-			request.Header.Set("anthropic-version", "2023-06-01")
-		case "generate-content":
-			request.Header.Set("x-goog-api-key", p.requestKey(streamCtx))
-		default:
-			if p.requestKey(streamCtx) != "" {
-				request.Header.Set("Authorization", "Bearer "+p.requestKey(streamCtx))
-			}
-		}
+		transport.ApplyProviderAuthHeaders(request.Header, p.api(), p.requestKey(streamCtx))
 		if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
-			for key, value := range profile.Headers {
-				request.Header.Set(key, os.ExpandEnv(value))
-			}
+			transport.ApplyProviderHeaders(request.Header, profile.Headers)
 		}
 		return request, nil
 	})
@@ -492,7 +479,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 			return result, fmt.Errorf("invalid provider event: %w", err)
 		}
 		if event.Error != nil {
-			return result, fmt.Errorf("provider error: %s", event.Error.Message)
+			return result, fmt.Errorf("provider error: %s", transport.RedactDiagnostic(event.Error.Message))
 		}
 		switch p.api() {
 		case "messages":
@@ -581,7 +568,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 				complete = true
 				applyUsage(event.Response.Usage)
 			case "response.failed":
-				return result, fmt.Errorf("provider response failed: %s", event.Response.Error.Message)
+				return result, fmt.Errorf("provider response failed: %s", transport.RedactDiagnostic(event.Response.Error.Message))
 			}
 		case "generate-content":
 			result.PromptTokens = event.UsageMetadata.Input

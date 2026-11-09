@@ -68,6 +68,25 @@ func safeLiveLabel(value string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// TrackProgressCall records a quiet call even when argument previews are off.
+// Its result may still contain a blocker that must survive a redraw.
+func (sr *StreamRenderer) TrackProgressCall(index int) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.trackProgressCallLocked(index)
+}
+
+func (sr *StreamRenderer) trackProgressCallLocked(index int) {
+	if sr.liveCallViews == nil {
+		sr.liveCallViews = make(map[int]*liveCallView)
+	}
+	if sr.liveCallViews[index] != nil {
+		return
+	}
+	sr.liveCallViews[index] = &liveCallView{name: "task_state", titleLine: -1, compactLine: -1, endsWithNewline: true}
+	sr.liveReplayEvents = append(sr.liveReplayEvents, liveReplayEvent{kind: "tool", index: index})
+}
+
 // ShowLiveToolContent is called in model-stream order. It never writes a file
 // and never runs a tool. It appends actual decoded text deltas, rather than
 // rewriting an arbitrarily sized block of terminal rows. Writes stream even
@@ -77,6 +96,10 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	defer sr.mu.Unlock()
 	name = safeLiveLabel(name)
 	if name == "" {
+		return
+	}
+	if name == "task_state" {
+		sr.trackProgressCallLocked(index)
 		return
 	}
 	if name == "ask_user" && sr.interactiveQuestions {

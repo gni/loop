@@ -53,7 +53,7 @@ func (h *ChatHistory) scheduleLayoutsLocked() {
 		if turn.alternate != nil && !turn.alternate.archived && !turn.alternate.failed {
 			archiveTurn = turn
 		}
-		if turn == h.active || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
+		if turn.fragment != nil || turn == h.active || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
 			continue
 		}
 		if len(turn.messages) == 0 && turn.size == 0 {
@@ -214,11 +214,7 @@ func (h *ChatHistory) restoreTurnLayoutLocked(index int, rows *render.Scrollback
 		later.start += delta + padding
 		later.end += delta + padding
 	}
-	if h.searchRow >= end {
-		h.searchRow += delta + padding
-	} else if h.searchRow >= start {
-		h.searchRow = start + padding + min(h.searchRow-start, max(0, turn.end-turn.start-1))
-	}
+	h.adjustSearchRowsLocked(start, end, turn.end, delta, padding)
 	if h.top >= end {
 		h.top += delta + padding
 	} else if h.top >= start {
@@ -249,7 +245,7 @@ func (h *ChatHistory) limitLayoutScrollLocked(from, to int) int {
 	key := h.appearanceKey()
 	limited := to
 	for _, turn := range h.turns {
-		if turn == h.active || (len(turn.messages) == 0 && turn.size == 0) || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
+		if turn.fragment != nil || turn == h.active || (len(turn.messages) == 0 && turn.size == 0) || turn.appearance == key || turn.failedLayout == key || h.cachedLayoutReady(turn, key) {
 			continue
 		}
 		if to < from {

@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"loop/pkg/buildinfo"
+	transporthttp "loop/pkg/transport/http"
 )
 
 func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
@@ -61,10 +63,11 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	if err != nil {
 		return false, 0
 	}
-	req.Header.Set("loop", "v1.0.0")
-	if key := p.requestKey(ctx); key != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+	req.Header.Set("loop", buildinfo.Version)
+	if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
+		transporthttp.ApplyProviderHeaders(req.Header, profile.Headers)
 	}
+	transporthttp.ApplyProviderAuthHeaders(req.Header, "chat-completions", p.requestKey(ctx))
 	client := p.HTTPClient
 	if client == nil {
 		client = http.DefaultClient

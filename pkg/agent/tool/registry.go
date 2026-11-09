@@ -14,6 +14,7 @@ type FunctionDefinition = domaintool.FunctionDefinition
 type Tool = domaintool.Tool
 type Skill = domaintool.Skill
 type AgentContext = domaintool.AgentContext
+type BackgroundTaskOptions = domaintool.BackgroundTaskOptions
 type LiveOutputWriter = domaintool.LiveOutputWriter
 type ToolExecutor = domaintool.ToolExecutor
 

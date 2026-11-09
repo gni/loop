@@ -43,28 +43,11 @@ func ShutdownStatusBar(w io.Writer) {
 	getUI().ShutdownStatusBar(w)
 }
 
-var (
-	altTerms   = make(map[io.Writer]*terminal.Terminal)
-	altTermsMu sync.Mutex
-)
-
-func termForWriter(w io.Writer) *terminal.Terminal {
-	if w == nil {
-		return terminal.Default()
-	}
-	altTermsMu.Lock()
-	defer altTermsMu.Unlock()
-	t, ok := altTerms[w]
-	if !ok {
-		t = terminal.New(w)
-		altTerms[w] = t
-	}
-	return t
-}
-
 func ForceExitAlternateScreen(w io.Writer) {
 	terminal.Default().ForceExitAltScreen()
-	termForWriter(w).ForceExitAltScreen()
+	if w != nil {
+		terminal.New(w).ForceExitAltScreen()
+	}
 }
 
 func MarkSessionReloaded() {

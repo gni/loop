@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +10,7 @@ import (
 
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
+	"loop/pkg/storage"
 )
 
 // Limits apply to retained records, not explicit full-history reads. Large
@@ -26,6 +29,7 @@ type cachedEntries struct {
 	complete         bool
 	count            int
 	lastID, lastType string
+	settingsHash     *[sha256.Size]byte
 	used             uint64
 }
 
@@ -43,6 +47,14 @@ func cacheForEntries(info os.FileInfo, entries []session.Record) cachedEntries {
 		c.lastID, c.lastType = last.ID, last.Type
 		if c.lastID == "" {
 			c.lastID = fmt.Sprintf("legacy-%d", len(entries)-1)
+		}
+	}
+	path := session.LeafPath(entries, "")
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i].Type == "settings" {
+			hash := sha256.Sum256(path[i].Data)
+			c.settingsHash = &hash
+			break
 		}
 	}
 	return c
@@ -91,6 +103,10 @@ func (s *JSONLStore) cacheEntries(id string, c cachedEntries) {
 }
 
 func (s *JSONLStore) appendState(id string) (cachedEntries, error) {
+	return s.appendStateContext(context.Background(), id)
+}
+
+func (s *JSONLStore) appendStateContext(ctx context.Context, id string) (cachedEntries, error) {
 	info, err := os.Stat(s.sessionPath(id))
 	if os.IsNotExist(err) {
 		return cachedEntries{complete: true}, err
@@ -101,18 +117,23 @@ func (s *JSONLStore) appendState(id string) (cachedEntries, error) {
 	if c, ok := s.cached(id, info); ok {
 		return c, nil
 	}
-	f, err := os.Open(s.sessionPath(id))
+	f, err := storage.OpenRegularFile(s.sessionPath(id))
 	if err != nil {
 		return cachedEntries{}, err
 	}
 	defer f.Close()
 	c := cachedEntries{size: info.Size(), modified: info.ModTime(), complete: info.Size() <= maxCachedFileBytes}
 	// Validate envelopes one at a time. Bodies are released immediately once
-	// the retention limit is exceeded; only IDs are needed for parent checks.
-	ids := make(map[string]bool)
-	scanner := newJSONLScanner(f)
+	// the retention limit is exceeded. Settings digests follow parent links so
+	// deduplication uses the active branch even after a branch-marker append.
+	ids := make(map[string]*[sha256.Size]byte)
+	var previous string
+	scanner := newJSONLScanner(contextReader{ctx, f})
 	line := 0
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return cachedEntries{}, err
+		}
 		line++
 		if len(scanner.Bytes()) == 0 {
 			continue
@@ -125,16 +146,27 @@ func (s *JSONLStore) appendState(id string) (cachedEntries, error) {
 			if c.count != 0 || entry.Version > session.CurrentSessionVersion {
 				return cachedEntries{}, fmt.Errorf("unsupported session header at entry %d", c.count)
 			}
-		} else if entry.ID == "" {
-			ids[fmt.Sprintf("legacy-%d", c.count)] = true
 		} else {
-			if ids[entry.ID] {
+			id, parent := entry.ID, entry.ParentID
+			if id == "" {
+				id, parent = fmt.Sprintf("legacy-%d", c.count), previous
+			}
+			if _, exists := ids[id]; exists {
 				return cachedEntries{}, fmt.Errorf("duplicate session entry %q", entry.ID)
 			}
-			if entry.ParentID != "" && !ids[entry.ParentID] {
-				return cachedEntries{}, fmt.Errorf("entry %q has unknown or forward parent %q", entry.ID, entry.ParentID)
+			hash, exists := ids[parent]
+			if parent != "" && !exists {
+				return cachedEntries{}, fmt.Errorf("entry %q has unknown or forward parent %q", id, parent)
 			}
-			ids[entry.ID] = true
+			if entry.Type == "settings" {
+				digest := sha256.Sum256(entry.Data)
+				hash = &digest
+			}
+			ids[id] = hash
+			c.settingsHash = hash
+			if entry.Type != "branch" {
+				previous = id
+			}
 		}
 		c.lastID, c.lastType = entry.ID, entry.Type
 		if c.lastID == "" {
@@ -153,6 +185,16 @@ func (s *JSONLStore) appendState(id string) (cachedEntries, error) {
 	if err := scanner.Err(); err != nil {
 		return cachedEntries{}, fmt.Errorf("read session append cursor: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return cachedEntries{}, err
+	}
 	s.cacheEntries(id, c)
 	return c, nil
+}
+
+// invalidateSessionCacheLocked keeps record and summary caches consistent.
+// The caller must hold core.mu for writing.
+func (s *JSONLStore) invalidateSessionCacheLocked(sessionID string) {
+	delete(s.core.cache, sessionID)
+	delete(s.core.summaryCache, sessionID)
 }

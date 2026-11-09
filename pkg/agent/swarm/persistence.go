@@ -17,14 +17,18 @@ type AgentDef = subagent.AgentDef
 type AgentState = subagent.AgentState
 
 func (mam *MultiAgentManager) getAgentsDir() (string, error) {
-	if mam.agentsDir != "" {
-		return mam.agentsDir, nil
+	return resolveAgentsDir(mam.agentsDir)
+}
+
+func resolveAgentsDir(directory string) (string, error) {
+	if directory == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		directory = filepath.Join(home, ".loop", "agents")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".loop", "agents"), nil
+	return filepath.Abs(directory)
 }
 
 func (mam *MultiAgentManager) getStorage() (*subagent.Storage, error) {
@@ -36,18 +40,15 @@ func (mam *MultiAgentManager) getStorage() (*subagent.Storage, error) {
 }
 
 func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) error {
-	if mam.ephemeral {
+	ma.persistenceMu.Lock()
+	defer ma.persistenceMu.Unlock()
+	if ma.stateStore == nil || ma.stopped {
 		return nil
-	}
-
-	store, err := mam.getStorage()
-	if err != nil {
-		return err
 	}
 	ma.HistoryMu.RLock()
 	history := message.CloneAll(ma.History)
 	ma.HistoryMu.RUnlock()
-	return store.SaveState(ma.Name, AgentState{
+	return ma.stateStore.SaveState(ma.Name, AgentState{
 		Status:  status,
 		Todos:   ma.GetTodos(),
 		History: history,
@@ -55,15 +56,10 @@ func (mam *MultiAgentManager) SaveAgentState(ma *MultiAgent, status string) erro
 }
 
 func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
-	if mam.ephemeral {
+	if ma.stateStore == nil {
 		return nil
 	}
-
-	store, err := mam.getStorage()
-	if err != nil {
-		return err
-	}
-	state, err := store.LoadState(ma.Name)
+	state, err := ma.stateStore.LoadState(ma.Name)
 	if err != nil || state == nil {
 		return err
 	}
@@ -83,13 +79,10 @@ func (mam *MultiAgentManager) LoadAgentState(ma *MultiAgent) error {
 }
 
 func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
-	if mam.ephemeral {
+	ma.persistenceMu.Lock()
+	defer ma.persistenceMu.Unlock()
+	if ma.stateStore == nil || ma.stopped {
 		return nil
-	}
-
-	store, err := mam.getStorage()
-	if err != nil {
-		return err
 	}
 
 	var skillNames []string
@@ -114,7 +107,7 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 		parentName = ma.Parent.Name
 	}
 
-	return store.SaveDefinition(AgentDef{
+	return ma.stateStore.SaveDefinition(AgentDef{
 		Name:             ma.Name,
 		SystemPrompt:     ma.SystemPrompt,
 		ParentName:       parentName,
@@ -125,15 +118,11 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 }
 
 func (mam *MultiAgentManager) deleteAgentDef(name string) error {
-	if mam.ephemeral {
+	ma := mam.Agents[name]
+	if ma.stateStore == nil {
 		return nil
 	}
-
-	store, err := mam.getStorage()
-	if err != nil {
-		return err
-	}
-	return store.DeleteDefinition(name)
+	return ma.stateStore.DeleteDefinition(name)
 }
 
 func (mam *MultiAgentManager) LoadSavedAgents() error {
@@ -226,27 +215,39 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 	return errors.Join(failures...)
 }
 
-func (mam *MultiAgentManager) ClearAllAgents() {
+func (mam *MultiAgentManager) ClearAllAgents() error {
 	mam.mu.Lock()
-	for _, ma := range mam.Agents {
-		ma.CancelActiveTurn()
-		if ma.Cancel != nil {
-			ma.Cancel()
-		}
-		ma.KillTasks()
+	if mam.clearing {
+		mam.mu.Unlock()
+		return fmt.Errorf("subagents are already being cleared")
 	}
+	mam.clearing = true
+	agents := mam.Agents
+	dir, dirErr := mam.getAgentsDir()
+	ephemeral := mam.ephemeral
+	mam.generation++
 	mam.Agents = make(map[string]*MultiAgent)
 	mam.ActiveAgent = nil
-	mam.mu.Unlock()
-
-	if dir, err := mam.getAgentsDir(); err == nil && dir != "" {
-		_ = os.RemoveAll(dir)
-	}
-
+	mam.Supervisor = subagent.NewTaskSupervisor()
 	if mam.BaseAgent != nil {
 		mam.BaseAgent.Registry.UnregisterPrefix("subagent__")
 		mam.BaseAgent.SpawnedAgentsMu.Lock()
 		mam.BaseAgent.SpawnedAgents = make(map[string]bool)
 		mam.BaseAgent.SpawnedAgentsMu.Unlock()
 	}
+	mam.mu.Unlock()
+	for _, ma := range agents {
+		ma.stop()
+	}
+	var clearErr error
+	if !ephemeral {
+		clearErr = dirErr
+		if clearErr == nil && dir != "" {
+			clearErr = os.RemoveAll(dir)
+		}
+	}
+	mam.mu.Lock()
+	mam.clearing = false
+	mam.mu.Unlock()
+	return clearErr
 }

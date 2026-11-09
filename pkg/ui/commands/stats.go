@@ -27,5 +27,5 @@ func handleStatsCommand(a *agent.Agent, messages *[]db.Message, theme *style.UIT
 	if a.Config != nil {
 		model = a.Config.Model
 	}
-	render.RenderStats(w, msgs, model, agent.GetTimingRecorder(), *theme)
+	render.RenderStats(w, msgs, model, a.Timing, *theme)
 }

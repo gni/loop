@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
-	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 var sessionCmd = &cobra.Command{
@@ -17,34 +20,36 @@ var sessionCmd = &cobra.Command{
 var sessionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all saved conversation sessions and metadata",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := initSessionStore(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
+			return err
 		}
 
-		sessions, err := db.GetSessions()
+		sessions, err := db.GetSessionsContext(cmd.Context())
 		if err != nil {
-			fmt.Printf("Error listing sessions: %v\n", err)
-			return
+			return fmt.Errorf("list sessions: %w", err)
 		}
 		if len(sessions) == 0 {
-			fmt.Println("No past sessions found.")
-			return
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "No past sessions found.")
+			return err
 		}
 
-		fmt.Println("Past Conversation Sessions:")
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Past Conversation Sessions:"); err != nil {
+			return err
+		}
 		for _, s := range sessions {
 			preview := s.Preview
-			if len(preview) > 50 {
-				preview = preview[:50] + "..."
-			}
+			preview = style.TruncateCells(preview, 50)
 			ts := s.Timestamp
 			if len(ts) > 16 {
 				ts = ts[:16]
 			}
-			fmt.Printf("  - %s [%s] (%d messages) - %s\n", s.SessionID, ts, s.MsgCount, preview)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "  - %s [%s] (%d messages) - %s\n", s.SessionID, ts, s.MsgCount, preview); err != nil {
+				return err
+			}
 		}
+		return nil
 	},
 }
 
@@ -56,61 +61,47 @@ var (
 var sessionNewCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Start a new session and output its UUID",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := initSessionStore(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
+			return err
 		}
 
 		if forkFrom != "" {
-			newID, err := db.ForkSession(forkFrom, forkEntry)
+			newID, err := db.ForkSessionContext(cmd.Context(), forkFrom, forkEntry)
 			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				return
+				return err
 			}
-			if err := db.SetLatestSessionID(newID); err != nil {
-				fmt.Printf("Error: %v\n", err)
-				return
+			if err := db.SetLatestSessionIDContext(cmd.Context(), newID); err != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(cmd.Context()), 2*time.Second)
+				defer cancel()
+				return errors.Join(err, db.ClearSessionContext(cleanupCtx, newID))
 			}
-			fmt.Println(newID)
-			return
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), newID)
+			return err
 		}
 
 		newID := db.NewUUID()
-		cfg := loadConfigOrPrintErr()
-		if cfg == nil {
-			return
-		}
-		a := agent.NewAgent(cfg, configPath, nil)
-		sysMsg := db.Message{Role: "system", Content: a.GetSystemPrompt()}
-		if err := db.ClearSession(newID); err != nil {
-			fmt.Printf("Error preparing session %q: %v\n", newID, err)
-			return
-		}
-		if err := db.SaveMessage(newID, sysMsg); err != nil {
-			fmt.Printf("Error saving session %q: %v\n", newID, err)
-			return
-		}
-
-		fmt.Println(newID)
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), newID)
+		return err
 	},
 }
 
 var sessionClearCmd = &cobra.Command{
 	Use:   "clear",
 	Short: "Clear all saved conversation sessions from disk",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := initSessionStore(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
+			return err
 		}
 
-		if err := db.ClearHistory(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
+		if err := db.ClearHistoryContext(cmd.Context()); err != nil {
+			return err
 		}
 
-		fmt.Println("All saved conversation sessions cleared from disk.")
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "All saved conversation sessions cleared from disk.")
+		return err
 	},
 }
 

@@ -27,7 +27,7 @@ var providerAddCmd = &cobra.Command{
 	Short: "Add a new endpoint provider profile",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -55,7 +55,7 @@ var providerAddCmd = &cobra.Command{
 				return err
 			}
 		}
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		fmt.Printf("Provider '%s' successfully added/updated.\n", name)
@@ -68,14 +68,14 @@ var providerSelectCmd = &cobra.Command{
 	Short: "Select active endpoint provider",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
 		name := args[0]
 		if name == "none" || name == "default" {
 			cfg.ActiveProvider = ""
-			if err := config.SaveConfig(configPath, cfg); err != nil {
+			if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 				return err
 			}
 			fmt.Println("Switched active provider to default settings.")
@@ -89,7 +89,7 @@ var providerSelectCmd = &cobra.Command{
 		if err := cfg.ActivateProvider(name); err != nil {
 			return err
 		}
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		fmt.Printf("Switched active provider to '%s'.\n", name)
@@ -102,14 +102,14 @@ var providerModelCmd = &cobra.Command{
 	Short: "Set model for the currently active endpoint provider",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
 		model := strings.Join(args, " ")
 		cfg.Model = model
 		cfg.UpdateActiveProvider()
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		if cfg.ActiveProvider != "" {
@@ -126,7 +126,7 @@ var providerRemoveCmd = &cobra.Command{
 	Short: "Remove an endpoint provider profile",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -139,7 +139,7 @@ var providerRemoveCmd = &cobra.Command{
 		if cfg.ActiveProvider == name {
 			cfg.ActiveProvider = ""
 		}
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		fmt.Printf("Provider '%s' removed.\n", name)
@@ -152,7 +152,7 @@ var providerTimeoutCmd = &cobra.Command{
 	Short: "Set timeout in seconds for the currently active endpoint provider",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ var providerTimeoutCmd = &cobra.Command{
 		}
 		cfg.Timeout = sec
 		cfg.UpdateActiveProvider()
-		if err := config.SaveConfig(configPath, cfg); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err
 		}
 		if cfg.ActiveProvider != "" {

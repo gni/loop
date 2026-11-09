@@ -3,7 +3,6 @@ package render
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"loop/pkg/ui/style"
 )
@@ -21,14 +20,18 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 	}
 
 	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
-	statusLen := utf8.RuneCountInString(statusPart)
+	statusLen := style.CellWidth(statusPart)
 	prefix := "─── prompt "
 	available := width - 1
 	if available <= 0 {
 		return "\n"
 	}
-	if available <= utf8.RuneCountInString(prefix) {
-		return borderStyle.Render(style.TruncateRunes(prefix, available)) + "\n"
+	if available <= style.CellWidth(prefix) {
+		return borderStyle.Render(style.TruncateCells(prefix, available)) + "\n"
+	}
+
+	if style.CellWidth(prefix)+statusLen >= available {
+		return borderStyle.Render(style.TruncateCells(prefix+statusPart, available)) + "\n"
 	}
 
 	var branchStyled string
@@ -36,22 +39,22 @@ func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme styl
 	if len(gitBranch) > 0 && strings.TrimSpace(gitBranch[0]) != "" {
 		b := strings.TrimSpace(gitBranch[0])
 		if width < 70 && len(b) > 14 {
-			b = style.TruncateRunes(b, 14)
+			b = style.TruncateCells(b, 14)
 		}
 		branchRaw := "── ⎇ " + b + " "
-		branchLen = utf8.RuneCountInString(branchRaw)
-		if available > utf8.RuneCountInString(prefix)+branchLen+statusLen+4 {
+		branchLen = style.CellWidth(branchRaw)
+		if available > style.CellWidth(prefix)+branchLen+statusLen+4 {
 			branchStyled = borderStyle.Render("── ") + branchStyle.Render("⎇ "+b) + " "
 		} else {
 			branchLen = 0
 		}
 	}
 
-	used := utf8.RuneCountInString(prefix) + branchLen + statusLen
+	used := style.CellWidth(prefix) + branchLen + statusLen
 	if available <= used {
 		branchStyled = ""
 		branchLen = 0
-		used = utf8.RuneCountInString(prefix) + statusLen
+		used = style.CellWidth(prefix) + statusLen
 	}
 
 	dashCount := max(1, available-used)

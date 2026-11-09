@@ -2,29 +2,34 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"io"
 
+	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
+
+func (s *Session) SetName(ctx context.Context, name string) error {
+	if err := s.lockIdle(); err != nil {
+		return err
+	}
+	defer s.runMu.Unlock()
+	return s.Agent.SetSessionName(ctx, name)
+}
 
 func (s *Session) UpdateConfig(cfg *config.Config) error {
 	if err := s.lockIdle(); err != nil {
 		return err
 	}
 	defer s.runMu.Unlock()
-	s.mu.Lock()
 	applyErr := s.Agent.ApplyConfig(cfg)
-	s.mu.Unlock()
-	if applyErr != nil {
+	if !agent.ConfigApplied(applyErr) {
 		return applyErr
 	}
 	s.Agent.SyncSessionSystemPrompt(&s.messages, s.storageID())
-	if err := s.persistSettings(); err != nil {
-		return err
-	}
-	return s.Agent.PersistenceError()
+	return errors.Join(applyErr, s.persistSettings(), s.Agent.PersistenceError())
 }
 
 func (s *Session) SetTools(names []string) error {

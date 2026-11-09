@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -18,10 +19,19 @@ func main() {
 		term.RestoreCursor()
 	}
 
+	var originalTerminal *termpkg.State
+	var originalTerminalFD int
+	for _, file := range []*os.File{os.Stdin, os.Stderr, os.Stdout} {
+		if termpkg.IsTerminal(int(file.Fd())) {
+			originalTerminalFD = int(file.Fd())
+			originalTerminal, _ = termpkg.GetState(originalTerminalFD)
+			break
+		}
+	}
+
 	var (
-		exitMu    sync.Mutex
-		exitCode  int
-		shutdowns int
+		exitMu   sync.Mutex
+		exitCode int
 	)
 
 	// Registered first so it runs last, after the terminal cleanup defers. The default
@@ -53,21 +63,31 @@ func main() {
 		term.ForceExitAltScreen()
 	})
 
-	// The first shutdown only records the code so main's deferred cleanup can run. A
-	// repeated shutdown (double interrupt) still terminates the process immediately.
+	// Normal shutdown leaves main's defers in control of cleanup.
 	supervisor.SetExitFunc(func(code int) {
 		exitMu.Lock()
-		shutdowns++
-		forceNow := shutdowns > 1
 		exitCode = code
 		exitMu.Unlock()
-		if forceNow {
-			os.Exit(code)
+	})
+	supervisor.SetForceExitFunc(func(code int) {
+		// A blocked hook may hold a terminal mutex. Restore the original
+		// terminal directly rather than acquiring application locks again.
+		if originalTerminal != nil {
+			_ = termpkg.Restore(originalTerminalFD, originalTerminal)
+			output := os.Stderr
+			if !termpkg.IsTerminal(int(output.Fd())) {
+				output = os.Stdout
+			}
+			if termpkg.IsTerminal(int(output.Fd())) {
+				_, _ = output.WriteString(terminal.ExitAlternateScreen + terminal.DisableBracketedPaste + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m")
+			}
 		}
+		os.Exit(code)
 	})
 
 	supervisor.Start()
 	defer supervisor.Stop()
+	defer supervisor.Wait(context.Background())
 
 	if err := cmd.ExecuteContext(supervisor.Context()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,8 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
+
+	"loop/pkg/storage"
 )
 
 func CanonicalWorkspace(path string) (string, error) {
@@ -46,7 +48,7 @@ func WorkspaceTrusted(configPath, workspace string) bool {
 	}
 	trustDir := filepath.Join(filepath.Dir(configPath), "trust")
 	for {
-		data, err := os.ReadFile(filepath.Join(trustDir, WorkspaceKey(canonical)+".json"))
+		data, err := storage.ReadFile(filepath.Join(trustDir, WorkspaceKey(canonical)+".json"), 16<<10)
 		if err == nil {
 			var decision struct {
 				Workspace string `json:"workspace"`
@@ -74,11 +76,19 @@ func TrustWorkspace(configPath, workspace string, trusted bool) error {
 	if err != nil {
 		return err
 	}
-	return writePrivateConfigFile(filepath.Join(filepath.Dir(configPath), "trust", WorkspaceKey(canonical)+".json"), data)
+	return WritePrivateFile(filepath.Join(filepath.Dir(configPath), "trust", WorkspaceKey(canonical)+".json"), data)
 }
 
 func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) {
-	cfg, rawGlobal, err := loadConfigWithRaw(path)
+	return LoadWorkspaceConfigContext(context.Background(), path, workspace, trusted)
+}
+
+// LoadWorkspaceConfigContext applies workspace overrides after a cancellable global load.
+func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, trusted bool) (*Config, error) {
+	if path == "" {
+		path = DefaultConfigPath()
+	}
+	cfg, rawGlobal, err := loadConfigWithRaw(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +104,17 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	}
 	cfg.ProjectResources = trusted
 	if !trusted {
-		applyEnvironment(cfg)
+		if err := applyEnvironment(cfg); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 	projectPath := filepath.Join(workspace, ".loop", "config.json")
-	data, err := os.ReadFile(projectPath)
+	data, err := storage.ReadFile(projectPath, 8<<20)
 	if os.IsNotExist(err) {
-		applyEnvironment(cfg)
+		if err := applyEnvironment(cfg); err != nil {
+			return nil, err
+		}
 		return cfg, nil
 	}
 	if err != nil {
@@ -160,11 +174,13 @@ func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) 
 	if v, ok := project["model"].(string); ok && strings.TrimSpace(v) != "" {
 		cfg.Model = v
 	}
-	if v, ok := project["timeout"].(float64); ok && int(v) > 0 {
+	if v, ok := project["timeout"].(float64); ok && int(v) >= 0 {
 		cfg.Timeout = int(v)
 	}
 	cfg.applyDefaults()
-	applyEnvironment(cfg)
+	if err := applyEnvironment(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -178,49 +194,6 @@ func mergeObjects(target, source map[string]any) {
 			target[key] = value
 		}
 	}
-}
-
-func Clone(cfg *Config) (*Config, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("configuration is unavailable")
-	}
-	cloned := *cfg
-	if cfg.Nostop.IntervalSeconds != nil {
-		sec := *cfg.Nostop.IntervalSeconds
-		cloned.Nostop.IntervalSeconds = &sec
-	}
-	cloned.Sources = cloneStringMap(cfg.Sources)
-	if cloned.Sources == nil {
-		cloned.Sources = make(map[string]string)
-	}
-	if cfg.PluginDirectories != nil {
-		cloned.PluginDirectories = append([]string(nil), cfg.PluginDirectories...)
-	}
-	if cfg.ExtensionDirectories != nil {
-		cloned.ExtensionDirectories = append([]string(nil), cfg.ExtensionDirectories...)
-	}
-	if cfg.PromptDirectories != nil {
-		cloned.PromptDirectories = append([]string(nil), cfg.PromptDirectories...)
-	}
-	if cfg.SkillDirectories != nil {
-		cloned.SkillDirectories = append([]string(nil), cfg.SkillDirectories...)
-	}
-	if cfg.DisabledTools != nil {
-		cloned.DisabledTools = append([]string(nil), cfg.DisabledTools...)
-	}
-	if cfg.RepeatReminderThresholds != nil {
-		cloned.RepeatReminderThresholds = append([]int(nil), cfg.RepeatReminderThresholds...)
-	}
-	cloned.MCPServers = CopyMCPServers(cfg.MCPServers)
-	cloned.Providers = CopyProviders(cfg.Providers)
-	if cfg.Limits.ReasoningTokenBudgets != nil {
-		budgets := make(map[string]int, len(cfg.Limits.ReasoningTokenBudgets))
-		for k, v := range cfg.Limits.ReasoningTokenBudgets {
-			budgets[k] = v
-		}
-		cloned.Limits.ReasoningTokenBudgets = budgets
-	}
-	return &cloned, nil
 }
 
 func absoluteSetting(base, path string) string {
@@ -275,7 +248,7 @@ func resolveProjectPaths(values map[string]any, base string) {
 		}
 	}
 }
-func applyEnvironment(cfg *Config) {
+func applyEnvironment(cfg *Config) error {
 	for name, target := range map[string]*string{"LOOP_ENDPOINT": &cfg.Endpoint, "LOOP_MODEL": &cfg.Model} {
 		if value, ok := os.LookupEnv(name); ok && value != "" {
 			*target = value
@@ -286,14 +259,25 @@ func applyEnvironment(cfg *Config) {
 		cfg.APIKey = "env:LOOP_API_KEY"
 		cfg.Sources["api_key"] = "environment:LOOP_API_KEY"
 	}
-	if raw, ok := os.LookupEnv("LOOP_TIMEOUT"); ok {
-		if value, err := strconv.Atoi(raw); err == nil && value >= 0 {
-			cfg.Timeout = value
-			cfg.Sources["timeout"] = "environment:LOOP_TIMEOUT"
+	if err := applyTimeoutEnvironment(cfg); err != nil {
+		return err
+	}
+	if os.Getenv("LOOP_TIMEOUT") != "" {
+		cfg.Sources["timeout"] = "environment:LOOP_TIMEOUT"
+	}
+	return nil
+}
+
+func applyTimeoutEnvironment(cfg *Config) error {
+	if raw := os.Getenv("LOOP_TIMEOUT"); raw != "" {
+		if err := cfg.SetValue("timeout", raw); err != nil {
+			return fmt.Errorf("LOOP_TIMEOUT: %w", err)
 		}
 	}
+	return nil
 }
-func saveProjectConfig(cfg *Config) error {
+
+func saveProjectConfig(ctx context.Context, cfg *Config) error {
 	if cfg.ProjectBase == nil {
 		return fmt.Errorf("project configuration has no base settings")
 	}
@@ -397,5 +381,11 @@ func saveProjectConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return writePrivateConfigFile(cfg.ProjectPath, data)
+	if len(data) > 8<<20 {
+		return fmt.Errorf("project configuration exceeds 8 MiB")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return WritePrivateFile(cfg.ProjectPath, data)
 }

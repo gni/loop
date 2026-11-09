@@ -11,28 +11,33 @@ import (
 
 // Config configures process lifecycle monitoring and interrupt handling.
 type Config struct {
-	// DoubleInterruptDuration specifies the window in which two interrupts force exit.
+	// DoubleInterruptDuration is the window in which a second interrupt
+	// bypasses active-operation cancellation and begins shutdown.
 	DoubleInterruptDuration time.Duration
 	// Signals specifies the OS signals to intercept. Defaults to SIGINT and SIGTERM.
 	Signals []os.Signal
 	// ExitFunc specifies the function called to terminate the process. Defaults to os.Exit.
 	ExitFunc func(code int)
+	// ForceExitFunc bypasses blocked graceful hooks on a repeated signal.
+	ForceExitFunc func(code int)
 }
 
 // Supervisor monitors process signals and coordinates graceful application termination.
 type Supervisor struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	config        Config
-	sigChan       chan os.Signal
-	doneChan      chan struct{}
-	mu            sync.Mutex
-	cancelHandler func() bool
-	shutdownHooks []func()
-	lastInterrupt time.Time
-	running       bool
-	shutdownOnce  sync.Once
-	exitCode      int
+	ctx             context.Context
+	cancel          context.CancelFunc
+	config          Config
+	sigChan         chan os.Signal
+	doneChan        chan struct{}
+	mu              sync.Mutex
+	cancelHandler   func() bool
+	shutdownHooks   []func()
+	lastInterrupt   time.Time
+	running         bool
+	shutdownStarted bool
+	shutdownDone    chan struct{}
+	stopped         bool
+	exitCode        int
 }
 
 var defaultSupervisor = NewSupervisor(Config{})
@@ -52,6 +57,9 @@ func NewSupervisor(cfg Config) *Supervisor {
 	}
 	if cfg.ExitFunc == nil {
 		cfg.ExitFunc = os.Exit
+	}
+	if cfg.ForceExitFunc == nil {
+		cfg.ForceExitFunc = cfg.ExitFunc
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -97,6 +105,32 @@ func (s *Supervisor) SetExitFunc(fn func(code int)) {
 	}
 }
 
+// SetForceExitFunc installs the last-resort exit path. It must not wait on
+// application locks or graceful hooks, which may be the reason for forcing exit.
+func (s *Supervisor) SetForceExitFunc(fn func(int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fn != nil {
+		s.config.ForceExitFunc = fn
+	}
+}
+
+// Wait waits for graceful shutdown hooks if shutdown has started.
+func (s *Supervisor) Wait(ctx context.Context) error {
+	s.mu.Lock()
+	done := s.shutdownDone
+	s.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // OnShutdown registers a cleanup hook to be executed on shutdown in LIFO order.
 func (s *Supervisor) OnShutdown(hook func()) {
 	s.mu.Lock()
@@ -107,7 +141,7 @@ func (s *Supervisor) OnShutdown(hook func()) {
 // Start begins listening for process signals in the background.
 func (s *Supervisor) Start() {
 	s.mu.Lock()
-	if s.running {
+	if s.running || s.stopped {
 		s.mu.Unlock()
 		return
 	}
@@ -126,6 +160,7 @@ func (s *Supervisor) Stop() {
 		return
 	}
 	s.running = false
+	s.stopped = true
 	s.mu.Unlock()
 
 	signal.Stop(s.sigChan)
@@ -152,10 +187,19 @@ func (s *Supervisor) handleSignal(sig os.Signal) {
 	lastInt := s.lastInterrupt
 	s.lastInterrupt = now
 	handler := s.cancelHandler
+	shuttingDown := s.shutdownStarted
 	s.mu.Unlock()
 
+	if shuttingDown {
+		code := 0
+		if sig == os.Interrupt {
+			code = 130
+		}
+		s.executeShutdown(code)
+		return
+	}
 	if sig == os.Interrupt {
-		// Double Ctrl+C within duration triggers immediate forced exit
+		// A quick second interrupt bypasses active-operation cancellation.
 		if !lastInt.IsZero() && now.Sub(lastInt) < s.config.DoubleInterruptDuration {
 			s.executeShutdown(130)
 			return
@@ -176,30 +220,32 @@ func (s *Supervisor) handleSignal(sig os.Signal) {
 func (s *Supervisor) executeShutdown(exitCode int) {
 	s.mu.Lock()
 	s.exitCode = exitCode
+	if s.shutdownStarted {
+		forceExit := s.config.ForceExitFunc
+		s.mu.Unlock()
+		if forceExit != nil {
+			forceExit(exitCode)
+		}
+		return
+	}
+	s.shutdownStarted = true
+	s.shutdownDone = make(chan struct{})
+	done := s.shutdownDone
 	exitFunc := s.config.ExitFunc
+	hooks := append([]func(){}, s.shutdownHooks...)
 	s.mu.Unlock()
-
 	s.cancel()
 
-	s.shutdownOnce.Do(func() {
-		s.mu.Lock()
-		hooks := make([]func(), len(s.shutdownHooks))
-		copy(hooks, s.shutdownHooks)
-		s.mu.Unlock()
-
-		// Execute hooks in LIFO order. They run at most once even when shutdown is
-		// re-entered by a double interrupt, so cleanup cannot double-fire.
+	// Keep the signal loop available while graceful hooks execute.
+	go func() {
+		defer close(done)
 		for i := len(hooks) - 1; i >= 0; i-- {
 			if hooks[i] != nil {
 				hooks[i]()
 			}
 		}
-	})
-
-	// ExitFunc is called on every shutdown: the first call can be a non-terminating
-	// recorder so the caller's deferred cleanup still runs, while a second call (the
-	// double-interrupt path) must still terminate the process.
-	if exitFunc != nil {
-		exitFunc(exitCode)
-	}
+		if exitFunc != nil {
+			exitFunc(exitCode)
+		}
+	}()
 }

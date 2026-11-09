@@ -16,8 +16,6 @@ func setConfigValue(cfg *config.Config, key, value string, w io.Writer) bool {
 		return false
 	}
 	switch key {
-	case "compression_threshold":
-		cfg.CompressionThreshold, err = config.ParseCompressionThreshold(value)
 	case "compaction_reserve_tokens":
 		var reserve int
 		reserve, err = strconv.Atoi(value)

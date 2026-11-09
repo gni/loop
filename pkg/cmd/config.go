@@ -26,7 +26,7 @@ var configEditCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Open the interactive TUI configuration editor",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfig(configPath)
+		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err
 		}
@@ -39,7 +39,7 @@ var configEditCmd = &cobra.Command{
 		if newConfig == nil {
 			return nil
 		}
-		if err := config.SaveConfig(configPath, newConfig); err != nil {
+		if err := config.SaveConfigContext(cmd.Context(), configPath, newConfig); err != nil {
 			return err
 		}
 		fmt.Printf("Configuration successfully updated and saved to %s\n", configPath)

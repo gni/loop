@@ -3,10 +3,10 @@ package message
 import (
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"strings"
+
+	"loop/pkg/storage"
 )
 
 type ContentBlock struct {
@@ -20,24 +20,9 @@ type ContentBlock struct {
 }
 
 func ReadAttachment(path string) (ContentBlock, error) {
-	info, err := os.Stat(path)
+	data, err := storage.ReadFile(path, 20<<20)
 	if err != nil {
 		return ContentBlock{}, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > 20<<20 {
-		return ContentBlock{}, fmt.Errorf("attachment must be a regular file at most 20 MiB")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return ContentBlock{}, err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (20<<20)+1))
-	if err != nil {
-		return ContentBlock{}, err
-	}
-	if len(data) > 20<<20 {
-		return ContentBlock{}, fmt.Errorf("attachment exceeds 20 MiB")
 	}
 	mime := http.DetectContentType(data)
 	switch mime {

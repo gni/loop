@@ -20,20 +20,16 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks, TaskState: run.TaskSnapshot(a.Context()), InheritedInstructions: run.DelegationInstructions(a.Context())}
 	a.MessagesMu.Lock()
 	*messages = append(*messages, userMsg)
-	var firstSys *db.Message
-	if len(*messages) > 1 && (*messages)[0].Role == "system" {
-		sysCopy := (*messages)[0]
-		firstSys = &sysCopy
-	}
 	a.MessagesMu.Unlock()
 
 	if sessionID != "" {
-		if !a.HasMessages(sessionID) && firstSys != nil {
-			if err := a.SaveMessage(sessionID, *firstSys); err != nil {
+		if !a.HasMessages(sessionID) {
+			// Draft-only reference instructions become durable with the first
+			// real input, alongside the leading prompt and accepted message.
+			if err := a.CheckpointSession(a.Context(), sessionID, *messages); err != nil {
 				a.recordPersistenceError(err)
 			}
-		}
-		if err := a.SaveMessage(sessionID, userMsg); err != nil {
+		} else if err := a.SaveMessage(sessionID, userMsg); err != nil {
 			a.recordPersistenceError(err)
 		}
 	}

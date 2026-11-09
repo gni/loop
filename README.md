@@ -1,6 +1,6 @@
 # Loop
 
-A lightweight coding agent for your terminal. Ask it to explore a project, fix bugs, edit files, or run commands. Built for local models, including llama.cpp.
+A lightweight coding agent for your terminal. Ask it to explore a project, fix bugs, edit files, or run commands. Built for local models, including llama.cpp, strata.
 
 ## Get started
 

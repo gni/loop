@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,13 +33,14 @@ func commitProviderConfig(a *agent.Agent, next *config.Config) error {
 			return err
 		}
 	}
-	if err := a.ApplyConfig(next); err != nil {
-		return err
+	applyErr := a.ApplyConfig(next)
+	if !agent.ConfigApplied(applyErr) {
+		return applyErr
 	}
-	if err := config.SaveConfig(a.ConfigPath, a.Config); err != nil {
-		return fmt.Errorf("provider applied in memory, but could not save: %w", err)
+	if err := a.SaveConfig(); err != nil {
+		return &agent.ConfigApplyError{Err: errors.Join(applyErr, fmt.Errorf("provider could not save: %w", err))}
 	}
-	return nil
+	return applyErr
 }
 
 func HandleProviderCommand(
@@ -72,7 +74,7 @@ func HandleProviderCommand(
 		}
 		if err := commitProviderConfig(a, next); err != nil {
 			fmt.Fprintf(w, "error: %v\n", err)
-			return false
+			return agent.ConfigApplied(err)
 		}
 		return true
 	}

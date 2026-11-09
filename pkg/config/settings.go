@@ -10,91 +10,102 @@ import (
 	"strings"
 )
 
-type legacyBoolean struct {
-	name   string
-	invert bool
-}
-
-var legacyBooleans = map[string]legacyBoolean{
-	"disable_local_plugins":          {"local_plugins", true},
-	"disable_file_observation_guard": {"file_observation_guard", true},
-	"disable_recap":                  {"recap", true},
-	"no_context_files":               {"context_files", true},
-	"skip_verify":                    {"tls_verify", true},
-	"approval_always_answer":         {"auto_approve", false},
-	"enable_mcp":                     {"mcp", false},
-}
-
-// NormalizeConfigJSON migrates old names before overlaying project settings.
-// Explicit new names take precedence; saves only write the new names.
-func NormalizeConfigJSON(data []byte) ([]byte, error) {
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(data, &values); err != nil {
-		return nil, err
+// isAskUserToolName covers the aliases recognized by the tool registry.
+func isAskUserToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ask_user", "ask_user_question", "askuser", "ask_human", "question_user", "ask", "ask_question", "confirm":
+		return true
 	}
+	return false
+}
 
-	for old, alias := range legacyBooleans {
-		raw, ok := values[old]
-		if !ok {
-			continue
+// SetAskUserMode keeps the mode authoritative over the legacy disabled_tools entry.
+func (c *Config) SetAskUserMode(mode string) {
+	if c == nil {
+		return
+	}
+	c.AskUserMode = mode
+	filtered := c.DisabledTools[:0]
+	for _, name := range c.DisabledTools {
+		if !isAskUserToolName(name) {
+			filtered = append(filtered, name)
 		}
-		if _, exists := values[alias.name]; !exists && string(raw) != "null" {
-			var enabled bool
-			if err := json.Unmarshal(raw, &enabled); err != nil {
-				return nil, fmt.Errorf("%s: %w", old, err)
-			}
-			if alias.invert {
-				enabled = !enabled
-			}
-			values[alias.name], _ = json.Marshal(enabled)
+	}
+	c.DisabledTools = filtered
+}
+
+// NormalizeSafety canonicalizes accepted values, enforces guided mode and
+// migrates legacy ask_user tool disabling.
+func (c *Config) NormalizeSafety() {
+	if c == nil {
+		return
+	}
+	c.normalizeValues()
+	for _, name := range c.DisabledTools {
+		if isAskUserToolName(name) {
+			c.SetAskUserMode("disabled")
+			break
 		}
-		delete(values, old)
 	}
-	// Workspace resource permission comes from trust, never from a config file.
-	delete(values, "disable_project_plugins")
-	delete(values, "project_resources")
-	return json.Marshal(values)
+	if c.GuidedMode {
+		c.AutoApprove = false
+
+		c.ParallelToolCalls = false
+	}
 }
 
-func (cfg *Config) UnmarshalJSON(data []byte) error {
-	normalized, err := NormalizeConfigJSON(data)
-	if err != nil {
-		return err
+// Keep accepted aliases identical for files, flags and runtime configuration.
+func (cfg *Config) normalizeValues() {
+	if effort, err := ParseReasoningEffort(cfg.ReasoningEffort); err == nil {
+		cfg.ReasoningEffort = effort
 	}
-	type plain Config
-	return json.Unmarshal(normalized, (*plain)(cfg))
+	if mode, err := ParseAskUserMode(cfg.AskUserMode); err == nil {
+		cfg.AskUserMode = mode
+	}
+	cfg.ToolProtocol = strings.ToLower(strings.TrimSpace(cfg.ToolProtocol))
+	if cfg.CompressionThreshold > 0 {
+		if value, err := ParseCompressionThreshold(strconv.FormatFloat(cfg.CompressionThreshold, 'g', -1, 64)); err == nil {
+			cfg.CompressionThreshold = value
+		}
+	}
 }
 
-func ParseBoolValue(value string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "true", "1", "yes", "on":
-		return true, nil
-	case "false", "0", "no", "off":
-		return false, nil
-	default:
-		return false, fmt.Errorf("expected true or false, got %q", value)
-	}
+type settingDescriptor struct {
+	key   string
+	field reflect.StructField
 }
+
+// Build schema metadata once; configuration values remain instance-owned.
+var settingsSchema = func() []settingDescriptor {
+	t := reflect.TypeOf(Config{})
+	fields := make([]settingDescriptor, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		key := strings.Split(field.Tag.Get("json"), ",")[0]
+		if key != "" && key != "-" {
+			fields = append(fields, settingDescriptor{key: key, field: field})
+		}
+	}
+	return fields
+}()
+
+var settingsByKey = func() map[string]reflect.StructField {
+	fields := make(map[string]reflect.StructField, len(settingsSchema))
+	for _, setting := range settingsSchema {
+		fields[setting.key] = setting.field
+	}
+	return fields
+}()
 
 func settingField(key string) (reflect.StructField, bool) {
-	t := reflect.TypeOf(Config{})
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if strings.Split(f.Tag.Get("json"), ",")[0] == key && key != "-" {
-			return f, true
-		}
-	}
-	return reflect.StructField{}, false
+	field, ok := settingsByKey[key]
+	return field, ok
 }
 
 func SettingKeys() []string {
-	t := reflect.TypeOf(Config{})
-	keys := make([]string, 0, t.NumField())
-	for i := 0; i < t.NumField(); i++ {
-		key := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
-		if key != "" && key != "-" {
-			keys = append(keys, key)
-		}
+	keys := make([]string, 0, len(settingsSchema))
+	for _, setting := range settingsSchema {
+		keys = append(keys, setting.key)
 	}
 	sort.Strings(keys)
 	return keys
@@ -176,39 +187,32 @@ func (cfg *Config) SetValue(key, value string) error {
 		if err != nil {
 			return err
 		}
-		if key == "auto_approve" && enabled {
-			cfg.GuidedMode = false
-		}
 		target.Elem().SetBool(enabled)
 	case reflect.Int:
 		n, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
+		if err != nil || target.Elem().OverflowInt(n) {
 			return fmt.Errorf("%s must be an integer", key)
 		}
-		if key == "logo_brightness" && (n < 10 || n > 100) {
-			return fmt.Errorf("logo_brightness must be between 10 and 100")
-		}
-		if key != "recap_interval" && n < 0 {
-			return fmt.Errorf("%s must be non-negative", key)
+		if key == "timeout" || key == "shell_timeout" || key == "extension_timeout" {
+			if err := validateTimeoutValue(key, n); err != nil {
+				return err
+			}
 		}
 		if n == 0 {
 			switch key {
 			case "timeout", "shell_timeout", "extension_timeout", "max_subagent_depth":
 			default:
-				return fmt.Errorf("%s must be non-zero", key)
+				n = reflect.ValueOf(DefaultConfig()).Elem().FieldByIndex(field.Index).Int()
 			}
 		}
 		target.Elem().SetInt(n)
 	case reflect.Float64:
 		n, err := strconv.ParseFloat(value, 64)
+		if key == "compression_threshold" {
+			n, err = ParseCompressionThreshold(value)
+		}
 		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return fmt.Errorf("%s must be a finite number", key)
-		}
-		if key == "temperature" && (n < 0 || n > 2) {
-			return fmt.Errorf("temperature must be between 0 and 2")
-		}
-		if (key == "frequency_penalty" || key == "presence_penalty") && (n < -2 || n > 2) {
-			return fmt.Errorf("%s must be between -2 and 2", key)
 		}
 		target.Elem().SetFloat(n)
 	default:
@@ -216,42 +220,16 @@ func (cfg *Config) SetValue(key, value string) error {
 			return fmt.Errorf("%s: %w", key, err)
 		}
 	}
+	candidate := *cfg
+	reflect.ValueOf(&candidate).Elem().FieldByIndex(field.Index).Set(target.Elem())
+	if err := candidate.ValidateSettings(); err != nil {
+		return err
+	}
 	reflect.ValueOf(cfg).Elem().FieldByIndex(field.Index).Set(target.Elem())
-	return nil
-}
-
-// MCP servers were historically enabled unless explicitly disabled.
-func (server *MCPServerConfig) UnmarshalJSON(data []byte) error {
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(data, &values); err != nil {
-		return err
+	if key == "auto_approve" && cfg.AutoApprove {
+		cfg.GuidedMode = false
 	}
-	if raw, ok := values["alwaysLoad"]; ok {
-		if _, exists := values["always_load"]; !exists {
-			values["always_load"] = raw
-		}
-		delete(values, "alwaysLoad")
-	}
-	if raw, ok := values["disabled"]; ok {
-		if _, exists := values["enabled"]; !exists {
-			var disabled bool
-			if err := json.Unmarshal(raw, &disabled); err != nil {
-				return err
-			}
-			values["enabled"], _ = json.Marshal(!disabled)
-		}
-		delete(values, "disabled")
-	}
-	normalized, err := json.Marshal(values)
-	if err != nil {
-		return err
-	}
-	type plain MCPServerConfig
-	decoded := plain{Enabled: true}
-	if err := json.Unmarshal(normalized, &decoded); err != nil {
-		return err
-	}
-	*server = MCPServerConfig(decoded)
+	cfg.NormalizeSafety()
 	return nil
 }
 
@@ -267,29 +245,4 @@ func (cfg *Config) SettingValue(key string) (string, error) {
 	}
 	data, err := json.Marshal(value.Interface())
 	return string(data), err
-}
-
-func applyLegacyDefaults(data []byte, cfg *Config) {
-	var values map[string]json.RawMessage
-	if json.Unmarshal(data, &values) != nil {
-		return
-	}
-	// Old files omitted disable_local_plugins when plugins were allowed.
-	legacyFormat := false
-	for key := range legacyBooleans {
-		if _, ok := values[key]; ok {
-			legacyFormat = true
-			break
-		}
-	}
-	if legacyFormat {
-		_, oldPresent := values["disable_local_plugins"]
-		_, newPresent := values["local_plugins"]
-		if !oldPresent && !newPresent {
-			values["local_plugins"] = json.RawMessage("true")
-		}
-	}
-	if raw, ok := values["local_plugins"]; ok {
-		_ = json.Unmarshal(raw, &cfg.LocalPlugins)
-	}
 }

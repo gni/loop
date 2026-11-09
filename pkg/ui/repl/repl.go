@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -34,6 +35,13 @@ func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initial
 func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if a.CancelLifetime != nil {
+		stop := context.AfterFunc(ctx, a.CancelLifetime)
+		defer stop()
+	}
+	if a.SyncSessionState != nil {
+		allowedTools = slices.Clone(a.ToolSelection)
+	}
 
 	ui.IsInteractive = true
 	defer func() { ui.IsInteractive = false }()
@@ -44,7 +52,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	}
 	if currentSessionID == "" && !a.Ephemeral {
 		currentSessionID = db.NewUUID()
-		_ = db.SetLatestSessionID(currentSessionID)
+		_ = db.SetLatestSessionIDContext(a.Context(), currentSessionID)
 	}
 
 	var messages []db.Message
@@ -95,7 +103,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	}
 	mam.SetOutput(ppWriter, theme)
 	a.MultiAgentManager = mam
-	a.ClearAgentsFunc = func() { mam.ClearAllAgents() }
+	a.ClearAgentsFunc = mam.ClearAllAgents
 	if !hadMAM {
 		_ = mam.LoadSavedAgents()
 	}
@@ -168,7 +176,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	chatHistory.PrintInitialHistory()
 	if !a.Ephemeral {
 		go func() {
-			historyLines, err := db.GetUserHistory()
+			historyLines, err := db.GetUserHistoryContext(a.Context())
 			if err == nil && ctx.Err() == nil {
 				hist.RestoreOlder(historyLines)
 			}
@@ -376,11 +384,13 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 			if ui.ConsumeSessionReloaded() {
 				if a.SyncSessionState != nil {
-					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, false); err != nil {
+					if err := a.SyncSessionState(messages, a.ToolSelection, currentSessionID, false); err != nil {
 						fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
 					}
 					theme = ui.GetConfiguredTheme(a.Config)
 					kiReader.Theme = theme
+					allowedTools = slices.Clone(a.ToolSelection)
+					kiReader.AllowedTools = allowedTools
 				}
 				if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
 					fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
@@ -442,6 +452,6 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	}
 
 	if !a.Ephemeral {
-		_ = db.SetLatestSessionID(currentSessionID)
+		_ = db.SetLatestSessionIDContext(a.Context(), currentSessionID)
 	}
 }

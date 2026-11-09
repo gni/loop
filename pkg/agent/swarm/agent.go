@@ -15,24 +15,28 @@ import (
 )
 
 type MultiAgent struct {
-	planMu       sync.RWMutex
-	todos        []tool.TodoItem
-	Name         string
-	SystemPrompt string
-	History      []db.Message
-	HistoryMu    sync.RWMutex
-	Skills       []tool.Skill
-	LocalSkills  []tool.Skill
-	HasAllSkills bool
-	Input        chan db.Message
-	Output       chan db.Message
-	Subagents    map[string]*MultiAgent
-	SubagentsMu  sync.RWMutex
-	BaseAgent    *agent.Agent
-	Parent       *MultiAgent
-	Manager      *MultiAgentManager
-	Context      context.Context
-	Cancel       context.CancelFunc
+	planMu        sync.RWMutex
+	todos         []tool.TodoItem
+	Name          string
+	SystemPrompt  string
+	History       []db.Message
+	HistoryMu     sync.RWMutex
+	Skills        []tool.Skill
+	LocalSkills   []tool.Skill
+	HasAllSkills  bool
+	Input         chan db.Message
+	Output        chan db.Message
+	Subagents     map[string]*MultiAgent
+	SubagentsMu   sync.RWMutex
+	BaseAgent     *agent.Agent
+	Parent        *MultiAgent
+	Manager       *MultiAgentManager
+	Context       context.Context
+	Cancel        context.CancelFunc
+	stateStore    *subagent.Storage
+	supervisor    *subagent.TaskSupervisor
+	persistenceMu sync.Mutex
+	stopped       bool
 
 	ActiveContext context.Context
 	ActiveCancel  context.CancelFunc
@@ -51,6 +55,13 @@ func (ma *MultiAgent) RecordTask(id string) {
 		return
 	}
 	ma.TasksMu.Lock()
+	if ma.Context != nil && ma.Context.Err() != nil {
+		ma.TasksMu.Unlock()
+		if ma.BaseAgent != nil {
+			_ = ma.BaseAgent.KillTask(id)
+		}
+		return
+	}
 	ma.TaskIDs = append(ma.TaskIDs, id)
 	ma.TasksMu.Unlock()
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,19 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
+// ConfigApplyError reports a configuration that was committed before a
+// dependent service failed. Callers must finish synchronizing active state.
+type ConfigApplyError struct{ Err error }
+
+func (e *ConfigApplyError) Error() string { return "configuration applied, but " + e.Err.Error() }
+func (e *ConfigApplyError) Unwrap() error { return e.Err }
+
+// ConfigApplied distinguishes committed updates from preparation failures.
+func ConfigApplied(err error) bool {
+	var applied *ConfigApplyError
+	return err == nil || errors.As(err, &applied)
+}
+
 // ApplyConfig prepares local resources before replacing the active configuration.
 // Callers must keep inference idle while changing configuration.
 func (a *Agent) ApplyConfig(input *config.Config) error {
@@ -22,10 +36,7 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if err := next.ValidatePrompt(); err != nil {
-		return err
-	}
-	if err := next.Nostop.Validate(); err != nil {
+	if err := next.ValidateSettings(); err != nil {
 		return err
 	}
 	next.NormalizeSafety()
@@ -116,7 +127,7 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	if mcpChanged {
 		a.StopMCPServers()
 		if err := a.StartMCPServers(next.MCPServers); err != nil {
-			return fmt.Errorf("configuration applied, but %w", err)
+			return &ConfigApplyError{Err: err}
 		}
 	}
 	return nil
