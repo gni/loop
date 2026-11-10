@@ -2,6 +2,7 @@ package file
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,13 +15,26 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-type snapshotGuard interface {
-	HasSnapshot(absPath string) bool
-	DiscardSnapshot(absPath string)
+// MutationError reports a completed replacement whose durability could not be
+// confirmed. Callers must retain rollback data and report the actual change.
+type MutationError struct {
+	Path string
+	Err  error
+}
+
+func (e *MutationError) Error() string {
+	return fmt.Sprintf("file %s was replaced, but durability confirmation failed: %v", e.Path, e.Err)
+}
+
+func (e *MutationError) Unwrap() error { return e.Err }
+
+func mutationCommitted(err error, path string) bool {
+	var committed *MutationError
+	return errors.As(err, &committed) && committed.Path == path
 }
 
 func prepareSnapshotRollback(ctx domaintool.AgentContext, safePath string) func() {
-	sg, ok := ctx.(snapshotGuard)
+	sg, ok := ctx.(domaintool.SnapshotGuard)
 	if !ok || sg.HasSnapshot(safePath) {
 		return func() {}
 	}
@@ -65,7 +79,10 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("atomically replace %s: %w", filename, err)
 	}
 	tmpName = ""
-	return syncParentDirectory(dir)
+	if err := syncParentDirectory(dir); err != nil {
+		return &MutationError{Path: filename, Err: err}
+	}
+	return nil
 }
 
 func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
@@ -93,25 +110,43 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 		return fmt.Errorf("inspect target %s: %w", safePath, err)
 	}
 	useAtomic := true
-	if cp, ok := ctx.(interface{ IsAtomicWritesEnabled() bool }); ok {
+	if cp, ok := ctx.(domaintool.AtomicWriteSettings); ok {
 		useAtomic = cp.IsAtomicWritesEnabled()
+	}
+	releaseRecovery := func() {}
+	if recovery, ok := ctx.(domaintool.FileMutationRecorder); ok {
+		release, beginErr := recovery.BeginFileMutation(ctx.Context(), safePath, data, perm)
+		err = beginErr
+		if err != nil {
+			return err
+		}
+		if release == nil {
+			return fmt.Errorf("file mutation recorder did not provide a release function")
+		}
+		var once sync.Once
+		releaseRecovery = func() { once.Do(release) }
+	}
+	defer releaseRecovery()
+	if err := ctx.Context().Err(); err != nil {
+		return err
 	}
 	if useAtomic {
 		err = AtomicWriteFile(safePath, data, perm)
 	} else {
 		err = os.WriteFile(safePath, data, perm)
 	}
-	if err != nil {
+	releaseRecovery()
+	if err != nil && !mutationCommitted(err, safePath) {
 		return err
 	}
 	if fo, ok := ctx.(domaintool.FileObserver); ok {
 		fo.RecordMutation(safePath, data)
 	}
-	if index, ok := ctx.(interface{ InvalidateCodeIndex(string) }); ok {
+	if index, ok := ctx.(domaintool.CodeIndexInvalidator); ok {
 		index.InvalidateCodeIndex(safePath)
 	}
 	ctx.ReloadSkills()
-	return nil
+	return err
 }
 
 func IsBinary(data []byte) bool {

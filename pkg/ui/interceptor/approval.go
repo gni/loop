@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/ui/interactive"
@@ -16,9 +15,15 @@ type ApprovalByteReader struct {
 	Input   <-chan byte
 }
 
+func (r *ApprovalByteReader) GetInputContext() context.Context { return r.Context }
+func (r *ApprovalByteReader) GetInputChan() <-chan byte        { return r.Input }
+
 func (r *ApprovalByteReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
+	}
+	if r.Context != nil && r.Context.Err() != nil {
+		return 0, r.Context.Err()
 	}
 
 	var done <-chan struct{}
@@ -36,40 +41,16 @@ func (r *ApprovalByteReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	p[0] = first
-	if first != 27 {
-		n := 1
-		for n < len(p) {
-			select {
-			case next, ok := <-r.Input:
-				if !ok {
-					return n, nil
-				}
-				p[n] = next
-				n++
-			default:
-				return n, nil
-			}
-		}
-		return n, nil
-	}
-
-	if len(p) == 1 {
-		return 1, nil
-	}
-
-	timer := time.NewTimer(15 * time.Millisecond)
-	defer timer.Stop()
-
 	n := 1
-	for n < len(p) && n < 3 {
+	for n < len(p) {
 		select {
-		case next, channelOpen := <-r.Input:
-			if !channelOpen {
+		case next, ok := <-r.Input:
+			if !ok {
 				return n, nil
 			}
 			p[n] = next
 			n++
-		case <-timer.C:
+		default:
 			return n, nil
 		}
 	}
@@ -77,6 +58,10 @@ func (r *ApprovalByteReader) Read(p []byte) (int, error) {
 }
 
 func (ki *KeyInterceptorReader) BeginApprovalInput() io.Reader {
+	if ki.approvalCancel != nil {
+		ki.approvalCancel()
+		ki.approvalCancel = nil
+	}
 	if ki.ApprovalChan == nil {
 		ki.ApprovalChan = make(chan byte, 1000)
 	}
@@ -84,10 +69,29 @@ func (ki *KeyInterceptorReader) BeginApprovalInput() io.Reader {
 	if ki.ApprovalReader == nil {
 		ki.ApprovalReader = &ApprovalByteReader{Input: ki.ApprovalChan, Context: ki.InputContext}
 	}
+	ctx := ki.InputContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ki.Agent != nil && ki.ActiveTurn.Load() {
+		root := ctx
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ki.Agent.Context())
+		stop := context.AfterFunc(root, cancel)
+		if root.Err() != nil {
+			cancel()
+		}
+		ki.approvalCancel = func() { stop(); cancel() }
+	}
+	ki.ApprovalReader.Context = ctx
 	return ki.ApprovalReader
 }
 
 func (ki *KeyInterceptorReader) EndApprovalInput() {
+	if ki.approvalCancel != nil {
+		ki.approvalCancel()
+		ki.approvalCancel = nil
+	}
 	ki.DrainApprovalInput()
 }
 

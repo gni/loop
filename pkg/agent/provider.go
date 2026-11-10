@@ -261,6 +261,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 
 	var textBuilder, rawTextBuilder, reasoningBuilder, cleanReasoningBuilder strings.Builder
 	toolCallsMap := make(map[int]*db.ToolCall)
+	argumentBuffers := make(toolArgumentBuffers)
 
 	textFilter := p.newStreamTextFilter(ctx, chunkChan, "text", &textBuilder)
 	reasoningFilter := p.newStreamTextFilter(ctx, chunkChan, "reasoning", &cleanReasoningBuilder)
@@ -289,6 +290,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
+		argumentBuffers.flush(toolCallsMap)
 		var calls []db.ToolCall
 		if len(toolCallsMap) > 0 {
 			calls = assembleToolCalls(toolCallsMap, "", "")
@@ -309,6 +311,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 	}
 
+	var budget responseBudget
 	for {
 		chunk, done, err := streamReader.ReadNextChunk(streamCtx)
 		if err != nil {
@@ -356,6 +359,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		choice := chunk.Choices[0]
+		if err := budget.add(choice.Delta.Content, choice.Delta.ReasoningContent); err != nil {
+			return buildMessage(), err
+		}
 		if choice.FinishReason != "" {
 			finishReason = choice.FinishReason
 		}
@@ -375,6 +381,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			observer := p.chunkDropObserver(ctx)
 
 			for _, tc := range choice.Delta.ToolCalls {
+				if err := budget.add(tc.ID, tc.Function.Name, tc.Function.Arguments); err != nil {
+					return buildMessage(), err
+				}
 				idx := 0
 				if tc.Index != nil {
 					idx = *tc.Index
@@ -384,7 +393,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				}
 				existing, ok := toolCallsMap[idx]
 				if !ok {
+					if len(toolCallsMap) >= maxResponseToolCalls {
+						return buildMessage(), fmt.Errorf("provider response exceeds %d tool calls", maxResponseToolCalls)
+					}
 					newTC := tc
+					newTC.Function.Arguments = ""
 					if newTC.ID == "" {
 						newTC.ID = fmt.Sprintf("call_%d_%s", idx, db.NewUUID()[:8])
 					}
@@ -397,8 +410,8 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					if tc.Type != "" {
 						existing.Type = tc.Type
 					}
-					existing.Function.Arguments += tc.Function.Arguments
 				}
+				argumentBuffers.append(idx, tc.Function.Arguments)
 				if tc.Function.Name != "" {
 					tcName := tool.NormalizeName(tc.Function.Name)
 					existing.Function.Name = tcName
@@ -421,6 +434,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
 	}
 
+	argumentBuffers.flush(toolCallsMap)
+	if err := validateProviderCalls(toolCallsMap); err != nil {
+		return buildMessage(), err
+	}
+	if len(toolCallsMap) == 0 && strings.EqualFold(p.Config.ToolProtocol, "xml") {
+		if _, err := fallback.ParseFallbackToolCallsStrict(rawTextBuilder.String()); err != nil {
+			return buildMessage(), err
+		}
+	}
 	assistantMsg := buildMessage()
 	if !hasUsableAssistantResponse(assistantMsg) {
 		return assistantMsg, fmt.Errorf("model server closed the stream after %s without a usable answer or tool call (HTTP %d, finish reason %q): %w", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, ErrEmptyResponse)

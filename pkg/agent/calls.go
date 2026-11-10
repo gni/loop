@@ -40,10 +40,12 @@ func relayStreamChunks(ctx context.Context, source <-chan StreamChunk) <-chan St
 	go func() {
 		defer close(out)
 		const maxQueuedChunks = 8192
+		const maxQueuedBytes = 1 << 20
+		queuedBytes := 0
 		queue := make([]StreamChunk, 0, 256)
 		for source != nil || len(queue) > 0 {
 			var input <-chan StreamChunk
-			if len(queue) < maxQueuedChunks {
+			if len(queue) < maxQueuedChunks && queuedBytes < maxQueuedBytes {
 				input = source
 			}
 			var output chan<- StreamChunk
@@ -58,8 +60,10 @@ func relayStreamChunks(ctx context.Context, source <-chan StreamChunk) <-chan St
 					source = nil
 				} else {
 					queue = append(queue, chunk)
+					queuedBytes += len(chunk.Content)
 				}
 			case output <- next:
+				queuedBytes -= len(next.Content)
 				queue[0] = StreamChunk{}
 				queue = queue[1:]
 				if len(queue) == 0 {

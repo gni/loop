@@ -246,7 +246,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if batch != nil {
 			batch.CancelUnfinished()
 		}
-		if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+		if marker, ok := sr.(PendingWritePresenter); ok {
 			marker.MarkPendingWriteResults("Not executed")
 		}
 	}
@@ -345,7 +345,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
 					// Ctrl+O may change this setting while the provider is streaming.
 					// Apply it before every chunk, including the first of a new file.
-					if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
+					if view, ok := sr.(LiveCollapsePresenter); ok {
 						view.SetLiveCollapse(a.Config.CollapseResults)
 					}
 					if (name == "write" || name == "edit") && !a.Config.StreamWrites {
@@ -382,11 +382,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			// Handle a toggle received with the last provider chunk before
 			// the live stream snapshot is released.
 			canReplay := true
-			if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+			if view, ok := sr.(ReplaySafety); ok {
 				canReplay = view.SafeToReplay()
 			}
 			if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
-				if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+				if view, ok := sr.(TrackedRowInvalidator); ok {
 					view.InvalidateTrackedRows()
 				}
 			}
@@ -457,11 +457,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			// Tool execution may run without provider chunks. Handle queued Ctrl+O
 			// after the tool results have entered saved conversation history.
 			canReplay := true
-			if view, ok := sr.(interface{ SafeToReplay() bool }); ok {
+			if view, ok := sr.(ReplaySafety); ok {
 				canReplay = view.SafeToReplay()
 			}
 			if canReplay && a.OnStreamProgress != nil && a.OnStreamProgress() {
-				if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+				if view, ok := sr.(TrackedRowInvalidator); ok {
 					view.InvalidateTrackedRows()
 				}
 			}

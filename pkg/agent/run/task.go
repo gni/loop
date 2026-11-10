@@ -173,9 +173,15 @@ func EndTask(ctx context.Context, status Status) *task.State {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if status == Completed && !task.HasWork(&state.state) {
+		return nil
+	}
 	if status != Completed {
+		preserveReason := state.state.Status == string(status) && state.state.Summary != ""
 		state.state.Status, state.state.Source = string(status), "runtime"
-		state.state.Summary = "Execution stopped before a final task assessment."
+		if !preserveReason {
+			state.state.Summary = "Execution stopped before a final task assessment."
+		}
 	}
 	return task.Clone(&state.state)
 }
@@ -240,6 +246,13 @@ func NewBackgroundOutput(ctx context.Context, id, output string, versions ...int
 		version = versions[0]
 	}
 	previous, exists := state.processOutput[id]
+	if !exists && len(state.processOutput) >= 1024 {
+		// An evicted cursor may repeat output once; it must never hide new data.
+		for oldest := range state.processOutput {
+			delete(state.processOutput, oldest)
+			break
+		}
+	}
 	next := processOutputCursor{size: len(output), hash: sha256.Sum256([]byte(output)), version: version}
 	state.processOutput[id] = next
 	// Identical text can still be new data after a rolling buffer fills.

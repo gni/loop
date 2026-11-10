@@ -34,7 +34,7 @@ func (t *grepTool) PromptGuidelines() []string {
 func (t *grepTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"grep",
-		domaintool.FormatToolDescription("grep", "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories. Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices state the exact next offset and the total matching lines, so use offset to continue."),
+		domaintool.FormatToolDescription("grep", "Search file contents for regular expressions or literal strings across the workspace (like grep -rn). Returns matching file paths, line numbers, and lines. If pattern is empty and glob is provided, lists matching file paths. Automatically respects .gitignore and ignores dependency/build directories. Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices report the next unread offset and a lower bound on matching lines. Use offset to continue."),
 		map[string]domaintool.SchemaProp{
 			"pattern":     domaintool.StringProp(domaintool.FormatParamDescription("grep", "pattern", "Regular expression pattern to search for (or literal string). If empty and glob is provided, matches file names.")),
 			"path":        domaintool.StringProp(domaintool.FormatParamDescription("grep", "path", "Directory or file to search in (default: current directory).")),
@@ -69,16 +69,7 @@ func buildLineMatcher(pattern string, literal, ignoreCase bool) (func(string) bo
 	}
 	re, err := regexp.Compile(regexPattern)
 	if err != nil {
-		// Fallback to literal matching if the pattern contains unescaped regex metacharacters
-		if ignoreCase {
-			lowerPattern := strings.ToLower(pattern)
-			return func(line string) bool {
-				return strings.Contains(strings.ToLower(line), lowerPattern)
-			}, nil
-		}
-		return func(line string) bool {
-			return strings.Contains(line, pattern)
-		}, nil
+		return nil, fmt.Errorf("invalid regular expression; use literal=true to search exact text: %w", err)
 	}
 	return re.MatchString, nil
 }
@@ -130,24 +121,29 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", err
 	}
 
-	limit := int(args.Limit)
+	limit, err := domaintool.IntegerArgument("limit", args.Limit)
+	if err != nil {
+		return "", err
+	}
 	if limit <= 0 {
 		limit = limits.For(ctx).GrepDefaultLimit
 	} else if limit > limits.For(ctx).GrepMaxLimit {
 		limit = limits.For(ctx).GrepMaxLimit
 	}
 
-	offset := int(args.Offset)
+	offset, err := domaintool.IntegerArgument("offset", args.Offset)
+	if err != nil {
+		return "", err
+	}
 	if offset < 1 {
 		offset = 1
 	}
 
-	contextLines := int(args.Context)
-	if contextLines < 0 {
-		contextLines = 0
-	} else if contextLines > 5 {
-		contextLines = 5
+	contextLines, err := domaintool.IntegerArgument("context", args.Context)
+	if err != nil {
+		return "", err
 	}
+	contextLines = min(contextLines, 5)
 
 	ignoreCase := args.IgnoreCase || args.IgnoreCaseCamel || args.CaseInsensitive
 	if args.CaseSensitive != nil {
@@ -201,7 +197,10 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 		fInfo, err := os.Stat(validated)
-		if err != nil || !fInfo.Mode().IsRegular() || fInfo.Size() == 0 || fInfo.Size() > maxFileBytes {
+		if err != nil {
+			return fmt.Errorf("inspect search file %s: %w", filePath, err)
+		}
+		if !fInfo.Mode().IsRegular() {
 			return nil
 		}
 
@@ -221,9 +220,15 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			shownMatches++
 			return nil
 		}
+		if fInfo.Size() == 0 || fInfo.Size() > maxFileBytes {
+			return nil
+		}
 
 		data, err := storage.ReadFile(validated, maxFileBytes)
-		if err != nil || IsBinary(data) {
+		if err != nil {
+			return fmt.Errorf("read search file %s: %w", filePath, err)
+		}
+		if IsBinary(data) {
 			return nil
 		}
 
@@ -239,10 +244,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			}
 			if matchFunc(line) {
 				totalMatches++
-				if totalMatches >= offset && totalMatches < offset+limit {
+				if totalMatches >= offset && totalMatches-offset < limit {
 					matchedIndices[idx] = true
-					shownMatches++
-				} else if totalMatches >= offset+limit {
+				} else if totalMatches >= offset && totalMatches-offset >= limit {
 					limitReached = true
 				}
 			}
@@ -258,6 +262,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				if !appendOutputLine(fmt.Sprintf("%s:%d: %s\n", relPath, idx+1, lineContent)) {
 					return fs.SkipAll
 				}
+				shownMatches++
 			}
 		} else {
 			linesToShow := make(map[int]bool, len(matchedIndices)*(2*contextLines+1))
@@ -275,20 +280,39 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				}
 			}
 
+			selectedLines := sortedIntKeys(matchedIndices)
+			nextMatch := 0
 			prevLine := -1
 			for _, idx := range sortedIntKeys(linesToShow) {
-				if prevLine != -1 && idx > prevLine+1 {
-					if !appendOutputLine("--\n") {
-						return fs.SkipAll
-					}
+				for nextMatch < len(selectedLines) && selectedLines[nextMatch] < idx {
+					nextMatch++
 				}
 				lineContent := truncateGrepLine(fileLines[idx], maxLineLen)
 				sep := "-"
 				if matchedIndices[idx] {
 					sep = ":"
 				}
-				if !appendOutputLine(fmt.Sprintf("%s:%d%s %s\n", relPath, idx+1, sep, lineContent)) {
+				row := fmt.Sprintf("%s:%d%s %s\n", relPath, idx+1, sep, lineContent)
+				if prevLine != -1 && idx > prevLine+1 {
+					row = "--\n" + row
+				}
+				if !matchedIndices[idx] && out.Len()+len(row) > maxOutBytes {
+					continue
+				}
+				if !matchedIndices[idx] && nextMatch < len(selectedLines) {
+					// Context must leave room for the next actual match. Otherwise
+					// a page could contain only context and never advance its offset.
+					match := selectedLines[nextMatch]
+					reserved := len(fmt.Sprintf("%s:%d: %s\n", relPath, match+1, truncateGrepLine(fileLines[match], maxLineLen))) + 3
+					if out.Len()+len(row)+reserved > maxOutBytes {
+						continue
+					}
+				}
+				if !appendOutputLine(row) {
 					return fs.SkipAll
+				}
+				if matchedIndices[idx] {
+					shownMatches++
 				}
 				prevLine = idx
 			}
@@ -301,6 +325,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if !info.IsDir() {
+		if globPattern != "" && !MatchGlob(globPattern, RelSlashPath(workspaceRoot, safePath), filepath.Base(safePath)) {
+			return fmt.Sprintf("File does not match glob: %s", globPattern), nil
+		}
 		if err := processFile(safePath); err != nil && err != fs.SkipAll {
 			return "", err
 		}
@@ -310,7 +337,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return cancelErr
 			}
 			if err != nil {
-				return nil
+				return fmt.Errorf("walk search path %s: %w", path, err)
 			}
 			if skip, skipErr := ShouldSkipWalkEntry(path, d, workspaceRoot, gitIgnorePatterns); skip {
 				return skipErr
@@ -331,9 +358,12 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	result := out.String()
 	if strings.TrimSpace(result) == "" && outputSizeReached {
-		return file.GrepOutputNotice(maxOutBytes/1024, shownMatches, totalMatches, offset+shownMatches), nil
+		return "", fmt.Errorf("matching line exceeds the output budget of %d bytes; narrow the path or increase grep_max_output_bytes", maxOutBytes)
 	}
 	if strings.TrimSpace(result) == "" {
+		if totalMatches > 0 {
+			return fmt.Sprintf("No more matches at offset %d (%d matches found).", offset, totalMatches), nil
+		}
 		if pattern == "" && globPattern != "" {
 			return fmt.Sprintf("No files found matching glob: %s\nCheck the search path and broaden the glob before changing the content pattern.", globPattern), nil
 		}
@@ -342,7 +372,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	if limitReached || outputSizeReached {
 		next := offset + shownMatches
-		if outputSizeReached && !limitReached {
+		if outputSizeReached {
 			result += file.GrepOutputNotice(maxOutBytes/1024, shownMatches, totalMatches, next)
 		} else {
 			result += file.GrepLimitNotice(shownMatches, totalMatches, next)

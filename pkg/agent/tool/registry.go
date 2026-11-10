@@ -76,6 +76,7 @@ func (r *ToolRegistry) Register(t ToolExecutor) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools[t.Name()] = t
+	delete(r.schemas, t.Name())
 }
 
 func (r *ToolRegistry) Unregister(name string) {
@@ -84,6 +85,7 @@ func (r *ToolRegistry) Unregister(name string) {
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 	delete(r.schemas, name)
+	delete(r.hidden, name)
 }
 
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
@@ -93,6 +95,7 @@ func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 		if strings.HasPrefix(name, prefix) {
 			delete(r.tools, name)
 			delete(r.schemas, name)
+			delete(r.hidden, name)
 		}
 	}
 }
@@ -205,13 +208,23 @@ func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) 
 // system-prompt tool guidance. Hidden, disabled, and disallowed tools stay out
 // of both surfaces.
 func (r *ToolRegistry) GetAvailableExecutors(allowlist []string) []ToolExecutor {
+	return r.filteredExecutors(allowlist, false)
+}
+
+// GetSearchableExecutors includes tools awaiting explicit discovery. Disabled
+// tools and tools outside the caller's allowlist remain excluded.
+func (r *ToolRegistry) GetSearchableExecutors(allowlist []string) []ToolExecutor {
+	return r.filteredExecutors(allowlist, true)
+}
+
+func (r *ToolRegistry) filteredExecutors(allowlist []string, includeHidden bool) []ToolExecutor {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	all := make([]ToolExecutor, 0, len(r.tools))
 	for name, executor := range r.tools {
 		norm := NormalizeName(name)
-		if r.disabled[name] || r.disabled[norm] || r.hidden[name] || r.hidden[norm] || !IsAllowedTool(name, allowlist) {
+		if r.disabled[name] || r.disabled[norm] || (!includeHidden && (r.hidden[name] || r.hidden[norm])) || !IsAllowedTool(name, allowlist) {
 			continue
 		}
 		all = append(all, executor)
@@ -261,6 +274,7 @@ func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExe
 		if strings.HasPrefix(name, prefix) {
 			delete(r.tools, name)
 			delete(r.schemas, name)
+			delete(r.hidden, name)
 		}
 	}
 	for name, executor := range executors {

@@ -60,12 +60,10 @@ func AddInstruction(ctx context.Context, instruction string) {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if instruction == state.objective {
-		return
-	}
-	for _, previous := range state.updates {
+	for index, previous := range state.updates {
 		if previous == instruction {
-			return
+			state.updates = append(state.updates[:index], state.updates[index+1:]...)
+			break
 		}
 	}
 	state.updates = append(state.updates, instruction)
@@ -79,23 +77,11 @@ func Instructions(ctx context.Context) []string {
 	}
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	var instructions []string
+	instructions := append([]string(nil), state.inherited...)
 	if state.objective != "" {
 		instructions = append(instructions, state.objective)
 	}
-	for _, inherited := range state.inherited {
-		duplicate := false
-		for _, present := range instructions {
-			if present == inherited {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			instructions = append(instructions, inherited)
-		}
-	}
-	return append(instructions, state.updates...)
+	return latestInstructions(append(instructions, state.updates...))
 }
 
 type planKey struct{}

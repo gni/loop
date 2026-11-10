@@ -76,7 +76,6 @@ func handleBranchCommand(
 
 	if a != nil {
 		a.SyncSessionSystemPrompt(messages, "")
-		resetSessionSnapshots(a)
 	}
 
 	if history := ui.GetUI().ChatHistory; history != nil {

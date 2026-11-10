@@ -401,14 +401,22 @@ func (s *JSONLStore) RepairTailContext(ctx context.Context, id string) error {
 		return err
 	}
 	backup := path + ".backup-" + time.Now().UTC().Format("20060102T150405.000000000")
-	if err := os.WriteFile(backup, data, 0600); err != nil {
+	backupFile, err := os.OpenFile(backup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
 		return err
+	}
+	_, backupErr := backupFile.Write(data)
+	if err := errors.Join(backupErr, backupFile.Sync(), backupFile.Close()); err != nil {
+		return fmt.Errorf("save damaged session backup: %w", err)
+	}
+	if err := storage.SyncDirectory(s.core.dir); err != nil {
+		return fmt.Errorf("sync damaged session backup: %w", err)
 	}
 	if err := os.Rename(temp.Name(), path); err != nil {
 		return err
 	}
 	s.invalidateSessionCacheLocked(id)
-	return nil
+	return storage.SyncDirectory(s.core.dir)
 }
 
 func DefaultStore() (*JSONLStore, error) { return getStore() }

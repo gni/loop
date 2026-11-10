@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"maps"
+	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,6 +15,14 @@ import (
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/task"
 )
+
+// providerState owns settings and provider replacement. Runs use an immutable
+// snapshot; live terminal controls are synchronized through LLMProviderMu.
+type providerState struct {
+	LLMProvider   LLMProvider
+	LLMProviderMu sync.RWMutex
+	HTTPClient    *http.Client
+}
 
 type contextKey string
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool/file"
+	domaintool "loop/pkg/domain/tool"
 	"strings"
 )
 
@@ -98,9 +99,7 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 	_ = json.Unmarshal([]byte(arguments), &options)
 	readStatus := ctx.GetTaskStatus
 	if options.Full {
-		if full, ok := ctx.(interface {
-			GetFullTaskStatus(string) (string, string, error)
-		}); ok {
+		if full, ok := ctx.(domaintool.FullTaskStatusProvider); ok {
 			readStatus = full.GetFullTaskStatus
 		}
 	}
@@ -110,7 +109,7 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 	}
 
 	fullOutput := output
-	if versioned, ok := ctx.(interface{ GetTaskOutputVersion(string) int64 }); ok {
+	if versioned, ok := ctx.(domaintool.TaskOutputVersionProvider); ok {
 		output = run.NewBackgroundOutput(ctx.Context(), taskID, output, versioned.GetTaskOutputVersion(taskID))
 	} else {
 		output = run.NewBackgroundOutput(ctx.Context(), taskID, output)
@@ -121,7 +120,7 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 	}
 
 	var cmdStr string
-	if tc, ok := ctx.(interface{ GetTaskCommand(string) string }); ok {
+	if tc, ok := ctx.(domaintool.TaskCommandProvider); ok {
 		cmdStr = tc.GetTaskCommand(taskID)
 	}
 	if cmdStr != "" {

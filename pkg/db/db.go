@@ -71,6 +71,7 @@ type JSONLStore struct {
 }
 
 var _ session.Store = (*JSONLStore)(nil)
+var _ session.ContextStore = (*JSONLStore)(nil)
 
 func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	clean := filepath.Clean(dirPath)
@@ -188,7 +189,7 @@ func (s *JSONLStore) LoadMessagesContext(ctx context.Context, sessionID string) 
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to open session file: %w", err)
+		return nil, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 
 	return ProjectMessages(entries), nil
@@ -249,6 +250,12 @@ func (s *JSONLStore) AppendEntryContext(ctx context.Context, sessionID string, r
 
 // The caller owns both the store file lock and cache mutex through commit.
 func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, record session.Record) (err error) {
+	return s.appendRecordLocked(ctx, sessionID, record, false)
+}
+
+// Branch markers supply their parent explicitly; ordinary records follow the
+// current leaf. Both use the same durable append and cache invalidation path.
+func (s *JSONLStore) appendRecordLocked(ctx context.Context, sessionID string, record session.Record, explicitParent bool) (err error) {
 	cached, err := s.appendStateContext(ctx, sessionID)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -267,8 +274,11 @@ func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, re
 		}
 		settingsHash = &hash
 	}
-	if cached.count > 0 && cached.lastType != "session" {
-		record.ParentID = cached.lastID
+	if !explicitParent {
+		record.ParentID = ""
+		if cached.count > 0 && cached.lastType != "session" {
+			record.ParentID = cached.lastID
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -277,7 +287,7 @@ func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, re
 	s.invalidateSessionCacheLocked(sessionID)
 	record.ID = session.NewUUID()
 	record.Timestamp = nowTimestamp()
-	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
@@ -292,6 +302,9 @@ func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, re
 			err = rollbackSessionAppend(f, infoBefore.Size(), created, err)
 		}
 	}()
+	if err := ensureSessionAppendBoundary(f, infoBefore.Size()); err != nil {
+		return err
+	}
 
 	if cached.count == 0 {
 		header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: sessionID, Cwd: s.Workspace, Timestamp: nowTimestamp()}
@@ -327,7 +340,11 @@ func (s *JSONLStore) appendEntryLocked(ctx context.Context, sessionID string, re
 	if cached.complete {
 		cached.entries = append(cached.entries, cloneRecord(record))
 	}
-	s.cacheEntries(sessionID, cached)
+	// A branch changes which settings snapshot is active. Rebuild its parent
+	// ancestry before deduplicating a later settings append.
+	if record.Type != "branch" {
+		s.cacheEntries(sessionID, cached)
+	}
 	return nil
 }
 
@@ -419,4 +436,8 @@ func OpenHistoryContext(ctx context.Context, sessionID string) (*HistoryReader, 
 
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {
 	return &JSONLStore{core: s.core, Workspace: workspace}
+}
+
+func (s *JSONLStore) ScopedStore(workspace string) session.ContextStore {
+	return s.ForWorkspace(workspace)
 }

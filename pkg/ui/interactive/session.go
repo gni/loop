@@ -56,6 +56,8 @@ func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput
 	if term.IsTerminal(fd) {
 		terminal.Default().EnterAltScreen(rlOutput)
 		defer terminal.Default().ExitAltScreen(rlOutput)
+		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
+		defer restorePaste()
 		signals := make(chan os.Signal, 1)
 		terminal.NotifyResize(signals)
 		defer signal.Stop(signals)

@@ -396,7 +396,7 @@ type wireChatMessage struct {
 type chatCompletionWireRequest = chatCompletionRequest[wireChatMessage]
 
 func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
-	if role == "tool" && name != "read" && name != "write" && name != "edit" && len(content) > maxChars {
+	if role == "tool" && name != "read" && name != "write" && name != "edit" && name != "ask_user" && len(content) > maxChars {
 		if name == "bash" {
 			prefix := "... (earlier command output omitted for context limits)\n"
 			if strings.Contains(suffix, "optimization") {

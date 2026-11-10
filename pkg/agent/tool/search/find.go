@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"loop/pkg/agent/tool/file"
@@ -33,7 +32,7 @@ func (t *findTool) PromptGuidelines() []string {
 func (t *findTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"find_files",
-		domaintool.FormatToolDescription("find_files", "Find files by glob pattern. Returns up to 500 results (max 2000). Notices state the exact next offset and the total result count, so use offset to continue."),
+		domaintool.FormatToolDescription("find_files", "Find files by glob pattern. Returns up to 500 results (max 2000). Notices report the next unread offset and a lower bound on matching files. Use offset to continue."),
 		map[string]domaintool.SchemaProp{
 			"pattern": domaintool.StringProp(domaintool.FormatParamDescription("find_files", "pattern", "Glob pattern to match files (e.g. *.py, **/*.json)")),
 			"path":    domaintool.StringProp(domaintool.FormatParamDescription("find_files", "path", "Directory to search in (default: current directory)")),
@@ -78,12 +77,18 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("cannot access path '%s': %w", searchPath, err)
 	}
 
-	limit := int(args.Limit)
+	limit, err := domaintool.IntegerArgument("limit", args.Limit)
+	if err != nil {
+		return "", err
+	}
 	if limit <= 0 || limit > limits.For(ctx).FindMaxResults {
 		limit = limits.For(ctx).FindMaxResults
 	}
 
-	offset := int(args.Offset)
+	offset, err := domaintool.IntegerArgument("offset", args.Offset)
+	if err != nil {
+		return "", err
+	}
 	if offset < 1 {
 		offset = 1
 	}
@@ -100,7 +105,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if totalMatches >= offset && len(matchedPaths) < limit {
 			matchedPaths = append(matchedPaths, rel)
 		}
-		if totalMatches >= offset+limit {
+		if totalMatches >= offset && totalMatches-offset >= limit {
 			limitReached = true
 		}
 	}
@@ -116,7 +121,7 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return cancelErr
 			}
 			if err != nil {
-				return nil
+				return fmt.Errorf("walk search path %s: %w", path, err)
 			}
 			if path == safePath {
 				return nil
@@ -141,12 +146,16 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	if len(matchedPaths) == 0 {
+		if totalMatches > 0 {
+			return fmt.Sprintf("No more files at offset %d (%d matches found).", offset, totalMatches), nil
+		}
 		return fmt.Sprintf("No files found matching pattern '%s' in '%s'\nCheck the parent directory with list_directory, or broaden the filename glob. An empty search does not prove that the intended file should be created.", pattern, searchPath), nil
 	}
 
-	sort.Strings(matchedPaths)
-
 	cut := file.TruncateHead(matchedPaths, len(matchedPaths), limits.For(ctx).MaxOutputBytes)
+	if cut.ShownLines == 0 && len(matchedPaths) > 0 {
+		return "", fmt.Errorf("matching path exceeds the output byte budget; narrow the search path or increase max_output_bytes")
+	}
 	result := cut.Content
 	if limitReached || cut.Truncated {
 		result += file.SearchLimitNotice("find_files", cut.ShownLines, totalMatches, cut.ShownLines+offset)

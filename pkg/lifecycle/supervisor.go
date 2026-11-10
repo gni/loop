@@ -24,21 +24,25 @@ type Config struct {
 
 // Supervisor monitors process signals and coordinates graceful application termination.
 type Supervisor struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	config          Config
-	sigChan         chan os.Signal
-	doneChan        chan struct{}
-	mu              sync.Mutex
-	cancelHandler   func() bool
-	shutdownHooks   []func()
-	lastInterrupt   time.Time
-	running         bool
-	shutdownStarted bool
-	shutdownDone    chan struct{}
-	stopped         bool
-	exitCode        int
+	ctx              context.Context
+	cancel           context.CancelFunc
+	config           Config
+	sigChan          chan os.Signal
+	doneChan         chan struct{}
+	mu               sync.Mutex
+	cancelHandler    func() bool
+	shutdownHooks    []func()
+	lastInterrupt    time.Time
+	running          bool
+	shutdownStarted  bool
+	shutdownFinished bool
+	shutdownDone     chan struct{}
+	pendingInterrupt *interruptAttempt
+	stopped          bool
+	exitCode         int
 }
+
+type interruptAttempt struct{ _ byte }
 
 var defaultSupervisor = NewSupervisor(Config{})
 
@@ -55,6 +59,7 @@ func NewSupervisor(cfg Config) *Supervisor {
 	if len(cfg.Signals) == 0 {
 		cfg.Signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 	}
+	cfg.Signals = append([]os.Signal(nil), cfg.Signals...)
 	if cfg.ExitFunc == nil {
 		cfg.ExitFunc = os.Exit
 	}
@@ -126,43 +131,55 @@ func (s *Supervisor) Wait(ctx context.Context) error {
 	select {
 	case <-done:
 		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// OnShutdown registers a cleanup hook to be executed on shutdown in LIFO order.
+// OnShutdown registers cleanup in LIFO order, including during shutdown. Hooks
+// registered after cleanup has finished run immediately on the calling goroutine.
 func (s *Supervisor) OnShutdown(hook func()) {
+	if hook == nil {
+		return
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.shutdownFinished {
+		s.mu.Unlock()
+		hook()
+		return
+	}
 	s.shutdownHooks = append(s.shutdownHooks, hook)
+	s.mu.Unlock()
 }
 
 // Start begins listening for process signals in the background.
 func (s *Supervisor) Start() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.running || s.stopped {
-		s.mu.Unlock()
 		return
 	}
-	s.running = true
-	s.mu.Unlock()
-
+	// Subscription and state publication are one operation with respect to Stop.
 	signal.Notify(s.sigChan, s.config.Signals...)
+	s.running = true
 	go s.eventLoop()
 }
 
-// Stop stops the background signal monitor and releases signal subscriptions.
+// Stop releases signal subscriptions and prevents a later Start from reviving them.
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
-	if !s.running {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.stopped {
 		return
 	}
 	s.running = false
 	s.stopped = true
-	s.mu.Unlock()
-
+	s.pendingInterrupt = nil
 	signal.Stop(s.sigChan)
 	close(s.doneChan)
 }
@@ -183,14 +200,13 @@ func (s *Supervisor) eventLoop() {
 
 func (s *Supervisor) handleSignal(sig os.Signal) {
 	s.mu.Lock()
-	now := time.Now()
-	lastInt := s.lastInterrupt
-	s.lastInterrupt = now
-	handler := s.cancelHandler
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	shuttingDown := s.shutdownStarted
-	s.mu.Unlock()
-
 	if shuttingDown {
+		s.mu.Unlock()
 		code := 0
 		if sig == os.Interrupt {
 			code = 130
@@ -199,28 +215,63 @@ func (s *Supervisor) handleSignal(sig os.Signal) {
 		return
 	}
 	if sig == os.Interrupt {
+		now, lastInt := time.Now(), s.lastInterrupt
+		s.lastInterrupt = now
 		// A quick second interrupt bypasses active-operation cancellation.
-		if !lastInt.IsZero() && now.Sub(lastInt) < s.config.DoubleInterruptDuration {
+		if s.pendingInterrupt != nil || (!lastInt.IsZero() && now.Sub(lastInt) < s.config.DoubleInterruptDuration) {
+			s.mu.Unlock()
 			s.executeShutdown(130)
 			return
 		}
-
-		if handler != nil && handler() {
+		if handler := s.cancelHandler; handler != nil {
+			attempt := &interruptAttempt{}
+			s.pendingInterrupt = attempt
+			s.mu.Unlock()
+			// An operation may be blocked on a lock. Keep the signal loop free
+			// to begin shutdown or force exit while its cancel callback runs.
+			go s.cancelOperation(attempt, handler)
 			return
 		}
-
+		s.mu.Unlock()
 		s.executeShutdown(130)
 		return
 	}
+	s.mu.Unlock()
 
 	// SIGTERM or other signals trigger clean exit
 	s.executeShutdown(0)
 }
 
-func (s *Supervisor) executeShutdown(exitCode int) {
+func (s *Supervisor) cancelOperation(attempt *interruptAttempt, handler func() bool) {
+	consumed := handler()
 	s.mu.Lock()
-	s.exitCode = exitCode
+	if s.pendingInterrupt != attempt || s.shutdownStarted || s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.pendingInterrupt = nil
+	s.mu.Unlock()
+	if !consumed {
+		s.requestShutdown(130, false)
+	}
+}
+
+func (s *Supervisor) executeShutdown(exitCode int) {
+	s.requestShutdown(exitCode, true)
+}
+
+func (s *Supervisor) requestShutdown(exitCode int, force bool) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	if s.shutdownStarted {
+		if !force {
+			s.mu.Unlock()
+			return
+		}
+		s.exitCode = exitCode
 		forceExit := s.config.ForceExitFunc
 		s.mu.Unlock()
 		if forceExit != nil {
@@ -228,21 +279,31 @@ func (s *Supervisor) executeShutdown(exitCode int) {
 		}
 		return
 	}
+	s.exitCode = exitCode
 	s.shutdownStarted = true
+	s.pendingInterrupt = nil
 	s.shutdownDone = make(chan struct{})
 	done := s.shutdownDone
 	exitFunc := s.config.ExitFunc
-	hooks := append([]func(){}, s.shutdownHooks...)
 	s.mu.Unlock()
 	s.cancel()
 
 	// Keep the signal loop available while graceful hooks execute.
 	go func() {
 		defer close(done)
-		for i := len(hooks) - 1; i >= 0; i-- {
-			if hooks[i] != nil {
-				hooks[i]()
+		for {
+			s.mu.Lock()
+			if len(s.shutdownHooks) == 0 {
+				s.shutdownFinished = true
+				s.mu.Unlock()
+				break
 			}
+			last := len(s.shutdownHooks) - 1
+			hook := s.shutdownHooks[last]
+			s.shutdownHooks[last] = nil
+			s.shutdownHooks = s.shutdownHooks[:last]
+			s.mu.Unlock()
+			hook()
 		}
 		if exitFunc != nil {
 			exitFunc(exitCode)

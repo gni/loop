@@ -57,7 +57,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 		case !alreadyCompacted && toolName == "edit" && path != "" && failed && successfulUpdates[path]:
 			msg.Content = fmt.Sprintf("[Historical edit attempt on '%s' failed - resolved by subsequent update]", path)
 			msg.Recovery = nil
-		case !alreadyCompacted && len(msg.Content) > 1000:
+		case !alreadyCompacted && toolName != "ask_user" && len(msg.Content) > 1000:
 			msg.Content = truncateHistoricalOutput(msg.Content, toolName)
 		}
 		output[index] = msg

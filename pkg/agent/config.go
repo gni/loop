@@ -29,6 +29,26 @@ func ConfigApplied(err error) bool {
 // ApplyConfig prepares local resources before replacing the active configuration.
 // Callers must keep inference idle while changing configuration.
 func (a *Agent) ApplyConfig(input *config.Config) error {
+	return a.applyConfig(input, configApplyOptions{})
+}
+
+// ApplyConfigAndReconnect commits settings and refreshes MCP in one idle operation.
+func (a *Agent) ApplyConfigAndReconnect(input *config.Config) error {
+	return a.applyConfig(input, configApplyOptions{reconnectMCP: true})
+}
+
+// ReloadConfigResources refreshes file-backed resources before committing their
+// new configuration. Callers must reserve the owning session's idle guard.
+func (a *Agent) ReloadConfigResources(input *config.Config) error {
+	return a.applyConfig(input, configApplyOptions{reloadResources: true})
+}
+
+type configApplyOptions struct {
+	reconnectMCP    bool
+	reloadResources bool
+}
+
+func (a *Agent) applyConfig(input *config.Config, options configApplyOptions) error {
 	if a == nil || a.Registry == nil {
 		return fmt.Errorf("agent is unavailable")
 	}
@@ -40,22 +60,35 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	if err := next.ValidateSettings(); err != nil {
 		return err
 	}
+	if options.reconnectMCP {
+		if !next.MCP {
+			return fmt.Errorf("enable MCP before reconnecting")
+		}
+		enabled := false
+		for _, server := range next.MCPServers {
+			enabled = enabled || server.Enabled
+		}
+		if !enabled {
+			return fmt.Errorf("enable at least one MCP server before reconnecting")
+		}
+	}
 	next.NormalizeSafety()
 	next.Limits = limits.Resolve(next.Limits)
+	previous := a.Config
 	client, err := a.httpClientForConfig(next)
 	if err != nil {
 		return err
 	}
 	plugins := tool.NewToolRegistry()
-	if next.LocalPlugins {
+	pluginsChanged := options.reloadResources || previous == nil || previous.LocalPlugins != next.LocalPlugins || previous.ProjectResources != next.ProjectResources || !reflect.DeepEqual(previous.PluginDirectories, next.PluginDirectories)
+	if pluginsChanged && next.LocalPlugins {
 		for _, dir := range a.pluginDirsForConfig(next) {
 			if err := tool.RegisterPluginsContext(a.Context(), plugins, dir); err != nil {
 				return fmt.Errorf("load plugins: %w", err)
 			}
 		}
 	}
-	previous := a.Config
-	skillsChanged := previous == nil || previous.SkillsDir != next.SkillsDir || previous.ProjectResources != next.ProjectResources || !reflect.DeepEqual(previous.SkillDirectories, next.SkillDirectories)
+	skillsChanged := options.reloadResources || previous == nil || previous.SkillsDir != next.SkillsDir || previous.ProjectResources != next.ProjectResources || !reflect.DeepEqual(previous.SkillDirectories, next.SkillDirectories)
 	var skills []Skill
 	if skillsChanged {
 		skills, err = LoadSkillsFromDirs(a.skillDirsForConfig(next)...)
@@ -77,7 +110,7 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 			logger.Close()
 		}
 	}()
-	catalogChanged := previous == nil || previous.PromptsFile != next.PromptsFile
+	catalogChanged := options.reloadResources || previous == nil || previous.PromptsFile != next.PromptsFile
 	if catalogChanged || next.PromptsFile != "" {
 		path := next.PromptsFile
 		if path != "" {
@@ -108,7 +141,9 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	if previousClient != nil && previousClient != client {
 		previousClient.CloseIdleConnections()
 	}
-	a.Registry.ReplacePrefix("plugin__", plugins.GetAllExecutors())
+	if pluginsChanged {
+		a.Registry.ReplacePrefix("plugin__", plugins.GetAllExecutors())
+	}
 	if skillsChanged {
 		a.SetActiveSkills(skills)
 	}
@@ -125,9 +160,16 @@ func (a *Agent) ApplyConfig(input *config.Config) error {
 	a.stateMu.Unlock()
 	a.syncToolAvailability()
 	a.markSystemPromptDirty()
-	if mcpChanged {
+	if mcpChanged || options.reconnectMCP {
 		a.StopMCPServers()
-		if err := a.StartMCPServers(next.MCPServers); err != nil {
+		servers := config.CopyMCPServers(next.MCPServers)
+		if options.reconnectMCP {
+			for name, server := range servers {
+				server.AlwaysLoad = true
+				servers[name] = server
+			}
+		}
+		if err := a.StartMCPServers(servers); err != nil {
 			return &ConfigApplyError{Err: err}
 		}
 	}
@@ -139,6 +181,9 @@ func tlsSettingsChanged(previous, next *config.Config) bool {
 }
 
 func (a *Agent) httpClientForConfig(next *config.Config) (*http.Client, error) {
+	if a.HTTPClient != nil && !tlsSettingsChanged(a.Config, next) && next.CAFile == "" && next.CertFile == "" && next.KeyFile == "" {
+		return a.HTTPClient, nil
+	}
 	tlsConfig, err := config.GetTLSConfig(next)
 	if err != nil {
 		return nil, err

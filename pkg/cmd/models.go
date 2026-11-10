@@ -1,31 +1,29 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/spf13/cobra"
 
+	"loop/pkg/agent"
 	"loop/pkg/config"
-	"loop/pkg/runtime"
 )
 
 func init() {
 	var discover bool
-	command := &cobra.Command{Use: "models", Short: "List configured model capabilities and prices", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) (runErr error) {
-		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
+	command := &cobra.Command{Use: "models", Short: "List configured model capabilities and prices", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		workspace, err := config.CanonicalWorkspace(".")
 		if err != nil {
 			return err
 		}
+		cfg, err := config.LoadWorkspaceConfigContext(cmd.Context(), configPath, workspace, false)
+		if err != nil {
+			return err
+		}
+		applyFlagOverrides(cmd, cfg)
 		entries := cfg.Models()
 		if discover {
-			session, err := runtime.NewContext(cmd.Context(), runtime.Options{Config: cfg, ConfigPath: configPath, NoSession: true, Tools: []string{}})
-			if err != nil {
-				return err
-			}
-			defer func() { runErr = errors.Join(runErr, session.Close(context.Background())) }()
-			entries, err = session.Agent.DiscoverModels(cmd.Context())
+			entries, err = agent.DiscoverModels(cmd.Context(), cfg, configPath)
 			if err != nil {
 				return err
 			}

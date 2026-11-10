@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 )
@@ -158,6 +159,15 @@ type FileObserver interface {
 	CheckMutationAllowed(absPath string, isEdit bool) error
 	RecordMutation(absPath string, data []byte)
 }
+
+// FileMutationRecorder persists recovery intent before a file is committed.
+// On success, the caller must release the returned transaction after its write.
+type FileMutationRecorder interface {
+	BeginFileMutation(context.Context, string, []byte, os.FileMode) (func(), error)
+}
+
+type AtomicWriteSettings interface{ IsAtomicWritesEnabled() bool }
+type CodeIndexInvalidator interface{ InvalidateCodeIndex(string) }
 
 // ToolExecutor defines the operational contract for executing a tool.
 type ToolExecutor interface {

@@ -16,3 +16,16 @@ func menuDisplayText(text string) string {
 		return r
 	}, style.StripAnsi(text))
 }
+
+// Pasting into a searchable list filters it without running menu shortcuts.
+func appendPastedQuery(key []byte, query *string, limit int) bool {
+	text, pasted := pastedKeyText(key)
+	if !pasted {
+		return false
+	}
+	text = strings.TrimSpace(menuDisplayText(text))
+	if len(text) <= limit-len(*query) {
+		*query += text
+	}
+	return true
+}

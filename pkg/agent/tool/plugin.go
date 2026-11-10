@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	domaintool "loop/pkg/domain/tool"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,7 @@ func (p *pluginTool) Definition() Tool {
 }
 
 func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error) {
-	gate, ok := ctx.(interface{ IsShellExecutionAllowed() bool })
+	gate, ok := ctx.(domaintool.ShellExecutionGate)
 	if !ok || !gate.IsShellExecutionAllowed() {
 		return "", fmt.Errorf("executable plugins require a trusted workspace")
 	}
@@ -55,7 +56,7 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 		parent = ctx.Context()
 	}
 	environment := os.Environ()
-	if provider, ok := ctx.(interface{ GetExecutionEnv() map[string]string }); ok {
+	if provider, ok := ctx.(domaintool.ExecutionEnvironment); ok {
 		for key, value := range provider.GetExecutionEnv() {
 			environment = append(environment, key+"="+value)
 		}

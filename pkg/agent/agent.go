@@ -22,52 +22,10 @@ import (
 	"loop/pkg/ui/style"
 )
 
-type StreamRenderer interface {
-	Write(content string)
-	WriteReasoning(content string)
-	Flush()
-	HasOutput() bool
-	StartToolCall(toolName string, toolCallIndex int)
-	SetToolTarget(target string, toolCallIndex int)
-	WriteToolCall(content string)
-	GetToolTitleLineNumber(index int) int
-	DidStreamToolBody(index int) bool
-	CompleteToolCall(index int, toolName string, toolArgs string, isError bool)
-	GetReasoningDuration() float64
-	SetPrompt(prompt string)
-}
-
-type TurnLoader interface {
-	Pause()
-	Resume()
-}
-
-type SubagentCancellationDecision uint8
-
-const (
-	SubagentCancellationContinue SubagentCancellationDecision = iota
-	SubagentCancellationSkipCurrent
-	SubagentCancellationStopAll
-)
-
-type AgentUI interface {
-	DrawStatusBar(w io.Writer, theme style.UITheme)
-	DrawPromptSeparator(w io.Writer, showThinking bool, reasoningEffort string, theme style.UITheme, spinnerFrame string)
-	NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) StreamRenderer
-	SetCollapseStatus(collapsed bool)
-	UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool)
-	UpdatePlanStatus(completed, total int)
-	DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string)
-	AskForApproval(w io.Writer, theme style.UITheme) (bool, bool)
-	AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error)
-	AskForSubagentCancellation(w io.Writer, theme style.UITheme, agentName string) SubagentCancellationDecision
-	RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, toolArgs string)
-	RenderToolOutput(w io.Writer, output string, isError bool, collapseResults bool, theme style.UITheme, toolName string, toolArgs string, bodyWasStreamed bool)
-	SetCursorHidden(hidden bool)
-	RenderGenerationError(w io.Writer, message string, theme style.UITheme)
-}
-
 type Agent struct {
+	providerState
+	mcpState
+	backgroundTasks
 	ReloadResources     func() error
 	Lifetime            context.Context
 	CancelLifetime      context.CancelFunc
@@ -91,29 +49,13 @@ type Agent struct {
 	persistenceFailures uint64
 	NextInput           func() []db.Message
 	UI                  AgentUI
-	LLMProvider         LLMProvider
-	LLMProviderMu       sync.RWMutex
 	Config              *config.Config
 	ConfigControl       ConfigurationController
 	ConfigPath          string
-	HTTPClient          *http.Client
 	ActiveSkills        []Skill
-	MCPClients          map[string]*mcpClient
-	MCPClientsMu        sync.Mutex
-	MCPStartErrors      map[string]error
-
-	mcpGeneration int
-	mcpPending    map[string]config.MCPServerConfig
-	mcpConnecting map[string]*mcpConnectAttempt
 
 	Registry      *tool.ToolRegistry
 	WorkspaceRoot string
-
-	Tasks         map[string]*Task
-	TasksMu       sync.Mutex
-	NextTaskID    int
-	StreamingTask string
-	taskOutput    taskOutputState
 
 	CurrentStreamBuffer *bytes.Buffer
 	// CurrentHistorySnapshot supplies the history owned by the running loop.
@@ -194,17 +136,14 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 	a := &Agent{
 		Lifetime: lifetime, CancelLifetime: cancelLifetime,
 		Config:           cfg,
+		providerState:    providerState{HTTPClient: httpClient},
+		mcpState:         mcpState{MCPClients: make(map[string]*mcpClient), MCPStartErrors: make(map[string]error), mcpPending: make(map[string]config.MCPServerConfig)},
+		backgroundTasks:  backgroundTasks{Tasks: make(map[string]*Task), NextTaskID: 1},
 		Timing:           NewTimingRecorder(),
 		Credentials:      auth.NewStore(filepath.Join(resources.AgentDirectory(configPath), "auth.json")),
 		ConfigPath:       configPath,
-		HTTPClient:       httpClient,
-		MCPClients:       make(map[string]*mcpClient),
-		MCPStartErrors:   make(map[string]error),
-		mcpPending:       make(map[string]config.MCPServerConfig),
 		Registry:         tool.NewToolRegistry(),
 		WorkspaceRoot:    absWorkspace,
-		Tasks:            make(map[string]*Task),
-		NextTaskID:       1,
 		SpawnedAgents:    make(map[string]bool),
 		SystemEvents:     make(chan string, 100),
 		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
@@ -299,326 +238,6 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 		return
 	}
 	a.MessagesMu.Unlock()
-}
-
-func (a *Agent) ShouldShowThinking() bool {
-	if a == nil || a.Config == nil || !a.Config.ShowThinking {
-		return false
-	}
-	effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
-	return effort != "off" && effort != "none"
-}
-
-func (a *Agent) NewTurnStreamRenderer(w io.Writer, theme style.UITheme, agentName, prompt string) StreamRenderer {
-	var sr StreamRenderer
-	if a != nil && a.UI != nil {
-		streamWrites := a.Config == nil || a.Config.StreamWrites
-		sr = a.UI.NewStreamRenderer(w, theme, a.ShouldShowThinking(), streamWrites, agentName)
-	} else {
-		sr = &FallbackStreamRenderer{w: w}
-	}
-	sr.SetPrompt(prompt)
-	if presenter, ok := sr.(interface{ SetLiveCollapse(bool) }); ok && a != nil && a.Config != nil {
-		presenter.SetLiveCollapse(a.Config.CollapseResults)
-	}
-	if presenter, ok := sr.(interface{ SetInteractiveQuestions(bool) }); ok {
-		presenter.SetInteractiveQuestions(a != nil && a.UI != nil && a.Inquirer == nil &&
-			(a.Config == nil || a.Config.AskUserMode != "auto_recommended"))
-	}
-	return sr
-}
-
-func (a *Agent) ensureGuided() *GuidedController {
-	if a == nil {
-		return nil
-	}
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	if a.Guided == nil {
-		enabled := a.Config != nil && a.Config.GuidedMode
-		a.Guided = NewGuidedController(enabled)
-	}
-	return a.Guided
-}
-
-func (a *Agent) IsGuidedMode() bool {
-	if a == nil {
-		return false
-	}
-	if a.Guided != nil {
-		return a.Guided.IsEnabled()
-	}
-	return a.Config != nil && a.Config.GuidedMode
-}
-
-func (a *Agent) SetGuidedMode(enabled bool) {
-	_ = a.UpdateLiveSettings(func(next *LiveSettings) { next.GuidedMode = enabled })
-}
-
-func (a *Agent) RollbackChanges() ([]string, error) {
-	if a == nil {
-		return nil, nil
-	}
-	return a.ensureGuided().Rollback(a.FileObservations)
-}
-
-func (a *Agent) HasSnapshot(absPath string) bool {
-	if a == nil {
-		return false
-	}
-	return a.ensureGuided().HasSnapshot(absPath)
-}
-
-func (a *Agent) DiscardSnapshot(absPath string) {
-	if a == nil {
-		return
-	}
-	a.ensureGuided().DiscardSnapshot(absPath)
-}
-
-func (a *Agent) RecordRead(absPath string, data []byte) {
-	if a != nil && a.FileObservations != nil {
-		a.FileObservations.RecordRead(absPath, data)
-	}
-}
-
-func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
-	if a == nil {
-		return nil
-	}
-	if a.FileObservations != nil {
-		if err := a.FileObservations.CheckMutationAllowed(absPath, isEdit); err != nil {
-			return err
-		}
-	}
-	return a.ensureGuided().captureFileSnapshot(absPath, int64(a.GetLimits().MaxReadFileBytes))
-}
-
-// InvalidateCodeIndex refreshes declarations after committed native edits.
-func (a *Agent) InvalidateCodeIndex(path string) {
-	if a.Registry == nil {
-		return
-	}
-	if executor, exists := a.Registry.Lookup("search_symbols"); exists {
-		if index, ok := executor.(interface{ Invalidate(string) }); ok {
-			index.Invalidate(path)
-		}
-	}
-}
-
-func (a *Agent) RecordMutation(absPath string, data []byte) {
-	if a == nil {
-		return
-	}
-	if a.FileObservations != nil {
-		a.FileObservations.RecordMutation(absPath, data)
-	}
-}
-
-func (a *Agent) GetTodos() []tool.TodoItem {
-	if a == nil {
-		return nil
-	}
-	a.TodosMu.RLock()
-	defer a.TodosMu.RUnlock()
-	res := make([]tool.TodoItem, len(a.Todos))
-	copy(res, a.Todos)
-	return res
-}
-
-func (a *Agent) SetTodos(todos []tool.TodoItem) error {
-	if a == nil {
-		return nil
-	}
-	a.TodosMu.Lock()
-	a.Todos = make([]tool.TodoItem, len(todos))
-	copy(a.Todos, todos)
-	a.TodosMu.Unlock()
-	a.RefreshPlanStatus()
-	return nil
-}
-
-// RefreshPlanStatus synchronizes a newly attached UI with restored task state.
-func (a *Agent) RefreshPlanStatus() {
-	if a == nil || a.UI == nil {
-		return
-	}
-	todos := a.GetTodos()
-	completed := 0
-	for _, item := range todos {
-		if item.Status == "completed" {
-			completed++
-		}
-	}
-	a.UI.UpdatePlanStatus(completed, len(todos))
-}
-
-// syncToolAvailability keeps explicit permissions separate from disabled-by-feature
-// tools. Registry state is a derived view, never a source for DisabledTools.
-func (a *Agent) syncToolAvailability() {
-	if a == nil || a.Registry == nil {
-		return
-	}
-	a.Registry.EnableAll()
-	if a.Config == nil {
-		return
-	}
-	a.Registry.Disable(a.Config.DisabledTools...)
-	if a.Config.AskUserMode == "disabled" {
-		a.Registry.Disable("ask_user")
-	}
-	a.enforceOptionalTools()
-}
-
-func containsDisabledTool(names []string, name string) bool {
-	for _, current := range names {
-		if tool.NormalizeName(current) == name {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *Agent) DisableTools(names ...string) {
-	if a == nil || a.Registry == nil {
-		return
-	}
-	if a.Config == nil {
-		a.Registry.Disable(names...)
-		a.markSystemPromptDirty()
-		return
-	}
-	for _, name := range names {
-		normalized := tool.NormalizeName(name)
-		if normalized == "" {
-			continue
-		}
-		if normalized == "ask_user" {
-			a.Config.SetAskUserMode("disabled")
-			continue
-		}
-		if !containsDisabledTool(a.Config.DisabledTools, normalized) {
-			a.Config.DisabledTools = append(a.Config.DisabledTools, normalized)
-		}
-	}
-	a.syncToolAvailability()
-	a.markSystemPromptDirty()
-}
-
-func (a *Agent) EnableTools(names ...string) {
-	if a == nil || a.Registry == nil {
-		return
-	}
-	if a.Config == nil {
-		a.Registry.Enable(names...)
-		a.markSystemPromptDirty()
-		return
-	}
-
-	wasMCPDisabled := !a.Config.MCP
-	wasSubagentsDisabled := a.Config.MaxSubagentDepth <= 0
-	requested := make(map[string]bool, len(names))
-	for _, name := range names {
-		normalized := tool.NormalizeName(name)
-		if normalized == "" {
-			continue
-		}
-		requested[normalized] = true
-		if normalized == "ask_user" && a.Config.AskUserMode == "disabled" {
-			a.Config.SetAskUserMode("interactive")
-		}
-		if normalized == "load_mcp" || normalized == "search_tools" || normalized == "list_mcp_resources" || normalized == "list_mcp_resource_templates" || normalized == "read_mcp_resource" || strings.HasPrefix(normalized, "mcp__") {
-			a.Config.MCP = true
-		}
-		if tool.IsSubagentTool(normalized) {
-			if a.Config.MaxSubagentDepth <= 0 {
-				a.Config.MaxSubagentDepth = 1
-			}
-		}
-	}
-
-	// Turning on a feature through a single tool must not silently enable all
-	// related tools. Those other tools remain individually opt-in.
-	if wasMCPDisabled && a.Config.MCP {
-		for _, name := range []string{"load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
-			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
-				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
-			}
-		}
-		a.enableMCPDeferred()
-	}
-	if wasSubagentsDisabled && a.Config.MaxSubagentDepth > 0 {
-		for _, name := range []string{"create_subagent", "remove_subagent", "list_subagents", "inspect_subagent"} {
-			if !requested[name] && !containsDisabledTool(a.Config.DisabledTools, name) {
-				a.Config.DisabledTools = append(a.Config.DisabledTools, name)
-			}
-		}
-	}
-
-	filtered := a.Config.DisabledTools[:0]
-	for _, name := range a.Config.DisabledTools {
-		if !requested[tool.NormalizeName(name)] {
-			filtered = append(filtered, name)
-		}
-	}
-	a.Config.DisabledTools = filtered
-	a.syncToolAvailability()
-	a.markSystemPromptDirty()
-}
-
-// enableMCPDeferred makes configured servers discoverable when MCP is enabled
-// during an existing session, without blocking the tools menu on connections.
-func (a *Agent) enableMCPDeferred() {
-	a.MCPClientsMu.Lock()
-	if a.mcpPending == nil {
-		a.mcpPending = make(map[string]config.MCPServerConfig)
-	}
-	for name, server := range a.Config.MCPServers {
-		if server.Enabled && a.MCPClients[name] == nil {
-			a.mcpPending[name] = server
-		}
-	}
-	a.MCPClientsMu.Unlock()
-	a.registerResourceTools()
-}
-
-func (a *Agent) EnableAllTools() {
-	if a == nil || a.Registry == nil {
-		return
-	}
-	if a.Config == nil {
-		a.Registry.EnableAll()
-		a.markSystemPromptDirty()
-		return
-	}
-	wasMCPDisabled := !a.Config.MCP
-	a.Config.DisabledTools = nil
-	if a.Config.AskUserMode == "disabled" {
-		a.Config.SetAskUserMode("interactive")
-	}
-	a.Config.MCP = true
-	if wasMCPDisabled {
-		a.enableMCPDeferred()
-	}
-	if a.Config.MaxSubagentDepth <= 0 {
-		a.Config.MaxSubagentDepth = 1
-	}
-	a.syncToolAvailability()
-	a.markSystemPromptDirty()
-}
-
-func (a *Agent) IsToolDisabled(name string) bool {
-	if a == nil || a.Registry == nil {
-		return false
-	}
-	return a.Registry.IsDisabled(name)
-}
-
-func (a *Agent) GetDisabledTools() []string {
-	if a == nil || a.Registry == nil {
-		return nil
-	}
-	return a.Registry.GetDisabledTools()
 }
 
 func (a *Agent) GetWorkspaceRoot() string {
@@ -873,41 +492,4 @@ func (a *Agent) GetShellTimeout() time.Duration {
 		}
 	}
 	return 120 * time.Second
-}
-
-// enforceOptionalTools enforces opt-in even after enable-all and config reloads.
-func (a *Agent) enforceOptionalTools() {
-	if a == nil || a.Registry == nil || a.Config == nil {
-		return
-	}
-	if !a.Config.MCP {
-		a.Registry.Disable("load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource")
-		for name := range a.Registry.GetAllExecutors() {
-			if strings.HasPrefix(name, "mcp__") {
-				a.Registry.Disable(name)
-			}
-		}
-	}
-	for name := range a.Registry.GetAllExecutors() {
-		if !a.Config.LocalPlugins && strings.HasPrefix(name, "plugin__") {
-			a.Registry.Disable(name)
-		}
-		if strings.HasPrefix(name, "mcp__") {
-			parts := strings.SplitN(name, "__", 3)
-			if len(parts) == 3 {
-				server, ok := a.Config.MCPServers[parts[1]]
-				if !ok || !server.Enabled {
-					a.Registry.Disable(name)
-				}
-			}
-		}
-	}
-	if a.Config.MaxSubagentDepth <= 0 {
-		a.Registry.Disable("create_subagent", "remove_subagent", "list_subagents", "inspect_subagent")
-		for name := range a.Registry.GetAllExecutors() {
-			if strings.HasPrefix(name, "subagent__") {
-				a.Registry.Disable(name)
-			}
-		}
-	}
 }

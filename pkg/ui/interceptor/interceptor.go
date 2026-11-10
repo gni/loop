@@ -41,6 +41,7 @@ type KeyInterceptorReader struct {
 	InputChan         chan byte
 	ApprovalChan      chan byte
 	ApprovalReader    *ApprovalByteReader
+	approvalCancel    func()
 	InjectChan        chan byte
 	TypeAheadBuffer   []byte
 	TypeAheadPastes   []string
@@ -107,7 +108,10 @@ func drainByteChannel(ch <-chan byte) {
 	}
 	for {
 		select {
-		case <-ch:
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
 		default:
 			return
 		}

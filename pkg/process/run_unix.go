@@ -3,6 +3,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -10,7 +11,10 @@ import (
 )
 
 func SetupProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid, cmd.SysProcAttr.Pgid = true, 0
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
@@ -23,8 +27,15 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	return cmd.Process.Kill()
+	groupErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if groupErr == syscall.ESRCH {
+		groupErr = nil
+	}
+	processErr := cmd.Process.Kill()
+	if errors.Is(processErr, os.ErrProcessDone) {
+		processErr = nil
+	}
+	return errors.Join(groupErr, processErr)
 }
 
 func KillPgid(pgid int) error {

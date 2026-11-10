@@ -20,11 +20,24 @@ func (s *Session) SetName(ctx context.Context, name string) error {
 }
 
 func (s *Session) UpdateConfig(cfg *config.Config) error {
+	return s.updateConfig(cfg, false)
+}
+
+func (s *Session) UpdateConfigAndReconnect(cfg *config.Config) error {
+	return s.updateConfig(cfg, true)
+}
+
+func (s *Session) updateConfig(cfg *config.Config, reconnect bool) error {
 	if err := s.lockIdle(); err != nil {
 		return err
 	}
 	defer s.runMu.Unlock()
-	applyErr := s.Agent.ApplyConfig(cfg)
+	var applyErr error
+	if reconnect {
+		applyErr = s.Agent.ApplyConfigAndReconnect(cfg)
+	} else {
+		applyErr = s.Agent.ApplyConfig(cfg)
+	}
 	if !agent.ConfigApplied(applyErr) {
 		return applyErr
 	}
@@ -36,6 +49,7 @@ func (s *Session) UpdateConfig(cfg *config.Config) error {
 }
 
 var _ agent.ConfigurationController = (*Session)(nil)
+var _ agent.MCPConfigurationController = (*Session)(nil)
 
 func (s *Session) SetTools(names []string) error {
 	if err := s.lockIdle(); err != nil {

@@ -1,17 +1,12 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
 	"loop/pkg/agent/tool"
-	filetool "loop/pkg/agent/tool/file"
-	"loop/pkg/storage"
 )
 
 type GuidedPhase string
@@ -23,10 +18,13 @@ const (
 )
 
 type FileSnapshot struct {
-	AbsPath string
-	Existed bool
-	Data    []byte
-	Mode    os.FileMode
+	AbsPath  string
+	Existed  bool
+	Data     []byte
+	Mode     os.FileMode
+	Target   string
+	Expected string
+	Previous string
 }
 
 type GuidedController struct {
@@ -36,6 +34,11 @@ type GuidedController struct {
 	planApproved bool
 	planHash     string
 	snapshots    map[string]FileSnapshot
+	journalPath  string
+	journalHash  string
+	journalErr   error
+	journalBlobs map[string]bool
+	workspace    string
 }
 
 func NewGuidedController(enabled bool) *GuidedController {
@@ -170,224 +173,6 @@ func FormatPlanSummary(todos []tool.TodoItem) string {
 	}
 	sb.WriteString("\nApprove this plan to begin execution?")
 	return sb.String()
-}
-
-func normalizeSnapshotPath(absPath string) string {
-	if abs, err := filepath.Abs(absPath); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(absPath)
-}
-
-func (gc *GuidedController) HasSnapshot(absPath string) bool {
-	if gc == nil || absPath == "" {
-		return false
-	}
-	clean := normalizeSnapshotPath(absPath)
-	gc.mu.RLock()
-	defer gc.mu.RUnlock()
-	_, exists := gc.snapshots[clean]
-	return exists
-}
-
-func (gc *GuidedController) CaptureFileSnapshot(absPath string) error {
-	return gc.captureFileSnapshot(absPath, 20<<20)
-}
-
-func (gc *GuidedController) captureFileSnapshot(absPath string, maxBytes int64) error {
-	if gc == nil || absPath == "" {
-		return nil
-	}
-	clean := normalizeSnapshotPath(absPath)
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-	if gc.snapshots == nil {
-		gc.snapshots = make(map[string]FileSnapshot)
-	}
-	if _, exists := gc.snapshots[clean]; exists {
-		return nil
-	}
-
-	mode := os.FileMode(0644)
-	existed := false
-	var data []byte
-
-	if info, err := os.Stat(clean); err == nil {
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("cannot snapshot non-regular file %s", clean)
-		}
-		existed = true
-		mode = info.Mode().Perm()
-		if mode == 0 {
-			mode = 0644
-		}
-		data, err = storage.ReadFile(clean, maxBytes)
-		if err != nil {
-			return fmt.Errorf("cannot snapshot file before mutation: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("cannot inspect file before mutation: %w", err)
-	}
-
-	gc.snapshots[clean] = FileSnapshot{
-		AbsPath: clean,
-		Existed: existed,
-		Data:    data,
-		Mode:    mode,
-	}
-	return nil
-}
-
-func (gc *GuidedController) DiscardSnapshot(absPath string) {
-	if gc == nil || absPath == "" {
-		return
-	}
-	clean := normalizeSnapshotPath(absPath)
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-	delete(gc.snapshots, clean)
-}
-
-func (gc *GuidedController) ClearSnapshots() {
-	if gc == nil {
-		return
-	}
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-	gc.snapshots = make(map[string]FileSnapshot)
-}
-
-func (gc *GuidedController) Snapshots() []FileSnapshot {
-	if gc == nil {
-		return nil
-	}
-	gc.mu.RLock()
-	defer gc.mu.RUnlock()
-	out := make([]FileSnapshot, 0, len(gc.snapshots))
-	for _, s := range gc.snapshots {
-		out = append(out, s)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].AbsPath < out[j].AbsPath
-	})
-	return out
-}
-
-func (gc *GuidedController) Rollback(obs *tool.FileObservationTracker) ([]string, error) {
-	if gc == nil {
-		return nil, nil
-	}
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
-	if len(gc.snapshots) == 0 {
-		return nil, nil
-	}
-
-	var restored []string
-	var firstErr error
-	remaining := make(map[string]FileSnapshot)
-
-	for pathKey, snap := range gc.snapshots {
-		if !snap.Existed {
-			if err := os.Remove(snap.AbsPath); err != nil && !os.IsNotExist(err) {
-				if firstErr == nil {
-					firstErr = err
-				}
-				remaining[pathKey] = snap
-				continue
-			}
-			if obs != nil {
-				obs.Forget(snap.AbsPath)
-			}
-			restored = append(restored, fmt.Sprintf("removed %s", snap.AbsPath))
-		} else {
-			mode := snap.Mode
-			if mode == 0 {
-				mode = 0644
-			}
-			if err := filetool.AtomicWriteFile(snap.AbsPath, snap.Data, mode); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				remaining[pathKey] = snap
-				continue
-			}
-			if obs != nil {
-				obs.RecordMutation(snap.AbsPath, snap.Data)
-			}
-			restored = append(restored, fmt.Sprintf("restored %s", snap.AbsPath))
-		}
-	}
-	sort.Strings(restored)
-	gc.snapshots = remaining
-	return restored, firstErr
-}
-
-func PreviewToolDiff(a *Agent, toolName, arguments string) string {
-	if a == nil {
-		return ""
-	}
-	ctx := a.Context()
-	if ctx.Err() != nil {
-		return ""
-	}
-	maxBytes := a.GetLimits().MaxReadFileBytes
-	// JSON escaping can expand a file body; bound argument parsing as well.
-	if len(arguments) > maxBytes*8 {
-		return ""
-	}
-	norm := tool.NormalizeName(toolName)
-	if norm != "write" && norm != "edit" {
-		return ""
-	}
-	targetPath := filetool.ExtractFilePath(arguments)
-	if targetPath == "" {
-		return ""
-	}
-	safePath, err := a.SafePath(targetPath)
-	if err != nil {
-		return ""
-	}
-
-	unlock, err := filetool.LockPathContext(ctx, safePath)
-	if err != nil {
-		return ""
-	}
-	existingBytes, readErr := storage.ReadFile(safePath, int64(maxBytes))
-	unlock()
-	if ctx.Err() != nil || (readErr != nil && !os.IsNotExist(readErr)) || filetool.IsBinary(existingBytes) {
-		return ""
-	}
-	oldContent := ""
-	if readErr == nil {
-		_, rawStr := filetool.SplitBOM(existingBytes)
-		oldContent = strings.ReplaceAll(rawStr, "\r\n", "\n")
-	}
-
-	if norm == "write" {
-		newContent, ok := filetool.ExtractFileContent(arguments)
-		if !ok || len(newContent) > maxBytes {
-			return ""
-		}
-		return filetool.GenerateDisplayDiff(oldContent, strings.ReplaceAll(newContent, "\r\n", "\n"), 3)
-	}
-
-	var args struct {
-		Updates      []filetool.ReplaceEdit `json:"updates"`
-		Edits        []filetool.ReplaceEdit `json:"edits"`
-		Replacements []filetool.ReplaceEdit `json:"replacements"`
-	}
-	_ = json.Unmarshal([]byte(arguments), &args)
-	edits := filetool.ExtractEdits(arguments, args.Updates, args.Edits, args.Replacements)
-	if len(edits) == 0 || readErr != nil {
-		return ""
-	}
-
-	previewContent, changed := filetool.ApplyEditsPreview(oldContent, edits)
-	if !changed || len(previewContent) > maxBytes || ctx.Err() != nil {
-		return ""
-	}
-	return filetool.GenerateDisplayDiff(oldContent, previewContent, 3)
 }
 
 func hashTodos(todos []tool.TodoItem) string {

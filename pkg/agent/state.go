@@ -4,19 +4,32 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
+	"loop/pkg/config"
+	"loop/pkg/resources"
 	"loop/pkg/ui/style"
 )
 
 func (a *Agent) SetActiveSessionID(sessionID string) {
 	a.stateMu.Lock()
-	if a.activeSessionID != sessionID {
+	changed := a.activeSessionID != sessionID
+	if changed {
 		a.sessionGeneration++
 		a.sessionName, a.sessionNameKnown, a.sessionNameDirty = "", false, false
 	}
 	a.activeSessionID = sessionID
 	a.stateMu.Unlock()
+	if changed {
+		path := ""
+		if !a.Ephemeral && sessionID != "" {
+			path = filepath.Join(resources.AgentDirectory(a.ConfigPath), "recovery", config.WorkspaceKey(a.WorkspaceRoot), config.WorkspaceKey(sessionID)+".json")
+		}
+		if err := a.ensureGuided().bindRecovery(a.Context(), path, a.WorkspaceRoot); err != nil {
+			a.recordPersistenceError(err)
+		}
+	}
 }
 
 func (a *Agent) ActiveSessionID() string {

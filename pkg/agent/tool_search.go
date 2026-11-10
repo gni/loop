@@ -42,13 +42,16 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	}
 	var matches []match
 	words := strings.Fields(strings.ToLower(args.Query))
-	for _, executor := range t.agent.Registry.GetAvailableExecutors(t.agent.ToolSelection) {
+	for _, executor := range t.agent.Registry.GetSearchableExecutors(t.agent.ToolSelection) {
 		name := executor.Name()
 		if name == t.Name() {
 			continue
 		}
-		if args.Server != "" && !strings.HasPrefix(name, "mcp__"+args.Server+"__") {
-			continue
+		if args.Server != "" {
+			owner, ok := t.agent.MCPToolServer(name)
+			if !ok || owner != args.Server {
+				continue
+			}
 		}
 		definition := executor.Definition()
 		haystack := strings.ToLower(name + " " + definition.Function.Description)
@@ -72,7 +75,7 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	if limit <= 0 || limit > 20 {
 		limit = 20
 	}
-	var definitions []tool.Tool
+	definitions := make([]tool.Tool, 0, min(len(matches), limit))
 	for _, entry := range matches[:min(len(matches), limit)] {
 		t.agent.Registry.Expose(entry.Definition.Function.Name)
 		definitions = append(definitions, entry.Definition)

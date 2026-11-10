@@ -63,32 +63,33 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 
 	targetPath := domaintool.FirstNonEmpty(args.Path, args.Dir, args.DirPath, ".")
 
-	depth := int(args.Depth)
+	depth, err := domaintool.IntegerArgument("depth", args.Depth)
+	if err != nil {
+		return "", err
+	}
 	if depth <= 0 {
 		depth = 1
 	} else if depth > limits.For(ctx).ListMaxDepth {
 		depth = limits.For(ctx).ListMaxDepth
 	}
 
-	offset := int(args.Offset)
+	offset, err := domaintool.IntegerArgument("offset", args.Offset)
+	if err != nil {
+		return "", err
+	}
 	if offset < 1 {
 		offset = 1
 	}
 
 	safePath, err := ctx.SafePath(targetPath)
 	if err != nil {
-		safePath = ctx.GetWorkspaceRoot()
-		tree, treeErr := ListDirectoryTreeContext(ctx.Context(), safePath, safePath, depth, limits.For(ctx).ListMaxEntries, offset)
-		if treeErr != nil {
-			return "", treeErr
-		}
-		return fmt.Sprintf("[Notice: '%s' is outside workspace root. Showing workspace root ('%s') instead:]\n\n%s", targetPath, safePath, tree), nil
+		return "", err
 	}
 
 	if err := validateSearchPath(safePath, ctx.GetWorkspaceRoot()); err != nil {
 		return "", err
 	}
-	if strings.ContainsAny(targetPath, "*?[") {
+	if strings.ContainsAny(targetPath, "*?") {
 		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'list_directory' tool only accepts directory paths; use the 'find_files' tool instead to search files by glob pattern (e.g. find_files(pattern: '%s'))", targetPath, targetPath)
 	}
 
@@ -161,6 +162,7 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 
 		entries, err := os.ReadDir(currentDir)
 		if err != nil {
+			walkErr = fmt.Errorf("read directory %s: %w", currentDir, err)
 			return
 		}
 
@@ -225,6 +227,9 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 
 			if entry.IsDir() {
 				walkTree(filepath.Join(currentDir, name), childPrefix, depth+1)
+				if walkErr != nil {
+					return
+				}
 			}
 		}
 	}
@@ -232,6 +237,9 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 	walkTree(dirPath, "", 1)
 	if walkErr != nil {
 		return "", walkErr
+	}
+	if shown == 0 && bytesReached {
+		return "", fmt.Errorf("directory entry exceeds the output byte budget; increase max_output_bytes before retrying")
 	}
 
 	if limitReached || bytesReached {

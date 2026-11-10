@@ -134,9 +134,10 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 
 	ui.GetUI().ActiveInputReader = kiReader
 	defer func() {
-		fmt.Fprint(os.Stderr, "\x1b[?2004l")
 		ui.GetUI().ActiveInputReader = nil
 	}()
+	restorePaste := terminal.Default().BeginBracketedPaste(os.Stderr)
+	defer restorePaste()
 
 	startREPLSystemNotifications(a, kiReader)
 	go startREPLRawInputDispatcher(startREPLInputReader(kiReader), kiReader)
@@ -248,12 +249,10 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				os.Exit(1)
 			}
 
-			fmt.Fprint(os.Stderr, "\x1b[?2004h")
 			kiReader.IsAtMainPrompt.Store(true)
 			line, err = rl.ReadLine()
 			kiReader.IsAtMainPrompt.Store(false)
 			kiReader.SetPromptDraft("", 0)
-			fmt.Fprint(os.Stderr, "\x1b[?2004l")
 			term.Restore(fd, oldState)
 			if ctx.Err() != nil {
 				break

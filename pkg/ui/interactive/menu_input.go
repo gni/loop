@@ -87,6 +87,13 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 		if resized {
 			continue
 		}
+		if pasted, err := appendPastedInput(key, &input, io.Discard); pasted {
+			if err != nil {
+				return "", &menuInputError{cause: err}
+			}
+			warning = ""
+			continue
+		}
 		switch string(key) {
 		case "\x1b", "\x03", "\x04":
 			return "", ErrSelectionCancelled
@@ -99,6 +106,9 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			continue
 		}
 		if len(key) > 0 && key[0] == 27 {
+			continue
+		}
+		if !utf8.Valid(key) {
 			continue
 		}
 		done, err := consumeLineBytes(key, &input, io.Discard)

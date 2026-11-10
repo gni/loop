@@ -33,6 +33,103 @@ func forwardToInputChan(kiReader *interceptor.KeyInterceptorReader, data ...byte
 	}
 }
 
+func forwardApprovalBytes(ki *interceptor.KeyInterceptorReader, data ...byte) bool {
+	var done <-chan struct{}
+	if ki.InputContext != nil {
+		done = ki.InputContext.Done()
+	}
+	for _, b := range data {
+		for {
+			state := ui.GetUI()
+			state.StateMu.Lock()
+			active := state.InApprovalPrompt
+			state.StateMu.Unlock()
+			if !active {
+				return false
+			}
+			sent := false
+			select {
+			case <-done:
+				return false
+			case ki.ApprovalChan <- b:
+				sent = true
+			default:
+			}
+			if sent {
+				break
+			}
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-done:
+				timer.Stop()
+				return false
+			case ki.ApprovalChan <- b:
+				timer.Stop()
+			case <-timer.C:
+				continue
+			}
+			break
+		}
+	}
+	return true
+}
+
+// Keep paste contents out of shortcut dispatch, even if the prompt closes
+// while a slow paste is arriving. Its remaining bytes are then discarded.
+func forwardApprovalEscape(raw <-chan byte, ki *interceptor.KeyInterceptorReader, onBareEscape func()) bool {
+	sequence := []byte{27}
+	next, ok := readNextRawByte(raw, 50*time.Millisecond)
+	if !ok {
+		onBareEscape()
+		forwardApprovalBytes(ki, sequence...)
+		return true
+	}
+	sequence = append(sequence, next)
+	if next == '[' || next == 'O' {
+		for len(sequence) < 64 {
+			b, ok := readNextRawByte(raw, 50*time.Millisecond)
+			if !ok {
+				break
+			}
+			sequence = append(sequence, b)
+			if b >= 0x40 && b <= 0x7e {
+				break
+			}
+		}
+	}
+	deliver := forwardApprovalBytes(ki, sequence...)
+	if string(sequence) != "\x1b[200~" {
+		return true
+	}
+	var done <-chan struct{}
+	if ki.InputContext != nil {
+		done = ki.InputContext.Done()
+	}
+	tail := ""
+	for {
+		var b byte
+		select {
+		case <-done:
+			return false
+		case next, ok := <-raw:
+			if !ok {
+				return false
+			}
+			b = next
+		}
+		if deliver {
+			deliver = forwardApprovalBytes(ki, b)
+		}
+		tail += string([]byte{b})
+		if len(tail) > 6 {
+			tail = tail[len(tail)-6:]
+		}
+		if tail == "\x1b[201~" {
+			return true
+		}
+	}
+}
+
 func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader, esc byte, onBareEscape func()) {
 	next, ok := readNextRawByte(rawChan, 50*time.Millisecond)
 	if !ok {
@@ -114,6 +211,8 @@ func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterc
 
 func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyInterceptorReader) {
 	rawChan = normalizeKeyboardInput(rawChan, kiReader.OnChatHistoryInput)
+	defer close(kiReader.InputChan)
+	defer close(kiReader.ApprovalChan)
 	abortOperation := func(cancelFunc func(), clearQueue bool) {
 		if cancelFunc != nil {
 			cancelFunc()
@@ -165,8 +264,6 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 	for {
 		b, ok := <-rawChan
 		if !ok {
-			close(kiReader.InputChan)
-			close(kiReader.ApprovalChan)
 			return
 		}
 
@@ -181,23 +278,19 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 			}
 			if b == 3 || b == 4 {
 				abortOperation(cancelFunc, false)
-				kiReader.ApprovalChan <- b
+				forwardApprovalBytes(kiReader, b)
 				continue
 			}
 			if b == 27 {
-				if next, ok := readNextRawByte(rawChan, 50*time.Millisecond); ok {
-					kiReader.ApprovalChan <- b
-					kiReader.ApprovalChan <- next
-				} else {
-					abortOperation(cancelFunc, false)
-					kiReader.ApprovalChan <- b
+				if !forwardApprovalEscape(rawChan, kiReader, func() { abortOperation(cancelFunc, false) }) {
+					return
 				}
 				continue
 			}
 			if handleShortcutKey(b) {
 				continue
 			}
-			kiReader.ApprovalChan <- b
+			forwardApprovalBytes(kiReader, b)
 			continue
 		}
 

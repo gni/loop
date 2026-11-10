@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
-	"loop/pkg/domain/task"
 	"loop/pkg/ui/style"
 )
 
@@ -58,43 +56,6 @@ func (s *agentSink) Messages() []db.Message {
 func NewAgentSink(a *Agent, messages *[]db.Message, sessionID string) HistorySink {
 	return &agentSink{a: a, messages: messages, sessionID: sessionID}
 }
-
-type EngineRenderer interface {
-	ToolHeader(w io.Writer, theme style.UITheme, toolName, args string)
-	ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool)
-}
-
-type mainRenderer struct{ a *Agent }
-
-func (r *mainRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, args string) {
-	if r.a != nil && r.a.UI != nil {
-		r.a.UI.RenderToolHeader(w, theme, toolName, args)
-	} else {
-		fmt.Fprintf(w, "tool call: %s %s\n", toolName, args)
-	}
-}
-
-func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
-	if toolName == "task_state" && !isError && !task.ShowProgressNotice(output, args) {
-		return
-	}
-	if r.a != nil && r.a.UI != nil {
-		collapse := r.a.Config != nil && r.a.Config.CollapseResults
-		var rendered bytes.Buffer
-		r.a.UI.RenderToolOutput(&rendered, output, isError, collapse, theme, toolName, args, bodyStreamed)
-		if rendered.Len() == 0 {
-			return
-		}
-		if counter, ok := w.(*NewlineCounterWriter); ok {
-			counter.EnsureNewline()
-		}
-		_, _ = rendered.WriteTo(w)
-	} else if !bodyStreamed {
-		fmt.Fprintln(w, output)
-	}
-}
-
-func NewMainRenderer(a *Agent) EngineRenderer { return &mainRenderer{a: a} }
 
 type EnginePolicy struct {
 	Config         *config.Config
@@ -281,7 +242,7 @@ func (e *TurnEngine) ensureToolHeaderRendered(idx int, tc db.ToolCall, assistant
 		e.policy.BeforeToolCall(idx, tc)
 	}
 	if tc.Function.Name == "task_state" {
-		if tracker, ok := sr.(interface{ TrackProgressCall(int) }); ok {
+		if tracker, ok := sr.(ProgressCallTracker); ok {
 			tracker.TrackProgressCall(idx)
 		}
 		return

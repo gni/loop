@@ -16,6 +16,8 @@ const (
 
 	// DisableBracketedPaste sequence disables bracketed paste mode.
 	DisableBracketedPaste = "\x1b[?2004l"
+	// EnableBracketedPaste separates pasted text from keyboard shortcuts.
+	EnableBracketedPaste = "\x1b[?2004h"
 	// EnterAlternateScreen sequence switches terminal to alternate screen buffer.
 	EnterAlternateScreen = "\x1b[?1049h\x1b[r\x1b[2J\x1b[H"
 	// ExitAlternateScreen sequence restores primary screen buffer and shows cursor.
@@ -24,10 +26,13 @@ const (
 
 // Terminal manages terminal display modes, screen buffers, and cursor state.
 type Terminal struct {
-	writer    io.Writer
-	altWriter io.Writer
-	altDepth  int
-	mu        sync.Mutex
+	writer          io.Writer
+	altWriter       io.Writer
+	altDepth        int
+	pasteWriter     io.Writer
+	pasteDepth      int
+	pasteGeneration uint64
+	mu              sync.Mutex
 }
 
 var defaultTerminal = New(os.Stderr)
@@ -52,6 +57,37 @@ func (t *Terminal) RestoreCursor() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	fmt.Fprint(t.writer, ShowCursor)
+}
+
+// BeginBracketedPaste keeps paste framing enabled until the outermost input
+// scope closes. The returned cleanup is safe to call more than once.
+func (t *Terminal) BeginBracketedPaste(w io.Writer) func() {
+	t.mu.Lock()
+	if t.pasteDepth == 0 {
+		if w == nil {
+			w = t.writer
+		}
+		t.pasteWriter = w
+		fmt.Fprint(w, EnableBracketedPaste)
+	}
+	t.pasteDepth++
+	generation := t.pasteGeneration
+	t.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if generation != t.pasteGeneration || t.pasteDepth == 0 {
+				return
+			}
+			t.pasteDepth--
+			if t.pasteDepth == 0 {
+				fmt.Fprint(t.pasteWriter, DisableBracketedPaste)
+				t.pasteWriter = nil
+			}
+		})
+	}
 }
 
 // EnterAltScreen switches w (or the default writer) into the alternate screen buffer
@@ -100,6 +136,12 @@ func (t *Terminal) ForceExitAltScreen() { t.restoreModes("") }
 func (t *Terminal) restoreModes(extra string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.pasteDepth > 0 {
+		fmt.Fprint(t.pasteWriter, DisableBracketedPaste)
+	}
+	t.pasteDepth = 0
+	t.pasteWriter = nil
+	t.pasteGeneration++
 	altW := t.altWriter
 	t.altDepth = 0
 	t.altWriter = nil

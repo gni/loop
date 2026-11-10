@@ -79,6 +79,10 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 			if width < mcpMinWidth || height < mcpMinHeight {
 				continue
 			}
+			if appendPastedQuery(key, &manager.query, 256) {
+				manager.searching, manager.selected = true, 0
+				continue
+			}
 			if manager.searching {
 				switch value {
 				case "\r", "\n":

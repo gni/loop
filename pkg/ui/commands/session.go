@@ -19,12 +19,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func resetSessionSnapshots(a *agent.Agent) {
-	if a != nil && a.Guided != nil {
-		a.Guided.ClearSnapshots()
-	}
-}
-
 // Drop transient work before entering another conversation. Failed loads leave
 // the current conversation intact because callers run this only after validation.
 func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorReader) {
@@ -44,7 +38,6 @@ func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorRe
 		reader.ClearQueue()
 	}
 	a.ClearTasks()
-	resetSessionSnapshots(a)
 	a.CurrentStreamMu.Lock()
 	a.CurrentStreamBuffer = nil
 	a.CurrentStreamReplay = nil

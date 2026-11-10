@@ -1,14 +1,11 @@
 package packages
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,7 +126,7 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 		if _, err := command(ctx, "git", "-C", staging, "checkout", "--detach", installed.Revision); err != nil {
 			return installed, err
 		}
-		manifest, err := ReadManifest(staging)
+		manifest, err := ReadManifestContext(ctx, staging)
 		if err != nil {
 			return installed, err
 		}
@@ -158,10 +155,10 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 		if filepath.Base(packed[0].Filename) != packed[0].Filename {
 			return installed, fmt.Errorf("invalid npm archive name")
 		}
-		if err := unpack(filepath.Join(staging, packed[0].Filename), filepath.Join(staging, "content")); err != nil {
+		if err := unpack(ctx, filepath.Join(staging, packed[0].Filename), filepath.Join(staging, "content")); err != nil {
 			return installed, err
 		}
-		manifest, err := ReadManifest(filepath.Join(staging, "content"))
+		manifest, err := ReadManifestContext(ctx, filepath.Join(staging, "content"))
 		if err != nil {
 			return installed, err
 		}
@@ -173,7 +170,7 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 		if err != nil {
 			return installed, err
 		}
-		manifest, err := ReadManifest(installed.Directory)
+		manifest, err := ReadManifestContext(ctx, installed.Directory)
 		if err != nil {
 			return installed, err
 		}
@@ -257,12 +254,23 @@ func (m Manager) Update(ctx context.Context, source string) error {
 }
 
 func ReadManifest(directory string) (Manifest, error) {
+	return ReadManifestContext(context.Background(), directory)
+}
+
+// ReadManifestContext stops resource resolution when startup or installation is canceled.
+func ReadManifestContext(ctx context.Context, directory string) (Manifest, error) {
 	var manifest Manifest
+	if err := ctx.Err(); err != nil {
+		return manifest, err
+	}
 	data, err := storage.ReadFile(filepath.Join(directory, "loop.json"), 1<<20)
 	if os.IsNotExist(err) {
 		data, err = storage.ReadFile(filepath.Join(directory, "package.json"), 1<<20)
+		if os.IsNotExist(err) {
+			return manifest, fmt.Errorf("package needs loop.json or package.json: %w", err)
+		}
 		if err != nil {
-			return manifest, fmt.Errorf("package needs loop.json or package.json")
+			return manifest, fmt.Errorf("read package.json: %w", err)
 		}
 		var npm struct {
 			Name    string   `json:"name"`
@@ -282,7 +290,7 @@ func ReadManifest(directory string) (Manifest, error) {
 			return manifest, err
 		}
 	}
-	if manifest.APIVersion > 1 {
+	if manifest.APIVersion < 0 || manifest.APIVersion > 1 {
 		return manifest, fmt.Errorf("unsupported package API version %d", manifest.APIVersion)
 	}
 	if manifest.Name == "" {
@@ -294,6 +302,9 @@ func ReadManifest(directory string) (Manifest, error) {
 	}
 	for _, group := range []*[]string{&manifest.Skills, &manifest.Prompts, &manifest.Plugins, &manifest.Extensions} {
 		for i, path := range *group {
+			if err := ctx.Err(); err != nil {
+				return manifest, err
+			}
 			resolved, err := resourcePathWithBase(base, directory, path)
 			if err != nil {
 				return manifest, err
@@ -309,13 +320,16 @@ func ReadManifest(directory string) (Manifest, error) {
 		}
 	}
 	for event, path := range manifest.Hooks {
+		if err := ctx.Err(); err != nil {
+			return manifest, err
+		}
 		resolved, err := resourcePathWithBase(base, directory, path)
 		if err != nil {
 			return manifest, err
 		}
 		manifest.Hooks[event] = resolved
 	}
-	return manifest, nil
+	return manifest, ctx.Err()
 }
 
 func ResourcePath(directory, relative string) (string, error) {
@@ -359,65 +373,4 @@ func command(ctx context.Context, name string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s failed: %w", name, err)
 	}
 	return result.Stdout, nil
-}
-
-func unpack(path, destination string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gzipReader, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gzipReader.Close()
-	reader := tar.NewReader(io.LimitReader(gzipReader, 64<<20))
-	total := int64(0)
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		name := strings.TrimPrefix(header.Name, "package/")
-		if name == "package" || name == "" {
-			continue
-		}
-		clean := filepath.Clean(name)
-		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("archive path escapes package directory")
-		}
-		target := filepath.Join(destination, clean)
-		if header.Typeflag == tar.TypeDir {
-			if err := os.MkdirAll(target, 0700); err != nil {
-				return err
-			}
-			continue
-		}
-		if header.Typeflag != tar.TypeReg {
-			return fmt.Errorf("package archive contains an unsupported link or special file")
-		}
-		total += header.Size
-		if total > 64<<20 || header.Size < 0 {
-			return fmt.Errorf("package archive exceeds 64 MiB")
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, os.FileMode(header.Mode)&0700)
-		if err != nil {
-			return err
-		}
-		_, err = io.CopyN(output, reader, header.Size)
-		closeErr := output.Close()
-		if err != nil {
-			return err
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
 }

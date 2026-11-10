@@ -86,7 +86,7 @@ type StreamReader struct {
 
 // NewStreamReader wraps an io.Reader into an SSE stream parser.
 func NewStreamReader(r io.Reader) *StreamReader {
-	return &StreamReader{reader: sse.NewReader(r)}
+	return &StreamReader{reader: sse.NewLimitedReader(r, 128<<20)}
 }
 
 // ReadNextChunk reads lines until the next valid data chunk or EOF/[DONE].

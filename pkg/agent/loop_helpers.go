@@ -128,14 +128,14 @@ func (a *Agent) consumeTurnChunks(ctx context.Context, chunks <-chan StreamChunk
 // Semantic replays preserve incomplete lines; legacy renderers wait for a safe
 // boundary before their terminal-byte snapshot is used.
 func (a *Agent) refreshStreamPresentation(sr StreamRenderer) {
-	if view, ok := sr.(interface{ SetLiveCollapse(bool) }); ok {
+	if view, ok := sr.(LiveCollapsePresenter); ok {
 		view.SetLiveCollapse(a.Config.CollapseResults)
 	}
-	if view, ok := sr.(interface{ SafeToReplay() bool }); ok && !view.SafeToReplay() {
+	if view, ok := sr.(ReplaySafety); ok && !view.SafeToReplay() {
 		return
 	}
 	if a.OnStreamProgress != nil && a.OnStreamProgress() {
-		if view, ok := sr.(interface{ InvalidateTrackedRows() }); ok {
+		if view, ok := sr.(TrackedRowInvalidator); ok {
 			view.InvalidateTrackedRows()
 		}
 	}
@@ -160,7 +160,7 @@ func (a *Agent) runTurnToolCalls(ctx context.Context, engine *TurnEngine, batch 
 
 // renderFinalAgentTurn completes the presentation of the final assistant reply.
 func (a *Agent) renderFinalAgentTurn(assistantMsg *db.Message, sr StreamRenderer, loader *turnLoader, rawW io.Writer, w io.Writer, sessionID string, startTime time.Time, theme style.UITheme) {
-	if pending, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+	if pending, ok := sr.(PendingWritePresenter); ok {
 		pending.MarkPendingWriteResults("Not executed")
 	}
 	if loader != nil {

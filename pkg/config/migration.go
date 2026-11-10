@@ -27,6 +27,9 @@ func NormalizeConfigJSON(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, err
 	}
+	if values == nil {
+		return nil, fmt.Errorf("settings must contain a JSON object")
+	}
 
 	for old, alias := range legacyBooleans {
 		raw, ok := values[old]
@@ -76,6 +79,9 @@ func (server *MCPServerConfig) UnmarshalJSON(data []byte) error {
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(data, &values); err != nil {
 		return err
+	}
+	if values == nil {
+		return fmt.Errorf("MCP server configuration must contain a JSON object")
 	}
 	if raw, ok := values["alwaysLoad"]; ok {
 		if _, exists := values["always_load"]; !exists {

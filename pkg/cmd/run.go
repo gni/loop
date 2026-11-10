@@ -100,7 +100,12 @@ func runRoot(cmd *cobra.Command, args []string) (runErr error) {
 	}
 	if !noninteractive {
 		if s.Store != nil {
-			db.SetDefaultStore(s.Store)
+			// The terminal's paged history adapter currently consumes JSONL files.
+			store, ok := s.Store.(*db.JSONLStore)
+			if !ok {
+				return fmt.Errorf("interactive history requires JSONL session storage")
+			}
+			db.SetDefaultStore(store)
 		} else if err := initSessionStore(); err != nil {
 			return err
 		}

@@ -17,13 +17,11 @@ import (
 // need a semantic replay entry before their output is recorded.
 func recordRenderedToolResult(sr StreamRenderer, index int, call db.ToolCall, output string, failed bool) {
 	if call.Function.Name == "task_state" {
-		if tracker, ok := sr.(interface{ TrackProgressCall(int) }); ok {
+		if tracker, ok := sr.(ProgressCallTracker); ok {
 			tracker.TrackProgressCall(index)
 		}
 	}
-	if recorder, ok := sr.(interface {
-		RecordToolResult(int, string, string, bool)
-	}); ok {
+	if recorder, ok := sr.(ToolResultRecorder); ok {
 		recorder.RecordToolResult(index, call.Function.Arguments, output, failed)
 	}
 }
@@ -53,7 +51,7 @@ func (e *TurnEngine) emitRejectedToolCall(
 		e.policy.ToolBatch.Finish(idx, true)
 	}
 	if (tc.Function.Name == "write" || tc.Function.Name == "edit") && bodyStreamed {
-		if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+		if replacer, ok := sr.(WriteResultPresenter); ok {
 			label := "⎿  Not saved (details below)"
 			if tc.Function.Name == "edit" {
 				label = "⎿  Not applied (details below)"
@@ -168,14 +166,14 @@ func (e *TurnEngine) finalizeToolCall(
 		resultHandled := false
 		if livePreviewed && (tc.Function.Name == "write" || tc.Function.Name == "edit") {
 			if toolErr != nil {
-				if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+				if replacer, ok := sr.(WriteResultPresenter); ok {
 					_ = replacer.TryCompleteWriteResult(idx, "⎿  Error (details below)")
 				}
 			} else {
 				var rendered bytes.Buffer
 				render.ToolOutput(&rendered, theme, pruned, false, tc.Function.Name, tc.Function.Arguments, tc.Function.Name == "write")
 				if line := verifiedToolSummaryLine(rendered.String()); line != "" {
-					if replacer, ok := sr.(interface{ TryCompleteWriteResult(int, string) bool }); ok {
+					if replacer, ok := sr.(WriteResultPresenter); ok {
 						_ = replacer.TryCompleteWriteResult(idx, line)
 					}
 					// Old previews may have scrolled away; their result must

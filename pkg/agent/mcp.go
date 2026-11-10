@@ -20,6 +20,17 @@ import (
 
 var mcpDebugLogging = os.Getenv("LOOP_MCP_DEBUG") == "1"
 
+// mcpState owns connection generations, in-flight attempts and published clients.
+// Configuration and transport replacement happen while the session is idle.
+type mcpState struct {
+	MCPClients     map[string]*mcpClient
+	MCPClientsMu   sync.Mutex
+	MCPStartErrors map[string]error
+	mcpGeneration  int
+	mcpPending     map[string]config.MCPServerConfig
+	mcpConnecting  map[string]*mcpConnectAttempt
+}
+
 func mcpLog(format string, args ...interface{}) {
 	if mcpDebugLogging {
 		fmt.Fprint(os.Stderr, transporthttp.RedactDiagnostic(fmt.Sprintf(format, args...)))
@@ -31,6 +42,38 @@ type mcpConnectAttempt struct {
 	cancel context.CancelFunc
 	client *mcpClient
 	err    error
+}
+
+func mcpToolPrefix(server string) string {
+	if len(server) > 28 || strings.Contains(server, "__") || !tool.IsSafeIdentifier(server) {
+		sum := sha256.Sum256([]byte(server))
+		server = "s_" + hex.EncodeToString(sum[:12])
+	}
+	return "mcp__" + server + "__"
+}
+
+// MCPToolServer resolves ownership from the executor, or its stable namespace
+// before a deferred server has connected. Ambiguous namespaces are rejected.
+func (a *Agent) MCPToolServer(name string) (string, bool) {
+	if executor, ok := a.Registry.Lookup(name); ok {
+		if owner, ok := executor.(*mcpToolExecutor); ok {
+			return owner.server, true
+		}
+		return "", false
+	}
+	if a.Config == nil {
+		return "", false
+	}
+	owner := ""
+	for server := range a.Config.MCPServers {
+		if strings.HasPrefix(name, mcpToolPrefix(server)) {
+			if owner != "" {
+				return "", false
+			}
+			owner = server
+		}
+	}
+	return owner, owner != ""
 }
 
 type mcpToolExecutor struct {
@@ -159,10 +202,9 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 		return "", fmt.Errorf("MCP server '%s' is not connected", name)
 	}
 
-	prefix := fmt.Sprintf("mcp__%s__", name)
 	var loaded []string
-	for toolName := range a.Registry.GetAllExecutors() {
-		if strings.HasPrefix(toolName, prefix) {
+	for toolName, executor := range a.Registry.GetAllExecutors() {
+		if owner, ok := executor.(*mcpToolExecutor); ok && owner.server == name {
 			loaded = append(loaded, toolName)
 		}
 	}
@@ -262,12 +304,17 @@ func (a *Agent) startAndRegisterMCPServer(client *mcpClient, generation int) (*m
 	}
 
 	executors := make([]tool.ToolExecutor, 0, len(tools))
+	names := make(map[string]bool, len(tools))
 	for _, mcpTool := range tools {
-		prefixedName := fmt.Sprintf("mcp__%s__%s", name, mcpTool.Name)
-		if !tool.IsSafeIdentifier(prefixedName) {
+		prefixedName := mcpToolPrefix(name) + mcpTool.Name
+		if len(prefixedName) > 64 || !tool.IsSafeIdentifier(prefixedName) || strings.Contains(mcpTool.Name, "__") {
 			sum := sha256.Sum256([]byte(mcpTool.Name))
-			prefixedName = fmt.Sprintf("mcp__%s__tool_%s", name, hex.EncodeToString(sum[:12]))
+			prefixedName = mcpToolPrefix(name) + "tool_" + hex.EncodeToString(sum[:12])
 		}
+		if names[prefixedName] {
+			return nil, fmt.Errorf("MCP server %q reported duplicate tool %q", name, mcpTool.Name)
+		}
+		names[prefixedName] = true
 		var jsonSchema JSONSchema
 		if schemaBytes, marshalErr := json.Marshal(mcpTool.InputSchema); marshalErr == nil {
 			if err := json.Unmarshal(schemaBytes, &jsonSchema); err != nil {
@@ -296,7 +343,20 @@ func (a *Agent) startAndRegisterMCPServer(client *mcpClient, generation int) (*m
 		a.MCPClients = make(map[string]*mcpClient)
 	}
 	previous := a.MCPClients[name]
-	a.Registry.UnregisterPrefix("mcp__" + name + "__")
+	registered := a.Registry.GetAllExecutors()
+	for _, executor := range executors {
+		if existing := registered[executor.Name()]; existing != nil {
+			if owner, ok := existing.(*mcpToolExecutor); !ok || owner.server != name {
+				a.MCPClientsMu.Unlock()
+				return nil, fmt.Errorf("MCP tool name collision for %q", executor.Name())
+			}
+		}
+	}
+	for toolName, executor := range registered {
+		if owner, ok := executor.(*mcpToolExecutor); ok && owner.server == name {
+			a.Registry.Unregister(toolName)
+		}
+	}
 	a.MCPClients[name] = client
 	delete(a.mcpPending, name)
 	delete(a.MCPStartErrors, name)
@@ -311,9 +371,7 @@ func (a *Agent) startAndRegisterMCPServer(client *mcpClient, generation int) (*m
 	if previous != nil && previous != client {
 		previous.close()
 	}
-	if len(executors) > 0 {
-		a.markSystemPromptDirty()
-	}
+	a.markSystemPromptDirty()
 	mcpLog("Started MCP server '%s' with %d tools\n", name, len(executors))
 	return client, nil
 }

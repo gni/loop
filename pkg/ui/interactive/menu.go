@@ -60,6 +60,8 @@ func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 
 	terminal.Default().EnterAltScreen(rlOutput)
 	defer terminal.Default().ExitAltScreen(rlOutput)
+	restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
+	defer restorePaste()
 
 	return true, fn()
 }
@@ -225,6 +227,10 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 				return readErr
 			}
 			if resized {
+				continue
+			}
+			if appendPastedQuery(keyData, &searchQuery, maxMenuInputBytes) {
+				selectedIdx = 0
 				continue
 			}
 			n = copy(readBuf[:], keyData)
@@ -414,6 +420,10 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			return -1, err
 		}
 		if resized {
+			continue
+		}
+		if appendPastedQuery(key, &query, maxMenuInputBytes) {
+			selected = 0
 			continue
 		}
 		switch string(key) {

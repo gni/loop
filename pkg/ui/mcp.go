@@ -71,20 +71,15 @@ func HandleMCPCommand(
 
 		ShutdownStatusBar(os.Stderr)
 		newConfig, errInteractive := RunInteractiveMCPConfig(snapshot, theme, input, output, interactive.MCPConfigActions{Reconnect: func(next *config.Config) error {
-			changed := a.Config.MCP != next.MCP || !config.MCPServersEqual(a.Config.MCPServers, next.MCPServers)
-			var applyErr error
-			if changed {
-				applyErr = a.UpdateConfig(next)
-				if !agent.ConfigApplied(applyErr) {
-					return applyErr
-				}
+			applyErr := a.UpdateConfigAndReconnect(next)
+			if !agent.ConfigApplied(applyErr) {
+				return applyErr
 			}
-			reconnectErr := a.ReconnectMCPServers()
 			syncAgentStatus(a, theme, calcHistoryTokens)
 			if saveErr := a.SaveConfig(); saveErr != nil {
-				return errors.Join(applyErr, reconnectErr, fmt.Errorf("MCP settings applied, but could not save: %w", saveErr))
+				return errors.Join(applyErr, fmt.Errorf("MCP settings applied, but could not save: %w", saveErr))
 			}
-			return errors.Join(applyErr, reconnectErr)
+			return applyErr
 		}, Statuses: a.MCPServerStatuses, Configuration: a.Configuration})
 		InitStatusBar(os.Stderr)
 		if errInteractive != nil {

@@ -81,9 +81,7 @@ func (a *Agent) SavePendingSessionName(ctx context.Context, id string) error {
 
 func (a *Agent) saveSessionName(ctx context.Context, id, name string) error {
 	if a.Store != nil {
-		if store, ok := a.Store.(interface {
-			SetNameContext(context.Context, string, string) error
-		}); ok {
+		if store, ok := a.Store.(session.NameWriter); ok {
 			return store.SetNameContext(ctx, id, name)
 		}
 		if store, ok := a.Store.(interface{ SetName(string, string) error }); ok {

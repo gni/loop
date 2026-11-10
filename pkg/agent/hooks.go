@@ -27,7 +27,11 @@ func (a *Agent) executeHookScript(script string, payload any) (string, string, e
 	if a.Config != nil && a.Config.ExtensionTimeout > 0 {
 		timeout = time.Duration(a.Config.ExtensionTimeout) * time.Second
 	}
-	result, err := process.Run(a.Context(), process.Options{Executable: "bash", Arguments: []string{"-c", script}, Directory: a.WorkspaceRoot, Environment: os.Environ(), Input: bytes.NewReader(payloadBytes), Timeout: timeout})
+	environment := os.Environ()
+	for key, value := range a.GetExecutionEnv() {
+		environment = append(environment, key+"="+value)
+	}
+	result, err := process.Run(a.Context(), process.Options{Executable: "bash", Arguments: []string{"-c", script}, Directory: a.GetWorkspaceRoot(), Environment: environment, Input: bytes.NewReader(payloadBytes), Timeout: timeout})
 	return result.Stdout, result.Stderr, err
 
 }
@@ -72,7 +76,7 @@ func (a *Agent) runAfterToolHook(tc db.ToolCall, output string, toolErr error) (
 		bus = EventBusInstance()
 	}
 	if decision := bus.Emit(ToolCallEvent{Type: "tool_result", ToolCall: tc, Output: output, Err: toolErr}); decision != nil && !decision.Allowed {
-		return output, errors.Join(toolErr, fmt.Errorf("result hook blocked: %s", decision.Reason))
+		return output, errors.Join(toolErr, fmt.Errorf("result hook blocked after tool execution; effects have not been undone: %s", decision.Reason))
 	}
 	return a.runExecAfterHook(tc, output, toolErr)
 }
@@ -96,7 +100,10 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 	}
 	stdout, stderr, err := a.executeHookScript(a.Config.AfterToolHook, payload)
 	if err != nil {
-		return output, errors.Join(toolErr, fmt.Errorf("after_tool_hook failed: %s", hookFailureReason(stdout, stderr, err)))
+		if reason := hookFailureReason(stdout, stderr, err); reason != err.Error() {
+			err = fmt.Errorf("%s: %w", reason, err)
+		}
+		return output, errors.Join(toolErr, fmt.Errorf("after_tool_hook failed after tool execution; effects have not been undone: %w", err))
 	}
 
 	if stdout != "" {

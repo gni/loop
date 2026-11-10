@@ -118,33 +118,30 @@ func expandBracePatterns(pattern string) []string {
 	return out
 }
 
-func matchPathSegments(patSegs, pathSegs []string) bool {
-	for len(patSegs) > 0 {
-		if patSegs[0] == "**" {
-			for len(patSegs) > 1 && patSegs[1] == "**" {
-				patSegs = patSegs[1:]
+// Track reachable path positions iteratively. Repeated ** segments must not
+// cause exponential backtracking on an otherwise ordinary nonmatching path.
+func matchPathSegments(pattern, path []string) bool {
+	current := make([]bool, len(path)+1)
+	next := make([]bool, len(path)+1)
+	current[0] = true
+	for _, segment := range pattern {
+		clear(next)
+		if segment == "**" {
+			next[0] = current[0]
+			for index := 1; index <= len(path); index++ {
+				next[index] = current[index] || next[index-1]
 			}
-			if len(patSegs) == 1 {
-				return true
-			}
-			for i := 0; i <= len(pathSegs); i++ {
-				if matchPathSegments(patSegs[1:], pathSegs[i:]) {
-					return true
+		} else {
+			for index, name := range path {
+				if current[index] {
+					matched, err := filepath.Match(segment, name)
+					next[index+1] = err == nil && matched
 				}
 			}
-			return false
 		}
-		if len(pathSegs) == 0 {
-			return false
-		}
-		matched, err := filepath.Match(patSegs[0], pathSegs[0])
-		if err != nil || !matched {
-			return false
-		}
-		patSegs = patSegs[1:]
-		pathSegs = pathSegs[1:]
+		current, next = next, current
 	}
-	return len(pathSegs) == 0
+	return current[len(path)]
 }
 
 // MatchGlob matches a case-insensitive glob pattern (supporting **, path segments, and {a,b} braces)

@@ -17,6 +17,12 @@ func WithDelegationInstructions(ctx context.Context, instructions []string) cont
 func DelegationInstructions(ctx context.Context) []string {
 	prior, _ := ctx.Value(delegationInstructionsKey{}).([]string)
 	all := append(append([]string(nil), prior...), Instructions(ctx)...)
+	return latestInstructions(all)
+}
+
+// Later explicit instructions retain their priority when an earlier request
+// is repeated, including when that request was the original objective.
+func latestInstructions(all []string) []string {
 	last := make(map[string]int, len(all))
 	for i, s := range all {
 		all[i] = strings.TrimSpace(s)

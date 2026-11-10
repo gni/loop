@@ -30,14 +30,37 @@ type PackageResources struct {
 }
 
 func LoadPackages(directories ...string) (PackageResources, error) {
+	return LoadPackagesContext(context.Background(), directories...)
+}
+
+// LoadPackagesContext lets session construction and reload stop between packages.
+func LoadPackagesContext(ctx context.Context, directories ...string) (PackageResources, error) {
 	resources := PackageResources{Providers: make(map[string]config.ProviderConfig)}
+	seen := make(map[string]bool, len(directories))
+	if err := ctx.Err(); err != nil {
+		return resources, err
+	}
 	for _, directory := range directories {
+		if err := ctx.Err(); err != nil {
+			return resources, err
+		}
+		key, err := filepath.Abs(directory)
+		if err != nil {
+			return resources, err
+		}
+		if resolved, err := filepath.EvalSymlinks(key); err == nil {
+			key = resolved
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		installed, err := (packages.Manager{Directory: directory}).List()
 		if err != nil {
 			return resources, err
 		}
 		for _, entry := range installed {
-			manifest, err := packages.ReadManifest(entry.Directory)
+			manifest, err := packages.ReadManifestContext(ctx, entry.Directory)
 			if err != nil {
 				return resources, fmt.Errorf("package %s: %w", entry.Name, err)
 			}
@@ -56,7 +79,7 @@ func LoadPackages(directories ...string) (PackageResources, error) {
 			}
 		}
 	}
-	return resources, nil
+	return resources, ctx.Err()
 }
 
 type HookResult struct {
@@ -78,11 +101,15 @@ func RunHook(ctx context.Context, hook Hook, event any) (HookResult, error) {
 		}
 		return HookResult{}, fmt.Errorf("extension %s failed: %w", filepath.Base(hook.Path), err)
 	}
-	var response HookResult
+	var response *HookResult
 	if strings.TrimSpace(result.Stdout) != "" {
 		if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
-			return response, fmt.Errorf("extension %s returned invalid JSON", filepath.Base(hook.Path))
+			return HookResult{}, fmt.Errorf("extension %s returned invalid JSON: %w", filepath.Base(hook.Path), err)
 		}
+		if response == nil {
+			return HookResult{}, fmt.Errorf("extension %s must return a JSON object", filepath.Base(hook.Path))
+		}
+		return *response, nil
 	}
-	return response, nil
+	return HookResult{}, nil
 }

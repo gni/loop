@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"loop/pkg/agent"
 	filetool "loop/pkg/agent/tool/file"
@@ -14,18 +16,38 @@ import (
 	"loop/pkg/storage"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
-	"strings"
-	"time"
 )
 
 func handleChangesCommand(ctx context.Context, a *agent.Agent, showDiff bool, w io.Writer, theme style.UITheme) {
+	if ctx.Err() != nil {
+		return
+	}
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("Changes in this conversation"))
 	count := 0
+	inspectionFailed := false
 	if a.Guided != nil {
 		for _, snapshot := range a.Guided.Snapshots() {
-			current, err := storage.ReadFile(snapshot.AbsPath, 8<<20)
+			if ctx.Err() != nil {
+				return
+			}
+			path, err := a.SafePath(snapshot.AbsPath)
+			if err != nil || path != snapshot.AbsPath {
+				fmt.Fprintf(w, "  Could not inspect %s: target is no longer accessible.\n", render.SanitizeTerminalText(snapshot.AbsPath))
+				inspectionFailed = true
+				continue
+			}
+			unlock, err := filetool.LockPathContext(ctx, path)
+			if err != nil {
+				return
+			}
+			current, err := storage.ReadFileContext(ctx, path, 8<<20)
+			unlock()
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(w, "  Could not inspect %s: %v\n", snapshot.AbsPath, err)
+				fmt.Fprintf(w, "  Could not inspect %s: %s\n", render.SanitizeTerminalText(snapshot.AbsPath), render.SanitizeTerminalText(err.Error()))
+				inspectionFailed = true
 				continue
 			}
 			if (!snapshot.Existed && os.IsNotExist(err)) || (snapshot.Existed && err == nil && bytes.Equal(current, snapshot.Data)) {
@@ -38,18 +60,28 @@ func handleChangesCommand(ctx context.Context, a *agent.Agent, showDiff bool, w 
 			if os.IsNotExist(err) {
 				status = "Deleted"
 			}
-			path := snapshot.AbsPath
+			path = snapshot.AbsPath
 			if rel, e := filepath.Rel(a.WorkspaceRoot, path); e == nil {
 				path = rel
 			}
 			fmt.Fprintf(w, "  %s  %s\n", status, render.SanitizeTerminalText(path))
 			count++
 			if showDiff {
-				fmt.Fprint(w, render.SanitizeTerminalText(filetool.GenerateDisplayDiff(string(snapshot.Data), string(current), 3))+"\n")
+				if filetool.IsBinary(snapshot.Data) || filetool.IsBinary(current) {
+					fmt.Fprintln(w, "  Binary file changed.")
+					continue
+				}
+				diff, err := filetool.GenerateDisplayDiffContext(ctx, string(snapshot.Data), string(current), 3)
+				if err != nil {
+					return
+				}
+				if _, err := fmt.Fprint(w, render.SanitizeTerminalText(diff)+"\n"); err != nil {
+					return
+				}
 			}
 		}
 	}
-	if count == 0 {
+	if count == 0 && !inspectionFailed {
 		fmt.Fprintln(w, "  No changes recorded by file tools.")
 	}
 	fmt.Fprintln(w, "\nGit working tree (includes shell edits and existing changes)")
@@ -69,7 +101,10 @@ func handleChangesCommand(ctx context.Context, a *agent.Agent, showDiff bool, w 
 		}
 	}
 	if err != nil {
-		fmt.Fprintln(w, "  Git view unavailable; use /changes for recorded file edits.")
+		if ctx.Err() != nil {
+			return
+		}
+		fmt.Fprintln(w, "  Git view unavailable.")
 		return
 	}
 	if result.Stdout == "" {

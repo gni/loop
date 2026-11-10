@@ -12,6 +12,7 @@ import (
 // Later calls wait until the current call has complete JSON arguments, so
 // interleaved provider deltas cannot mix different files in one preview.
 type toolStreamSequencer struct {
+	retainedBytes   int
 	renderer        StreamRenderer
 	enabled         bool
 	active          int
@@ -175,6 +176,13 @@ func (s *toolStreamSequencer) Feed(chunk StreamChunk) {
 	default:
 		return
 	}
+	if len(chunk.Content) > maxResponseBytes-s.retainedBytes || len(s.calls)+len(s.unnamed) > maxResponseToolCalls {
+		// Preview state is optional. The finalized provider message remains the
+		// authority for execution and history when presentation hits its budget.
+		s.enabled = false
+		return
+	}
+	s.retainedBytes += len(chunk.Content)
 
 	// Some native providers use content-block indices (which can have gaps),
 	// while the execution engine numbers tool calls consecutively.

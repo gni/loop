@@ -8,7 +8,6 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
-	"loop/pkg/db"
 	"loop/pkg/domain/session"
 )
 
@@ -21,11 +20,11 @@ type savedSettings struct {
 	Todos         []tool.TodoItem `json:"todos"`
 }
 
-func restoreSettings(store *db.JSONLStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
+func restoreSettings(store session.ContextStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
 	return restoreSettingsContext(context.Background(), store, id, cfg, tools, keepSelection)
 }
 
-func restoreSettingsContext(ctx context.Context, store *db.JSONLStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
+func restoreSettingsContext(ctx context.Context, store session.ContextStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
 	if !store.HasMessages(id) {
 		return nil, nil
 	}

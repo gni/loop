@@ -32,7 +32,7 @@ func (e *TurnEngine) ExecuteToolCalls(
 	e.batchFailure = ""
 	defer func() { e.batchFailure = "" }()
 	defer func() {
-		if marker, ok := sr.(interface{ MarkPendingWriteResults(string) }); ok {
+		if marker, ok := sr.(PendingWritePresenter); ok {
 			marker.MarkPendingWriteResults("Not executed")
 		}
 	}()

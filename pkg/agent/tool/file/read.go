@@ -2,7 +2,6 @@ package file
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"loop/pkg/domain/ignore"
 	"loop/pkg/domain/limits"
+	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/storage"
 )
@@ -97,6 +97,11 @@ func resolveDirEntrypoint(safePath, targetPath, workspaceRoot string) (string, o
 }
 
 func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (string, error) {
+	result, err := t.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, blocks *[]message.ContentBlock) (string, error) {
 	if err := ctx.Context().Err(); err != nil {
 		return "", err
 	}
@@ -105,11 +110,8 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		Offset float64 `json:"offset"`
 		Limit  float64 `json:"limit"`
 	}
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		var rawPath string
-		if errStr := json.Unmarshal([]byte(arguments), &rawPath); errStr == nil && strings.TrimSpace(rawPath) != "" {
-			args.Path = rawPath
-		}
+	if err := domaintool.ParseToolArguments(arguments, &args, func(path string) { args.Path = path }); err != nil {
+		return "", err
 	}
 
 	targetPath := ExtractFilePath(arguments, args.Path)
@@ -127,7 +129,15 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		}
 	}
 
-	if strings.ContainsAny(targetPath, "*?[") {
+	offset, err := domaintool.IntegerArgument("offset", args.Offset)
+	if err != nil {
+		return "", err
+	}
+	limit, err := domaintool.IntegerArgument("limit", args.Limit)
+	if err != nil {
+		return "", err
+	}
+	if strings.ContainsAny(targetPath, "*?") {
 		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'read' tool requires a specific file path; use the 'find_files' tool instead to search files matching this pattern (e.g. find_files(pattern: '%s'))", targetPath, targetPath)
 	}
 
@@ -194,7 +204,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	if err := ctx.Context().Err(); err != nil {
 		return "", err
 	}
-	data, err := storage.ReadFile(safePath, int64(maxReadBytes))
+	data, err := storage.ReadFileContext(ctx.Context(), safePath, int64(maxReadBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -203,14 +213,18 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		fo.RecordRead(safePath, data)
 	}
 
-	if IsBinary(data) {
-		mime := http.DetectContentType(data)
-		switch mime {
-		case "image/png", "image/jpeg", "image/gif", "image/webp":
-			return fmt.Sprintf("Read image file %s [%s, %d bytes]", targetPath, mime, len(data)), nil
-		default:
-			return "", fmt.Errorf("cannot read binary file; the read tool only supports text files and images")
+	mime := http.DetectContentType(data)
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		block, err := message.AttachmentFromBytes(data)
+		if err != nil {
+			return "", err
 		}
+		*blocks = []message.ContentBlock{block}
+		return entryHeader + fmt.Sprintf("Read image file %s [%s, %d bytes]", targetPath, mime, len(data)), nil
+	}
+	if IsBinary(data) {
+		return "", fmt.Errorf("cannot read binary file; the read tool only supports text files and images")
 	}
 
 	_, textWithoutBOM := SplitBOM(data)
@@ -220,7 +234,6 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 
 	lines := strings.Split(contentStr, "\n")
-	offset := int(args.Offset)
 	if offset <= 0 {
 		offset = 1
 	}
@@ -228,7 +241,6 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("offset %d is beyond end of file (%d lines total)", offset, len(lines))
 	}
 
-	limit := int(args.Limit)
 	if limit <= 0 {
 		limit = readDefaultLimit
 	} else if limit > limits.For(ctx).MaxOutputLines {
@@ -248,7 +260,7 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	}
 	cut := TruncateHead(window, limit, limits.For(ctx).MaxOutputBytes)
 	if cut.ShownLines == 0 {
-		return entryHeader + ReadFirstLineOverBudgetNotice(limits.For(ctx).MaxOutputBytes, offset, targetPath), nil
+		return "", fmt.Errorf("line %d cannot fit the output budget of %d bytes; reduce the line length limit or increase the output budget", offset, limits.For(ctx).MaxOutputBytes)
 	}
 	resultLines := window[:cut.ShownLines]
 

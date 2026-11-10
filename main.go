@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
+	"time"
 
 	termpkg "golang.org/x/term"
 	"loop/pkg/cmd"
@@ -29,10 +29,7 @@ func main() {
 		}
 	}
 
-	var (
-		exitMu   sync.Mutex
-		exitCode int
-	)
+	exitCode := 0
 
 	// Registered first so it runs last, after the terminal cleanup defers. The default
 	// lifecycle exit function calls os.Exit inside the signal path, which skips every
@@ -43,11 +40,11 @@ func main() {
 		if r := recover(); r != nil {
 			panic(r)
 		}
-		exitMu.Lock()
 		code := exitCode
-		exitMu.Unlock()
-		if code == 0 && supervisor.Context().Err() != nil {
-			code = supervisor.ExitCode()
+		if supervisor.Context().Err() != nil {
+			if requested := supervisor.ExitCode(); requested != 0 || code == 0 {
+				code = requested
+			}
 		}
 		if code != 0 {
 			os.Exit(code)
@@ -64,24 +61,9 @@ func main() {
 	})
 
 	// Normal shutdown leaves main's defers in control of cleanup.
-	supervisor.SetExitFunc(func(code int) {
-		exitMu.Lock()
-		exitCode = code
-		exitMu.Unlock()
-	})
+	supervisor.SetExitFunc(func(int) {})
 	supervisor.SetForceExitFunc(func(code int) {
-		// A blocked hook may hold a terminal mutex. Restore the original
-		// terminal directly rather than acquiring application locks again.
-		if originalTerminal != nil {
-			_ = termpkg.Restore(originalTerminalFD, originalTerminal)
-			output := os.Stderr
-			if !termpkg.IsTerminal(int(output.Fd())) {
-				output = os.Stdout
-			}
-			if termpkg.IsTerminal(int(output.Fd())) {
-				_, _ = output.WriteString(terminal.ExitAlternateScreen + terminal.DisableBracketedPaste + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m")
-			}
-		}
+		restoreTerminalForExit(originalTerminalFD, originalTerminal)
 		os.Exit(code)
 	})
 
@@ -90,11 +72,60 @@ func main() {
 	defer supervisor.Wait(context.Background())
 
 	if err := cmd.ExecuteContext(supervisor.Context()); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		exitMu.Lock()
-		if exitCode == 0 {
-			exitCode = 1
+		if supervisor.Context().Err() != nil && isShutdownCancellation(err) {
+			return
 		}
-		exitMu.Unlock()
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		exitCode = 1
 	}
+}
+
+func restoreTerminalForExit(fd int, state *termpkg.State) {
+	if state == nil {
+		return
+	}
+	restored := make(chan struct{})
+	go func() {
+		defer close(restored)
+		_ = termpkg.Restore(fd, state)
+		output := os.Stderr
+		if !termpkg.IsTerminal(int(output.Fd())) {
+			output = os.Stdout
+		}
+		if termpkg.IsTerminal(int(output.Fd())) {
+			_, _ = output.WriteString(terminal.ExitAlternateScreen + terminal.DisableBracketedPaste + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m")
+		}
+	}()
+	// Even a direct terminal write may block on a full buffer or file lock.
+	// Forced exit gives restoration a brief chance, then leaves cleanup behind.
+	timer := time.NewTimer(150 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-restored:
+	case <-timer.C:
+	}
+}
+
+// A requested shutdown is not a command failure. Joined cleanup failures must
+// still be reported, even when one of their causes is context cancellation.
+func isShutdownCancellation(err error) bool {
+	if err == context.Canceled {
+		return true
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := wrapped.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !isShutdownCancellation(cause) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return isShutdownCancellation(wrapped.Unwrap())
+	}
+	return false
 }

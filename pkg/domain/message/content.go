@@ -1,6 +1,7 @@
 package message
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -20,10 +21,20 @@ type ContentBlock struct {
 }
 
 func ReadAttachment(path string) (ContentBlock, error) {
-	data, err := storage.ReadFile(path, 20<<20)
+	return ReadAttachmentContext(context.Background(), path, 20<<20)
+}
+
+func ReadAttachmentContext(ctx context.Context, path string, limit int64) (ContentBlock, error) {
+	data, err := storage.ReadFileContext(ctx, path, limit)
 	if err != nil {
 		return ContentBlock{}, err
 	}
+	return AttachmentFromBytes(data)
+}
+
+// AttachmentFromBytes uses the same content detection for explicit attachments
+// and the file reader, without rereading or decoding an image a second time.
+func AttachmentFromBytes(data []byte) (ContentBlock, error) {
 	mime := http.DetectContentType(data)
 	switch mime {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":

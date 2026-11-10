@@ -3,6 +3,8 @@
 package process
 
 import (
+	"errors"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -20,7 +22,11 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	return cmd.Process.Kill()
+	err := cmd.Process.Kill()
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
 }
 
 func KillPgid(pgid int) error {

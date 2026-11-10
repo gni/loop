@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/resources"
@@ -41,6 +43,9 @@ func (s *Session) transformContext(ctx context.Context, messages []db.Message) (
 			return nil, fmt.Errorf("context blocked: %s", result.Reason)
 		}
 		if len(result.Messages) > 0 {
+			if strings.TrimSpace(string(result.Messages)) == "null" {
+				return nil, fmt.Errorf("extension context messages must be an array")
+			}
 			if err := json.Unmarshal(result.Messages, &messages); err != nil {
 				return nil, fmt.Errorf("extension context: %w", err)
 			}

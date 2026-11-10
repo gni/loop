@@ -55,6 +55,10 @@ func (t *writeTool) ExecuteResult(ctx domaintool.AgentContext, arguments string)
 	observed.Outcome = evidence.Succeeded
 	if err != nil {
 		observed.Outcome = evidence.Failed
+		if mutationCommitted(err, observed.Target) {
+			changed := true
+			observed.Changed = &changed
+		}
 	}
 	return domaintool.ToolResult{Output: output, IsError: err != nil, Evidence: observed}, err
 }
@@ -70,7 +74,7 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 	if targetPath == "" {
 		return "", fmt.Errorf("missing required argument: path")
 	}
-	if strings.ContainsAny(targetPath, "*?[") {
+	if strings.ContainsAny(targetPath, "*?") {
 		return "", fmt.Errorf("cannot write to wildcard path '%s': please provide an exact target file path", targetPath)
 	}
 
@@ -137,7 +141,9 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 	}
 
 	if err := CommitFileMutation(ctx, safePath, []byte(content), 0644); err != nil {
-		discardIfUncommitted()
+		if !mutationCommitted(err, safePath) {
+			discardIfUncommitted()
+		}
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 

@@ -191,7 +191,11 @@ func pinnedTaskInstructions(ctx context.Context, kept, source []db.Message) []db
 		}
 	}
 	var pinned []db.Message
-	for index, instruction := range instructions {
+	objective := run.Objective(ctx)
+	if objective == "" && len(instructions) > 0 {
+		objective = instructions[0]
+	}
+	for _, instruction := range instructions {
 		present := false
 		for _, msg := range kept {
 			if msg.Role == "user" && strings.TrimSpace(msg.Content) == instruction {
@@ -203,7 +207,7 @@ func pinnedTaskInstructions(ctx context.Context, kept, source []db.Message) []db
 			continue
 		}
 		kind := "instruction"
-		if index == 0 {
+		if instruction == objective {
 			kind = "objective"
 		}
 		pinned = append(pinned, db.Message{Role: "user", ContextKind: kind, Content: instruction})

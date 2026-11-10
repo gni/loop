@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"loop/pkg/agent/tool"
-	"strings"
 )
 
 func (s *Session) validateTools(names []string) error {
@@ -14,9 +13,8 @@ func (s *Session) validateTools(names []string) error {
 		if _, exists := s.Agent.Registry.Lookup(name); exists {
 			continue
 		}
-		parts := strings.SplitN(name, "__", 3)
-		if len(parts) == 3 && parts[0] == "mcp" {
-			if server, exists := s.Agent.Config.MCPServers[parts[1]]; exists && server.Enabled {
+		if owner, found := s.Agent.MCPToolServer(name); found {
+			if server, exists := s.Agent.Config.MCPServers[owner]; exists && server.Enabled {
 				continue
 			}
 		}

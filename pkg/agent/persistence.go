@@ -47,9 +47,7 @@ func (a *Agent) SaveMessageContext(ctx context.Context, id string, msg db.Messag
 
 func (a *Agent) saveMessageContext(ctx context.Context, id string, msg db.Message) error {
 	if a.Store != nil {
-		if store, ok := a.Store.(interface {
-			SaveMessageContext(context.Context, string, db.Message) error
-		}); ok {
+		if store, ok := a.Store.(session.MessageWriter); ok {
 			return store.SaveMessageContext(ctx, id, msg)
 		}
 		return a.Store.SaveMessage(id, msg)
@@ -73,14 +71,10 @@ func (a *Agent) AppendEntryContext(ctx context.Context, id string, record sessio
 		return err
 	}
 	if a.Store != nil {
-		if store, ok := a.Store.(interface {
-			AppendEntryContext(context.Context, string, session.Record) error
-		}); ok {
+		if store, ok := a.Store.(session.ContextEntryAppender); ok {
 			return store.AppendEntryContext(ctx, id, record)
 		}
-		store, ok := a.Store.(interface {
-			AppendEntry(string, session.Record) error
-		})
+		store, ok := a.Store.(session.EntryAppender)
 		if !ok {
 			return fmt.Errorf("session storage does not support durable context entries")
 		}
@@ -118,9 +112,7 @@ func (a *Agent) loadSessionMessages(ctx context.Context, id string) ([]db.Messag
 	var msgs []db.Message
 	var err error
 	if a.Store != nil {
-		if store, ok := a.Store.(interface {
-			LoadMessagesContext(context.Context, string) ([]db.Message, error)
-		}); ok {
+		if store, ok := a.Store.(session.MessageLoader); ok {
 			msgs, err = store.LoadMessagesContext(ctx, id)
 		} else {
 			msgs, err = a.Store.LoadMessages(id)
@@ -143,9 +135,7 @@ func (a *Agent) rewriteSession(ctx context.Context, id string, msgs []db.Message
 		return err
 	}
 	if a.Store != nil {
-		if store, ok := a.Store.(interface {
-			RewriteSessionContext(context.Context, string, []db.Message) error
-		}); ok {
+		if store, ok := a.Store.(session.SessionRewriter); ok {
 			return store.RewriteSessionContext(ctx, id, msgs)
 		}
 		return a.Store.RewriteSession(id, msgs)

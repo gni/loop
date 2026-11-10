@@ -37,11 +37,11 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 			cleanConfig := filepath.Clean(absConfig)
 			if evalCfg, evalErr := resolveExistingAncestorSymlinks(cleanConfig, cleanConfig); evalErr == nil {
 				if candidate == evalCfg || candidate == evalCfg+".lock" {
-					return fmt.Errorf("security violation: modifying the active configuration file is not allowed")
+					return fmt.Errorf("security violation: accessing the active configuration file is not allowed")
 				}
 			}
 			if candidate == cleanConfig || candidate == cleanConfig+".lock" {
-				return fmt.Errorf("security violation: modifying the active configuration file is not allowed")
+				return fmt.Errorf("security violation: accessing the active configuration file is not allowed")
 			}
 		}
 	}
@@ -75,8 +75,8 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 		top := strings.Split(filepath.ToSlash(rel), "/")[0]
 		switch top {
 		case "sessions":
-			return fmt.Errorf("security violation: modifying session database files is not allowed")
-		case "agents", "trust":
+			return fmt.Errorf("security violation: accessing session database files is not allowed")
+		case "agents", "trust", "recovery":
 			return fmt.Errorf("security violation: accessing runtime security or agent state is not allowed")
 		case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json":
 			return fmt.Errorf("security violation: accessing runtime credentials or configuration is not allowed")

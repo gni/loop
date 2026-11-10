@@ -28,33 +28,40 @@ func (c *mcpClient) startStdio() error {
 		cancel()
 		return err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		cancel()
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		cancel()
 		return err
 	}
+	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
 
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		cancel()
 		return fmt.Errorf("failed to start MCP server '%s': %w", c.name, err)
 	}
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 
 	c.cmd = cmd
 	c.processDone = make(chan struct{})
 	c.stdin = stdin
 
 	go func() {
+		defer stderr.Close()
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
 		for scanner.Scan() {
@@ -62,9 +69,11 @@ func (c *mcpClient) startStdio() error {
 		}
 	}()
 
+	stdoutDone := make(chan struct{})
 	go func() {
+		defer close(stdoutDone)
+		defer stdout.Close()
 		defer c.failPendingRequests()
-		defer func() { _ = cmd.Wait(); close(c.processDone) }()
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
@@ -80,6 +89,20 @@ func (c *mcpClient) startStdio() error {
 		} else {
 			mcpLog("stdio stream closed for '%s'\n", c.name)
 		}
+	}()
+	go func() {
+		// Observe the command independently of inherited output pipes. A child
+		// holding stdout open must not hide a dead server or survive its exit.
+		_ = cmd.Wait()
+		_ = process.KillProcessGroup(cmd)
+		select {
+		case <-stdoutDone:
+		case <-time.After(cmd.WaitDelay):
+			_ = stdout.Close()
+			<-stdoutDone
+		}
+		_ = stderr.Close()
+		close(c.processDone)
 	}()
 
 	return c.completeHandshake()

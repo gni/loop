@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
@@ -402,10 +403,13 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	result := &db.Message{Role: "assistant", Provider: p.Config.ActiveProvider, Model: p.Config.Model}
 	var text, reasoning strings.Builder
 	calls := make(map[int]*db.ToolCall)
+	argumentBuffers := make(toolArgumentBuffers)
 	itemIndexes := make(map[string]int)
 	complete := false
 	finish := ""
 	thinking := make(map[int]*message.ContentBlock)
+	thinkingText := make(map[int]*strings.Builder)
+	thinkingSignatures := make(map[int]*strings.Builder)
 	applyUsage := func(usage nativeUsage) {
 		if usage.Input > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 {
 			result.PromptTokens = usage.Input
@@ -420,8 +424,16 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		result.CacheWriteTokens = max(result.CacheWriteTokens, usage.CacheWrite)
 	}
 	observer := p.chunkDropObserver(ctx)
+	var budget responseBudget
+	var outputErr error
 	var generationStart time.Time
 	emit := func(kind, delta string) {
+		if outputErr != nil {
+			return
+		}
+		if outputErr = budget.add(delta); outputErr != nil {
+			return
+		}
 		if delta != "" && generationStart.IsZero() {
 			generationStart = time.Now()
 		}
@@ -433,6 +445,18 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: kind, Content: delta}, observer)
 	}
 	setCall := func(index int, item nativeItem) {
+		if outputErr != nil {
+			return
+		}
+		if index < 0 || len(calls) >= maxResponseToolCalls {
+			outputErr = fmt.Errorf("invalid or excessive provider tool call index")
+			return
+		}
+		_, knownItem := itemIndexes[item.ID]
+		if calls[index] != nil || (item.ID != "" && knownItem) {
+			outputErr = fmt.Errorf("duplicate provider tool call")
+			return
+		}
 		if generationStart.IsZero() {
 			generationStart = time.Now()
 		}
@@ -446,15 +470,25 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		if item.Arguments == "" && len(item.Input) > 0 && string(item.Input) != "{}" {
 			item.Arguments = string(item.Input)
 		}
+		if outputErr = budget.add(item.Name, item.Arguments); outputErr != nil {
+			return
+		}
 		normName := tool.NormalizeName(item.Name)
 		calls[index] = &db.ToolCall{ID: id, Type: "function", Function: db.ToolFunction{Name: normName, Arguments: item.Arguments}}
+		argumentBuffers.replace(index, item.Arguments)
 		if item.ID != "" {
 			itemIndexes[item.ID] = index
 		}
 		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: index}, observer)
 	}
-	defer func() { result.Content = text.String(); result.ReasoningContent = reasoning.String() }()
-	reader := sse.NewReader(response.Body)
+	finalized := false
+	defer func() {
+		if !finalized {
+			result.Content = text.String()
+			result.ReasoningContent = reasoning.String()
+		}
+	}()
+	reader := sse.NewLimitedReader(response.Body, 128<<20)
 	reader.OnActivity = kick
 	for {
 		packet, err := reader.Read(streamCtx)
@@ -504,7 +538,11 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					setCall(event.Index, event.Block)
 				}
 				if event.Block.Type == "thinking" {
+					if event.Index < 0 || len(thinking) >= maxResponseToolCalls || thinking[event.Index] != nil {
+						return result, fmt.Errorf("invalid or excessive provider content blocks")
+					}
 					thinking[event.Index] = &message.ContentBlock{Type: "thinking"}
+					thinkingText[event.Index], thinkingSignatures[event.Index] = &strings.Builder{}, &strings.Builder{}
 				}
 				if event.Block.Text != "" {
 					emit("text", event.Block.Text)
@@ -516,16 +554,24 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 				case "thinking_delta":
 					emit("reasoning", delta.Thinking)
 					if thinking[event.Index] != nil {
-						thinking[event.Index].Text += delta.Thinking
+						thinkingText[event.Index].WriteString(delta.Thinking)
 					}
 				case "signature_delta":
+					if err := budget.add(delta.Signature); err != nil {
+						return result, err
+					}
 					if thinking[event.Index] != nil {
-						thinking[event.Index].Signature += delta.Signature
+						thinkingSignatures[event.Index].WriteString(delta.Signature)
 					}
 				case "input_json_delta":
+					if err := budget.add(delta.JSON); err != nil {
+						return result, err
+					}
 					if call := calls[event.Index]; call != nil {
-						call.Function.Arguments += delta.JSON
+						argumentBuffers.append(event.Index, delta.JSON)
 						emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta.JSON, ToolCallIndex: event.Index}, observer)
+					} else {
+						return result, fmt.Errorf("arguments for unknown tool call")
 					}
 				}
 			case "message_delta":
@@ -536,8 +582,14 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 			}
 		case "responses":
 			var delta string
-			if len(event.Delta) > 0 {
-				_ = json.Unmarshal(event.Delta, &delta)
+			switch event.Type {
+			case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.function_call_arguments.delta":
+				if string(event.Delta) == "null" || len(event.Delta) == 0 {
+					return result, fmt.Errorf("missing delta for provider event %q", event.Type)
+				}
+				if err := json.Unmarshal(event.Delta, &delta); err != nil {
+					return result, fmt.Errorf("invalid delta for provider event %q: %w", event.Type, err)
+				}
 			}
 			switch event.Type {
 			case "response.output_text.delta":
@@ -549,15 +601,23 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					setCall(event.OutputIndex, event.Item)
 				}
 			case "response.function_call_arguments.delta":
+				if err := budget.add(delta); err != nil {
+					return result, err
+				}
 				index, ok := itemIndexes[event.ItemID]
 				if !ok {
 					return result, fmt.Errorf("arguments for unknown tool call")
 				}
-				calls[index].Function.Arguments += delta
+				argumentBuffers.append(index, delta)
 				emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta, ToolCallIndex: index}, observer)
 			case "response.function_call_arguments.done":
+				if err := budget.add(event.Arguments); err != nil {
+					return result, err
+				}
 				if index, ok := itemIndexes[event.ItemID]; ok {
-					calls[index].Function.Arguments = event.Arguments
+					argumentBuffers.replace(index, event.Arguments)
+				} else {
+					return result, fmt.Errorf("arguments for unknown tool call")
 				}
 			case "response.completed":
 				complete = true
@@ -592,6 +652,12 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					setCall(index, nativeItem{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
 				}
 				if part.Signature != "" {
+					if len(result.ContentBlocks) >= maxResponseToolCalls {
+						return result, fmt.Errorf("excessive provider content blocks")
+					}
+					if err := budget.add(part.Signature); err != nil {
+						return result, err
+					}
 					result.ContentBlocks = append(result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature, ToolCallID: signatureCallID(calls)})
 				}
 			}
@@ -600,21 +666,28 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 				complete = true
 			}
 		}
+		if outputErr != nil {
+			return result, outputErr
+		}
 	}
 	rawText := text.String()
 	result.Content = rawText
 	result.ReasoningContent = reasoning.String()
-	for _, call := range calls {
-		if call.Function.Arguments == "" {
-			call.Function.Arguments = "{}"
-		}
+	argumentBuffers.flush(calls)
+	if err := validateProviderCalls(calls); err != nil {
+		return result, err
 	}
 	if len(calls) > 0 {
 		result.ToolCalls = assembleToolCalls(calls, "", "")
 	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
-		result.ToolCalls = assembleToolCalls(nil, rawText, "")
+		var err error
+		result.ToolCalls, err = fallback.ParseFallbackToolCallsStrict(rawText)
+		if err != nil {
+			return result, err
+		}
 		result.Content = StripFallbackToolMarkup(rawText)
 	}
+	finalized = true
 	result.StopReason = finish
 	indexes := make([]int, 0, len(thinking))
 	for index := range thinking {
@@ -622,6 +695,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	sort.Ints(indexes)
 	for _, index := range indexes {
+		thinking[index].Text, thinking[index].Signature = thinkingText[index].String(), thinkingSignatures[index].String()
 		result.ContentBlocks = append(result.ContentBlocks, *thinking[index])
 	}
 

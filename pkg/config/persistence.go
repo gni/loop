@@ -127,6 +127,10 @@ func loadConfigWithRaw(ctx context.Context, path string) (*Config, []byte, error
 			}
 		}
 
+		if err := restoreConfigSidecars(snapshot, filepath.Dir(path), conf); err != nil {
+			return nil, nil, err
+		}
+
 		conf.applyDefaults()
 		conf.ensureDefaultProvider()
 		if err := conf.SyncActiveProvider(); err != nil {
@@ -159,14 +163,9 @@ func loadConfigWithRaw(ctx context.Context, path string) (*Config, []byte, error
 	dir := filepath.Dir(path)
 	mcpPath := filepath.Join(dir, "mcp.json")
 	if mcpData, err := snapshot.mcp.data, snapshot.mcp.err; err == nil {
-		var servers map[string]MCPServerConfig
-		if err := json.Unmarshal(mcpData, &servers); err != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", mcpPath, err)
+		if err := decodeMCPFile(mcpData, mcpPath, cfg); err != nil {
+			return nil, nil, err
 		}
-		if servers == nil {
-			return nil, nil, fmt.Errorf("%s must contain a JSON object", mcpPath)
-		}
-		cfg.MCPServers = servers
 	} else if !os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf("read %s: %w", mcpPath, err)
 	} else if len(cfg.MCPServers) > 0 {
@@ -177,37 +176,9 @@ func loadConfigWithRaw(ctx context.Context, path string) (*Config, []byte, error
 
 	providersPath := filepath.Join(dir, "providers.json")
 	if provData, err := snapshot.providers.data, snapshot.providers.err; err == nil {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(provData, &fields); err != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
+		if err := decodeProvidersFile(provData, providersPath, cfg); err != nil {
+			return nil, nil, err
 		}
-		if fields == nil {
-			return nil, nil, fmt.Errorf("%s must contain a JSON object", providersPath)
-		}
-		if _, wrapped := fields["providers"]; wrapped {
-			var file ProvidersFile
-			if err := json.Unmarshal(provData, &file); err != nil {
-				return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
-			}
-			if file.Providers == nil {
-				return nil, nil, fmt.Errorf("providers in %s must be a JSON object", providersPath)
-			}
-			active := file.Active
-			if active == "" {
-				active = file.ActiveProvider
-			}
-			if active != "" {
-				cfg.ActiveProvider = active
-			}
-			cfg.Providers = file.Providers
-		} else {
-			var providers map[string]ProviderConfig
-			if err := json.Unmarshal(provData, &providers); err != nil {
-				return nil, nil, fmt.Errorf("parse %s: %w", providersPath, err)
-			}
-			cfg.Providers = providers
-		}
-		populateProviderNames(cfg.Providers)
 	} else if !os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf("read %s: %w", providersPath, err)
 	} else if len(cfg.Providers) > 0 {

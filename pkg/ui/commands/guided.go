@@ -54,12 +54,8 @@ func handleGuidedCommand(
 		fmt.Fprintf(w, "approved plan (%d step(s)).\n", len(todos))
 		return
 	case "plan", "status":
-		var snaps []agent.FileSnapshot
-		if a.Guided != nil {
-			snaps = a.Guided.Snapshots()
-		}
 		fmt.Fprintf(w, "guided mode: %v (phase: %s, approved: %v, snapshots: %d)\n",
-			a.IsGuidedMode(), a.Guided.Phase(), a.Guided.IsPlanApproved(), len(snaps))
+			a.IsGuidedMode(), a.Guided.Phase(), a.Guided.IsPlanApproved(), a.Guided.SnapshotCount())
 		for i, item := range a.GetTodos() {
 			fmt.Fprintf(w, "  %d. [%s] %s\n", i+1, item.Status, item.Task)
 		}
@@ -85,7 +81,7 @@ func handleGuidedCommand(
 }
 
 func handleRollbackCommand(a *agent.Agent, theme *style.UITheme, w io.Writer) {
-	if a == nil || a.Guided == nil || len(a.Guided.Snapshots()) == 0 {
+	if a == nil || a.Guided.SnapshotCount() == 0 {
 		fmt.Fprintln(w, "no modified files to roll back.")
 		return
 	}
@@ -136,7 +132,7 @@ func handleUndoCommand(
 	*messages = (*messages)[:lastUserIdx]
 	a.MessagesMu.Unlock()
 
-	if a.Guided != nil && len(a.Guided.Snapshots()) > 0 {
+	if a.Guided.SnapshotCount() > 0 {
 		restored, err := a.RollbackChanges()
 		if err != nil {
 			fmt.Fprintf(w, "warning: file rollback encountered error: %v\n", err)

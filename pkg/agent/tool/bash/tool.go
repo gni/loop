@@ -104,7 +104,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	if err := ctx.Context().Err(); err != nil {
 		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
-	gate, ok := ctx.(interface{ IsShellExecutionAllowed() bool })
+	gate, ok := ctx.(domaintool.ShellExecutionGate)
 	if !ok || !gate.IsShellExecutionAllowed() {
 		return "", fmt.Errorf("shell execution requires a trusted workspace; trust it explicitly before running commands")
 	}
@@ -118,7 +118,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	}
 
 	persistentBash := true
-	if cp, ok := ctx.(interface{ IsPersistentBashEnabled() bool }); ok {
+	if cp, ok := ctx.(domaintool.PersistentShellSettings); ok {
 		persistentBash = cp.IsPersistentBashEnabled()
 	}
 	if !persistentBash {
@@ -159,9 +159,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		var id string
 		var err error
 		bgCmd := normalized
-		if spawner, ok := ctx.(interface {
-			SpawnTaskWithOptions(context.Context, string, io.Writer, domaintool.BackgroundTaskOptions) (string, error)
-		}); ok {
+		if spawner, ok := ctx.(domaintool.BackgroundTaskSpawner); ok {
 			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir})
 		} else {
 			if workDir != workspaceRoot {
@@ -192,12 +190,12 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	}
 	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
 	wrappedCmd := fmt.Sprintf("__loop_exit() {\n  __loop_ret=$?\n  printf '\\n%%s%%s\\n' %s \"$(pwd -P)\"\n  exit $__loop_ret\n}\ntrap __loop_exit EXIT\n%s", ShellQuote(pwdMarker), args.Command)
-	if settings, ok := ctx.(interface{ IsShellScanDefaultsEnabled() bool }); ok && settings.IsShellScanDefaultsEnabled() {
+	if settings, ok := ctx.(domaintool.ShellScanSettings); ok && settings.IsShellScanDefaultsEnabled() {
 		wrappedCmd = WithScanDefaults(wrappedCmd, workspaceRoot)
 	}
 	cmd := NewCommand(wrappedCmd)
 	cmd.Dir = workDir
-	if ep, ok := ctx.(interface{ GetExecutionEnv() map[string]string }); ok {
+	if ep, ok := ctx.(domaintool.ExecutionEnvironment); ok {
 		for k, v := range ep.GetExecutionEnv() {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
@@ -405,7 +403,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 }
 
 func shellTimeout(ctx domaintool.AgentContext) time.Duration {
-	if provider, ok := ctx.(interface{ GetShellTimeout() time.Duration }); ok {
+	if provider, ok := ctx.(domaintool.ShellTimeoutSettings); ok {
 		return provider.GetShellTimeout()
 	}
 	return 120 * time.Second

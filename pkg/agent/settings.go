@@ -11,6 +11,23 @@ type ConfigurationController interface {
 	UpdateConfig(*config.Config) error
 }
 
+type MCPConfigurationController interface {
+	UpdateConfigAndReconnect(*config.Config) error
+}
+
+func (a *Agent) UpdateConfigAndReconnect(next *config.Config) error {
+	if a == nil {
+		return fmt.Errorf("agent is unavailable")
+	}
+	if controller, ok := a.ConfigControl.(MCPConfigurationController); ok {
+		return controller.UpdateConfigAndReconnect(next)
+	}
+	if a.ConfigControl != nil {
+		return fmt.Errorf("configuration controller does not support MCP reconnect")
+	}
+	return a.ApplyConfigAndReconnect(next)
+}
+
 // Configuration returns a snapshot that callers can edit without changing live state.
 func (a *Agent) Configuration() (*config.Config, error) {
 	if a == nil {

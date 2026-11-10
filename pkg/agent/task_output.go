@@ -3,8 +3,19 @@ package agent
 import (
 	"fmt"
 	"io"
+	"sync"
 	"unicode/utf8"
 )
+
+// backgroundTasks keeps process ownership and its bounded presentation queue
+// together. TasksMu protects both; terminal writes happen outside that lock.
+type backgroundTasks struct {
+	Tasks         map[string]*Task
+	TasksMu       sync.Mutex
+	NextTaskID    int
+	StreamingTask string
+	taskOutput    taskOutputState
+}
 
 // TasksMu protects the queue. One caller drains it outside all task locks,
 // keeping snapshots, stdout, stderr and completion notices in display order.

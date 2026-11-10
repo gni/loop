@@ -101,6 +101,21 @@ func normalizeToolArguments(name, arguments string, value any) any {
 	}
 	switch name {
 	case "read", "write", "edit", "list_directory":
+		if name == "edit" {
+			if path, edits, err := filetool.ParseEditArguments(arguments); err == nil {
+				updates := make([]any, len(edits))
+				for i, edit := range edits {
+					update := map[string]any{"oldText": edit.OldText, "newText": edit.NewText}
+					if edit.Path != "" && edit.Path != path {
+						update["path"] = edit.Path
+					}
+					updates[i] = update
+				}
+				// Keep only the canonical request, including per-edit paths.
+				return map[string]any{"path": path, "updates": updates}
+			}
+			return value
+		}
 		if path := filetool.ExtractFilePath(arguments); path != "" {
 			object["path"] = path
 		}

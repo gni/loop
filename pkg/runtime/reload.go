@@ -16,7 +16,7 @@ func (s *Session) Reload() error {
 	if s.Agent.Config.ProjectResources {
 		directories = append(directories, s.Workspace+"/.loop")
 	}
-	loaded, err := resources.LoadPackages(directories...)
+	loaded, err := resources.LoadPackagesContext(s.Agent.Context(), directories...)
 	if err != nil {
 		return err
 	}
@@ -27,22 +27,10 @@ func (s *Session) Reload() error {
 	if err := applyResources(cfg, s.loaded, loaded); err != nil {
 		return err
 	}
-	trusted := cfg.ProjectResources
-	skillDirs := agent.SkillSearchDirsForWorkspace(cfg.SkillsDir, s.Workspace, trusted)
-	for _, extraDir := range cfg.SkillDirectories {
-		if s.Agent.ProjectResourceAllowed(extraDir) {
-			skillDirs = append(skillDirs, extraDir)
-		}
-	}
-	skills, err := agent.LoadSkillsFromDirs(skillDirs...)
-	if err != nil {
-		return err
-	}
-	applyErr := s.Agent.ApplyConfig(cfg)
+	applyErr := s.Agent.ReloadConfigResources(cfg)
 	if !agent.ConfigApplied(applyErr) {
 		return applyErr
 	}
-	s.Agent.SetActiveSkills(skills)
 	s.mu.Lock()
 	s.hooks = loaded.Hooks
 	s.loaded = loaded

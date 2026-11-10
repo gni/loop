@@ -21,31 +21,34 @@ type directToolMatchers struct {
 }
 
 var (
-	reAttr           = regexp.MustCompile(`([a-zA-Z0-9_\-]+)=(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	reAttr           = regexp.MustCompile(`([a-zA-Z0-9_\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
 	rePathTag        = regexp.MustCompile(`(?s)<path>(.*?)<\/path>`)
 	reContentTag     = regexp.MustCompile(`(?s)<content>(.*?)<\/content>`)
 	reInstructionTag = regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`)
 	reOldNewTag      = regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`)
 	reConflictBlock  = regexp.MustCompile(`(?s)<<<<<<< SEARCH\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>> REPLACE`)
 	reTaskTag        = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+([^>]*))?>\s*(.*?)\s*<\/(?:task|item)>`)
-	reToolCallBlock  = regexp.MustCompile(`(?s)<tool_call\b([^>]*)>(.*?)<\/tool_call>`)
-	reToolColonAttrs = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b([^>]*)>(.*?)<\/tool:([a-zA-Z0-9_\-]+)>`)
-	reExecuteAttrs   = regexp.MustCompile(`(?s)<execute\b([^>]*)>(.*?)<\/execute>`)
-	reFunc           = regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/function(?:\s*>|\s*\n|$)|$)`)
-	reParam          = regexp.MustCompile(`(?s)<parameter[=\s]*([a-zA-Z0-9_\-]+)(?:\s*>|\s*\n|$)(.*?)(?:<\/parameter(?:\s*>|\s*\n|$)|$)`)
+	reToolCallBlock  = regexp.MustCompile(`(?s)<tool_call\b(` + xmlAttrsPattern + `)>(.*?)<\/tool_call>`)
+	reToolColonAttrs = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)>(.*?)<\/tool:([a-zA-Z0-9_\-]+)>`)
+	reExecuteAttrs   = regexp.MustCompile(`(?s)<execute\b(` + xmlAttrsPattern + `)>(.*?)<\/execute>`)
+	reFunc           = regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)\s*>(.*?)<\/function\s*>`)
+	reParam          = regexp.MustCompile(`(?s)<parameter[=\s]+([a-zA-Z0-9_\-]+)\s*>(.*?)<\/parameter\s*>`)
 
 	compiledDirectTools = func() []directToolMatchers {
 		out := make([]directToolMatchers, len(directToolNames))
 		for i, name := range directToolNames {
 			out[i] = directToolMatchers{
 				name:        name,
-				selfClosing: regexp.MustCompile(fmt.Sprintf(`(?s)<%s\b([^>]*?)\/>`, name)),
-				paired:      regexp.MustCompile(fmt.Sprintf(`(?s)<%s\b([^>]*?)>(.*?)<\/%s>`, name, name)),
+				selfClosing: regexp.MustCompile(fmt.Sprintf(`(?s)<%s\b(%s)\/>`, name, xmlAttrsPattern)),
+				paired:      regexp.MustCompile(fmt.Sprintf(`(?s)<%s\b(%s)>(.*?)<\/%s>`, name, xmlPairedAttrsPattern, name)),
 			}
 		}
 		return out
 	}()
 )
+
+const xmlAttrsPattern = `(?:[^"'<>]|"[^"]*"|'[^']*')*?`
+const xmlPairedAttrsPattern = `(?:(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:[^"'<>/]|"[^"]*"|'[^']*'))?`
 
 // Reuse the executable tools' schemas so fallback XML cannot drift from their
 // numeric, boolean and structured parameter contracts. Text stays literal.
@@ -244,6 +247,9 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
 			params[p[1]] = xmlArgumentValue(tool.NormalizeName(name), p[1], strings.TrimSpace(p[2]))
 		}
+		if strings.Contains(rawBody, "<parameter") && strings.TrimSpace(reParam.ReplaceAllString(rawBody, "")) != "" {
+			continue
+		}
 		if len(params) == 0 {
 			calls = append(calls, BuildToolCall(name, rawBody))
 			continue
@@ -259,6 +265,22 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 
 // ParseFallbackToolCalls extracts XML-style fallback tool calls from plain assistant message content.
 func ParseFallbackToolCalls(content string) []db.ToolCall {
+	calls, _ := ParseFallbackToolCallsStrict(content)
+	return calls
+}
+
+const MaxToolCalls = 1024
+
+// ParseFallbackToolCallsStrict bounds parsing work and reports oversized batches
+// instead of silently executing a truncated subset of the model's calls.
+func ParseFallbackToolCallsStrict(content string) ([]db.ToolCall, error) {
+	openings := 0
+	for _, marker := range fallbackOpeningMarkers {
+		openings += strings.Count(content, marker)
+		if openings > MaxToolCalls*4 {
+			return nil, fmt.Errorf("fallback response exceeds tool call limit")
+		}
+	}
 	type candidate struct {
 		start, end int
 		calls      []db.ToolCall
@@ -307,7 +329,7 @@ func ParseFallbackToolCalls(content string) []db.ToolCall {
 		add(match, parseHermesFunctionCalls(content[match[0]:match[1]])...)
 	}
 	if len(found) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Tool families and aliases must not change execution order. Prefer an outer
 	// wrapper over tool-looking text inside its arguments, avoiding duplicate calls.
@@ -324,9 +346,12 @@ func ParseFallbackToolCalls(content string) []db.ToolCall {
 			continue
 		}
 		calls = append(calls, item.calls...)
+		if len(calls) > MaxToolCalls {
+			return nil, fmt.Errorf("fallback response exceeds %d tool calls", MaxToolCalls)
+		}
 		end = item.end
 	}
-	return calls
+	return calls, nil
 }
 
 // BuildToolCall normalizes tool names and formats arguments into a db.ToolCall.

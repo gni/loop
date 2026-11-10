@@ -1,17 +1,18 @@
 package interactive
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
 
 	"loop/pkg/agent"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -53,6 +54,25 @@ type ChoiceMenuOption struct {
 	// free-form answer instead of just picking the label.
 	FreeText bool
 }
+
+type modalOutput struct {
+	io.Writer
+	err error
+}
+
+func (w *modalOutput) Write(data []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.Writer.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	w.err = err
+	return n, err
+}
+
+func (w *modalOutput) Unwrap() io.Writer { return w.Writer }
 
 var (
 	activeReaderMu          sync.RWMutex
@@ -112,6 +132,11 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 	if selected < 0 || selected >= len(options) {
 		selected = 0
 	}
+	if output == nil {
+		output = os.Stdout
+	}
+	checkedOutput := &modalOutput{Writer: output}
+	output = checkedOutput
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
@@ -121,9 +146,9 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	renderOption := func(index int) string {
 		width, _ := style.GetTerminalSize()
-		label := options[index].Label
+		label := menuDisplayText(options[index].Label)
 		if width > 5 {
-			label = style.TruncateRunes(label, width-5)
+			label = style.TruncateCells(label, width-5)
 		}
 		if index == selected {
 			return fmt.Sprintf("  > %s", activeStyle.Render(label))
@@ -133,9 +158,10 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	renderMenu := func() {
 		if firstRender {
+			prompt = menuDisplayText(prompt)
 			width, _ := style.GetTerminalSize()
 			if width > 2 {
-				prompt = style.TruncateRunes(prompt, width-2)
+				prompt = style.TruncateCells(prompt, width-2)
 			}
 			fmt.Fprintf(output, "\r\x1b[K%s\r\n", promptStyle.Render(prompt))
 			for i := range options {
@@ -162,118 +188,127 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 		}
 	}
 
+	sr, closeReader := modalSessionReader(input)
+	defer closeReader()
 	renderMenu()
-	buf := make([]byte, 3)
+	if checkedOutput.err != nil {
+		return selected, true, ""
+	}
+	return readChoiceSelection(sr, output, promptStyle, activeStyle, options, selected, func(index int) { selected = index; renderMenu() }, true)
+}
+
+func readChoiceSelection(sr *SessionReader, output io.Writer, promptStyle, activeStyle style.Style, options []ChoiceMenuOption, selected int, redraw func(int), allowEnter bool) (int, bool, string) {
+	selectOption := func(index int) (int, bool, string) {
+		if options[index].FreeText {
+			answer, dismissed := readFreeTextAnswer(sr, output, promptStyle, activeStyle)
+			return index, dismissed, answer
+		}
+		return index, false, ""
+	}
 	for {
-		n, err := input.Read(buf)
+		if checked, ok := output.(*modalOutput); ok && checked.err != nil {
+			return selected, true, ""
+		}
+		key, _, err := sr.ReadKeyOrResize(nil)
 		if err != nil {
 			return selected, true, ""
 		}
-		if n == 0 {
+		switch string(key) {
+		case "\x1b[A", "\x1bOA":
+			selected = (selected - 1 + len(options)) % len(options)
+			if redraw != nil {
+				redraw(selected)
+			}
+			continue
+		case "\x1b[B", "\x1bOB":
+			selected = (selected + 1) % len(options)
+			if redraw != nil {
+				redraw(selected)
+			}
+			continue
+		case "\r", "\n":
+			if allowEnter {
+				return selectOption(selected)
+			}
+			continue
+		case "\x03", "\x04", "\x1b":
+			return selected, true, ""
+		}
+		// Paste frames and terminal reports cannot authorize a choice.
+		if len(key) == 0 || key[0] == 27 {
 			continue
 		}
-
-		if n == 3 && buf[0] == 27 && (buf[1] == '[' || buf[1] == 'O') {
-			switch buf[2] {
-			case 'A':
-				selected = (selected - 1 + len(options)) % len(options)
-			case 'B':
-				selected = (selected + 1) % len(options)
-			}
-			renderMenu()
+		r, size := utf8.DecodeRune(key)
+		if r == utf8.RuneError && size == 1 {
 			continue
 		}
-
-		for i, char := range buf[:n] {
-			if char == '\r' || char == '\n' {
-				if options[selected].FreeText {
-					pending := string(buf[i+1 : n])
-					answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
-					return selected, false, answer
-				}
-				return selected, false, ""
-			}
-			if char == 3 || char == 4 || char == 27 {
-				return selected, true, ""
-			}
-			for index, option := range options {
-				if strings.ContainsRune(option.Keys, rune(char)) {
-					if option.FreeText {
-						pending := string(buf[i+1 : n]) // bytes already consumed past the keypress
-						answer := readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, pending)
-						return index, false, answer
-					}
-					return index, false, ""
-				}
+		for index, option := range options {
+			if strings.ContainsRune(option.Keys, r) {
+				return selectOption(index)
 			}
 		}
 	}
 }
 
-// readFreeTextAnswer reads one line of user input (echoed inline) and returns it.
-// Enter confirms; Ctrl+C/Ctrl+D/Esc dismisses with an empty answer.
-func readFreeTextAnswer(input io.Reader, output io.Writer, theme style.UITheme, promptStyle, activeStyle style.Style, initial string) string {
+// EOF, cancellation and interrupted input dismiss the editor. Only Enter
+// submits the answer, including when its preceding bytes came from a paste.
+func readFreeTextAnswer(sr *SessionReader, output io.Writer, promptStyle, activeStyle style.Style) (string, bool) {
 	if writer := getScrollBlockReplacer(output); writer != nil {
 		if cursor, ok := writer.(interface{ SetRestoreCursorToPrompt(bool) }); ok {
 			cursor.SetRestoreCursorToPrompt(false)
 			defer cursor.SetRestoreCursorToPrompt(true)
 		}
 	}
-	fmt.Fprint(output, "\r\x1b[K", promptStyle.Render("  type your answer (Enter to confirm): "), "\x1b[?25h")
-
-	answer := []byte{}
-	cleanInitial := strings.TrimLeft(initial, "\r\n")
-	if len(cleanInitial) > 0 {
-		answer = append(answer, []byte(cleanInitial)...)
-		_, _ = output.Write([]byte(cleanInitial))
+	const prefix = "  type your answer (Enter to confirm): "
+	if _, err := fmt.Fprint(output, "\r\x1b[K", promptStyle.Render(prefix), "\x1b[?25h"); err != nil {
+		return "", true
 	}
-	buf := make([]byte, 16)
+	var answer strings.Builder
+	redraw := func() bool {
+		visible := strings.NewReplacer("\n", " ", "\t", " ").Replace(answer.String())
+		_, err := fmt.Fprint(output, "\r\x1b[K", activeStyle.Render(prefix), visible)
+		return err == nil
+	}
 	for {
-		n, err := input.Read(buf)
-		if err != nil || n == 0 {
-			if len(answer) > 0 {
-				return strings.TrimSpace(string(answer))
-			}
-			return ""
+		key, _, err := sr.ReadKeyOrResize(nil)
+		if err != nil {
+			return "", true
 		}
-		for i := 0; i < n; {
-			c := buf[i]
-			switch c {
-			case '\r', '\n':
-				fmt.Fprint(output, "\r\n")
-				if len(answer) == 0 {
-					return ""
-				}
-				return strings.TrimSpace(string(answer))
-			case 3, 4, 27:
-				fmt.Fprint(output, "\r\n")
-				return ""
-			case 127, 8:
-				if len(answer) > 0 {
-					_, size := utf8.DecodeLastRune(answer)
-					if size > 0 {
-						answer = answer[:len(answer)-size]
-					} else {
-						answer = answer[:len(answer)-1]
-					}
-					fmt.Fprint(output, "\r\x1b[K", activeStyle.Render("  type your answer (Enter to confirm): ")+string(answer))
-				}
-				i++
-			default:
-				r, size := utf8.DecodeRune(buf[i:n])
-				if r != utf8.RuneError && r >= 32 {
-					chunk := buf[i : i+size]
-					answer = append(answer, chunk...)
-					_, _ = output.Write(chunk)
-					i += size
-				} else if c >= 32 {
-					answer = append(answer, c)
-					_, _ = output.Write([]byte{c})
-					i++
-				} else {
-					i++
-				}
+		if pasted, err := appendPastedInput(key, &answer, io.Discard); pasted {
+			if err != nil || !redraw() {
+				return "", true
 			}
+			continue
+		}
+		switch string(key) {
+		case "\r", "\n":
+			if _, err := fmt.Fprint(output, "\r\n"); err != nil {
+				return "", true
+			}
+			return strings.TrimSpace(answer.String()), false
+		case "\x03", "\x04", "\x1b":
+			fmt.Fprint(output, "\r\n")
+			return "", true
+		case "\x7f", "\x08":
+			PopRuneFromBuilder(&answer, io.Discard)
+			if !redraw() {
+				return "", true
+			}
+			continue
+		}
+		if len(key) == 0 || key[0] == 27 {
+			continue
+		}
+		r, size := utf8.DecodeRune(key)
+		if unicode.IsControl(r) || (r == utf8.RuneError && size == 1) {
+			continue
+		}
+		if len(key) > maxMenuInputBytes-answer.Len() {
+			return "", true
+		}
+		answer.Write(key)
+		if _, err := output.Write(key); err != nil {
+			return "", true
 		}
 	}
 }
@@ -305,7 +340,9 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	hasActiveReader := activeReader != nil
 	if hasActiveReader {
 		input = activeReader
-		output = w
+		if w != nil {
+			output = w
+		}
 	}
 	notify := onApprovalPromptChange
 	activeReaderMu.Unlock()
@@ -355,13 +392,23 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 		}
 	}
 
+	sr, closeReader := modalSessionReader(input)
+	defer closeReader()
+	checkedOutput := &modalOutput{Writer: output}
+	output = checkedOutput
+	if isTerm {
+		restorePaste := terminal.Default().BeginBracketedPaste(output)
+		defer restorePaste()
+	}
+
 	// A free-text-only question is already an editor, not a choice menu.
 	// Open it immediately so users can type without selecting "Other" first.
 	if len(options) == 1 && options[0].FreeText {
 		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-		fmt.Fprintln(output, promptStyle.Render(prompt))
-		return 0, false, readFreeTextAnswer(input, output, theme, promptStyle, activeStyle, "")
+		fmt.Fprintln(output, promptStyle.Render(menuDisplayText(prompt)))
+		answer, dismissed := readFreeTextAnswer(sr, output, promptStyle, activeStyle)
+		return 0, dismissed, answer
 	}
 
 	// Fallback only if NOT a terminal AND no active reader
@@ -373,28 +420,17 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 			if option.Keys != "" {
 				key = string([]rune(option.Keys)[0])
 			}
-			shortcutLabels = append(shortcutLabels, fmt.Sprintf("%s=%s", key, option.Label))
-		}
-		fmt.Fprint(output, promptStyle.Render(fmt.Sprintf("%s [%s]: ", prompt, strings.Join(shortcutLabels, "/"))))
-		buf := make([]byte, 1)
-		n, err := input.Read(buf)
-		if err != nil || n == 0 {
-			return selected, true, ""
-		}
-		for index, option := range options {
-			if strings.ContainsRune(option.Keys, rune(buf[0])) {
-				if option.FreeText {
-					reader := bufio.NewReader(input)
-					line, _ := reader.ReadString('\n')
-					return index, false, strings.TrimSpace(line)
-				}
-				return index, false, ""
+			label := menuDisplayText(option.Label)
+			if key != "" {
+				label = key + "=" + label
 			}
+			shortcutLabels = append(shortcutLabels, label)
 		}
-		return selected, true, ""
+		fmt.Fprint(output, promptStyle.Render(fmt.Sprintf("%s [%s]: ", menuDisplayText(prompt), strings.Join(shortcutLabels, "/"))))
+		return readChoiceSelection(sr, output, promptStyle, style.NewStyle().Foreground(theme.Highlight).Bold(true), options, selected, nil, false)
 	}
 
-	return runChoiceMenuEx(input, output, theme, prompt, options, selected)
+	return runChoiceMenuEx(sr, output, theme, prompt, options, selected)
 }
 
 func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
@@ -414,6 +450,14 @@ func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
 	} else {
 		return false, false
 	}
+}
+
+// Single-key shortcuts stop at nine; later choices remain reachable by arrows.
+func choiceShortcut(index int) string {
+	if index >= 0 && index < 9 {
+		return fmt.Sprint(index + 1)
+	}
+	return ""
 }
 
 func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error) {
@@ -443,7 +487,7 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 		}
 		menuOptions = append(menuOptions, ChoiceMenuOption{
 			Label: label,
-			Keys:  fmt.Sprintf("%d", len(menuOptions)+1),
+			Keys:  choiceShortcut(len(menuOptions)),
 		})
 	}
 
@@ -452,7 +496,7 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 	}
 	menuOptions = append(menuOptions, ChoiceMenuOption{
 		Label:    freeTextLabel,
-		Keys:     fmt.Sprintf("%d", len(menuOptions)+1),
+		Keys:     choiceShortcut(len(menuOptions)),
 		FreeText: true,
 	})
 

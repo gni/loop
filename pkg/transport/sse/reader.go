@@ -19,6 +19,16 @@ type Event struct {
 type Reader struct {
 	scanner    *bufio.Scanner
 	OnActivity func()
+	remaining  int64
+	limited    bool
+}
+
+// NewLimitedReader bounds one finite response, including comments and metadata.
+// Long-lived event subscriptions should use NewReader instead.
+func NewLimitedReader(input io.Reader, maxBytes int64) *Reader {
+	r := NewReader(input)
+	r.remaining, r.limited = maxBytes, true
+	return r
 }
 
 func NewReader(input io.Reader) *Reader {
@@ -39,6 +49,12 @@ func (r *Reader) Read(ctx context.Context) (Event, error) {
 			r.OnActivity()
 		}
 		line := r.scanner.Text()
+		if r.limited {
+			r.remaining -= int64(len(line) + 1)
+			if r.remaining < 0 {
+				return Event{}, fmt.Errorf("SSE response exceeds byte limit")
+			}
+		}
 		if line == "" {
 			if seen {
 				event.Data = strings.TrimSuffix(data.String(), "\n")

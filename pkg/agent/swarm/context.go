@@ -3,17 +3,26 @@ package swarm
 import (
 	"context"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"loop/pkg/agent/tool"
 	bashtool "loop/pkg/agent/tool/bash"
 	"loop/pkg/domain/limits"
+	domaintool "loop/pkg/domain/tool"
 )
 
 type multiAgentContext struct {
 	tool.AgentContext
 	ma *MultiAgent
+}
+
+func (mac *multiAgentContext) BeginFileMutation(ctx context.Context, path string, data []byte, mode os.FileMode) (func(), error) {
+	if recorder, ok := mac.AgentContext.(domaintool.FileMutationRecorder); ok {
+		return recorder.BeginFileMutation(ctx, path, data, mode)
+	}
+	return func() {}, nil
 }
 
 func (mac *multiAgentContext) DedicatedBashTool() tool.ToolExecutor {
@@ -31,7 +40,7 @@ func (mac *multiAgentContext) GetExecutionEnv() map[string]string {
 	if env == nil {
 		env = make(map[string]string)
 	}
-	if provider, ok := mac.AgentContext.(interface{ GetExecutionEnv() map[string]string }); ok {
+	if provider, ok := mac.AgentContext.(domaintool.ExecutionEnvironment); ok {
 		for key, value := range provider.GetExecutionEnv() {
 			env[key] = value
 		}
@@ -58,9 +67,7 @@ func (mac *multiAgentContext) SpawnTaskWithOptions(ctx context.Context, command 
 	}
 	var id string
 	var err error
-	if spawner, ok := mac.AgentContext.(interface {
-		SpawnTaskWithOptions(context.Context, string, io.Writer, tool.BackgroundTaskOptions) (string, error)
-	}); ok {
+	if spawner, ok := mac.AgentContext.(domaintool.BackgroundTaskSpawner); ok {
 		environment := mac.GetExecutionEnv()
 		for key, value := range options.Environment {
 			environment[key] = value
@@ -76,9 +83,7 @@ func (mac *multiAgentContext) SpawnTaskWithOptions(ctx context.Context, command 
 			}
 			command = "cd -- " + bashtool.ShellQuote(directory) + " && {\n" + command + "\n}"
 		}
-		if spawner, ok := mac.AgentContext.(interface {
-			SpawnTaskContext(context.Context, string, io.Writer) (string, error)
-		}); ok {
+		if spawner, ok := mac.AgentContext.(domaintool.ContextTaskSpawner); ok {
 			id, err = spawner.SpawnTaskContext(ctx, command, w)
 		} else {
 			id, err = mac.AgentContext.SpawnTask(command, w)
@@ -91,27 +96,27 @@ func (mac *multiAgentContext) SpawnTaskWithOptions(ctx context.Context, command 
 }
 
 func (mac *multiAgentContext) IsShellExecutionAllowed() bool {
-	gate, ok := mac.AgentContext.(interface{ IsShellExecutionAllowed() bool })
+	gate, ok := mac.AgentContext.(domaintool.ShellExecutionGate)
 	return ok && gate.IsShellExecutionAllowed()
 }
 
 func (mac *multiAgentContext) IsShellScanDefaultsEnabled() bool {
-	settings, ok := mac.AgentContext.(interface{ IsShellScanDefaultsEnabled() bool })
+	settings, ok := mac.AgentContext.(domaintool.ShellScanSettings)
 	return ok && settings.IsShellScanDefaultsEnabled()
 }
 
 func (mac *multiAgentContext) IsPersistentBashEnabled() bool {
-	settings, ok := mac.AgentContext.(interface{ IsPersistentBashEnabled() bool })
+	settings, ok := mac.AgentContext.(domaintool.PersistentShellSettings)
 	return !ok || settings.IsPersistentBashEnabled()
 }
 
 func (mac *multiAgentContext) IsAtomicWritesEnabled() bool {
-	settings, ok := mac.AgentContext.(interface{ IsAtomicWritesEnabled() bool })
+	settings, ok := mac.AgentContext.(domaintool.AtomicWriteSettings)
 	return !ok || settings.IsAtomicWritesEnabled()
 }
 
 func (mac *multiAgentContext) GetShellTimeout() time.Duration {
-	if settings, ok := mac.AgentContext.(interface{ GetShellTimeout() time.Duration }); ok {
+	if settings, ok := mac.AgentContext.(domaintool.ShellTimeoutSettings); ok {
 		return settings.GetShellTimeout()
 	}
 	return 120 * time.Second
@@ -122,16 +127,14 @@ func (mac *multiAgentContext) GetLimits() limits.Limits {
 }
 
 func (mac *multiAgentContext) GetFullTaskStatus(id string) (string, string, error) {
-	if provider, ok := mac.AgentContext.(interface {
-		GetFullTaskStatus(string) (string, string, error)
-	}); ok {
+	if provider, ok := mac.AgentContext.(domaintool.FullTaskStatusProvider); ok {
 		return provider.GetFullTaskStatus(id)
 	}
 	return mac.AgentContext.GetTaskStatus(id)
 }
 
 func (mac *multiAgentContext) GetTaskOutputVersion(id string) int64 {
-	if provider, ok := mac.AgentContext.(interface{ GetTaskOutputVersion(string) int64 }); ok {
+	if provider, ok := mac.AgentContext.(domaintool.TaskOutputVersionProvider); ok {
 		return provider.GetTaskOutputVersion(id)
 	}
 	return 0
@@ -183,7 +186,7 @@ func (mac *multiAgentContext) CheckMutationAllowed(absPath string, isEdit bool) 
 }
 
 func (mac *multiAgentContext) InvalidateCodeIndex(path string) {
-	if index, ok := mac.AgentContext.(interface{ InvalidateCodeIndex(string) }); ok {
+	if index, ok := mac.AgentContext.(domaintool.CodeIndexInvalidator); ok {
 		index.InvalidateCodeIndex(path)
 	}
 }
@@ -210,7 +213,7 @@ func (mac *multiAgentContext) DiscardSnapshot(absPath string) {
 func (mac *multiAgentContext) GetTodos() []tool.TodoItem { return mac.ma.GetTodos() }
 
 func (mac *multiAgentContext) GetTaskCommand(taskID string) string {
-	if tc, ok := mac.AgentContext.(interface{ GetTaskCommand(string) string }); ok {
+	if tc, ok := mac.AgentContext.(domaintool.TaskCommandProvider); ok {
 		return tc.GetTaskCommand(taskID)
 	}
 	return ""

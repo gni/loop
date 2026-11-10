@@ -9,31 +9,31 @@ import (
 )
 
 type ReplaceEdit struct {
-	OldText                  string `json:"oldText"`
+	OldText                  string `json:"oldText,omitempty"`
 	NewText                  string `json:"newText"`
-	OldTextSnake             string `json:"old_text"`
-	NewTextSnake             string `json:"new_text"`
-	OldString                string `json:"old_string"`
-	NewString                string `json:"new_string"`
-	TargetContent            string `json:"targetContent"`
-	TargetContentSnake       string `json:"target_content"`
-	TargetContentPascal      string `json:"TargetContent"`
-	ReplacementContent       string `json:"replacementContent"`
-	ReplacementContentSnake  string `json:"replacement_content"`
-	ReplacementContentPascal string `json:"ReplacementContent"`
-	Search                   string `json:"search"`
-	Replace                  string `json:"replace"`
-	Old                      string `json:"old"`
-	New                      string `json:"new"`
-	OldStr                   string `json:"old_str"`
-	NewStr                   string `json:"new_str"`
+	OldTextSnake             string `json:"old_text,omitempty"`
+	NewTextSnake             string `json:"new_text,omitempty"`
+	OldString                string `json:"old_string,omitempty"`
+	NewString                string `json:"new_string,omitempty"`
+	TargetContent            string `json:"targetContent,omitempty"`
+	TargetContentSnake       string `json:"target_content,omitempty"`
+	TargetContentPascal      string `json:"TargetContent,omitempty"`
+	ReplacementContent       string `json:"replacementContent,omitempty"`
+	ReplacementContentSnake  string `json:"replacement_content,omitempty"`
+	ReplacementContentPascal string `json:"ReplacementContent,omitempty"`
+	Search                   string `json:"search,omitempty"`
+	Replace                  string `json:"replace,omitempty"`
+	Old                      string `json:"old,omitempty"`
+	New                      string `json:"new,omitempty"`
+	OldStr                   string `json:"old_str,omitempty"`
+	NewStr                   string `json:"new_str,omitempty"`
 	Instruction              string `json:"instruction,omitempty"`
 	Instructions             string `json:"instructions,omitempty"`
 	Description              string `json:"description,omitempty"`
-	Path                     string `json:"path"`
-	File                     string `json:"file"`
-	FilePath                 string `json:"file_path"`
-	TargetFile               string `json:"target_file"`
+	Path                     string `json:"path,omitempty"`
+	File                     string `json:"file,omitempty"`
+	FilePath                 string `json:"file_path,omitempty"`
+	TargetFile               string `json:"target_file,omitempty"`
 }
 
 func (e ReplaceEdit) EffectiveOldText() string {
@@ -50,37 +50,6 @@ func (e ReplaceEdit) EffectiveNewText() string {
 		e.ReplacementContent, e.ReplacementContentSnake, e.ReplacementContentPascal,
 		e.Replace, e.New, e.NewStr,
 	)
-}
-
-// ApplyEditsPreview simulates applying a sequence of ReplaceEdits using the same
-// non-overlapping batch and fuzzy line matching logic as the edit tool.
-func ApplyEditsPreview(oldContent string, edits []ReplaceEdit) (string, bool) {
-	if len(edits) == 0 {
-		return oldContent, false
-	}
-	normalized := make([]ReplaceEdit, len(edits))
-	for i, e := range edits {
-		normalized[i] = ReplaceEdit{
-			OldText: strings.ReplaceAll(e.EffectiveOldText(), "\r\n", "\n"),
-			NewText: strings.ReplaceAll(e.EffectiveNewText(), "\r\n", "\n"),
-		}
-	}
-	if batchContent, ok := tryApplyNonOverlappingBatch(oldContent, normalized); ok {
-		return batchContent, batchContent != oldContent
-	}
-
-	previewContent := oldContent
-	for _, e := range normalized {
-		if e.OldText == "" {
-			continue
-		}
-		if m, err := locateEditMatch(previewContent, e.OldText, e.NewText); err == nil && m != nil {
-			previewContent = previewContent[:m.startByte] + m.newText + previewContent[m.endByte:]
-		} else if strings.Contains(previewContent, e.OldText) {
-			previewContent = strings.Replace(previewContent, e.OldText, e.NewText, 1)
-		}
-	}
-	return previewContent, previewContent != oldContent
 }
 
 var (
@@ -232,77 +201,20 @@ func findPathInGenericMap(m map[string]interface{}) string {
 	return ""
 }
 
-func extractEditFromMap(m map[string]interface{}) (ReplaceEdit, bool) {
-	oldT := findStringInMap(m, oldTextKeys...)
-	newT := findStringInMap(m, newTextKeys...)
-	if oldT != "" {
-		return ReplaceEdit{OldText: oldT, NewText: newT}, true
-	}
-	return ReplaceEdit{}, false
-}
-
-func extractEditsFromGenericMap(m map[string]interface{}) []ReplaceEdit {
-	var results []ReplaceEdit
-	for _, lk := range editListKeys {
-		switch val := m[lk].(type) {
-		case []interface{}:
-			for _, item := range val {
-				if itemMap, ok := item.(map[string]interface{}); ok {
-					if edit, ok := extractEditFromMap(itemMap); ok {
-						results = append(results, edit)
-					}
-				}
-			}
-		case map[string]interface{}:
-			if edit, ok := extractEditFromMap(val); ok {
-				results = append(results, edit)
-			}
-		}
-	}
-	if len(results) > 0 {
-		return results
-	}
-
-	for _, w := range wrapperKeys {
-		if subMap, ok := m[w].(map[string]interface{}); ok {
-			if subEdits := extractEditsFromGenericMap(subMap); len(subEdits) > 0 {
-				return subEdits
-			}
-		}
-	}
-
-	if edit, ok := extractEditFromMap(m); ok {
-		return []ReplaceEdit{edit}
-	}
-	return nil
-}
-
+// ExtractEdits retains the legacy helper while using strict request parsing.
 func ExtractEdits(rawJSON string, candidateEdits ...[]ReplaceEdit) []ReplaceEdit {
-	var merged []ReplaceEdit
+	if strings.TrimSpace(rawJSON) != "" {
+		_, edits, err := ParseEditArguments(rawJSON)
+		if err != nil {
+			return nil
+		}
+		return edits
+	}
+	var edits []ReplaceEdit
 	for _, group := range candidateEdits {
-		for _, e := range group {
-			if old := e.EffectiveOldText(); old != "" {
-				merged = append(merged, ReplaceEdit{OldText: old, NewText: e.EffectiveNewText()})
-			}
-		}
+		edits = append(edits, group...)
 	}
-	if len(merged) > 0 {
-		return merged
-	}
-
-	genericMap, genericSlice := parseGenericJSON(strings.TrimSpace(rawJSON))
-	if len(genericSlice) > 0 {
-		for _, item := range genericSlice {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				merged = append(merged, extractEditsFromGenericMap(itemMap)...)
-			}
-		}
-		return merged
-	}
-	if genericMap != nil {
-		return extractEditsFromGenericMap(genericMap)
-	}
-	return nil
+	return edits
 }
 
 func ExtractFileContent(rawJSON string, candidateContents ...string) (string, bool) {
@@ -331,15 +243,6 @@ func findContentInGenericMap(m map[string]interface{}) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func findStringInMap(m map[string]interface{}, keys ...string) string {
-	for _, k := range keys {
-		if s, ok := m[k].(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func findTrimmedStringInMap(m map[string]interface{}, keys ...string) string {

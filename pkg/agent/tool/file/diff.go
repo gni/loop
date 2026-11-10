@@ -1,9 +1,12 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"loop/pkg/domain/limits"
 )
 
 type diffOp int
@@ -19,24 +22,34 @@ type diffPart struct {
 	lines []string
 }
 
-func computeMyersDiff(a, b []string) []diffPart {
+func computeMyersDiff(ctx context.Context, a, b []string) ([]diffPart, error) {
 	if len(a) == 0 && len(b) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(a) == 0 {
-		return []diffPart{{op: diffInsert, lines: b}}
+		return []diffPart{{op: diffInsert, lines: b}}, nil
 	}
 	if len(b) == 0 {
-		return []diffPart{{op: diffDelete, lines: a}}
+		return []diffPart{{op: diffDelete, lines: a}}, nil
 	}
 
 	prefixLen := 0
 	for prefixLen < len(a) && prefixLen < len(b) && a[prefixLen] == b[prefixLen] {
+		if prefixLen%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		prefixLen++
 	}
 
 	suffixLen := 0
 	for suffixLen < len(a)-prefixLen && suffixLen < len(b)-prefixLen && a[len(a)-1-suffixLen] == b[len(b)-1-suffixLen] {
+		if suffixLen%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		suffixLen++
 	}
 
@@ -66,6 +79,14 @@ func computeMyersDiff(a, b []string) []diffPart {
 
 		dFound := -1
 		for d := 0; d <= maxD; d++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			// Cap the trace at about 8 MiB on a 64-bit build. Large rewrites
+			// fall back to a bounded display of the replaced region.
+			if (d+1)*len(v) > 1<<20 {
+				break
+			}
 			vCopy := make([]int, len(v))
 			copy(vCopy, v)
 			trace = append(trace, vCopy)
@@ -100,7 +121,7 @@ func computeMyersDiff(a, b []string) []diffPart {
 			var revParts []diffPart
 			addRevLine := func(op diffOp, line string) {
 				if len(revParts) > 0 && revParts[len(revParts)-1].op == op {
-					revParts[len(revParts)-1].lines = append([]string{line}, revParts[len(revParts)-1].lines...)
+					revParts[len(revParts)-1].lines = append(revParts[len(revParts)-1].lines, line)
 				} else {
 					revParts = append(revParts, diffPart{op: op, lines: []string{line}})
 				}
@@ -138,6 +159,10 @@ func computeMyersDiff(a, b []string) []diffPart {
 			}
 
 			for i := len(revParts) - 1; i >= 0; i-- {
+				lines := revParts[i].lines
+				for l, r := 0, len(lines)-1; l < r; l, r = l+1, r-1 {
+					lines[l], lines[r] = lines[r], lines[l]
+				}
 				parts = append(parts, revParts[i])
 			}
 		}
@@ -153,99 +178,149 @@ func computeMyersDiff(a, b []string) []diffPart {
 			continue
 		}
 		if len(merged) > 0 && merged[len(merged)-1].op == p.op {
-			merged[len(merged)-1].lines = append(merged[len(merged)-1].lines, p.lines...)
+			merged[len(merged)-1].lines = append(append([]string(nil), merged[len(merged)-1].lines...), p.lines...)
 		} else {
 			merged = append(merged, p)
 		}
 	}
-	return merged
+	return merged, nil
 }
 
+// GenerateDisplayDiff is the synchronous convenience wrapper.
 func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string {
-	oldLines := strings.Split(oldContent, "\n")
-	newLines := strings.Split(newContent, "\n")
-	parts := computeMyersDiff(oldLines, newLines)
-	if len(parts) == 0 {
-		return ""
-	}
+	diff, _ := GenerateDisplayDiffContext(context.Background(), oldContent, newContent, contextLines)
+	return diff
+}
 
-	maxLineNum := len(oldLines)
-	if len(newLines) > maxLineNum {
-		maxLineNum = len(newLines)
+func diffLines(content string, limit int) []string {
+	if content == "" {
+		return nil
 	}
-	width := len(strconv.Itoa(maxLineNum))
-	if width < 4 {
-		width = 4
+	lines := strings.SplitAfterN(content, "\n", limit+1)
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
+	return lines
+}
 
+// GenerateDisplayDiffContext bounds computation and terminal output separately.
+// A truncated display never changes the full replacement applied to the file.
+func GenerateDisplayDiffContext(ctx context.Context, oldContent, newContent string, contextLines int) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if oldContent == newContent {
+		return "", nil
+	}
+	contextLines = max(0, min(contextLines, 100))
+	const maxInputLines = 100000
+	oldLines := diffLines(oldContent, maxInputLines)
+	newLines := diffLines(newContent, maxInputLines)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(oldLines) > maxInputLines || len(newLines) > maxInputLines {
+		return "Diff exceeds display limits.\n", nil
+	}
+	parts, err := computeMyersDiff(ctx, oldLines, newLines)
+	if err != nil {
+		return "", err
+	}
+	width := max(4, len(strconv.Itoa(max(len(oldLines), len(newLines)))))
+	const notice = "Diff display truncated.\n"
 	var sb strings.Builder
-	oldLineNum := 1
-	newLineNum := 1
-	lastWasChange := false
-
-	writeEqual := func(lines []string) {
-		for _, line := range lines {
-			sb.WriteString(fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line))
+	rows, oldLineNum, newLineNum := 0, 1, 1
+	truncated := false
+	writeLine := func(op diffOp, line string) bool {
+		hasNewline := strings.HasSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\n")
+		if len(line) > limits.DefaultReadLineLength {
+			line = UTF8SafePrefix(line, limits.DefaultReadLineLength) + "..."
+			truncated = true
+		}
+		var text string
+		switch op {
+		case diffInsert:
+			text = fmt.Sprintf("\x1b[32m%-*d + %s\x1b[0m\n", width, newLineNum, line)
+			newLineNum++
+		case diffDelete:
+			text = fmt.Sprintf("\x1b[31m%-*d - %s\x1b[0m\n", width, oldLineNum, line)
+			oldLineNum++
+		default:
+			text = fmt.Sprintf("%-*d   %s\n", width, oldLineNum, line)
 			oldLineNum++
 			newLineNum++
 		}
-	}
-	skipEqual := func(count int) {
-		if count > 0 {
-			sb.WriteString(fmt.Sprintf("%-*s   ...\n", width, ""))
-			oldLineNum += count
-			newLineNum += count
+		lineCount := 1
+		if op != diffEqual && !hasNewline {
+			text += "\\ No newline at end of file\n"
+			lineCount++
 		}
+		if rows+lineCount > limits.DefaultToolOutputLines-1 || sb.Len()+len(text)+len(notice) > limits.DefaultToolOutputBytes {
+			truncated = true
+			return false
+		}
+		sb.WriteString(text)
+		rows += lineCount
+		return true
 	}
-
+	skipEqual := func(count int) bool {
+		oldLineNum += count
+		newLineNum += count
+		if count == 0 {
+			return true
+		}
+		text := fmt.Sprintf("%-*s   ...\n", width, "")
+		if rows >= limits.DefaultToolOutputLines-1 || sb.Len()+len(text)+len(notice) > limits.DefaultToolOutputBytes {
+			truncated = true
+			return false
+		}
+		sb.WriteString(text)
+		rows++
+		return true
+	}
+display:
 	for i, part := range parts {
-		if part.op == diffInsert || part.op == diffDelete {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if part.op != diffEqual {
 			for _, line := range part.lines {
-				if part.op == diffInsert {
-					sb.WriteString(fmt.Sprintf("\x1b[32m%-*d + %s\x1b[0m\n", width, newLineNum, line))
-					newLineNum++
-				} else {
-					sb.WriteString(fmt.Sprintf("\x1b[31m%-*d - %s\x1b[0m\n", width, oldLineNum, line))
-					oldLineNum++
+				if err := ctx.Err(); err != nil {
+					return "", err
+				}
+				if !writeLine(part.op, line) {
+					break display
 				}
 			}
-			lastWasChange = true
 			continue
 		}
-
-		raw := part.lines
-		hasLeadingChange := lastWasChange
-		hasTrailingChange := i < len(parts)-1 && (parts[i+1].op == diffInsert || parts[i+1].op == diffDelete)
-
-		switch {
-		case hasLeadingChange && hasTrailingChange:
-			if len(raw) <= contextLines*2 {
-				writeEqual(raw)
-			} else {
-				writeEqual(raw[:contextLines])
-				skipEqual(len(raw) - contextLines*2)
-				writeEqual(raw[len(raw)-contextLines:])
-			}
-		case hasLeadingChange:
-			shown := raw
-			if len(shown) > contextLines {
-				shown = raw[:contextLines]
-			}
-			writeEqual(shown)
-			skipEqual(len(raw) - len(shown))
-		case hasTrailingChange:
-			skipped := len(raw) - contextLines
-			if skipped < 0 {
-				skipped = 0
-			}
-			skipEqual(skipped)
-			writeEqual(raw[skipped:])
-		default:
-			oldLineNum += len(raw)
-			newLineNum += len(raw)
+		before, after := 0, 0
+		if i > 0 {
+			before = min(contextLines, len(part.lines))
 		}
-		lastWasChange = false
+		if i < len(parts)-1 {
+			after = min(contextLines, len(part.lines)-before)
+		}
+		for _, line := range part.lines[:before] {
+			if !writeLine(diffEqual, line) {
+				break display
+			}
+		}
+		if !skipEqual(len(part.lines) - before - after) {
+			break display
+		}
+		for _, line := range part.lines[len(part.lines)-after:] {
+			if !writeLine(diffEqual, line) {
+				break display
+			}
+		}
 	}
-
-	return sb.String()
+	if truncated {
+		sb.WriteString(notice)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return sb.String(), nil
 }
