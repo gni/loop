@@ -99,10 +99,19 @@ func LoadConfigContext(ctx context.Context, path string) (*Config, error) {
 		path = DefaultConfigPath()
 	}
 	cfg, _, err := loadConfigWithRaw(ctx, path)
-	return cfg, err
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func loadConfigWithRaw(ctx context.Context, path string) (*Config, []byte, error) {
+	if !validConfigMainName(filepath.Base(path)) {
+		return nil, nil, fmt.Errorf("global config path conflicts with reserved file %s", filepath.Base(path))
+	}
 	snapshot, err := readConfigSnapshot(ctx, path)
 	if err != nil {
 		return nil, nil, err
@@ -249,7 +258,7 @@ func saveConfig(ctx context.Context, path string, cfg *Config, createOnly bool) 
 	if path == "" {
 		path = DefaultConfigPath()
 	}
-	if cfg.ProjectPath != "" && filepath.Clean(path) == filepath.Clean(cfg.ProjectPath) {
+	if cfg.ProjectPath != "" && sameConfigPath(path, cfg.ProjectPath) {
 		return saveProjectConfig(ctx, cfg)
 	}
 	base := filepath.Base(path)

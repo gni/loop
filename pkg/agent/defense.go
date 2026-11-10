@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"loop/pkg/agent/tool"
@@ -17,6 +16,10 @@ func FormatDefensiveError(toolName string, err error) string {
 	if toolName == "todo" {
 		return errStr
 	}
+	if strings.HasPrefix(toolName, "mcp__") || toolName == "read_mcp_resource" ||
+		toolName == "list_mcp_resources" || toolName == "list_mcp_resource_templates" {
+		return fmt.Sprintf("error [%s]: %s", toolName, errStr)
+	}
 
 	if strings.Contains(lowerErr, "loop detected") || strings.Contains(lowerErr, "agent halted") {
 		return fmt.Sprintf("error: %s (Action required: Backtrack and explore an alternative approach or different strategy instead of repeating this action.)", errStr)
@@ -28,12 +31,12 @@ func FormatDefensiveError(toolName string, err error) string {
 	} else if (strings.Contains(lowerErr, "oldtext") && strings.Contains(lowerErr, "not found")) ||
 		strings.Contains(lowerErr, "targetcontent not found") {
 		detail = RuntimeMessage("suggestion_old_text_miss", "The file exists, but oldText does not match its current contents. Read the file again, copy a small unique block exactly as it exists now, and retry without reusing an earlier snapshot. Do not recover by overwriting the existing file with write.")
-	} else if (strings.Contains(lowerErr, "task") && (strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task"))) ||
-		toolName == "get_task_status" || toolName == "stop_task" {
+	} else if (toolName == "get_task_status" || toolName == "stop_task") &&
+		(strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no task")) {
 		detail = RuntimeMessage("suggestion_task_not_found", "The background task ID was not found. Check background tasks list or events to inspect valid task IDs. Do not search the filesystem for task IDs.")
 	} else if strings.Contains(lowerErr, "not found") || strings.Contains(lowerErr, "no such file") {
 		detail = RuntimeMessage("suggestion_path_not_found", "Inspect your immediate working directory structure using 'find_files' or 'list_directory' or check the file path. Ensure the file actually exists before calling this tool.")
-	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "security violation") {
+	} else if strings.Contains(lowerErr, "escapes workspace") || strings.Contains(lowerErr, "outside workspace root") {
 		detail = RuntimeMessage("suggestion_workspace", "Verify that the path is relative or inside the current workspace. Escaping the workspace is blocked.")
 	} else if strings.Contains(lowerErr, "command failed") || strings.Contains(lowerErr, "exit status") {
 		detail = RuntimeMessage("suggestion_command", "Review the command syntax and arguments. If attempting to read, write, edit, or search files, use internal tools ('read', 'write', 'edit', 'grep', 'find_files', 'list_directory') instead of shell commands.")
@@ -91,19 +94,4 @@ func FormatToolExecutionFailure(toolName, output string, err error, hints ...*di
 		return alert
 	}
 	return diagnostic + "\n\n" + alert
-}
-
-var llmControlTokenRegexes = []*regexp.Regexp{
-	regexp.MustCompile(`</?atem:[^>\n<]*>?`),
-	regexp.MustCompile(`</?atem:[^<\n]*`),
-	regexp.MustCompile(`<\|(?:eom|im_start|im_end|start|message|endoftext|assistant|user|system)[^>|]*\|?>`),
-	regexp.MustCompile(`<\|[^>\n|]+\|>`),
-}
-
-// SanitizeLLMControlTokens removes leaked provider control tokens and ChatML tags from text.
-func SanitizeLLMControlTokens(s string) string {
-	for _, re := range llmControlTokenRegexes {
-		s = re.ReplaceAllString(s, "")
-	}
-	return s
 }

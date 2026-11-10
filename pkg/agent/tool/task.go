@@ -4,28 +4,38 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool/file"
 	domaintool "loop/pkg/domain/tool"
-	"strings"
 )
 
-func scalarToString(v interface{}) string {
-	if v == nil {
-		return ""
-	}
-	switch val := v.(type) {
+var errTaskIDMissing = errors.New("missing required argument: task_id")
+
+func taskIDString(v any) (string, error) {
+	switch value := v.(type) {
+	case nil:
+		return "", nil
 	case string:
-		return strings.TrimSpace(val)
+		return strings.TrimSpace(value), nil
 	case float64:
-		return fmt.Sprintf("%.0f", val)
+		number, err := domaintool.IntegerArgument("task_id", value)
+		if err != nil {
+			return "", err
+		}
+		return strconv.Itoa(number), nil
 	case int:
-		return fmt.Sprintf("%d", val)
+		if value >= 0 {
+			return strconv.Itoa(value), nil
+		}
 	case int64:
-		return fmt.Sprintf("%d", val)
-	default:
-		return fmt.Sprintf("%v", val)
+		if value >= 0 {
+			return strconv.FormatInt(value, 10), nil
+		}
 	}
+	return "", fmt.Errorf("task_id must be a string or a nonnegative integer")
 }
 
 func parseTaskID(arguments string) (string, error) {
@@ -39,15 +49,22 @@ func parseTaskID(arguments string) (string, error) {
 	if err := ParseToolArguments(arguments, &args, func(s string) { raw = s }); err != nil {
 		return "", err
 	}
-	id := FirstNonEmpty(
-		strings.TrimSpace(raw),
-		scalarToString(args.TaskID),
-		scalarToString(args.TaskIDAlt),
-		scalarToString(args.ID),
-		scalarToString(args.Task),
-	)
+	var id string
+	for _, value := range []any{raw, args.TaskID, args.TaskIDAlt, args.ID, args.Task} {
+		candidate, err := taskIDString(value)
+		if err != nil {
+			return "", err
+		}
+		if candidate == "" {
+			continue
+		}
+		if id != "" && candidate != id {
+			return "", fmt.Errorf("conflicting task IDs")
+		}
+		id = candidate
+	}
 	if id == "" {
-		return "", fmt.Errorf("missing required argument: task_id")
+		return "", errTaskIDMissing
 	}
 	return id, nil
 }
@@ -55,7 +72,10 @@ func parseTaskID(arguments string) (string, error) {
 func resolveTaskIDArg(ctx AgentContext, arguments, missingKey, missingFallback string) (string, error) {
 	taskID, err := parseTaskID(arguments)
 	if err != nil {
-		return "", errors.New(RuntimeMessage(missingKey, missingFallback))
+		if errors.Is(err, errTaskIDMissing) {
+			return "", errors.New(RuntimeMessage(missingKey, missingFallback))
+		}
+		return "", err
 	}
 	if r, ok := ctx.(interface{ ResolveTaskID(string) string }); ok {
 		taskID = r.ResolveTaskID(taskID)

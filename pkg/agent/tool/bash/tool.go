@@ -2,15 +2,11 @@ package bash
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
 	"os"
-	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	"loop/pkg/domain/evidence"
@@ -20,13 +16,13 @@ import (
 )
 
 type bashTool struct {
-	mu         sync.Mutex
+	gate       chan struct{}
 	currentDir string
 }
 
 // NewBashTool creates a new bash command executor.
 func NewBashTool() domaintool.ToolExecutor {
-	return &bashTool{}
+	return &bashTool{gate: make(chan struct{}, 1)}
 }
 
 func (t *bashTool) Name() string { return "bash" }
@@ -47,7 +43,7 @@ func (t *bashTool) PromptGuidelines() []string {
 func (t *bashTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"bash",
-		domaintool.FormatToolDescription("bash", "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands. Captured stdout and stderr are bounded to 8 MiB each. Returned output is pruned to 25 head and 25 tail lines or 8192 bytes, with retained output spilled to .loop/spill/."),
+		domaintool.FormatToolDescription("bash", "Execute shell commands inside the workspace (builds, tests, package installation, git commands, and process management). Working directory persists across commands. Captured stdout and stderr are bounded to 8 MiB each. Long output is shortened to fit the configured budget. Use read on the saved output path when shown."),
 		map[string]domaintool.SchemaProp{
 			"command":    domaintool.StringProp(domaintool.FormatParamDescription("bash", "command", "The command to run in the terminal")),
 			"dir":        domaintool.StringProp(domaintool.FormatParamDescription("bash", "dir", "Optional working directory in which to execute the command. Persists across commands for this session.")),
@@ -111,8 +107,12 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 
 	args.Dir = domaintool.FirstNonEmpty(args.Dir, args.Cwd)
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	select {
+	case t.gate <- struct{}{}:
+		defer func() { <-t.gate }()
+	case <-ctx.Context().Done():
+		return "", fmt.Errorf("command cancelled before execution: %w", ctx.Context().Err())
+	}
 	if err := ctx.Context().Err(); err != nil {
 		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
@@ -184,12 +184,16 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), timeout)
 	defer cancel()
 
-	var markerBytes [16]byte
-	if _, err := rand.Read(markerBytes[:]); err != nil {
-		return "", fmt.Errorf("cannot generate command boundary: %w", err)
+	wrappedCmd := args.Command
+	var directory *directoryCapture
+	if persistentBash {
+		var err error
+		wrappedCmd, directory, err = captureDirectory(args.Command)
+		if err != nil {
+			return "", err
+		}
+		defer directory.Close()
 	}
-	pwdMarker := "__LOOP_PWD_" + hex.EncodeToString(markerBytes[:]) + ":"
-	wrappedCmd := fmt.Sprintf("__loop_exit() {\n  __loop_ret=$?\n  printf '\\n%%s%%s\\n' %s \"$(pwd -P)\"\n  exit $__loop_ret\n}\ntrap __loop_exit EXIT\n%s", ShellQuote(pwdMarker), args.Command)
 	if settings, ok := ctx.(domaintool.ShellScanSettings); ok && settings.IsShellScanDefaultsEnabled() {
 		wrappedCmd = WithScanDefaults(wrappedCmd, workspaceRoot)
 	}
@@ -201,43 +205,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		}
 	}
 
-	stdoutReader, stdoutWriter, err := os.Pipe()
-	if err != nil {
-		return "", fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderrReader, stderrWriter, err := os.Pipe()
-	if err != nil {
-		_ = stdoutReader.Close()
-		_ = stdoutWriter.Close()
-		return "", fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-	cmd.Stdout = stdoutWriter
-	cmd.Stderr = stderrWriter
-
-	if err := timeoutCtx.Err(); err != nil {
-		_ = stdoutReader.Close()
-		_ = stdoutWriter.Close()
-		_ = stderrReader.Close()
-		_ = stderrWriter.Close()
-		return "", fmt.Errorf("command cancelled before execution: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		_ = stdoutReader.Close()
-		_ = stdoutWriter.Close()
-		_ = stderrReader.Close()
-		_ = stderrWriter.Close()
-		return "", fmt.Errorf("failed to start command: %w", err)
-	}
-	if persistentBash {
-		t.currentDir = workDir
-	}
-	observed.Outcome = evidence.Unknown
-	_ = stdoutWriter.Close()
-	_ = stderrWriter.Close()
-
-	pgid := cmd.Process.Pid
-
+	cmd.WaitDelay = 100 * time.Millisecond
 	stdout := &process.Buffer{Limit: 8 << 20}
 	stderr := &process.Buffer{Limit: 8 << 20}
 	outWriter := io.Writer(stdout)
@@ -245,85 +213,42 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	live := newLiveShellOutput(ctx)
 	var finishStdout func()
 	if live != nil {
-		liveOut, liveErr, finish := live.Streams(pwdMarker)
+		liveOut, liveErr, finish := live.Streams()
 		outWriter = io.MultiWriter(stdout, bestEffortLiveWriter{liveOut})
 		errWriter = io.MultiWriter(stderr, bestEffortLiveWriter{liveErr})
 		finishStdout = finish
 	}
-	outDone := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(outWriter, stdoutReader)
-		close(outDone)
-	}()
-	errDone := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(errWriter, stderrReader)
-		close(errDone)
-	}()
-
-	type waitResult struct {
-		ps  *os.ProcessState
-		err error
+	if err := timeoutCtx.Err(); err != nil {
+		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
-	done := make(chan waitResult, 1)
-	go func() {
-		ps, waitErr := cmd.Process.Wait()
-		done <- waitResult{ps: ps, err: waitErr}
-	}()
-
+	wait, err := process.StartCapture(cmd, outWriter, errWriter)
+	if err != nil {
+		return "", fmt.Errorf("failed to start command: %w", err)
+	}
+	if persistentBash {
+		t.currentDir = workDir
+	}
+	observed.Outcome = evidence.Unknown
+	done := make(chan error, 1)
+	go func() { done <- wait() }()
 	select {
 	case <-timeoutCtx.Done():
-		killProcessGroup(pgid)
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = stdoutReader.Close()
-		_ = stderrReader.Close()
-
-		select {
-		case <-done:
-		case <-time.After(500 * time.Millisecond):
-		}
-
-		if timeoutCtx.Err() == context.DeadlineExceeded {
-			err = fmt.Errorf("command timed out after %d seconds. If this is a server or long-running process, use 'background: true'", max(1, int(timeout.Seconds())))
-		} else {
-			err = fmt.Errorf("command cancelled by user")
-		}
-
-	case res := <-done:
-		if res.ps != nil {
-			if code := res.ps.ExitCode(); code >= 0 {
+		_ = process.KillProcessGroup(cmd)
+		err = <-done
+	case err = <-done:
+		if cmd.ProcessState != nil {
+			if code := cmd.ProcessState.ExitCode(); code >= 0 {
 				observed.ExitCode = &code
 			}
 			observed.Outcome = evidence.Succeeded
-			if !res.ps.Success() {
+			if err != nil || !cmd.ProcessState.Success() {
 				observed.Outcome = evidence.Failed
 			}
 		}
-		killProcessGroup(pgid)
-		select {
-		case <-outDone:
-		case <-time.After(50 * time.Millisecond):
-			_ = stdoutReader.Close()
-		}
-		select {
-		case <-errDone:
-		case <-time.After(50 * time.Millisecond):
-			_ = stderrReader.Close()
-		}
-
-		if res.err != nil {
-			err = res.err
-		} else if res.ps != nil && !res.ps.Success() {
-			err = &exec.ExitError{ProcessState: res.ps}
-		}
 	}
-
-	<-outDone
-	<-errDone
-	_ = stdoutReader.Close()
-	_ = stderrReader.Close()
+	if timeoutCtx.Err() != nil {
+		err = timeoutCtx.Err()
+	}
 	if finishStdout != nil {
 		finishStdout()
 		live.Finish()
@@ -342,37 +267,10 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		errOutput += "\n[stderr capture limit reached at 8 MiB; later bytes discarded]\n"
 	}
 
-	markerIdx := strings.LastIndex(output, "\n"+pwdMarker)
-	isPrefixed := false
-	if markerIdx == -1 && strings.HasPrefix(output, pwdMarker) {
-		markerIdx = 0
-		isPrefixed = true
-	}
-	if markerIdx != -1 {
-		markerStart := markerIdx + 1
-		if isPrefixed {
-			markerStart = 0
-		}
-		lineEnd := strings.IndexByte(output[markerStart:], '\n')
-		var extractedDir string
-		if lineEnd == -1 {
-			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker):])
-			if isPrefixed {
-				output = ""
-			} else {
-				output = output[:markerIdx]
-			}
-		} else {
-			extractedDir = strings.TrimSpace(output[markerStart+len(pwdMarker) : markerStart+lineEnd])
-			if isPrefixed {
-				output = output[markerStart+lineEnd+1:]
-			} else {
-				output = output[:markerIdx] + output[markerStart+lineEnd+1:]
-			}
-		}
-		if err == nil && extractedDir != "" && persistentBash {
-			if safe, sErr := ctx.SafePath(extractedDir); sErr == nil {
-				if info, statErr := os.Stat(safe); statErr == nil && info.IsDir() {
+	if directory != nil && timeoutCtx.Err() == nil {
+		if extractedDir := directory.Read(ctx.Context()); extractedDir != "" {
+			if safe, err := ctx.SafePath(extractedDir); err == nil {
+				if info, err := os.Stat(safe); err == nil && info.IsDir() {
 					t.currentDir = safe
 				}
 			}

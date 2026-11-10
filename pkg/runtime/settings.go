@@ -36,37 +36,58 @@ func restoreSettingsContext(ctx context.Context, store session.ContextStore, id 
 }
 
 func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
-	path := session.LeafPath(entries, "")
+	todos, _, err := restoreSettingsFromPath(session.LeafPath(entries, ""), cfg, tools, keepSelection)
+	return todos, err
+}
+
+func restoreSettingsFromPath(path []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, bool, error) {
 	todos, err := restorePlan(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	restoreTools := *tools == nil
+	var latest savedSettings
+	var provider, model string
+	found := false
 	for _, entry := range path {
 		if entry.Type != "settings" {
 			continue
 		}
 		var saved savedSettings
 		if err := json.Unmarshal(entry.Data, &saved); err != nil {
-			return nil, fmt.Errorf("session settings: %w", err)
+			return nil, false, fmt.Errorf("session settings: %w", err)
 		}
-		if !keepSelection {
-			if saved.Provider != "" {
-				if err := cfg.ActivateProvider(saved.Provider); err != nil {
-					return nil, err
-				}
+		found, latest = true, saved
+		// Older records may supply only one part of the provider selection.
+		// Resolve those fields without activating profiles that were replaced.
+		if saved.Provider != "" {
+			provider = saved.Provider
+			if defaultModel := cfg.Providers[provider].Model; defaultModel != "" {
+				model = defaultModel
 			}
-			if saved.Model != "" {
-				cfg.Model = saved.Model
-			}
-			cfg.ReasoningEffort = saved.Reasoning
-			cfg.DisabledTools = saved.DisabledTools
 		}
-		if restoreTools {
-			*tools = saved.Tools
+		if saved.Model != "" {
+			model = saved.Model
 		}
 	}
-	return todos, nil
+	if !found {
+		return todos, false, nil
+	}
+	if !keepSelection {
+		if provider != "" {
+			if err := cfg.ActivateProvider(provider); err != nil {
+				return nil, false, err
+			}
+		}
+		if model != "" {
+			cfg.Model = model
+		}
+		cfg.ReasoningEffort = latest.Reasoning
+		cfg.DisabledTools = latest.DisabledTools
+	}
+	if *tools == nil {
+		*tools = latest.Tools
+	}
+	return todos, true, nil
 }
 
 func (s *Session) persistSettings() error { return s.persistSettingsFor(s.ID) }

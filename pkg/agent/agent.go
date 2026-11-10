@@ -32,6 +32,7 @@ type Agent struct {
 	TransformContext    func(context.Context, []db.Message) ([]db.Message, error)
 	RunSession          func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
 	SyncSessionState    func([]db.Message, []string, string, bool) error
+	SelectSessionBranch func(context.Context, string) ([]db.Message, error)
 	SessionMessages     func() []db.Message
 	MessagesMu          sync.RWMutex
 	Ephemeral           bool
@@ -69,16 +70,17 @@ type Agent struct {
 	// has been rendered. It may request a safe redraw of the active turn.
 	OnStreamProgress func() bool
 
-	stateMu           sync.Mutex
-	activeSessionID   string
-	sessionGeneration uint64
-	sessionName       string
-	sessionNameKnown  bool
-	sessionNameDirty  bool
-	liveToolWriter    io.Writer
-	currentWriter     io.Writer
-	currentContext    context.Context
-	currentTheme      style.UITheme
+	stateMu            sync.Mutex
+	activeSessionID    string
+	sessionGeneration  uint64
+	sessionAutoApprove bool
+	sessionName        string
+	sessionNameKnown   bool
+	sessionNameDirty   bool
+	liveToolWriter     io.Writer
+	currentWriter      io.Writer
+	currentContext     context.Context
+	currentTheme       style.UITheme
 
 	lastToolOutput         string
 	lastToolIsError        bool
@@ -350,18 +352,27 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 	if a.Config != nil && a.Config.AskUserMode == "disabled" {
 		return "", fmt.Errorf("ask_user tool is disabled by configuration")
 	}
+	if a.Inquirer == nil {
+		if a.Config != nil && a.Config.AskUserMode == "auto_recommended" {
+			return defaultAskUserSelection(options, recommended), nil
+		}
+		if a.UI == nil {
+			if a.Config != nil && a.Config.AskUserMode == "always_ask" {
+				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
+			}
+			return defaultAskUserSelection(options, recommended), nil
+		}
+	}
+	return a.askUserInteractively(question, options, recommended)
+}
+
+// Approval questions require a live answer regardless of the ask_user mode.
+func (a *Agent) askUserInteractively(question string, options []tool.AskUserOption, recommended string) (string, error) {
 	if a.Inquirer != nil {
 		return a.Inquirer(question, options, recommended)
 	}
-	if a.Config != nil {
-		switch a.Config.AskUserMode {
-		case "auto_recommended":
-			return defaultAskUserSelection(options, recommended), nil
-		case "always_ask":
-			if a.UI == nil {
-				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
-			}
-		}
+	if a.UI == nil {
+		return "", fmt.Errorf("no interactive approval input is available")
 	}
 
 	optStrings := make([]string, 0, len(options))
@@ -382,11 +393,7 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 		defer a.CurrentLoader.Resume()
 	}
 
-	if a.UI != nil {
-		return a.UI.AskUserQuestion(w, theme, question, optStrings, recommended)
-	}
-
-	return defaultAskUserSelection(options, recommended), nil
+	return a.UI.AskUserQuestion(w, theme, question, optStrings, recommended)
 }
 
 func (a *Agent) IsPersistentBashEnabled() bool {

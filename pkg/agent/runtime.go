@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"loop/pkg/agent/run"
@@ -154,22 +153,16 @@ func (a *Agent) resolveCredentialForConfig(ctx context.Context, cfg *config.Conf
 	if cfg == nil {
 		return "", fmt.Errorf("provider configuration unavailable")
 	}
-	if a.Credentials == nil {
-		return config.ProviderConfig{APIKey: cfg.APIKey}.ResolvedAPIKey(), nil
-	}
 	profile, exists := cfg.Providers[cfg.ActiveProvider]
 	if !exists {
 		profile = config.ProviderConfig{Endpoint: cfg.Endpoint, APIKey: cfg.APIKey}
 	}
 	profile.Endpoint = cfg.Endpoint
-	if strings.HasPrefix(cfg.APIKey, "env:") || strings.HasPrefix(cfg.APIKey, "$") {
-		profile.APIKey = cfg.APIKey
+	profile.APIKey = cfg.APIKey
+	if a.Credentials == nil {
+		return profile.ResolvedAPIKey(), profile.AuthStatus()
 	}
-	key, err := a.Credentials.Resolve(ctx, cfg.ActiveProvider, profile)
-	if key == "" && err == nil {
-		key = config.ProviderConfig{APIKey: cfg.APIKey}.ResolvedAPIKey()
-	}
-	return key, err
+	return a.Credentials.Resolve(ctx, cfg.ActiveProvider, profile)
 }
 
 // PageRecentMessages selects recent complete turns with an optional leading

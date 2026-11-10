@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 )
@@ -81,44 +80,10 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	return result, err
 }
 
-// Own the capture pipes so descendants are stopped as soon as the command
-// exits, before waiting for their inherited output descriptors to close.
 func captureCommand(cmd *exec.Cmd, stdout, stderr io.Writer) error {
-	outReader, outWriter, err := os.Pipe()
+	wait, err := StartCapture(cmd, stdout, stderr)
 	if err != nil {
 		return err
 	}
-	defer outReader.Close()
-	defer outWriter.Close()
-	errReader, errWriter, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer errReader.Close()
-	defer errWriter.Close()
-	cmd.Stdout, cmd.Stderr = outWriter, errWriter
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = outWriter.Close()
-	_ = errWriter.Close()
-	copied := make(chan error, 2)
-	go func() { _, err := io.Copy(stdout, outReader); copied <- err }()
-	go func() { _, err := io.Copy(stderr, errReader); copied <- err }()
-	err = errors.Join(cmd.Wait(), KillProcessGroup(cmd))
-	timer := time.NewTimer(cmd.WaitDelay)
-	defer timer.Stop()
-	for remaining := 2; remaining > 0; remaining-- {
-		select {
-		case copyErr := <-copied:
-			err = errors.Join(err, copyErr)
-		case <-timer.C:
-			// A detached descendant can escape the group. It must not retain
-			// our readers or keep the caller waiting indefinitely.
-			_ = outReader.Close()
-			_ = errReader.Close()
-			err = errors.Join(err, exec.ErrWaitDelay, <-copied)
-		}
-	}
-	return err
+	return wait()
 }

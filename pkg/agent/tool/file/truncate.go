@@ -12,11 +12,11 @@ import (
 // each tool description embeds, so the model knows its truncation budget before
 // calling.
 var DefaultLimitTexts = map[string]string{
-	"read":              "Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete.",
+	"read":              "Use the next offset in the continuation notice to read more. The page and its notice share the output budget.",
 	"grep":              "Returns up to 100 matches (max 500), caps each matched line at 500 characters and the total output at 64KB. Notices report the next unread offset and a lower bound on matching lines. Use offset to continue.",
 	"find_files":        "Returns up to 500 results (max 2000). Notices report the next unread offset and a lower bound on matching files. Use offset to continue.",
 	"list_directory":    "Lists up to 150 entries (max 1000) at up to depth 3 (max 8). Notices state the exact next offset and the total entry count, so use offset to continue.",
-	"bash":              "Output is pruned to 25 head and 25 tail lines or 8192 bytes (whichever is hit first); the full unpruned output is spilled to .loop/spill/ and the notice states the exact next offset and the total line count.",
+	"bash":              "Long output is shortened. When a saved output path is shown, use read to retrieve it.",
 	"read_param_offset": "Line number to start reading from (1-indexed). Optional",
 	"find_param_offset": "Result number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue.",
 	"list_param_offset": "Entry number to start from (1-indexed). Optional; use the offset reported in the previous truncation notice to continue.",
@@ -72,11 +72,14 @@ func TruncateLine(s string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return s
 	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
+	count := 0
+	for index := range s {
+		if count == maxRunes {
+			return s[:index] + LineTruncatedMarker()
+		}
+		count++
 	}
-	return string(runes[:maxRunes]) + LineTruncatedMarker()
+	return s
 }
 
 // TruncateHead applies the line and byte limits to complete lines, first hit
@@ -121,17 +124,37 @@ func TruncateMiddle(s string, maxBytes int) (string, int) {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s, 0
 	}
-	half := maxBytes / 2
-	if half < 1 {
-		half = 1
+	total := RuneCount(s)
+	budget := max(0, maxBytes-len(MiddleTruncationMarker(total))-2)
+	head, tail := previewEnds(s, budget)
+	omitted := total - RuneCount(head) - RuneCount(tail)
+	return UTF8SafePrefix(joinTextPreview(head, MiddleTruncationMarker(omitted), tail), maxBytes), omitted
+}
+
+// PreviewWithNotice reserves space for the complete notice before taking text
+// from either end. The result never exceeds the supplied byte budget.
+func PreviewWithNotice(s, notice string, maxBytes int) string {
+	if len(notice) >= maxBytes {
+		return UTF8SafePrefix(notice, maxBytes)
 	}
-	head := UTF8SafePrefix(s, half)
-	tail := UTF8SafeSuffix(s, maxBytes-half)
-	omitted := RuneCount(s) - RuneCount(head) - RuneCount(tail)
-	if omitted < 0 {
-		omitted = 0
+	head, tail := previewEnds(s, max(0, maxBytes-len(notice)-2))
+	return joinTextPreview(head, notice, tail)
+}
+
+func previewEnds(s string, budget int) (string, string) {
+	budget = min(budget, len(s))
+	headBytes := (budget + 1) / 2
+	return UTF8SafePrefix(s, headBytes), UTF8SafeSuffix(s, budget-headBytes)
+}
+
+func joinTextPreview(head, notice, tail string) string {
+	if head != "" {
+		notice = head + "\n" + notice
 	}
-	return head + MiddleTruncationMarker(omitted) + tail, omitted
+	if tail != "" {
+		notice += "\n" + tail
+	}
+	return notice
 }
 
 // RuneCount counts Unicode code points in s.
@@ -208,7 +231,7 @@ func SpillFullOutputNotice(locator string) string {
 	if locator == "" {
 		return ""
 	}
-	return domaintool.RuntimeMessagef("spill_full_output_notice", "\n[Full raw output preserved for reference at: %s]", locator)
+	return domaintool.RuntimeMessagef("spill_full_output_notice", "\n[Read saved output: %s]", locator)
 }
 
 func SpillRetrievalHint() string {

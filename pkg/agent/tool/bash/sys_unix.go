@@ -8,16 +8,6 @@ import (
 	"syscall"
 )
 
-func setupSysProcAttr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-}
-
-func killProcessGroup(pgid int) {
-	if pgid > 0 {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}
-}
-
 func extractSignalDiagnostic(exitErr *exec.ExitError) string {
 	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		sig := ws.Signal()

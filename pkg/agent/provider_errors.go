@@ -33,8 +33,6 @@ var (
 		regexp.MustCompile(`(?i)range of input length should be`),
 		regexp.MustCompile(`(?i)context[_ ]length[_ ]exceeded`),
 		regexp.MustCompile(`(?i)token limit exceeded`),
-		regexp.MustCompile(`(?i)provider stopped with (?:length|max_tokens)`),
-		regexp.MustCompile(`(?i)completion terminated with finish reason "(?:length|max_tokens)"`),
 		regexp.MustCompile(`(?i)(?:^|[\s:])413(?:[\s:]|$)`),
 	}
 	nonOverflowRegexes = []*regexp.Regexp{

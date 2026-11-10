@@ -2,14 +2,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"loop/pkg/domain/limits"
-	"loop/pkg/transport/sse"
 	"net/http"
 	"strings"
-	"time"
+
+	"loop/pkg/transport/sse"
 )
 
 func (c *mcpClient) startHTTP() error {
@@ -66,23 +64,4 @@ func (c *mcpClient) readHTTPResponse(ctx context.Context, response *http.Respons
 	default:
 		return "", fmt.Errorf("MCP response omitted request %d", id)
 	}
-}
-
-func (c *mcpClient) resourceRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	response, err := c.requestWithTimeout(ctx, method, params, c.requestTimeout())
-	if err != nil {
-		return nil, err
-	}
-	var result json.RawMessage
-	if err := decodeRPCResponse(response, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-func (c *mcpClient) requestTimeout() time.Duration {
-	if c.timeout > 0 {
-		return c.timeout
-	}
-	return limits.MCPRequestTimeout()
 }

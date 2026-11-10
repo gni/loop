@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
-	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
@@ -15,10 +14,7 @@ import (
 	domaintool "loop/pkg/domain/tool"
 )
 
-const (
-	nonFileToolMaxChars       = 8192
-	nonFileToolTruncateNotice = "\n... (historical tool output truncated to 8192 bytes for context; use spill file for full output)"
-)
+const nonFileToolMaxBytes = 8192
 
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
@@ -71,7 +67,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				continue
 			}
 		} else {
-			msg.Content = truncateNonFileToolContent(msg.Role, msg.Name, msg.Content, nonFileToolMaxChars, nonFileToolTruncateNotice)
+			msg.Content = truncateNonFileToolContent(msg, nonFileToolMaxBytes)
 			if msg.Content == "" && len(msg.ContentBlocks) == 0 {
 				msg.Content = " "
 			}
@@ -395,18 +391,11 @@ type wireChatMessage struct {
 
 type chatCompletionWireRequest = chatCompletionRequest[wireChatMessage]
 
-func truncateNonFileToolContent(role, name, content string, maxChars int, suffix string) string {
-	if role == "tool" && name != "read" && name != "write" && name != "edit" && name != "ask_user" && len(content) > maxChars {
-		if name == "bash" {
-			prefix := "... (earlier command output omitted for context limits)\n"
-			if strings.Contains(suffix, "optimization") {
-				prefix = "... (earlier command output omitted for context optimization)\n"
-			}
-			return prefix + filetool.UTF8SafeSuffix(content, maxChars)
-		}
-		return filetool.UTF8SafePrefix(content, maxChars) + suffix
+func truncateNonFileToolContent(msg db.Message, maxBytes int) string {
+	if msg.Role == "tool" && msg.Name != "read" && msg.Name != "write" && msg.Name != "edit" && msg.Name != "ask_user" {
+		return boundedHistoricalOutput(msg.Content, msg.SpillPath, maxBytes)
 	}
-	return content
+	return msg.Content
 }
 
 func (p *OpenAICompatibleProvider) GetLimits() limits.Limits {

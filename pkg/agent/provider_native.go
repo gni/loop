@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -68,10 +67,13 @@ type nativeEvent struct {
 		Usage nativeUsage `json:"usage"`
 	} `json:"message"`
 	Response struct {
-		Status string       `json:"status"`
-		Usage  nativeUsage  `json:"usage"`
-		Output []nativeItem `json:"output"`
-		Error  struct {
+		Status            string       `json:"status"`
+		Usage             nativeUsage  `json:"usage"`
+		Output            []nativeItem `json:"output"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	} `json:"response"`
@@ -490,6 +492,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}()
 	reader := sse.NewLimitedReader(response.Body, 128<<20)
 	reader.OnActivity = kick
+readStream:
 	for {
 		packet, err := reader.Read(streamCtx)
 		if err == io.EOF {
@@ -575,10 +578,16 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					}
 				}
 			case "message_delta":
-				finish = delta.StopReason
+				if delta.StopReason != "" {
+					if finish != "" && finish != delta.StopReason {
+						return result, fmt.Errorf("provider changed stop reason from %q to %q: %w", finish, delta.StopReason, ErrIncompleteResponse)
+					}
+					finish = delta.StopReason
+				}
 				applyUsage(event.Usage)
 			case "message_stop":
 				complete = true
+				break readStream
 			}
 		case "responses":
 			var delta string
@@ -620,13 +629,23 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 					return result, fmt.Errorf("arguments for unknown tool call")
 				}
 			case "response.completed":
+				applyUsage(event.Response.Usage)
+				if status := event.Response.Status; status != "" && status != "completed" {
+					return result, fmt.Errorf("provider completion reported status %q: %w", status, ErrIncompleteResponse)
+				}
 				complete = true
 				finish = "stop"
-				applyUsage(event.Response.Usage)
+				break readStream
 			case "response.incomplete":
-				finish = "length"
-				complete = true
 				applyUsage(event.Response.Usage)
+				result.StopReason = event.Response.IncompleteDetails.Reason
+				if result.StopReason == "" {
+					result.StopReason = "incomplete"
+				}
+				if result.StopReason == "content_filter" {
+					return result, fmt.Errorf("provider stopped with incomplete outcome %s", result.StopReason)
+				}
+				return result, fmt.Errorf("provider stopped with %s: %w", result.StopReason, ErrIncompleteResponse)
 			case "response.failed":
 				return result, fmt.Errorf("provider response failed: %s", transport.RedactDiagnostic(event.Response.Error.Message))
 			}
@@ -673,32 +692,8 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	rawText := text.String()
 	result.Content = rawText
 	result.ReasoningContent = reasoning.String()
-	argumentBuffers.flush(calls)
-	if err := validateProviderCalls(calls); err != nil {
-		return result, err
-	}
-	if len(calls) > 0 {
-		result.ToolCalls = assembleToolCalls(calls, "", "")
-	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
-		var err error
-		result.ToolCalls, err = fallback.ParseFallbackToolCallsStrict(rawText)
-		if err != nil {
-			return result, err
-		}
-		result.Content = StripFallbackToolMarkup(rawText)
-	}
-	finalized = true
 	result.StopReason = finish
-	indexes := make([]int, 0, len(thinking))
-	for index := range thinking {
-		indexes = append(indexes, index)
-	}
-	sort.Ints(indexes)
-	for _, index := range indexes {
-		thinking[index].Text, thinking[index].Signature = thinkingText[index].String(), thinkingSignatures[index].String()
-		result.ContentBlocks = append(result.ContentBlocks, *thinking[index])
-	}
-
+	finalized = true
 	if !complete || finish == "" {
 		return result, fmt.Errorf("provider stream ended before completion: %w", ErrIncompleteResponse)
 	}
@@ -708,10 +703,29 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	case "SAFETY", "RECITATION", "content_filter":
 		return result, fmt.Errorf("provider stopped with incomplete outcome %s", finish)
 	}
-	for _, call := range result.ToolCalls {
-		if !json.Valid([]byte(call.Function.Arguments)) {
-			return result, fmt.Errorf("incomplete arguments for tool %s", strconv.Quote(call.Function.Name))
+
+	argumentBuffers.flush(calls)
+	if err := validateProviderCalls(calls); err != nil {
+		return result, err
+	}
+	if len(calls) > 0 {
+		result.ToolCalls = orderedToolCalls(calls)
+	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
+		var err error
+		result.ToolCalls, err = fallback.ParseFallbackToolCallsStrict(rawText)
+		if err != nil {
+			return result, err
 		}
+		result.Content = StripFallbackToolMarkup(rawText)
+	}
+	indexes := make([]int, 0, len(thinking))
+	for index := range thinking {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	for _, index := range indexes {
+		thinking[index].Text, thinking[index].Signature = thinkingText[index].String(), thinkingSignatures[index].String()
+		result.ContentBlocks = append(result.ContentBlocks, *thinking[index])
 	}
 	if !hasUsableAssistantResponse(result) {
 		return result, ErrEmptyResponse

@@ -57,25 +57,26 @@ type State struct {
 }
 
 type Session struct {
-	Agent     *agent.Agent
-	Manager   *swarm.MultiAgentManager
-	Store     domainsession.ContextStore
-	ID        string
-	Workspace string
-	mu        sync.Mutex
-	runMu     sync.Mutex
-	messages  []db.Message
-	steering  []string
-	followUp  []string
-	cancel    context.CancelFunc
-	idle      chan struct{}
-	closeDone chan struct{}
-	closeErr  error
-	closed    bool
-	running   bool
-	options   Options
-	hooks     []resources.Hook
-	loaded    resources.PackageResources
+	Agent        *agent.Agent
+	Manager      *swarm.MultiAgentManager
+	Store        domainsession.ContextStore
+	ID           string
+	Workspace    string
+	mu           sync.Mutex
+	runMu        sync.Mutex
+	messages     []db.Message
+	steering     []string
+	followUp     []string
+	cancel       context.CancelFunc
+	idle         chan struct{}
+	closeDone    chan struct{}
+	closeErr     error
+	closed       bool
+	running      bool
+	options      Options
+	startupTools []string
+	hooks        []resources.Hook
+	loaded       resources.PackageResources
 }
 
 func New(options Options) (*Session, error) { return NewContext(context.Background(), options) }
@@ -98,6 +99,7 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 		}
 	}
 	options.Tools = slices.Clone(options.Tools)
+	startupTools := options.Tools
 	if options.ConfigPath == "" {
 		options.ConfigPath = filepath.Join(resources.AgentDirectory(""), "config.json")
 	}
@@ -196,7 +198,7 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 		transport.TLSClientConfig = tls
 		client = &http.Client{Transport: transport}
 	}
-	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
+	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, startupTools: startupTools, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
 	close(s.idle)
 	s.Agent = agent.NewAgentAt(cfg, options.ConfigPath, client, workspace)
 	s.Agent.ConfigControl = s
@@ -224,6 +226,7 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 	s.Agent.RestoreSessionName(id, restoredName)
 	s.Agent.RunSession = s.RunInteractive
 	s.Agent.SyncSessionState = s.SyncInteractive
+	s.Agent.SelectSessionBranch = s.SelectBranch
 	s.Agent.Bus = agent.NewEventBus()
 	s.Agent.Bus.On(s.permissionHook)
 	s.Agent.EventSink = s.event

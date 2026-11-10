@@ -35,7 +35,8 @@ func handleBranchCommand(
 	}
 
 	targetArg := strings.TrimSpace(parts[1])
-	entries, err := db.EntriesContext(a.Context(), *currentSessionID)
+	ctx := commandContext(a, kiReader)
+	entries, err := db.EntriesContext(ctx, *currentSessionID)
 	if err != nil {
 		fmt.Fprintf(w, "cannot inspect session entries: %v\n", err)
 		return
@@ -53,18 +54,17 @@ func handleBranchCommand(
 		return
 	}
 
-	if err := db.BranchContext(a.Context(), *currentSessionID, targetID); err != nil {
+	var projected []db.Message
+	if a != nil && a.SelectSessionBranch != nil {
+		projected, err = a.SelectSessionBranch(ctx, targetID)
+	} else {
+		projected = db.ProjectMessages(session.LeafPath(entries, targetID))
+		err = db.BranchContext(ctx, *currentSessionID, targetID)
+	}
+	if err != nil {
 		fmt.Fprintf(w, "cannot branch session: %v\n", err)
 		return
 	}
-
-	updatedEntries, err := db.EntriesContext(a.Context(), *currentSessionID)
-	if err != nil {
-		fmt.Fprintf(w, "branch marker created, but failed to reload session entries: %v\n", err)
-		return
-	}
-
-	projected := session.Project(updatedEntries)
 
 	if a != nil {
 		a.MessagesMu.Lock()
@@ -74,7 +74,8 @@ func handleBranchCommand(
 		a.MessagesMu.Unlock()
 	}
 
-	if a != nil {
+	if a != nil && a.SelectSessionBranch == nil {
+		a.ResetSessionApproval()
 		a.SyncSessionSystemPrompt(messages, "")
 	}
 

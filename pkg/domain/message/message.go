@@ -57,6 +57,7 @@ type Message struct {
 	IsError           bool            `json:"is_error,omitempty"`
 	Usage             *Usage          `json:"usage,omitempty"`
 	Structured        json.RawMessage `json:"structured_content,omitempty"`
+	SpillPath         string          `json:"spill_path,omitempty"`
 	ContentBlocks     []ContentBlock  `json:"content_blocks,omitempty"`
 	Provider          string          `json:"provider,omitempty"`
 	Model             string          `json:"model,omitempty"`

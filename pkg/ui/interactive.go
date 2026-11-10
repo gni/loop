@@ -45,8 +45,8 @@ func getInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	return interactive.GetInteractiveIO(kiReader)
 }
 
-func AskForApproval(w io.Writer, theme UITheme) (bool, bool) {
-	return interactive.AskForApproval(w, theme)
+func AskForApproval(w io.Writer, theme UITheme, allowSession bool) (bool, bool) {
+	return interactive.AskForApproval(w, theme, allowSession)
 }
 
 func AskUserQuestion(w io.Writer, theme UITheme, question string, options []string, recommended string) (string, error) {

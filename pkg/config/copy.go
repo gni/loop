@@ -104,7 +104,15 @@ func Clone(cfg *Config) (*Config, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("configuration is unavailable")
 	}
+	return cloneConfig(cfg, make(map[*Config]*Config)), nil
+}
+
+func cloneConfig(cfg *Config, seen map[*Config]*Config) *Config {
+	if existing, ok := seen[cfg]; ok {
+		return existing
+	}
 	cloned := *cfg
+	seen[cfg] = &cloned
 	if cfg.Nostop.IntervalSeconds != nil {
 		sec := *cfg.Nostop.IntervalSeconds
 		cloned.Nostop.IntervalSeconds = &sec
@@ -134,5 +142,8 @@ func Clone(cfg *Config) (*Config, error) {
 	cloned.MCPServers = CopyMCPServers(cfg.MCPServers)
 	cloned.Providers = CopyProviders(cfg.Providers)
 	cloned.Limits.ReasoningTokenBudgets = maps.Clone(cfg.Limits.ReasoningTokenBudgets)
-	return &cloned, nil
+	if cfg.ProjectBase != nil {
+		cloned.ProjectBase = cloneConfig(cfg.ProjectBase, seen)
+	}
+	return &cloned
 }

@@ -243,7 +243,7 @@ func (a *Agent) CompressHistory(
 
 	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))
 	for _, m := range (*messages)[keepIdx:] {
-		m.Content = truncateNonFileToolContent(m.Role, m.Name, m.Content, nonFileToolMaxChars, "... (truncated for context optimization)")
+		m.Content = truncateNonFileToolContent(m, nonFileToolMaxBytes)
 		keptMessages = append(keptMessages, m)
 	}
 

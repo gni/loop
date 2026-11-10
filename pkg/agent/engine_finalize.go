@@ -9,6 +9,7 @@ import (
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/limits"
 	"loop/pkg/domain/task"
 	"loop/pkg/ui/style"
 )
@@ -102,7 +103,6 @@ func (e *TurnEngine) finalizeToolCall(
 		rawOutput = strings.TrimRight(rawOutput, "\r\n") + fmt.Sprintf("\n\n[Command exit code: %d]", *rich.Evidence.ExitCode)
 		rawOutput = strings.TrimLeft(rawOutput, "\n")
 	}
-	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: rawOutput, IsError: toolErr != nil})
 	if !isRepetitionError(toolErr) {
 		e.guard.RecordObservedResult(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr, rich.Evidence)
 	}
@@ -134,14 +134,14 @@ func (e *TurnEngine) finalizeToolCall(
 		rawOutput = "(no output)"
 	}
 
-	maxOutputBytes := tool.DefaultMaxToolOutputBytes
-	if e.config != nil && e.config.MaxToolOutputBytes > 0 {
-		maxOutputBytes = e.config.MaxToolOutputBytes
+	exec := executionContext(e, a)
+	budget := limits.ToolOutputBytes(exec)
+	pruned, spillPath, truncated := tool.SpillToolOutput(exec, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, budget)
+	structured := rich.Structured
+	if truncated || len(structured) > budget {
+		structured = nil
 	}
-	if ceiling := a.GetLimits().MaxOutputBytes; ceiling < maxOutputBytes {
-		maxOutputBytes = ceiling
-	}
-	pruned, _, _ := tool.SpillAndPruneOutput(a.WorkspaceRoot, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, maxOutputBytes)
+	a.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: pruned, IsError: toolErr != nil})
 	if e.policy.ToolBatch != nil {
 		e.policy.ToolBatch.SetResult(idx, pruned, toolErr)
 		e.policy.ToolBatch.Finish(idx, toolErr != nil)
@@ -195,7 +195,7 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, ContentBlocks: rich.Content, Structured: rich.Structured, Recovery: recovery, Evidence: evidence.Clone(rich.Evidence), IsError: toolErr != nil, TaskState: e.observeTaskTool(tc, rich.Evidence, toolErr != nil)})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, SpillPath: spillPath, ContentBlocks: rich.Content, Structured: structured, Recovery: recovery, Evidence: evidence.Clone(rich.Evidence), IsError: toolErr != nil, TaskState: e.observeTaskTool(tc, rich.Evidence, toolErr != nil)})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}

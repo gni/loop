@@ -8,7 +8,11 @@ import (
 // OpenRegularFile opens a file for reading and verifies the opened object.
 // On Unix, opening a FIFO without a writer must not block this check.
 func OpenRegularFile(path string) (*os.File, error) {
-	file, err := openRead(path)
+	return openRegularFile(path, os.OpenFile)
+}
+
+func openRegularFile(path string, open func(string, int, os.FileMode) (*os.File, error)) (*os.File, error) {
+	file, err := openRead(path, open)
 	if err != nil {
 		return nil, err
 	}

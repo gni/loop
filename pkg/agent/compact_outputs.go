@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
+	"loop/pkg/storage"
 )
 
 // CompactHistoricalToolOutputs reduces old tool output while keeping the newest
@@ -41,6 +43,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 		if toolName == "" && hasCall {
 			toolName = call.Function.Name
 		}
+		toolName = tool.NormalizeName(toolName)
 		path := ""
 		if hasCall {
 			if rawPath := filetool.ExtractFilePath(call.Function.Arguments); rawPath != "" {
@@ -58,7 +61,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 			msg.Content = fmt.Sprintf("[Historical edit attempt on '%s' failed - resolved by subsequent update]", path)
 			msg.Recovery = nil
 		case !alreadyCompacted && toolName != "ask_user" && len(msg.Content) > 1000:
-			msg.Content = truncateHistoricalOutput(msg.Content, toolName)
+			msg.Content = boundedHistoricalOutput(msg.Content, msg.SpillPath, 1000)
 		}
 		output[index] = msg
 
@@ -87,7 +90,7 @@ func historicalToolFailed(msg db.Message) bool {
 }
 
 func isCompleteHistoricalRead(call db.ToolCall, msg db.Message) bool {
-	if historicalToolFailed(msg) || len(msg.ContentBlocks) > 0 || msg.Content == "" {
+	if historicalToolFailed(msg) || len(msg.ContentBlocks) > 0 || msg.SpillPath != "" || msg.Content == "" {
 		return false
 	}
 	// Require simple file arguments. Unknown wrappers, offsets and explicit
@@ -112,17 +115,18 @@ func isCompleteHistoricalRead(call db.ToolCall, msg db.Message) bool {
 	return true
 }
 
-func truncateHistoricalOutput(content, toolName string) string {
-	lines := strings.Split(content, "\n")
-	if len(lines) > 20 {
-		head := strings.Join(lines[:10], "\n")
-		tail := strings.Join(lines[len(lines)-5:], "\n")
-		// Bound bytes too: a few very long lines must not evade compaction.
-		return filetool.UTF8SafePrefix(head, 750) +
-			fmt.Sprintf("\n\n[... %d lines omitted from historical '%s' output; call '%s' again if needed ...]\n\n", len(lines)-15, toolName, toolName) +
-			filetool.UTF8SafeSuffix(tail, 250)
+// Historical shortening keeps the saved output reference without suggesting
+// that a past command or other side effect should be repeated.
+func boundedHistoricalOutput(content, spillPath string, budget int) string {
+	if len(content) <= budget {
+		return content
 	}
-	return filetool.UTF8SafePrefix(content, 750) +
-		fmt.Sprintf("\n\n[... output truncated from historical '%s' to preserve context cache ...]\n\n", toolName) +
-		filetool.UTF8SafeSuffix(content, 250)
+	notice := "[Earlier output omitted]"
+	if storage.IsSpillPath(spillPath) {
+		locator := "[Read saved output: " + spillPath + "]"
+		if len(locator) <= budget {
+			notice = locator
+		}
+	}
+	return filetool.PreviewWithNotice(content, notice, budget)
 }

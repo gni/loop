@@ -32,7 +32,7 @@ type GuidedController struct {
 	enabled      bool
 	phase        GuidedPhase
 	planApproved bool
-	planHash     string
+	planKey      string
 	snapshots    map[string]FileSnapshot
 	journalPath  string
 	journalHash  string
@@ -56,9 +56,7 @@ func (gc *GuidedController) SetEnabled(enabled bool) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	if enabled && !gc.enabled {
-		gc.phase = GuidedPhaseExplore
-		gc.planApproved = false
-		gc.planHash = ""
+		gc.resetPlanApprovalLocked()
 	}
 	gc.enabled = enabled
 }
@@ -110,10 +108,23 @@ func (gc *GuidedController) ResetForNewUserTurn(todos []tool.TodoItem) {
 		}
 	}
 	if len(todos) == 0 || allDone {
-		gc.phase = GuidedPhaseExplore
-		gc.planApproved = false
-		gc.planHash = ""
+		gc.resetPlanApprovalLocked()
 	}
+}
+
+func (gc *GuidedController) resetPlanApproval() {
+	if gc == nil {
+		return
+	}
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	gc.resetPlanApprovalLocked()
+}
+
+func (gc *GuidedController) resetPlanApprovalLocked() {
+	gc.phase = GuidedPhaseExplore
+	gc.planApproved = false
+	gc.planKey = ""
 }
 
 func (gc *GuidedController) CheckToolAllowed(a *Agent, toolName string) (bool, error) {
@@ -139,10 +150,10 @@ func (gc *GuidedController) CheckPlanAllowed(todos []tool.TodoItem, toolName str
 		return false, fmt.Errorf("guided mode: inspect files with read/grep/find_files/list_directory and register a plan with 'todo' before calling '%s'", toolName)
 	}
 
-	currentHash := hashTodos(todos)
+	currentPlan := guidedPlanKey(todos)
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
-	if !gc.planApproved || gc.planHash != currentHash {
+	if !gc.planApproved || gc.planKey != currentPlan {
 		gc.phase = GuidedPhasePlan
 		return true, nil
 	}
@@ -157,7 +168,7 @@ func (gc *GuidedController) ApprovePlan(todos []tool.TodoItem) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	gc.planApproved = true
-	gc.planHash = hashTodos(todos)
+	gc.planKey = guidedPlanKey(todos)
 	gc.phase = GuidedPhaseExecute
 }
 
@@ -175,10 +186,11 @@ func FormatPlanSummary(todos []tool.TodoItem) string {
 	return sb.String()
 }
 
-func hashTodos(todos []tool.TodoItem) string {
+func guidedPlanKey(todos []tool.TodoItem) string {
 	var sb strings.Builder
 	for _, t := range todos {
-		sb.WriteString(t.ID + ":" + t.Task + "|")
+		// Lengths separate task fields even when they contain delimiters.
+		fmt.Fprintf(&sb, "%d:%s%d:%s", len(t.ID), t.ID, len(t.Task), t.Task)
 	}
 	return sb.String()
 }

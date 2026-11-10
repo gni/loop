@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"loop/pkg/process"
 )
 
 // NewCommand requests unbuffered child output where available. Programs that
@@ -20,7 +22,7 @@ func NewCommand(command string) *exec.Cmd {
 	}
 	cmd := exec.Command(executable, args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8", "PYTHONUNBUFFERED=1")
-	setupSysProcAttr(cmd)
+	process.SetupProcessGroup(cmd)
 	return cmd
 }
 

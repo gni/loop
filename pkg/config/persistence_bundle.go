@@ -41,7 +41,7 @@ func writeConfigBundle(ctx context.Context, files []configFileUpdate, createOnly
 		if len(files[i].data) > limit {
 			return fmt.Errorf("configuration file %s exceeds %d MiB", filepath.Base(files[i].path), limit>>20)
 		}
-		data, err := storage.ReadFile(files[i].path, int64(limit))
+		data, err := storage.ReadFileContext(ctx, files[i].path, int64(limit))
 		if err == nil {
 			files[i].previous = data
 			files[i].existed = true
@@ -91,9 +91,12 @@ func readConfigSnapshot(ctx context.Context, path string) (configSnapshot, error
 		return configSnapshot{}, err
 	}
 	var snapshot configSnapshot
-	snapshot.settings.data, snapshot.settings.err = storage.ReadFile(path, 8<<20)
-	snapshot.mcp.data, snapshot.mcp.err = storage.ReadFile(filepath.Join(dir, "mcp.json"), 16<<20)
-	snapshot.providers.data, snapshot.providers.err = storage.ReadFile(filepath.Join(dir, "providers.json"), 16<<20)
+	snapshot.settings.data, snapshot.settings.err = storage.ReadFileContext(ctx, path, 8<<20)
+	snapshot.mcp.data, snapshot.mcp.err = storage.ReadFileContext(ctx, filepath.Join(dir, "mcp.json"), 16<<20)
+	snapshot.providers.data, snapshot.providers.err = storage.ReadFileContext(ctx, filepath.Join(dir, "providers.json"), 16<<20)
+	if err := ctx.Err(); err != nil {
+		return configSnapshot{}, err
+	}
 	return snapshot, nil
 }
 

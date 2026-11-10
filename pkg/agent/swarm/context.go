@@ -126,6 +126,10 @@ func (mac *multiAgentContext) GetLimits() limits.Limits {
 	return limits.For(mac.AgentContext)
 }
 
+func (mac *multiAgentContext) GetToolOutputByteLimit() int {
+	return limits.ToolOutputBytes(mac.AgentContext)
+}
+
 func (mac *multiAgentContext) GetFullTaskStatus(id string) (string, string, error) {
 	if provider, ok := mac.AgentContext.(domaintool.FullTaskStatusProvider); ok {
 		return provider.GetFullTaskStatus(id)

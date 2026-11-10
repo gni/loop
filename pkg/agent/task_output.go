@@ -20,19 +20,21 @@ type backgroundTasks struct {
 // TasksMu protects the queue. One caller drains it outside all task locks,
 // keeping snapshots, stdout, stderr and completion notices in display order.
 type taskOutputState struct {
-	queue    []taskOutputChunk
-	bytes    int
-	draining bool
-	dropped  bool
+	queue      []taskOutputChunk
+	bytes      int
+	draining   bool
+	dropped    bool
+	generation uint64
 }
 
 type taskOutputChunk struct {
-	writer io.Writer
-	data   []byte
+	writer     io.Writer
+	data       []byte
+	generation uint64
 }
 
 func (a *Agent) queueTaskOutputLocked(w io.Writer, data []byte) bool {
-	if len(data) == 0 {
+	if len(data) == 0 || (a.Lifetime != nil && a.Lifetime.Err() != nil) {
 		return false
 	}
 	// A slow terminal must not allow live previews to grow without bound.
@@ -53,7 +55,7 @@ func (a *Agent) queueTaskOutputLocked(w io.Writer, data []byte) bool {
 		a.taskOutput.queue = a.taskOutput.queue[1:]
 		a.taskOutput.dropped = true
 	}
-	a.taskOutput.queue = append(a.taskOutput.queue, taskOutputChunk{writer: w, data: data})
+	a.taskOutput.queue = append(a.taskOutput.queue, taskOutputChunk{writer: w, data: data, generation: a.taskOutput.generation})
 	a.taskOutput.bytes += len(data)
 	if a.taskOutput.draining {
 		return false
@@ -65,6 +67,12 @@ func (a *Agent) queueTaskOutputLocked(w io.Writer, data []byte) bool {
 func (a *Agent) drainTaskOutput() {
 	for {
 		a.TasksMu.Lock()
+		if a.Lifetime != nil && a.Lifetime.Err() != nil {
+			clear(a.taskOutput.queue)
+			a.taskOutput.queue = nil
+			a.taskOutput.bytes = 0
+			a.taskOutput.dropped = false
+		}
 		if len(a.taskOutput.queue) == 0 {
 			a.taskOutput.draining = false
 			a.TasksMu.Unlock()
@@ -78,6 +86,12 @@ func (a *Agent) drainTaskOutput() {
 		a.taskOutput.dropped = false
 		a.TasksMu.Unlock()
 		dest := a.resolveTaskOutputWriter(chunk.writer)
+		a.TasksMu.Lock()
+		current := chunk.generation == a.taskOutput.generation && (a.Lifetime == nil || a.Lifetime.Err() == nil)
+		a.TasksMu.Unlock()
+		if !current {
+			continue
+		}
 		if dropped {
 			_, _ = fmt.Fprintln(dest, "\n[live preview skipped older output; retained output is available with /task view]")
 		}

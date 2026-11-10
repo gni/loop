@@ -3,6 +3,7 @@ package tool
 import (
 	"fmt"
 
+	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -20,7 +21,7 @@ func (r *ToolRegistry) ExecuteResult(ctx AgentContext, name, arguments string) (
 func ExecutePreparedResult(ctx AgentContext, executor ToolExecutor, arguments string) (ToolResult, error) {
 	if rich, ok := executor.(domaintool.ResultExecutor); ok {
 		result, err := rich.ExecuteResult(ctx, arguments)
-		if result.IsError && err == nil {
+		if err == nil && (result.IsError || result.Evidence != nil && result.Evidence.Outcome == evidence.Failed) {
 			err = fmt.Errorf("tool %s reported an error", executor.Name())
 		}
 		result.IsError = err != nil

@@ -47,7 +47,7 @@ func (t *readTool) PromptGuidelines() []string {
 func (t *readTool) Definition() domaintool.Tool {
 	return domaintool.NewFunctionTool(
 		"read",
-		domaintool.FormatToolDescription("read", "Read text or image files. Text files return up to 2000 lines (or 50KB) by default; use offset and limit to paginate. Image files (.png, .jpg, .gif, .webp) return visual content blocks."),
+		domaintool.FormatToolDescription("read", "Read text or image files. Text output follows the configured page budget; use offset and limit to paginate files and saved tool output. Image files (.png, .jpg, .gif, .webp) return visual content blocks."),
 		map[string]domaintool.SchemaProp{
 			"path":   domaintool.StringProp(domaintool.FormatParamDescription("read", "path", "Path to a specific file to read (relative or absolute). Do not pass directory paths; use 'list_directory' to inspect directory trees.")),
 			"offset": domaintool.NumberProp(domaintool.FormatParamDescription("read", "offset", "Line number to start reading from (1-indexed). Optional")),
@@ -196,7 +196,17 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	}
 	defer unlock()
 
-	maxReadBytes := limits.For(ctx).MaxReadFileBytes
+	bounds := limits.For(ctx)
+	offset = max(1, offset)
+	if limit == 0 {
+		limit = readDefaultLimit
+	}
+	limit = min(limit, bounds.MaxOutputLines)
+	budget := limits.ToolOutputBytes(ctx)
+	if relative, err := filepath.Rel(workspaceRoot, safePath); err == nil && storage.IsSpillPath(relative) {
+		return readSpillPage(ctx.Context(), workspaceRoot, relative, entryHeader, offset, limit, budget, bounds.ReadMaxLineLength)
+	}
+	maxReadBytes := bounds.MaxReadFileBytes
 	if info.Size() > int64(maxReadBytes) {
 		return "", fmt.Errorf("file size (%d bytes) is too large; maximum allowed size is %d bytes", info.Size(), maxReadBytes)
 	}
@@ -230,46 +240,17 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	_, textWithoutBOM := SplitBOM(data)
 	contentStr := SanitizeUTF8([]byte(textWithoutBOM))
 	if len(data) == 0 || strings.TrimSpace(contentStr) == "" {
-		return entryHeader + "(empty file)", nil
+		return renderReadPage(entryHeader, []string{"(empty file)"}, offset, 1, budget)
 	}
 
 	lines := strings.Split(contentStr, "\n")
-	if offset <= 0 {
-		offset = 1
-	}
 	if offset > len(lines) {
 		return "", fmt.Errorf("offset %d is beyond end of file (%d lines total)", offset, len(lines))
 	}
-
-	if limit <= 0 {
-		limit = readDefaultLimit
-	} else if limit > limits.For(ctx).MaxOutputLines {
-		limit = limits.For(ctx).MaxOutputLines
-	}
-
-	end := offset + limit - 1
-	if end > len(lines) {
-		end = len(lines)
-	}
-	// Apply the documented per-line cap before the byte budget. Otherwise a
-	// single long line blocks the entire page even though its display fits.
-	lineCap := limits.For(ctx).ReadMaxLineLength
+	end := min(len(lines), offset+limit-1)
 	window := make([]string, 0, end-offset+1)
 	for _, line := range lines[offset-1 : end] {
-		window = append(window, TruncateLine(line, lineCap))
+		window = append(window, TruncateLine(line, bounds.ReadMaxLineLength))
 	}
-	cut := TruncateHead(window, limit, limits.For(ctx).MaxOutputBytes)
-	if cut.ShownLines == 0 {
-		return "", fmt.Errorf("line %d cannot fit the output budget of %d bytes; reduce the line length limit or increase the output budget", offset, limits.For(ctx).MaxOutputBytes)
-	}
-	resultLines := window[:cut.ShownLines]
-
-	result := strings.Join(resultLines, "\n")
-	shownEnd := offset + cut.ShownLines - 1
-	if cut.Truncated {
-		result += ReadTruncationNotice(offset, shownEnd, len(lines), shownEnd+1)
-	} else if end < len(lines) {
-		result += ReadMoreLinesNotice(len(lines)-end, len(lines), end+1)
-	}
-	return entryHeader + result, nil
+	return renderReadPage(entryHeader, window, offset, len(lines), budget)
 }

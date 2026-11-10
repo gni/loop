@@ -31,6 +31,15 @@ func resolveExistingAncestorSymlinks(cleanTarget, inputPath string) (string, err
 	}
 }
 
+func privateRuntimeConfigName(name string) bool {
+	name = strings.ToLower(name)
+	switch name {
+	case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json", ".config-recovery.json":
+		return true
+	}
+	return strings.HasPrefix(name, ".loop-config-")
+}
+
 func (a *Agent) isProtectedRuntimePath(candidate string) error {
 	if a.ConfigPath != "" {
 		if absConfig, err := filepath.Abs(a.ConfigPath); err == nil {
@@ -78,7 +87,8 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 			return fmt.Errorf("security violation: accessing session database files is not allowed")
 		case "agents", "trust", "recovery":
 			return fmt.Errorf("security violation: accessing runtime security or agent state is not allowed")
-		case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json":
+		}
+		if privateRuntimeConfigName(top) {
 			return fmt.Errorf("security violation: accessing runtime credentials or configuration is not allowed")
 		}
 		if strings.HasSuffix(top, ".lock") {
@@ -89,8 +99,7 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 	parentBase := filepath.Base(filepath.Dir(candidate))
 	base := filepath.Base(candidate)
 	if parentBase == ".loop" {
-		switch base {
-		case "auth.json", "config.json", "mcp.json", "providers.json", "packages.json":
+		if privateRuntimeConfigName(base) {
 			return fmt.Errorf("security violation: accessing protected .loop configuration is not allowed")
 		}
 		if strings.HasSuffix(base, ".lock") {

@@ -35,9 +35,6 @@ func (b toolArgumentBuffers) flush(calls map[int]*db.ToolCall) {
 	for index, buffer := range b {
 		if call := calls[index]; call != nil {
 			call.Function.Arguments = buffer.String()
-			if strings.TrimSpace(call.Function.Arguments) == "" {
-				call.Function.Arguments = "{}"
-			}
 		}
 	}
 }

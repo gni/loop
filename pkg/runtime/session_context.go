@@ -55,7 +55,10 @@ func (s *Session) adoptInteractiveContext(ctx context.Context, messages []db.Mes
 					return err
 				}
 			}
-			todos, err = restoreSettingsFromEntries(entries, cfg, &tools, false)
+			if tools == nil {
+				tools = s.startupTools
+			}
+			todos, err = restoreSettingsFromEntries(entries, cfg, &tools, s.options.KeepSelection)
 			if err != nil {
 				return err
 			}

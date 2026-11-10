@@ -163,11 +163,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	defer func() {
 		runErr = classifyInferenceFailure(runErr)
 		if result != nil {
+			if runErr != nil {
+				result.ToolCalls = nil
+				result.ContentBlocks = nil
+			}
 			seen := make(map[string]bool, len(result.ToolCalls))
 			for index := range result.ToolCalls {
 				call := &result.ToolCalls[index]
 				call.Function.Name = tool.NormalizeName(call.Function.Name)
-				call.Function.Arguments = tool.CanonicalArguments(call.Function.Name, SanitizeLLMControlTokens(call.Function.Arguments))
+				call.Function.Arguments = tool.CanonicalArguments(call.Function.Name, call.Function.Arguments)
 				if call.ID == "" || seen[call.ID] {
 					call.ID = "call_" + db.NewUUID()
 				}
@@ -259,22 +263,24 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	streamReader := transportllm.NewStreamReader(resp.Body)
 	streamReader.OnActivity = kickTimer
 
-	var textBuilder, rawTextBuilder, reasoningBuilder, cleanReasoningBuilder strings.Builder
+	var textBuilder, rawTextBuilder, cleanReasoningBuilder strings.Builder
 	toolCallsMap := make(map[int]*db.ToolCall)
 	argumentBuffers := make(toolArgumentBuffers)
+	xmlTools := strings.EqualFold(p.Config.ToolProtocol, "xml")
 
 	textFilter := p.newStreamTextFilter(ctx, chunkChan, "text", &textBuilder)
 	reasoningFilter := p.newStreamTextFilter(ctx, chunkChan, "reasoning", &cleanReasoningBuilder)
 
 	emitText := func(text string) {
 		if text != "" {
-			rawTextBuilder.WriteString(text)
+			if xmlTools {
+				rawTextBuilder.WriteString(text)
+			}
 			textFilter.Write(text)
 		}
 	}
 	emitReasoning := func(text string) {
 		if text != "" {
-			reasoningBuilder.WriteString(text)
 			reasoningFilter.Write(text)
 		}
 	}
@@ -290,14 +296,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		textFilter.Flush()
 		reasoningFilter.Flush()
 
-		argumentBuffers.flush(toolCallsMap)
-		var calls []db.ToolCall
-		if len(toolCallsMap) > 0 {
-			calls = assembleToolCalls(toolCallsMap, "", "")
-		} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
-			calls = assembleToolCalls(nil, rawTextBuilder.String(), "")
-		}
-
 		return &db.Message{
 			Role:     "assistant",
 			Provider: p.Config.ActiveProvider, Model: p.Config.Model, StopReason: finishReason,
@@ -307,7 +305,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			CompletionTokens: completionTokens,
 			CacheReadTokens:  cacheReadTokens,
 			CacheWriteTokens: cacheWriteTokens,
-			ToolCalls:        calls,
 		}
 	}
 
@@ -328,9 +325,9 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				Message string `json:"message"`
 			}
 			if json.Unmarshal(chunk.Error, &upstream) == nil && upstream.Message != "" {
-				return nil, fmt.Errorf("model server returned a stream error: %s", transporthttp.RedactDiagnostic(upstream.Message))
+				return buildMessage(), fmt.Errorf("model server returned a stream error: %s", transporthttp.RedactDiagnostic(upstream.Message))
 			}
-			return nil, fmt.Errorf("model server returned a stream error: %.512s", transporthttp.RedactDiagnostic(string(chunk.Error)))
+			return buildMessage(), fmt.Errorf("model server returned a stream error: %.512s", transporthttp.RedactDiagnostic(string(chunk.Error)))
 		}
 
 		if chunk.Usage != nil {
@@ -359,6 +356,17 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 
 		choice := chunk.Choices[0]
+		if finishReason != "" {
+			switch finishReason {
+			case "length", "max_tokens", "content_filter":
+				continue
+			}
+			if choice.Delta.Content != "" || choice.Delta.ReasoningContent != "" || len(choice.Delta.ToolCalls) > 0 ||
+				choice.FinishReason != "" && choice.FinishReason != finishReason {
+				return buildMessage(), fmt.Errorf("provider sent more output after finish reason %q: %w", finishReason, ErrIncompleteResponse)
+			}
+			continue
+		}
 		if err := budget.add(choice.Delta.Content, choice.Delta.ReasoningContent); err != nil {
 			return buildMessage(), err
 		}
@@ -389,7 +397,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 					idx = *tc.Index
 				}
 				if idx < 0 {
-					return nil, fmt.Errorf("invalid tool call index %d", idx)
+					return buildMessage(), fmt.Errorf("invalid tool call index %d", idx)
 				}
 				existing, ok := toolCallsMap[idx]
 				if !ok {
@@ -427,23 +435,27 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	if finishReason == "" && !streamReader.Complete {
 		return buildMessage(), fmt.Errorf("provider stream ended before a completion marker: %w", ErrIncompleteResponse)
 	}
-	if finishReason == "length" {
+	if finishReason == "length" || finishReason == "max_tokens" {
 		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q: %w", finishReason, ErrIncompleteResponse)
 	}
 	if finishReason == "content_filter" {
 		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)
 	}
 
-	argumentBuffers.flush(toolCallsMap)
-	if err := validateProviderCalls(toolCallsMap); err != nil {
-		return buildMessage(), err
-	}
-	if len(toolCallsMap) == 0 && strings.EqualFold(p.Config.ToolProtocol, "xml") {
-		if _, err := fallback.ParseFallbackToolCallsStrict(rawTextBuilder.String()); err != nil {
-			return buildMessage(), err
-		}
-	}
 	assistantMsg := buildMessage()
+	if len(toolCallsMap) > 0 {
+		argumentBuffers.flush(toolCallsMap)
+		if err := validateProviderCalls(toolCallsMap); err != nil {
+			return assistantMsg, err
+		}
+		assistantMsg.ToolCalls = orderedToolCalls(toolCallsMap)
+	} else if xmlTools {
+		calls, err := fallback.ParseFallbackToolCallsStrict(rawTextBuilder.String())
+		if err != nil {
+			return assistantMsg, err
+		}
+		assistantMsg.ToolCalls = calls
+	}
 	if !hasUsableAssistantResponse(assistantMsg) {
 		return assistantMsg, fmt.Errorf("model server closed the stream after %s without a usable answer or tool call (HTTP %d, finish reason %q): %w", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, ErrEmptyResponse)
 	}
@@ -489,5 +501,5 @@ func (p *OpenAICompatibleProvider) requestKey(ctx context.Context) string {
 	if key, ok := ctx.Value(credentialContextKey{}).(string); ok {
 		return key
 	}
-	return p.Config.APIKey
+	return config.ProviderConfig{APIKey: p.Config.APIKey}.ResolvedAPIKey()
 }

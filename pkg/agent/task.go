@@ -87,7 +87,7 @@ func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	}
 	tw.agent.TasksMu.Unlock()
 	if drain {
-		tw.agent.drainTaskOutput()
+		go tw.agent.drainTaskOutput()
 	}
 
 	return len(p), nil
@@ -234,8 +234,8 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 	a.TasksMu.Unlock()
 
 	task.Cmd = cmd
-	cmd.Stdout = &taskWriter{task: task, agent: a, w: w, isStderr: false}
-	cmd.Stderr = &taskWriter{task: task, agent: a, w: w, isStderr: true}
+	stdout := &taskWriter{task: task, agent: a, w: w, isStderr: false}
+	stderr := &taskWriter{task: task, agent: a, w: w, isStderr: true}
 
 	if err := a.checkTaskContext(ctx, sessionID, generation); err != nil {
 		task.Status, task.Err, task.EndTime = "failed", err, time.Now()
@@ -247,7 +247,8 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 		a.TasksMu.Unlock()
 		return "", err
 	}
-	if err := cmd.Start(); err != nil {
+	wait, err := process.StartCapture(cmd, stdout, stderr)
+	if err != nil {
 		task.Status = "failed"
 		task.EndTime = time.Now()
 		task.Err = err
@@ -277,10 +278,7 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 		}
 	}()
 	go func() {
-		waitErr := cmd.Wait()
-		// Once the tracked command exits, descendants must not outlive it or
-		// keep inherited stdout/stderr pipes open indefinitely.
-		_ = process.KillProcessGroup(cmd)
+		waitErr := wait()
 		close(stopWatcher)
 		task.mu.Lock()
 		task.EndTime = time.Now()
@@ -307,7 +305,7 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 		}
 		a.TasksMu.Unlock()
 		if drain {
-			a.drainTaskOutput()
+			go a.drainTaskOutput()
 		}
 
 		if tracked && a.checkTaskContext(context.Background(), sessionID, generation) == nil {
@@ -511,7 +509,7 @@ func (a *Agent) ToggleStreaming(id string, w io.Writer) {
 	drain := a.queueTaskOutputLocked(w, append([]byte(nil), frame.Bytes()...))
 	a.TasksMu.Unlock()
 	if drain {
-		a.drainTaskOutput()
+		go a.drainTaskOutput()
 	}
 
 }
@@ -592,6 +590,7 @@ func (a *Agent) ClearTasks() int {
 	a.taskOutput.queue = nil
 	a.taskOutput.bytes = 0
 	a.taskOutput.dropped = false
+	a.taskOutput.generation++
 	return killed
 }
 

@@ -8,6 +8,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func openRead(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+func openRead(path string, open func(string, int, os.FileMode) (*os.File, error)) (*os.File, error) {
+	return open(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
 }

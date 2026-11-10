@@ -34,8 +34,12 @@ func validConfigMainName(name string) bool {
 	if strings.ContainsAny(name, "/\\:") || strings.TrimRight(name, ". ") != name {
 		return false
 	}
-	switch strings.ToLower(name) {
-	case "mcp.json", "providers.json", ".config.lock", configJournalName:
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".lock") || strings.HasPrefix(lower, ".loop-config-") {
+		return false
+	}
+	switch lower {
+	case "mcp.json", "providers.json", "auth.json", "packages.json", "sessions", "agents", "trust", "recovery", configJournalName:
 		return false
 	}
 	return true

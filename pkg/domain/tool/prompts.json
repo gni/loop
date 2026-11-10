@@ -304,7 +304,7 @@
     "output_limit_notice": "\n[output size limit reached: %d KB from %d results of %d total. Use %s with offset=%d to continue.]",
     "spill_prune_notice": "\n\n[... %d lines (%d characters) truncated to protect context window ... Showing first %d lines and last lines of %d total lines]",
     "spill_byte_prune_notice": "\n\n[... %d characters truncated to protect context window ... Showing first %d characters of %d total bytes across %d total lines]",
-    "spill_full_output_notice": "\n[Full raw output preserved for reference at: %s]",
+    "spill_full_output_notice": "\n[Read saved output: %s]",
     "spill_retrieval_hint": "",
     "compression_summary_scaffold": "[System: Below is a summary of the earlier conversation history:%s\n%s]",
     "limit_text_read": "Results are truncated to 2000 lines or 50KB (whichever is hit first), never mid-line; each line is capped at 1000 characters. Truncation notices state the exact next offset and the total line count, so use offset/limit to page through the rest until complete.",

@@ -1,7 +1,6 @@
 package bash
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -85,55 +84,6 @@ func (s *liveShellOutput) Finish() {
 	}
 }
 
-// markerFilter removes the private pwd boundary while allowing partial lines
-// to reach the terminal. It holds at most the possible marker prefix.
-type markerFilter struct {
-	w        io.Writer
-	needle   []byte
-	pending  []byte
-	finished bool
-}
-
-func newMarkerFilter(w io.Writer, marker string) *markerFilter {
-	return &markerFilter{w: w, needle: []byte("\n" + marker)}
-}
-
-func (f *markerFilter) Write(p []byte) (int, error) {
-	length := len(p)
-	if f.finished || length == 0 {
-		return length, nil
-	}
-	f.pending = append(f.pending, p...)
-	if idx := bytes.Index(f.pending, f.needle); idx >= 0 {
-		if _, err := f.w.Write(f.pending[:idx]); err != nil {
-			return 0, err
-		}
-		f.pending = nil
-		f.finished = true
-		return length, nil
-	}
-	hold := 0
-	for n := min(len(f.pending), len(f.needle)-1); n > 0; n-- {
-		if bytes.Equal(f.pending[len(f.pending)-n:], f.needle[:n]) {
-			hold = n
-			break
-		}
-	}
-	if _, err := f.w.Write(f.pending[:len(f.pending)-hold]); err != nil {
-		return 0, err
-	}
-	f.pending = append(f.pending[:0], f.pending[len(f.pending)-hold:]...)
-	return length, nil
-}
-
-func (f *markerFilter) Finish() {
-	if f.finished || len(f.pending) == 0 {
-		return
-	}
-	_, _ = f.w.Write(f.pending)
-	f.pending = nil
-}
-
 // limitedLiveWriter shows the initial budget in full, then samples recent
 // output at a bounded rate. Long commands remain visible without flooding the
 // terminal or retaining an unbounded queue of pending output.
@@ -198,11 +148,11 @@ func (w bestEffortLiveWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (s *liveShellOutput) Streams(marker string) (io.Writer, io.Writer, func()) {
+func (s *liveShellOutput) Streams() (io.Writer, io.Writer, func()) {
 	liveLimit := s.limit
 	outLimit := &limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}
 	errLimit := &limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}
-	stdout := newMarkerFilter(output.NewSafeShellOutputWriter(outLimit), marker)
+	stdout := output.NewSafeShellOutputWriter(outLimit)
 	stderr := output.NewSafeShellOutputWriter(errLimit)
-	return stdout, stderr, func() { stdout.Finish(); outLimit.flushSample(); errLimit.flushSample() }
+	return stdout, stderr, func() { outLimit.flushSample(); errLimit.flushSample() }
 }

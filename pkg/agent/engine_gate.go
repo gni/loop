@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,8 +12,11 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, toolName string) error {
-	if e.guided == nil || !e.guided.IsEnabled() || e.agent == nil || !e.agent.Registry.Policy(toolName, "").RequiresPlan {
+var errToolApprovalRejected = errors.New("tool execution rejected by user")
+
+func (e *TurnEngine) verifyGuidedGate(ctx context.Context, sr StreamRenderer, loader EngineLoader, call db.ToolCall) error {
+	toolName := call.Function.Name
+	if e.guided == nil || !e.guided.IsEnabled() || e.agent == nil || !e.agent.Registry.Policy(toolName, call.Function.Arguments).RequiresPlan {
 		return nil
 	}
 
@@ -38,13 +43,16 @@ func (e *TurnEngine) verifyGuidedGate(sr StreamRenderer, loader EngineLoader, to
 		{Label: "Revise plan"},
 		{Label: "Abort turn"},
 	}
-	answer, err := e.agent.AskUser(FormatPlanSummary(todos), options, "Approve plan and execute")
+	answer, err := e.agent.askUserInteractively(FormatPlanSummary(todos), options, "Approve plan and execute")
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
-		return fmt.Errorf("plan approval cancelled: %w", err)
+		return fmt.Errorf("guided plan requires approval: %w", err)
 	}
 
 	trimmed := strings.TrimSpace(answer)
-	if strings.EqualFold(trimmed, "Approve plan and execute") || strings.EqualFold(trimmed, "Confirmed") {
+	if strings.EqualFold(trimmed, "Approve plan and execute") {
 		e.guided.ApprovePlan(todos)
 		return nil
 	}
@@ -64,7 +72,7 @@ func (e *TurnEngine) promptRejectionFeedback(toolName string) (steeringMessage s
 		{Label: "Skip this tool and continue"},
 		{Label: "Abort turn"},
 	}
-	resp, err := e.agent.AskUser(
+	resp, err := e.agent.askUserInteractively(
 		fmt.Sprintf("Tool '%s' was rejected. Select an action or choose Other to provide steering instructions:", toolName),
 		options,
 		"Skip this tool and continue",
@@ -96,41 +104,61 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 
 func (e *TurnEngine) needsInteractiveApproval(call db.ToolCall) bool {
 	a := e.agent
-	return e.policy.AllowApproval && a != nil && e.config != nil && a.Registry.Policy(call.Function.Name, call.Function.Arguments).RequiresApproval && ((e.guided != nil && e.guided.IsEnabled()) || !e.config.AutoApprove)
+	if !e.policy.AllowApproval || a == nil || e.config == nil || !a.Registry.Policy(call.Function.Name, call.Function.Arguments).RequiresApproval {
+		return false
+	}
+	if e.guided.IsEnabled() {
+		return true
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return !e.config.AutoApprove && !a.sessionAutoApprove
 }
 
-func (e *TurnEngine) requestApproval(sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (approved bool, approvalRendered bool) {
+func (e *TurnEngine) requestApproval(ctx context.Context, sr StreamRenderer, loader EngineLoader, w io.Writer, theme style.UITheme, idx int, tc db.ToolCall) (bool, error) {
 	if !e.needsInteractiveApproval(tc) {
-		return true, false
+		return false, nil
 	}
-	if e.agent.UI == nil {
-		return false, false
+	a := e.agent
+	if a.UI == nil {
+		return false, fmt.Errorf("tool execution requires interactive approval")
 	}
+	a.stateMu.Lock()
+	generation := a.sessionGeneration
+	a.stateMu.Unlock()
 
 	sr.Flush()
 	if loader != nil {
 		loader.Pause()
+		defer loader.Resume()
 	}
 	if !sr.DidStreamToolBody(idx) {
 		e.renderPreApprovalDiffPreview(w, theme, tc.Function.Name, tc.Function.Arguments)
 	}
 
-	approved, always := e.agent.UI.AskForApproval(GetScreenWriter(w), theme)
-	if loader != nil {
-		loader.Resume()
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	if always && (e.guided == nil || !e.guided.IsEnabled()) {
-		e.agent.LLMProviderMu.Lock()
-		e.agent.Config.AutoApprove = true
-		e.agent.LLMProviderMu.Unlock()
-		e.config.AutoApprove = true
-		if e.agent.ConfigPath != "" {
-			if err := e.agent.SaveConfig(); err != nil {
-				e.agent.recordPersistenceError(fmt.Errorf("save automatic approval preference: %w", err))
-			}
-		}
+	allowSession := !e.guided.IsEnabled()
+	approved, always := a.UI.AskForApproval(GetScreenWriter(w), theme, allowSession)
+	if err := ctx.Err(); err != nil {
+		return true, err
 	}
-	return approved, true
+	if !approved {
+		return true, errToolApprovalRejected
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
+	if a.sessionGeneration != generation {
+		return true, fmt.Errorf("session changed while waiting for tool approval")
+	}
+	if always && allowSession {
+		a.sessionAutoApprove = true
+	}
+	return true, nil
 }
 
 func (e *TurnEngine) renderSubagentToolPrefix(w io.Writer, theme style.UITheme) {

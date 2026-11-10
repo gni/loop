@@ -81,7 +81,7 @@ func DefaultConfig() *Config {
 		MaxPasteLines:            80,
 		MaxPasteChars:            8000,
 		Timeout:                  120,
-		MaxToolOutputBytes:       8192,
+		MaxToolOutputBytes:       limits.DefaultRetainedOutputBytes,
 		RepeatReminderThresholds: []int{3, 5},
 		RepeatGuardLimit:         10,
 		PersistentBash:           true,

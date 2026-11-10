@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"loop/pkg/storage"
@@ -110,7 +109,13 @@ func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, tru
 		return cfg, nil
 	}
 	projectPath := filepath.Join(workspace, ".loop", "config.json")
-	data, err := storage.ReadFile(projectPath, 8<<20)
+	if sameConfigPath(path, projectPath) {
+		if err := applyEnvironment(cfg); err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+	data, err := storage.ReadFileContext(ctx, projectPath, 8<<20)
 	if os.IsNotExist(err) {
 		if err := applyEnvironment(cfg); err != nil {
 			return nil, err
@@ -129,12 +134,12 @@ func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, tru
 		return nil, fmt.Errorf("project settings: %w", err)
 	}
 	resolveProjectPaths(project, filepath.Dir(projectPath))
-	for key := range project {
-		cfg.Sources[key] = projectPath
-	}
 	baseConfig, err := Clone(cfg)
 	if err != nil {
 		return nil, err
+	}
+	for key := range project {
+		cfg.Sources[key] = projectPath
 	}
 	base, err := json.Marshal(cfg)
 	if err != nil {
@@ -149,9 +154,12 @@ func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, tru
 	if err != nil {
 		return nil, err
 	}
+	sources := cfg.Sources
+	cfg = new(Config)
 	if err := json.Unmarshal(encoded, cfg); err != nil {
 		return nil, err
 	}
+	cfg.Sources = sources
 	cfg.ProjectBase = baseConfig
 	cfg.ProjectPath = projectPath
 	cfg.ProjectResources = true
@@ -164,12 +172,10 @@ func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, tru
 	if v, ok := project["endpoint"].(string); ok && strings.TrimSpace(v) != "" {
 		cfg.Endpoint = v
 	}
-	if v, ok := project["api_key"].(string); ok && strings.TrimSpace(v) != "" {
-		if envVar, isEnv := parseEnvVarKey(v); isEnv {
-			cfg.APIKey = os.Getenv(envVar)
-		} else {
-			cfg.APIKey = v
-		}
+	if v, ok := project["api_key"].(string); ok {
+		cfg.APIKey = v
+	} else if value, exists := project["api_key"]; exists && value == nil {
+		cfg.APIKey = ""
 	}
 	if v, ok := project["model"].(string); ok && strings.TrimSpace(v) != "" {
 		cfg.Model = v
@@ -177,15 +183,41 @@ func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, tru
 	if v, ok := project["timeout"].(float64); ok && int(v) >= 0 {
 		cfg.Timeout = int(v)
 	}
-	cfg.applyDefaults()
 	if err := applyEnvironment(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
+func sameConfigPath(a, b string) bool {
+	canonical := func(path string) (string, error) {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+			absolute = resolved
+		}
+		return absolute, nil
+	}
+	left, err := canonical(a)
+	if err != nil {
+		return false
+	}
+	right, err := canonical(b)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(left, right)
+	return err == nil && relative == "."
+}
+
 func mergeObjects(target, source map[string]any) {
 	for key, value := range source {
+		if value == nil {
+			delete(target, key)
+			continue
+		}
 		child, nested := value.(map[string]any)
 		existing, exists := target[key].(map[string]any)
 		if nested && exists {
@@ -275,117 +307,4 @@ func applyTimeoutEnvironment(cfg *Config) error {
 		}
 	}
 	return nil
-}
-
-func saveProjectConfig(ctx context.Context, cfg *Config) error {
-	if cfg.ProjectBase == nil {
-		return fmt.Errorf("project configuration has no base settings")
-	}
-	sanitized, err := Clone(cfg)
-	if err != nil {
-		return err
-	}
-	if profile, ok := sanitized.Providers[sanitized.ActiveProvider]; ok {
-		if _, isEnv := parseEnvVarKey(profile.APIKey); isEnv {
-			sanitized.APIKey = profile.APIKey
-		}
-	}
-	currentData, err := json.Marshal(sanitized)
-	if err != nil {
-		return err
-	}
-	baseData, err := json.Marshal(cfg.ProjectBase)
-	if err != nil {
-		return err
-	}
-	var current, base map[string]any
-	if err := json.Unmarshal(currentData, &current); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(baseData, &base); err != nil {
-		return err
-	}
-	patch := make(map[string]any)
-	for key, value := range current {
-		if key == "project_resources" {
-			continue
-		}
-		if key == "api_key" || key == "providers" || key == "mcp_servers" {
-			if cfg.Sources[key] != cfg.ProjectPath {
-				continue
-			}
-			if key == "api_key" {
-				if str, ok := value.(string); ok && str != "" {
-					if _, isEnv := parseEnvVarKey(str); isEnv {
-						patch[key] = str
-					}
-				}
-				continue
-			}
-			if key == "mcp_servers" {
-				baseServers, _ := base["mcp_servers"].(map[string]any)
-				if currentServers, ok := value.(map[string]any); ok {
-					projectServers := make(map[string]any)
-					for name, serverDef := range currentServers {
-						// Never persist servers inherited from global base config into repository
-						if _, inBase := baseServers[name]; !inBase {
-							projectServers[name] = serverDef
-						}
-					}
-					if len(projectServers) > 0 {
-						patch["mcp_servers"] = projectServers
-					}
-				}
-				continue
-			}
-			if key == "providers" {
-				baseProviders, _ := base["providers"].(map[string]any)
-				if currentProviders, ok := value.(map[string]any); ok {
-					projectProviders := make(map[string]any)
-					for name, providerDef := range currentProviders {
-						// Never persist providers inherited from global base config into repository
-						if _, inBase := baseProviders[name]; !inBase {
-							if pMap, ok := providerDef.(map[string]any); ok {
-								// Strip raw API keys; only preserve env references
-								if rawKey, hasKey := pMap["api_key"].(string); hasKey && rawKey != "" {
-									if _, isEnv := parseEnvVarKey(rawKey); !isEnv {
-										delete(pMap, "api_key")
-									}
-								}
-								projectProviders[name] = pMap
-							} else {
-								projectProviders[name] = providerDef
-							}
-						}
-					}
-					if len(projectProviders) > 0 {
-						patch["providers"] = projectProviders
-					}
-				}
-				continue
-			}
-		}
-		if !reflect.DeepEqual(value, base[key]) {
-			patch[key] = value
-		}
-	}
-	for key := range base {
-		if key == "project_resources" || key == "api_key" || key == "providers" || key == "mcp_servers" {
-			continue
-		}
-		if _, exists := current[key]; !exists {
-			patch[key] = nil
-		}
-	}
-	data, err := json.MarshalIndent(patch, "", "  ")
-	if err != nil {
-		return err
-	}
-	if len(data) > 8<<20 {
-		return fmt.Errorf("project configuration exceeds 8 MiB")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return WritePrivateFile(cfg.ProjectPath, data)
 }

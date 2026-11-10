@@ -77,15 +77,16 @@ const (
 	// Truncation defaults: two independent limits, first hit wins. The per-line
 	// cap is the grep match cap; the read line cap is the
 	// historical read per-line cap.
-	DefaultToolOutputLines   = 2000
-	DefaultToolOutputBytes   = 50 * 1024
-	DefaultReadFileBytes     = 500 * 1024
-	DefaultReadLineLength    = 1000
-	DefaultFindLimit         = 500
-	DefaultListEntries       = 150
-	DefaultListDepth         = 3
-	DefaultParallelWorkers   = 4
-	DefaultCompactionReserve = 16384
+	DefaultToolOutputLines     = 2000
+	DefaultToolOutputBytes     = 50 * 1024
+	DefaultRetainedOutputBytes = 8192
+	DefaultReadFileBytes       = 500 * 1024
+	DefaultReadLineLength      = 1000
+	DefaultFindLimit           = 500
+	DefaultListEntries         = 150
+	DefaultListDepth           = 3
+	DefaultParallelWorkers     = 4
+	DefaultCompactionReserve   = 16384
 
 	// MCP startup defaults. ConnectTimeout bounds the wait for the SSE endpoint event
 	// and for the response headers; RequestTimeout bounds a single JSON-RPC call.

@@ -1,273 +1,167 @@
 package tool
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
+	"loop/pkg/storage"
 )
 
 const (
-	// DefaultMaxToolOutputBytes is the default threshold beyond which tool output
-	// is pruned and spilled to disk to protect context token budget.
-	DefaultMaxToolOutputBytes = 8192
-
-	// DefaultHeadLines is the number of leading lines retained when pruning multi-line output.
-	DefaultHeadLines = 25
-
-	// DefaultTailLines is the number of trailing lines retained when pruning multi-line output.
-	DefaultTailLines = 25
-
-	// MaxSpillFilesPerSession bounds how many spill files one session may keep. Without
-	// a cap every oversized tool output leaves a file that is never rotated.
-	MaxSpillFilesPerSession = 200
-
-	// SpillFileMaxAge is the retention window for spill files; entries older than this
-	// are removed on the next spill write.
-	SpillFileMaxAge = 24 * time.Hour
+	DefaultMaxToolOutputBytes = limits.DefaultRetainedOutputBytes
+	DefaultHeadLines          = 25
+	DefaultTailLines          = 25
+	MaxSpillFilesPerSession   = 200
+	SpillFileMaxAge           = 24 * time.Hour
 )
 
-// PruneSpillDir enforces the retention policy for a session's spill directory: it drops
-// entries older than SpillFileMaxAge and, if the directory is still larger than
-// maxFiles, removes the oldest remaining files. A maxFiles of 0 or a maxAge of 0 only
-// applies whichever limit is nonzero.
-func PruneSpillDir(absDir string, maxFiles int, maxAge time.Duration) error {
-	if absDir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return err
-	}
-
-	type entry struct {
-		name    string
-		age     time.Duration
-		removed bool
-	}
-
-	items := make([]entry, 0, len(entries))
-	now := time.Now()
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		items = append(items, entry{name: e.Name(), age: now.Sub(info.ModTime())})
-	}
-
-	for i := range items {
-		if maxAge > 0 && items[i].age > maxAge {
-			if err := os.Remove(filepath.Join(absDir, items[i].name)); err == nil {
-				items[i].removed = true
-			}
-		}
-	}
-
-	if maxFiles <= 0 {
-		return nil
-	}
-
-	kept := 0
-	for _, it := range items {
-		if !it.removed {
-			kept++
-		}
-	}
-	if kept <= maxFiles {
-		return nil
-	}
-
-	// Evict the oldest survivors first so the freshest context hints stay resolvable.
-	var survivors []entry
-	for _, it := range items {
-		if !it.removed {
-			survivors = append(survivors, it)
-		}
-	}
-	sort.Slice(survivors, func(i, j int) bool { return survivors[i].age > survivors[j].age })
-	for _, it := range survivors[:kept-maxFiles] {
-		_ = os.Remove(filepath.Join(absDir, it.name))
-	}
-	return nil
+// PruneSpillDir removes only Loop-owned logs. Unrecognized files and links
+// remain untouched, including legacy spills referenced by older sessions.
+func PruneSpillDir(path string, maxFiles int, maxAge time.Duration) error {
+	return storage.PruneSpillDirectory(path, maxFiles, maxAge)
 }
 
-var spillFileMu sync.Mutex
-
-// SanitizeFileID ensures an identifier is safe for filenames.
+// SanitizeFileID keeps short safe IDs and disambiguates altered or long IDs.
 func SanitizeFileID(id string) string {
 	if id == "" {
 		return fmt.Sprintf("call_%d", time.Now().UnixNano())
 	}
-	var sb strings.Builder
+	if len(id) <= 40 && strings.IndexFunc(id, func(r rune) bool { return !fileIDRune(r) }) < 0 {
+		return id
+	}
+	var prefix strings.Builder
 	for _, r := range id {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			sb.WriteRune(r)
-		} else {
-			sb.WriteRune('_')
+		if !fileIDRune(r) {
+			r = '_'
+		}
+		prefix.WriteRune(r)
+		if prefix.Len() == 23 {
+			break
 		}
 	}
-	res := sb.String()
-	if len(res) > 40 {
-		res = res[:40]
-	}
-	return res
+	sum := sha256.Sum256([]byte(id))
+	return prefix.String() + "-" + hex.EncodeToString(sum[:8])
 }
 
-// pruneWithoutSpill keeps the tool response bounded if spill storage is unavailable.
-// The caller must not claim that the unpruned output was preserved on disk.
-func pruneWithoutSpill(output string, maxBytes int) string {
-	notice := "\n[Full output unavailable: could not save spill file.]"
-	if maxBytes <= len(notice) {
-		return file.UTF8SafePrefix(notice, maxBytes)
-	}
-	return file.UTF8SafePrefix(output, maxBytes-len(notice)) + notice
+func fileIDRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-'
 }
 
-// SpillAndPruneOutput inspects tool output and, if it exceeds maxBytes, writes the full
-// unpruned content to a local spill file under .loop/spill/<sessionID>/ and returns a compact
-// representation with leading and trailing context plus retrieval guidance.
-// If maxBytes <= 0, DefaultMaxToolOutputBytes is used.
 func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output string, maxBytes int) (string, string, bool) {
-	if maxBytes <= 0 {
-		maxBytes = DefaultMaxToolOutputBytes
-	}
-	// The live resolved limits can lower the pruner budget but never raise it
-	// past the safety ceiling.
-	if ceiling := limits.MaxOutputBytes(); ceiling < maxBytes {
-		maxBytes = ceiling
-	}
-	if len(output) <= maxBytes {
-		return output, "", false
-	}
+	return spillAndPruneOutput(context.Background(), workspaceRoot, sessionID, toolCallID, toolName, output, maxBytes, limits.Current())
+}
 
+// SpillToolOutput uses the execution context's limits and cancellation.
+func SpillToolOutput(ctx AgentContext, sessionID, toolCallID, toolName, output string, maxBytes int) (string, string, bool) {
+	return spillAndPruneOutput(ctx.Context(), ctx.GetWorkspaceRoot(), sessionID, toolCallID, toolName, output, maxBytes, limits.For(ctx))
+}
+
+func spillAndPruneOutput(ctx context.Context, workspace, sessionID, callID, name, output string, budget int, bounds limits.Limits) (string, string, bool) {
+	if budget <= 0 {
+		budget = DefaultMaxToolOutputBytes
+	}
+	budget = min(budget, bounds.MaxOutputBytes, limits.AbsoluteMaxToolOutputBytes)
+	text := strings.ToValidUTF8(output, "\uFFFD")
+	lineCount := strings.Count(output, "\n") + 1
+	// Native pages count their data rows before appending continuation notes.
+	// Do not re-truncate an already bounded page because of those notes.
+	tooManyLines := lineCount > bounds.MaxOutputLines
+	switch NormalizeName(name) {
+	case "read", "grep", "find_files", "list_directory", "search_symbols":
+		tooManyLines = false
+	}
+	if len(text) <= budget && !tooManyLines {
+		return text, "", false
+	}
 	if sessionID == "" {
 		sessionID = "session"
 	}
-	safeSessionID := SanitizeFileID(sessionID)
-	safeCallID := SanitizeFileID(toolCallID)
-
-	var relativeSpillPath string
-	var absoluteSpillPath string
-	var spillErr error
-
-	if workspaceRoot == "" {
-		return pruneWithoutSpill(output, maxBytes), "", true
-	}
-	spillRelDir := filepath.Join(".loop", "spill", safeSessionID)
-	spillAbsDir := filepath.Join(workspaceRoot, spillRelDir)
-
-	spillFileMu.Lock()
-	spillErr = os.MkdirAll(spillAbsDir, 0700)
-	if spillErr == nil {
-		var spillFile *os.File
-		spillFile, spillErr = os.CreateTemp(spillAbsDir, fmt.Sprintf("%s_%s_*.log", SanitizeFileID(toolName), safeCallID))
-		if spillErr == nil {
-			absoluteSpillPath = spillFile.Name()
-			relativeSpillPath = filepath.Join(spillRelDir, filepath.Base(absoluteSpillPath))
-			if _, spillErr = spillFile.WriteString(output); spillErr == nil {
-				spillErr = spillFile.Sync()
+	path, locator := "", ""
+	if workspace != "" && len(output) <= storage.MaxSpillBytes && ctx.Err() == nil {
+		candidate := storage.NewSpillPath(SanitizeFileID(sessionID), SanitizeFileID(name)+"-"+SanitizeFileID(callID))
+		hint := strings.TrimSpace(file.SpillFullOutputNotice(candidate))
+		if !strings.Contains(hint, candidate) || len(hint) > budget {
+			hint = "[Read " + candidate + "]"
+		}
+		// Do not write a file whose locator cannot be included in the result.
+		if len(hint) <= budget {
+			unlock, err := file.LockPathContext(ctx, filepath.Join(workspace, filepath.Dir(candidate)))
+			if err == nil {
+				err = storage.WriteSpill(ctx, workspace, candidate, output, MaxSpillFilesPerSession, SpillFileMaxAge)
+				unlock()
 			}
-			closeErr := spillFile.Close()
-			if spillErr == nil {
-				spillErr = closeErr
-			}
-			if spillErr != nil {
-				_ = os.Remove(absoluteSpillPath)
-			} else {
-				_ = PruneSpillDir(spillAbsDir, MaxSpillFilesPerSession, SpillFileMaxAge)
+			if err == nil {
+				path, locator = candidate, hint
 			}
 		}
 	}
-	spillFileMu.Unlock()
+	return outputPreview(text, locator, budget, lineCount, bounds), path, true
+}
 
-	if spillErr != nil {
-		return pruneWithoutSpill(output, maxBytes), "", true
+func outputPreview(output, locator string, budget, lineCount int, bounds limits.Limits) string {
+	notice := "[Output truncated; full output unavailable.]"
+	if locator != "" {
+		notice = locator
 	}
-	locatorHint := relativeSpillPath
-
-	lines := strings.Split(output, "\n")
-	headCount := DefaultHeadLines
-	tailCount := DefaultTailLines
-	// The resolved line budget can lower the head window but never raise it past
-	// the safety ceiling.
-	if limits.MaxOutputLines() < headCount {
-		headCount = limits.MaxOutputLines()
+	if len(notice) > budget {
+		if budget >= len("[Truncated]") {
+			return "[Truncated]"
+		}
+		return strings.Repeat(".", min(3, max(0, budget)))
 	}
-
-	// Multi-line output: head+tail middle truncation. Every retained line is
-	// complete (never a partial line) and each line is capped by the per-line
-	// budget, so the notice can state the exact next offset and the total line
-	// count for continued pagination.
-	if len(lines) > headCount+tailCount+5 {
-		head := make([]string, headCount)
-		for i, line := range lines[:headCount] {
-			head[i] = file.TruncateLine(line, limits.GrepMaxLineLength())
-		}
-		tail := make([]string, tailCount)
-		for i, line := range lines[len(lines)-tailCount:] {
-			tail[i] = file.TruncateLine(line, limits.GrepMaxLineLength())
-		}
-
-		// Include the notices in the byte budget. Drop complete preview lines
-		// rather than cutting a retained line in the middle.
-		for {
-			omittedLines := len(lines) - len(head) - len(tail)
-			omittedChars := file.RuneCount(output) - file.RuneCount(strings.Join(head, "\n")) - file.RuneCount(strings.Join(tail, "\n"))
-			pruned := strings.Join(head, "\n") +
-				file.SpillPruneNotice(omittedLines, omittedChars, len(head)+1, len(lines)) +
-				file.SpillFullOutputNotice(locatorHint) +
-				file.SpillRetrievalHint() +
-				"\n\n" + strings.Join(tail, "\n")
-			if len(pruned) <= maxBytes {
-				return pruned, locatorHint, true
+	lineBudget := min(DefaultHeadLines+DefaultTailLines, bounds.MaxOutputLines)
+	if lineCount > lineBudget {
+		head, tail := outputWindows(output, (lineBudget+1)/2, lineBudget/2, bounds.GrepMaxLineLength)
+		for len(head)+len(tail) > 0 {
+			detail := fmt.Sprintf("[Showing %d first and %d last lines of %d]", len(head), len(tail), lineCount)
+			if locator != "" && len(head) > 0 {
+				detail = fmt.Sprintf("[Showing %d first and %d last lines of %d; next offset=%d]", len(head), len(tail), lineCount, len(head)+1)
 			}
-			if len(head) == 0 && len(tail) == 0 {
-				return file.UTF8SafePrefix(pruned, maxBytes), locatorHint, true
+			parts := make([]string, 0, 4)
+			if len(head) > 0 {
+				parts = append(parts, strings.Join(head, "\n"))
 			}
-			if len(head) >= len(tail) && len(head) > 0 {
+			parts = append(parts, detail, notice)
+			if len(tail) > 0 {
+				parts = append(parts, strings.Join(tail, "\n"))
+			}
+			preview := strings.Join(parts, "\n")
+			if len(preview) <= budget {
+				return preview
+			}
+			if len(head) >= len(tail) {
 				head = head[:len(head)-1]
 			} else {
 				tail = tail[1:]
 			}
 		}
+		return notice
 	}
 
-	// Single very long line or few long lines: UTF-8-boundary-safe byte cut.
-	// Head/tail budgets must never exceed maxBytes, otherwise an output that is
-	// over maxBytes but shorter than the default budgets would be returned in
-	// full, breaking the documented contract that oversized output is always
-	// pruned.
-	headBytes := 3072
-	tailBytes := 1024
-	if headBytes+tailBytes > maxBytes {
-		headBytes = maxBytes / 2
-		tailBytes = maxBytes / 4
-	}
-	if headBytes < 1 {
-		headBytes = 1
-	}
-	if tailBytes < 1 {
-		tailBytes = 1
-	}
-	if len(output) > headBytes+tailBytes {
-		pruned, omittedChars := file.TruncateMiddle(output, headBytes+tailBytes)
+	return file.PreviewWithNotice(output, notice, budget)
+}
 
-		pruned = pruned +
-			file.SpillBytePruneNotice(omittedChars, file.RuneCount(pruned), len(output), len(lines)) +
-			file.SpillFullOutputNotice(locatorHint) +
-			file.SpillRetrievalHint()
-		return pruned, locatorHint, true
+func outputWindows(output string, headCount, tailCount, lineLimit int) ([]string, []string) {
+	head := make([]string, 0, headCount)
+	remaining := output
+	for range headCount {
+		line, rest, _ := strings.Cut(remaining, "\n")
+		head = append(head, file.TruncateLine(line, lineLimit))
+		remaining = rest
 	}
-
-	return output, locatorHint, false
+	tail := make([]string, tailCount)
+	remaining = output
+	for i := len(tail) - 1; i >= 0; i-- {
+		end := strings.LastIndexByte(remaining, '\n')
+		tail[i] = file.TruncateLine(remaining[end+1:], lineLimit)
+		remaining = remaining[:end]
+	}
+	return head, tail
 }

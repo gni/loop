@@ -214,8 +214,8 @@ func (ui *AgentUIImpl) DrawActivityStatsLine(w io.Writer, theme style.UITheme, t
 	DrawStaticStatsLineLocked(w, theme, "", saved)
 }
 
-func (ui *AgentUIImpl) AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
-	return AskForApproval(w, theme)
+func (ui *AgentUIImpl) AskForApproval(w io.Writer, theme style.UITheme, allowSession bool) (bool, bool) {
+	return AskForApproval(w, theme, allowSession)
 }
 
 func (ui *AgentUIImpl) AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error) {

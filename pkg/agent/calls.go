@@ -5,7 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 )
 
@@ -90,41 +89,15 @@ func emitChunkObserved(ctx context.Context, chunkChan chan<- StreamChunk, chunk 
 	return delivered
 }
 
-func assembleToolCalls(toolCallsMap map[int]*db.ToolCall, rawText string, rawReasoning string) []db.ToolCall {
-	var calls []db.ToolCall
-	if len(toolCallsMap) > 0 {
-		indices := make([]int, 0, len(toolCallsMap))
-		for idx := range toolCallsMap {
-			indices = append(indices, idx)
-		}
-		sort.Ints(indices)
-		for _, idx := range indices {
-			cleaned := *toolCallsMap[idx]
-			cleaned.Function.Name = tool.NormalizeName(cleaned.Function.Name)
-			cleaned.Function.Arguments = SanitizeLLMControlTokens(cleaned.Function.Arguments)
-			calls = append(calls, cleaned)
-		}
-	} else {
-		calls = ParseFallbackToolCalls(rawText)
-		if rawReasoning != "" {
-			reasoningCalls := ParseFallbackToolCalls(rawReasoning)
-			if len(calls) == 0 {
-				calls = reasoningCalls
-			} else {
-				for _, rc := range reasoningCalls {
-					duplicate := false
-					for _, c := range calls {
-						if c.Function.Name == rc.Function.Name && c.Function.Arguments == rc.Function.Arguments {
-							duplicate = true
-							break
-						}
-					}
-					if !duplicate {
-						calls = append(calls, rc)
-					}
-				}
-			}
-		}
+func orderedToolCalls(byIndex map[int]*db.ToolCall) []db.ToolCall {
+	indices := make([]int, 0, len(byIndex))
+	for index := range byIndex {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	calls := make([]db.ToolCall, 0, len(indices))
+	for _, index := range indices {
+		calls = append(calls, *byIndex[index])
 	}
 	return calls
 }

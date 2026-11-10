@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,9 @@ func newSecureHTTPClient() *http.Client {
 }
 
 func NewStore(path string) *Store {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
 	sharedStoresMu.Lock()
 	defer sharedStoresMu.Unlock()
 	if existing, ok := sharedStores[path]; ok {
@@ -131,7 +135,7 @@ func (s *Store) read() (map[string]Credential, error) {
 		return nil, fmt.Errorf("read credentials: %w", err)
 	}
 	if credentials == nil {
-		credentials = make(map[string]Credential)
+		return nil, fmt.Errorf("credential file must contain a JSON object")
 	}
 	s.cached = true
 	s.cacheExists = true
@@ -291,6 +295,9 @@ func (s *Store) Resolve(ctx context.Context, name string, profile config.Provide
 					return "", fmt.Errorf("credential environment variable %s is empty", credential.Environment)
 				}
 				return value, nil
+			}
+			if strings.TrimSpace(credential.Key) == "" {
+				return "", fmt.Errorf("stored API credential has no key; sign in again")
 			}
 			return credential.Key, nil
 		}

@@ -284,26 +284,42 @@ func (e *TurnEngine) HaltNotice() string {
 }
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
+	for _, call := range calls {
+		e.recordInterruptedCall(sink, call, reason, nil)
+	}
+}
+
+func (e *TurnEngine) recordInterruptedCall(sink HistorySink, call db.ToolCall, reason string, observed *evidence.Record) {
 	outcome := evidence.NotExecuted
 	if strings.Contains(reason, "during execution") {
 		outcome = evidence.Unknown
 	}
-	for _, tc := range calls {
-		observed := &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: outcome}
-		if e.policy.ToolBatch != nil {
-			e.policy.ToolBatch.CancelByProviderID(tc.ID)
-		}
-		sink.Append(db.Message{
-			Role:        "tool",
-			ToolCallID:  tc.ID,
-			Name:        tc.Function.Name,
-			Content:     RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason),
-			ToolOutcome: outcome,
-			Evidence:    observed,
-			TaskState:   e.observeTaskTool(tc, observed, true),
-			IsError:     true,
-		})
+	observed = evidence.Clone(observed)
+	if observed == nil {
+		observed = &evidence.Record{Kind: "tool", Target: call.Function.Name, Outcome: outcome}
+	} else if observed.Outcome == "" {
+		observed.Outcome = outcome
+	} else {
+		outcome = observed.Outcome
 	}
+	text := RuntimeMessagef("tool_interrupted", "error: tool execution interrupted (%s)", reason)
+	if observed.Changed != nil && *observed.Changed {
+		text += "\nFile changes were already applied."
+	}
+	if observed.TaskID != "" {
+		text += "\nBackground task started: " + observed.TaskID
+	}
+	if observed.ExitCode != nil {
+		text += fmt.Sprintf("\n[Command exit code: %d]", *observed.ExitCode)
+	}
+	if e.policy.ToolBatch != nil {
+		e.policy.ToolBatch.CancelByProviderID(call.ID)
+	}
+	if e.agent != nil {
+		e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &call, Output: text, IsError: true})
+	}
+	sink.Append(db.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: text, ToolOutcome: outcome,
+		Evidence: observed, TaskState: e.observeTaskTool(call, observed, true), IsError: true})
 }
 
 type EngineLoader interface {

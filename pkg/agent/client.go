@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"loop/pkg/config"
+	"loop/pkg/domain/limits"
 	"loop/pkg/process"
 	transporthttp "loop/pkg/transport/http"
 	"loop/pkg/transport/sse"
@@ -35,6 +36,7 @@ type mcpClient struct {
 	isHTTP            bool
 	sessionID         string
 	protocolVersion   string
+	capabilities      *mcpCapabilities
 	cmd               *exec.Cmd
 	stdin             io.WriteCloser
 	postURL           string
@@ -48,6 +50,11 @@ type mcpClient struct {
 	client            *http.Client
 	cancel            context.CancelFunc
 	connectTimeout    time.Duration
+}
+
+type mcpCapabilities struct {
+	Tools     *struct{} `json:"tools"`
+	Resources *struct{} `json:"resources"`
 }
 
 type MCPTool struct {
@@ -113,6 +120,21 @@ func decodeRPCResponse(raw string, resultDest interface{}) error {
 		return json.Unmarshal(env.Result, resultDest)
 	}
 	return nil
+}
+
+func (c *mcpClient) requestResult(ctx context.Context, method string, params, result any) error {
+	response, err := c.requestWithTimeout(ctx, method, params, c.requestTimeout())
+	if err != nil {
+		return err
+	}
+	return transporthttp.RedactError(decodeRPCResponse(response, result))
+}
+
+func (c *mcpClient) requestTimeout() time.Duration {
+	if c.timeout > 0 {
+		return c.timeout
+	}
+	return limits.MCPRequestTimeout()
 }
 
 func (c *mcpClient) completeHandshake() error {
@@ -463,12 +485,14 @@ func (c *mcpClient) handshake() error {
 		return err
 	}
 	var initialized struct {
-		ProtocolVersion string `json:"protocolVersion"`
+		ProtocolVersion string           `json:"protocolVersion"`
+		Capabilities    *mcpCapabilities `json:"capabilities"`
 	}
 	if err := decodeRPCResponse(res, &initialized); err != nil {
 		return err
 	}
 	c.protocolVersion = initialized.ProtocolVersion
+	c.capabilities = initialized.Capabilities
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -501,6 +525,9 @@ func (c *mcpClient) handshake() error {
 func (c *mcpClient) listTools() ([]MCPTool, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
+	}
+	if c.capabilities != nil && c.capabilities.Tools == nil {
+		return nil, nil
 	}
 
 	const maxPages = 100

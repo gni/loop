@@ -22,6 +22,7 @@ import (
 // Drop transient work before entering another conversation. Failed loads leave
 // the current conversation intact because callers run this only after validation.
 func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorReader) {
+	a.ResetSessionApproval()
 	state := ui.GetUI()
 	state.StateMu.Lock()
 	if reader == nil {

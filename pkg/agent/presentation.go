@@ -42,7 +42,7 @@ type AgentUI interface {
 	UpdateStatus(model string, promptTokens, completionTokens, currentCompletionTokens int, contextLimit int, isGenerating bool, tps float64, activeTasks int, showTokens bool)
 	UpdatePlanStatus(completed, total int)
 	DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string)
-	AskForApproval(w io.Writer, theme style.UITheme) (bool, bool)
+	AskForApproval(w io.Writer, theme style.UITheme, allowSession bool) (bool, bool)
 	AskUserQuestion(w io.Writer, theme style.UITheme, question string, options []string, recommended string) (string, error)
 	AskForSubagentCancellation(w io.Writer, theme style.UITheme, agentName string) SubagentCancellationDecision
 	RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, toolArgs string)

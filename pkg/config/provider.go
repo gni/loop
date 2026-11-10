@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -36,6 +37,20 @@ type ProvidersFile struct {
 	Active         string                    `json:"active,omitempty"`
 	ActiveProvider string                    `json:"active_provider,omitempty"`
 	Providers      map[string]ProviderConfig `json:"providers"`
+}
+
+func (p *ProviderConfig) UnmarshalJSON(data []byte) error {
+	type plain ProviderConfig
+	next := plain(*p)
+	decoded := &next
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded == nil {
+		return fmt.Errorf("provider configuration must contain a JSON object")
+	}
+	*p = ProviderConfig(*decoded)
+	return nil
 }
 
 func parseEnvVarKey(key string) (string, bool) {
@@ -127,7 +142,7 @@ func (c *Config) ActivateProvider(name string) error {
 	}
 	c.ActiveProvider = name
 	c.Endpoint = provider.Endpoint
-	c.APIKey = provider.ResolvedAPIKey()
+	c.APIKey = provider.APIKey
 	if provider.Model != "" {
 		c.Model = provider.Model
 	}

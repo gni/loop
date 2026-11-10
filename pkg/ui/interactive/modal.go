@@ -433,11 +433,13 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	return runChoiceMenuEx(sr, output, theme, prompt, options, selected)
 }
 
-func AskForApproval(w io.Writer, theme style.UITheme) (bool, bool) {
+func AskForApproval(w io.Writer, theme style.UITheme, allowSession bool) (bool, bool) {
 	options := []ChoiceMenuOption{
 		{Label: "yes, proceed (Recommended)", Keys: "yY1"},
 		{Label: "no, cancel", Keys: "nN2"},
-		{Label: "always allow in this session", Keys: "aA3"},
+	}
+	if allowSession {
+		options = append(options, ChoiceMenuOption{Label: "always allow in this session", Keys: "aA3"})
 	}
 	selected, dismissed := runModalChoice(w, theme, " approve tool execution?", options, 0)
 	if dismissed {

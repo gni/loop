@@ -15,11 +15,13 @@ func SetupProcessGroup(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setpgid, cmd.SysProcAttr.Pgid = true, 0
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
+	if cmd.Cancel != nil {
+		cmd.Cancel = func() error {
+			if cmd.Process == nil {
+				return os.ErrProcessDone
+			}
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
 

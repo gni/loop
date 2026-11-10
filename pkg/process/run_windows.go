@@ -10,12 +10,6 @@ import (
 )
 
 func SetupProcessGroup(cmd *exec.Cmd) {
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Kill()
-	}
 }
 
 func KillProcessGroup(cmd *exec.Cmd) error {

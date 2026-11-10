@@ -6,82 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"loop/pkg/config"
-	"loop/pkg/resources"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/domain/message"
+	"loop/pkg/resources"
 )
-
-type mcpResult struct {
-	Content []struct {
-		Type     string          `json:"type"`
-		Text     string          `json:"text"`
-		Data     string          `json:"data"`
-		MimeType string          `json:"mimeType"`
-		Resource json.RawMessage `json:"resource"`
-	} `json:"content"`
-	Structured json.RawMessage `json:"structuredContent"`
-	IsError    bool            `json:"isError"`
-}
-
-func (m *mcpToolExecutor) ExecuteResult(ctx tool.AgentContext, arguments string) (tool.ToolResult, error) {
-	client, err := m.resolveClient()
-	if err != nil {
-		return tool.ToolResult{}, err
-	}
-	parent := context.Background()
-	if ctx != nil {
-		parent = ctx.Context()
-	}
-	return client.callToolResult(parent, m.toolName, arguments)
-}
-
-func (client *mcpClient) callToolResult(parent context.Context, name, arguments string) (tool.ToolResult, error) {
-	if !client.initialized {
-		return tool.ToolResult{}, fmt.Errorf("client not initialized")
-	}
-	if strings.TrimSpace(arguments) == "" {
-		arguments = "{}"
-	}
-	var params map[string]any
-	if err := json.Unmarshal([]byte(arguments), &params); err != nil {
-		return tool.ToolResult{}, err
-	}
-	raw, err := client.resourceRequest(parent, "tools/call", map[string]any{"name": name, "arguments": params})
-	if err != nil {
-		return tool.ToolResult{}, err
-	}
-	var result mcpResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return tool.ToolResult{}, err
-	}
-	output := tool.ToolResult{Structured: result.Structured, IsError: result.IsError}
-	var text []string
-	for _, part := range result.Content {
-		switch part.Type {
-		case "text":
-			text = append(text, part.Text)
-		case "resource":
-			if len(part.Resource) > 0 {
-				text = append(text, string(part.Resource))
-			}
-		case "image":
-			output.Content = append(output.Content, message.ContentBlock{Type: "image", Data: part.Data, MimeType: part.MimeType})
-		}
-	}
-	output.Output = strings.Join(text, "\n")
-	if output.IsError {
-		if output.Output != "" {
-			return output, fmt.Errorf("%s", output.Output)
-		}
-		return output, fmt.Errorf("MCP tool %s failed", name)
-	}
-	return output, nil
-}
 
 type mcpResourceTool struct {
 	agent  *Agent
@@ -99,7 +32,11 @@ func (t *mcpResourceTool) Definition() tool.Tool {
 	if t.name == "list_mcp_resource_templates" {
 		description = "List parameterized resource templates from configured MCP servers."
 	}
-	return tool.NewFunctionTool(t.name, description, map[string]tool.SchemaProp{"server": tool.StringProp("Configured server name"), "uri": tool.StringProp("Resource URI"), "cursor": tool.StringProp("Pagination cursor")})
+	return tool.NewFunctionTool(t.name, description, map[string]tool.SchemaProp{
+		"server": tool.StringProp("Configured server name. Select the server that returned the cursor when continuing a listing."),
+		"uri":    tool.StringProp("Resource URI for read_mcp_resource"),
+		"cursor": tool.StringProp("Pagination cursor returned by the selected server"),
+	})
 }
 func (t *mcpResourceTool) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	result, err := t.ExecuteResult(ctx, arguments)
@@ -132,23 +69,44 @@ func (t *mcpResourceTool) ExecuteResult(ctx tool.AgentContext, arguments string)
 	if t.method == "resources/read" && (len(names) != 1 || args.URI == "") {
 		return tool.ToolResult{}, fmt.Errorf("read_mcp_resource requires server and uri")
 	}
+	if args.Cursor != "" && len(names) > 1 {
+		return tool.ToolResult{}, fmt.Errorf("select the MCP server that returned this cursor")
+	}
+	params := map[string]string{}
+	if args.Cursor != "" {
+		params["cursor"] = args.Cursor
+	}
+	if args.URI != "" {
+		params["uri"] = args.URI
+	}
 	results := make(map[string]json.RawMessage)
 	var blocks []message.ContentBlock
+	failures := 0
 	for _, name := range names {
-		client, err := t.agent.connectMCPServer(name)
-		if err != nil {
+		if err := parent.Err(); err != nil {
 			return tool.ToolResult{}, err
 		}
-		params := map[string]string{}
-		if args.Cursor != "" {
-			params["cursor"] = args.Cursor
+		client, err := t.agent.connectMCPServer(name)
+		if err == nil && client.capabilities != nil && client.capabilities.Resources == nil {
+			if args.Server != "" || t.method == "resources/read" {
+				return tool.ToolResult{}, fmt.Errorf("MCP server %q does not advertise resources", name)
+			}
+			continue
 		}
-		if args.URI != "" {
-			params["uri"] = args.URI
+		var raw json.RawMessage
+		if err == nil {
+			err = client.requestResult(parent, t.method, params, &raw)
 		}
-		raw, err := client.resourceRequest(parent, t.method, params)
 		if err != nil {
-			return tool.ToolResult{}, fmt.Errorf("MCP %s: %w", name, err)
+			if parent.Err() != nil {
+				return tool.ToolResult{}, parent.Err()
+			}
+			if args.Server != "" || t.method == "resources/read" {
+				return tool.ToolResult{}, fmt.Errorf("MCP %s: %w", name, err)
+			}
+			results[name], _ = json.Marshal(map[string]string{"error": err.Error()})
+			failures++
+			continue
 		}
 		results[name] = raw
 		if t.method == "resources/read" {
@@ -197,6 +155,9 @@ func (t *mcpResourceTool) ExecuteResult(ctx tool.AgentContext, arguments string)
 		}
 	}
 	encoded, err := json.Marshal(results)
+	if err == nil && failures > 0 && failures == len(results) {
+		err = fmt.Errorf("%s failed on every queried server", t.method)
+	}
 	return tool.ToolResult{Output: string(encoded), Structured: encoded, Content: blocks}, err
 }
 

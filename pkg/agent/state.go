@@ -17,19 +17,29 @@ func (a *Agent) SetActiveSessionID(sessionID string) {
 	changed := a.activeSessionID != sessionID
 	if changed {
 		a.sessionGeneration++
+		a.sessionAutoApprove = false
 		a.sessionName, a.sessionNameKnown, a.sessionNameDirty = "", false, false
 	}
 	a.activeSessionID = sessionID
 	a.stateMu.Unlock()
 	if changed {
+		guided := a.ensureGuided()
+		guided.resetPlanApproval()
 		path := ""
 		if !a.Ephemeral && sessionID != "" {
 			path = filepath.Join(resources.AgentDirectory(a.ConfigPath), "recovery", config.WorkspaceKey(a.WorkspaceRoot), config.WorkspaceKey(sessionID)+".json")
 		}
-		if err := a.ensureGuided().bindRecovery(a.Context(), path, a.WorkspaceRoot); err != nil {
+		if err := guided.bindRecovery(a.Context(), path, a.WorkspaceRoot); err != nil {
 			a.recordPersistenceError(err)
 		}
 	}
+}
+
+func (a *Agent) ResetSessionApproval() {
+	a.stateMu.Lock()
+	a.sessionAutoApprove = false
+	a.stateMu.Unlock()
+	a.Guided.resetPlanApproval()
 }
 
 func (a *Agent) ActiveSessionID() string {

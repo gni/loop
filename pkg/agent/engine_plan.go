@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -111,7 +112,12 @@ func (e *TurnEngine) prepareToolCallPlan(
 	plan.call = tc
 	plan.executor = executor
 
-	if gateErr := e.verifyGuidedGate(sr, loader, tc.Function.Name); gateErr != nil {
+	gateErr := e.verifyGuidedGate(ctx, sr, loader, tc)
+	if ctx.Err() != nil {
+		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
+		return plan, true, false
+	}
+	if gateErr != nil {
 		plan.toolErr = gateErr
 		plan.output = gateErr.Error()
 		plan.skipped = true
@@ -122,18 +128,29 @@ func (e *TurnEngine) prepareToolCallPlan(
 		return plan, false, false
 	}
 
-	approved, approvalRendered := e.requestApproval(sr, loader, w, theme, idx, tc)
+	approvalRendered, approvalErr := e.requestApproval(ctx, sr, loader, w, theme, idx, tc)
 	plan.approvalRendered = approvalRendered
-	if !approved {
+	if ctx.Err() != nil {
+		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
+		return plan, true, false
+	}
+	if errors.Is(approvalErr, errToolApprovalRejected) {
 		rejOutput, shouldAbort := e.promptRejectionFeedback(tc.Function.Name)
+		if ctx.Err() != nil {
+			e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
+			return plan, true, false
+		}
 		if shouldAbort {
 			e.emitRejectedToolCall(idx, tc, rejOutput, !approvalRendered, bodyStreamed, sink, sr, w, theme, render, false)
 			return plan, false, true
 		}
-		plan.toolErr = fmt.Errorf("rejected by user")
+		plan.toolErr = approvalErr
 		plan.output = rejOutput
 		plan.skipped = true
 		return plan, false, false
+	}
+	if approvalErr != nil {
+		plan.toolErr, plan.output, plan.skipped = approvalErr, approvalErr.Error(), true
 	}
 
 	return plan, false, false

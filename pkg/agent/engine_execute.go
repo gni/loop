@@ -90,7 +90,12 @@ func (e *TurnEngine) ExecuteToolCallAt(
 		return false, false
 	}
 	if !plan.guardHit {
-		if hookOut, hookErr := e.checkBeforeHook(tc); hookErr != nil {
+		hookOut, hookErr := e.checkBeforeHook(tc)
+		if ctx.Err() != nil {
+			e.RecordInterruption(sink, remaining, "cancelled before execution")
+			return true, false
+		}
+		if hookErr != nil {
 			plan.output, plan.toolErr = hookOut, hookErr
 			plan.rich.Evidence = &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: evidence.NotExecuted}
 		} else {
@@ -104,7 +109,7 @@ func (e *TurnEngine) ExecuteToolCallAt(
 			plan.rich, plan.toolErr = e.executeToolWithProgress(plan.executor, tc, sr)
 			plan.output = plan.rich.Output
 			if ctx.Err() != nil {
-				e.RecordInterruption(sink, []db.ToolCall{tc}, "cancelled during execution")
+				e.recordInterruptedCall(sink, tc, "cancelled during execution", plan.rich.Evidence)
 				if len(remaining) > 1 {
 					e.RecordInterruption(sink, remaining[1:], "cancelled before execution")
 				}
@@ -286,7 +291,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 			if plans[i].started {
 				reason = "cancelled during execution"
 			}
-			e.RecordInterruption(sink, assistantMsg.ToolCalls[startIndex+i:startIndex+i+1], reason)
+			e.recordInterruptedCall(sink, assistantMsg.ToolCalls[startIndex+i], reason, plans[i].rich.Evidence)
 		}
 		e.RecordInterruption(sink, assistantMsg.ToolCalls[endIndex:], "cancelled before execution")
 		return true, false
