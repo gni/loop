@@ -43,6 +43,9 @@ func DiscoverModels(ctx context.Context, cfg *config.Config, configPath string) 
 }
 
 func (p *OpenAICompatibleProvider) selectedModel() model.Model {
+	if p == nil || p.Config == nil {
+		return model.Model{}
+	}
 	if entry, err := model.Resolve(p.Config.Models(), p.Config.ActiveProvider, p.Config.Model); err == nil {
 		return entry
 	}
@@ -107,16 +110,7 @@ func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("model discovery returned HTTP %d", response.StatusCode)
 	}
-	var data struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []struct {
-			Name   string `json:"name"`
-			Input  int    `json:"inputTokenLimit"`
-			Output int    `json:"outputTokenLimit"`
-		} `json:"models"`
-	}
+	var data modelCatalog
 	const maxDiscoveryBytes = 4 << 20
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxDiscoveryBytes+1))
 	if err != nil {
@@ -132,24 +126,67 @@ func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
 		return nil, fmt.Errorf("model discovery must return a JSON object")
 	}
 	entries := cfg.Models()
-	seen := make(map[string]bool)
-	for _, entry := range entries {
+	seen := make(map[string]int)
+	for index, entry := range entries {
 		if entry.Provider == cfg.ActiveProvider {
-			seen[entry.ID] = true
+			seen[entry.ID] = index
 		}
 	}
-	for _, entry := range data.Data {
-		if strings.TrimSpace(entry.ID) != "" && !seen[entry.ID] {
-			entries = append(entries, model.Model{ID: entry.ID, Provider: cfg.ActiveProvider, API: profile.API})
-			seen[entry.ID] = true
+	for _, entry := range append(data.Data, data.Models...) {
+		id := entry.modelID()
+		if id == "" {
+			continue
 		}
-	}
-	for _, entry := range data.Models {
-		id := strings.TrimPrefix(entry.Name, "models/")
-		if strings.TrimSpace(id) != "" && !seen[id] {
-			entries = append(entries, model.Model{ID: id, Provider: cfg.ActiveProvider, API: profile.API, ContextWindow: entry.Input, MaxOutput: entry.Output})
-			seen[id] = true
+		if index, exists := seen[id]; exists {
+			// Explicit model metadata remains authoritative; fill missing fields.
+			if entries[index].ContextWindow <= 0 {
+				entries[index].ContextWindow = entry.contextLimit()
+			}
+			if entries[index].MaxOutput <= 0 {
+				entries[index].MaxOutput = max(0, entry.Output)
+			}
+		} else {
+			seen[id] = len(entries)
+			entries = append(entries, model.Model{ID: id, Provider: cfg.ActiveProvider, API: profile.API, ContextWindow: entry.contextLimit(), MaxOutput: max(0, entry.Output)})
 		}
 	}
 	return entries, nil
+}
+
+// Accept explicit serving limits, never training-context or tokenizer metadata.
+type modelMetadata struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	ContextLength    int    `json:"context_length"`
+	ContextWindow    int    `json:"context_window"`
+	MaxContextLength int    `json:"max_context_length"`
+	MaxModelLen      int    `json:"max_model_len"`
+	Input            int    `json:"inputTokenLimit"`
+	Output           int    `json:"outputTokenLimit"`
+}
+
+type modelCatalog struct {
+	Data   []modelMetadata `json:"data"`
+	Models []modelMetadata `json:"models"`
+}
+
+func (m modelMetadata) modelID() string {
+	if id := strings.TrimSpace(m.ID); id != "" {
+		return id
+	}
+	return strings.TrimPrefix(strings.TrimSpace(m.Name), "models/")
+}
+
+func (m modelMetadata) contextLimit() int {
+	return smallestContextLimit(m.ContextLength, m.ContextWindow, m.MaxContextLength, m.MaxModelLen, m.Input)
+}
+
+func smallestContextLimit(values ...int) int {
+	limit := 0
+	for _, value := range values {
+		if value > 0 && (limit == 0 || value < limit) {
+			limit = value
+		}
+	}
+	return limit
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
@@ -87,7 +88,12 @@ func (e *TurnEngine) prepareToolCallPlan(
 		return plan, false, false
 	}
 
-	if guardErr := e.checkGuardPreExecution(tc); guardErr != nil {
+	guardErr := e.checkGuardPreExecution(ctx, tc)
+	if ctx.Err() != nil {
+		e.RecordInterruption(sink, remainingCalls, "cancelled before execution")
+		return plan, true, false
+	}
+	if guardErr != nil {
 		plan.toolErr = guardErr
 		plan.output = guardErr.Error()
 		plan.guardHit = true
@@ -98,6 +104,11 @@ func (e *TurnEngine) prepareToolCallPlan(
 		plan.toolErr = fmt.Errorf("tool '%s' is not allowed for this agent", tc.Function.Name)
 		plan.output = plan.toolErr.Error()
 		plan.skipped = true
+		return plan, false, false
+	}
+	if !run.ToolVisible(ctx, tc.Function.Name) {
+		plan.skipped = true
+		plan.output = fmt.Sprintf("Tool %q was not exposed for this step. Discover it with search_tools before calling it.", tc.Function.Name)
 		return plan, false, false
 	}
 

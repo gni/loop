@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -110,13 +111,7 @@ func (s *JSONLStore) SetNameContext(ctx context.Context, id, name string) error 
 	if err != nil {
 		return err
 	}
-	active := false
-	for _, msg := range ProjectMessages(entries) {
-		if isConversationMessage(msg) {
-			active = true
-			break
-		}
-	}
+	active := slices.ContainsFunc(ProjectMessages(entries), isConversationMessage)
 	if !active {
 		return ErrEmptySession
 	}
@@ -159,6 +154,9 @@ func (s *JSONLStore) LatestForWorkspaceContext(ctx context.Context, workspace st
 	}
 	var candidates []fileCandidate
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		id, valid := validSessionEntry(entry)
 		if !valid {
 			continue
@@ -203,14 +201,17 @@ func (s *JSONLStore) LatestForWorkspaceContext(ctx context.Context, workspace st
 		}
 
 		if sessionWorkspace != "" && matchesWorkspace(sessionWorkspace, workspace) {
-			messages, err := s.LoadMessagesContext(ctx, candidate.id)
+			release, err := s.lockStore(ctx, false)
+			if err != nil {
+				return "", err
+			}
+			state, err := s.appendStateContext(ctx, candidate.id)
+			release()
 			if err != nil {
 				continue
 			}
-			for _, msg := range messages {
-				if isConversationMessage(msg) {
-					return candidate.id, nil
-				}
+			if state.hasConversation {
+				return candidate.id, nil
 			}
 		}
 	}
@@ -245,11 +246,12 @@ func (s *JSONLStore) ExportContext(ctx context.Context, id string, w io.Writer) 
 	if err != nil {
 		return err
 	}
+	encoder := json.NewEncoder(w)
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := json.NewEncoder(w).Encode(entry); err != nil {
+		if err := encoder.Encode(entry); err != nil {
 			return err
 		}
 	}
@@ -268,24 +270,18 @@ func (s *JSONLStore) ImportContext(ctx context.Context, reader io.Reader) (strin
 	if err := s.checkReady(""); err != nil {
 		return "", err
 	}
-	data, err := io.ReadAll(io.LimitReader(contextReader{ctx, reader}, (64<<20)+1))
-	if err != nil {
-		return "", err
-	}
-	if len(data) > 64<<20 {
-		return "", fmt.Errorf("session import exceeds 64 MiB")
-	}
 	f, err := os.CreateTemp(s.core.dir, ".import-*")
 	if err != nil {
 		return "", err
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	defer f.Close()
+	size, err := io.Copy(f, io.LimitReader(contextReader{ctx, reader}, (64<<20)+1))
+	if err != nil {
 		return "", err
 	}
-	if err := f.Close(); err != nil {
-		return "", err
+	if size > 64<<20 {
+		return "", fmt.Errorf("session import exceeds 64 MiB")
 	}
 	entries, err := readEntriesContext(ctx, f.Name())
 	if err != nil {
@@ -294,13 +290,7 @@ func (s *JSONLStore) ImportContext(ctx context.Context, reader io.Reader) (strin
 	if len(entries) == 0 {
 		return "", fmt.Errorf("session import is empty")
 	}
-	hasContent := false
-	for _, msg := range ProjectMessages(entries) {
-		if isConversationMessage(msg) {
-			hasContent = true
-			break
-		}
-	}
+	hasContent := slices.ContainsFunc(ProjectMessages(entries), isConversationMessage)
 	if !hasContent {
 		return "", fmt.Errorf("session import has no conversation content")
 	}
@@ -316,30 +306,32 @@ func (s *JSONLStore) ImportContext(ctx context.Context, reader io.Reader) (strin
 		entries = entries[1:]
 	}
 	header := session.Record{Type: "session", Version: session.CurrentSessionVersion, ID: id, Cwd: cwd, ParentSession: original, Timestamp: nowTimestamp()}
-	var buffer bytes.Buffer
-	if err := writeJSONLine(&buffer, header); err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if err := f.Truncate(0); err != nil {
+		return "", err
+	}
+	encoder := json.NewEncoder(f)
+	if err := encoder.Encode(header); err != nil {
 		return "", err
 	}
 	for _, entry := range entries {
-		if err := writeJSONLine(&buffer, entry); err != nil {
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		if err := encoder.Encode(entry); err != nil {
+			return "", err
+		}
+	}
+	if err := errors.Join(f.Sync(), f.Close()); err != nil {
+		return "", err
 	}
 	release, err := s.lockStore(ctx, true)
 	if err != nil {
 		return "", err
 	}
 	defer release()
-	if err := os.WriteFile(f.Name(), buffer.Bytes(), 0600); err != nil {
-		return "", err
-	}
-	file, err := os.OpenFile(f.Name(), os.O_WRONLY, 0600)
-	if err != nil {
-		return "", err
-	}
-	if err := errors.Join(file.Sync(), file.Close()); err != nil {
-		return "", err
-	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

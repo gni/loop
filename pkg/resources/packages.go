@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,11 +91,14 @@ type HookResult struct {
 }
 
 func RunHook(ctx context.Context, hook Hook, event any) (HookResult, error) {
+	if err := ctx.Err(); err != nil {
+		return HookResult{}, err
+	}
 	data, err := json.Marshal(event)
 	if err != nil {
 		return HookResult{}, err
 	}
-	result, err := process.Run(ctx, process.Options{Executable: hook.Path, Directory: hook.Directory, Input: strings.NewReader(string(data)), Timeout: 15 * time.Second, Environment: os.Environ()})
+	result, err := process.Run(ctx, process.Options{Executable: hook.Path, Directory: hook.Directory, Input: bytes.NewReader(data), Timeout: 15 * time.Second, Environment: os.Environ()})
 	if err != nil {
 		if details := strings.TrimSpace(result.Stderr); details != "" {
 			return HookResult{}, fmt.Errorf("extension %s failed: %w (details: %s)", filepath.Base(hook.Path), err, details)

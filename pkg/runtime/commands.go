@@ -26,10 +26,21 @@ func (s *Session) Commands() []resources.Command {
 }
 
 func (s *Session) ExecuteCommand(ctx context.Context, name string, args []string) (string, error) {
-	if err := s.lockIdle(); err != nil {
+	ctx, err := s.reserve(ctx)
+	if err != nil {
 		return "", err
 	}
-	defer s.runMu.Unlock()
+	defer s.releaseRun()
+	if lifetime := s.Agent.Lifetime; lifetime != nil {
+		s.mu.Lock()
+		cancel := s.cancel
+		s.mu.Unlock()
+		stop := context.AfterFunc(lifetime, cancel)
+		defer stop()
+		if lifetime.Err() != nil {
+			cancel()
+		}
+	}
 	if !strings.HasPrefix(name, "/") {
 		name = "/" + name
 	}

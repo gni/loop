@@ -1,5 +1,7 @@
 package tool
 
+import "maps"
+
 import "encoding/json"
 
 func decodeSchema(data []byte, target any, fields ...string) (map[string]json.RawMessage, error) {
@@ -43,9 +45,7 @@ func mergeSchema(data []byte, extra map[string]json.RawMessage) ([]byte, error) 
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	for key, value := range extra {
-		raw[key] = value
-	}
+	maps.Copy(raw, extra)
 	return json.Marshal(raw)
 }
 

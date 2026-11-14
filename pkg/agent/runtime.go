@@ -39,20 +39,33 @@ func (r RunResult) Clone() RunResult {
 	return r
 }
 
-// WithError records a failure, preserving specific stop reasons and classifying
-// both explicit cancellation and deadlines as cancelled runs.
+// WithError preserves the runner's stop reason. Results without a failure status
+// fall back to error classification when no runner context is available.
 func (r RunResult) WithError(err error) RunResult {
 	if err == nil {
 		return r
 	}
 	r.Error = err.Error()
-	if r.Status == RunCompleted || r.Status == "" {
-		r.Status = RunFailed
+	if r.Status != RunCompleted && r.Status != "" {
+		return r
 	}
+	r.Status = RunFailed
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		r.Status = RunCancelled
 	}
 	return r
+}
+
+// WithErrorContext distinguishes an operation cancellation from an independent
+// deadline in persistence, hooks or event delivery.
+func (r RunResult) WithErrorContext(ctx context.Context, err error) RunResult {
+	if err != nil && (r.Status == RunCompleted || r.Status == "") {
+		r.Status = RunFailed
+		if ctx.Err() != nil {
+			r.Status = RunCancelled
+		}
+	}
+	return r.WithError(err)
 }
 
 type Event struct {

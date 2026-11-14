@@ -112,11 +112,11 @@ func extractFallbackToolName(opening string) string {
 		}
 	}
 	for _, attr := range []string{`name="`, `name='`} {
-		if idx := strings.Index(opening, attr); idx >= 0 {
-			rest := opening[idx+len(attr):]
+		if _, after, ok := strings.Cut(opening, attr); ok {
+			rest := after
 			quote := attr[len(attr)-1]
-			if end := strings.IndexByte(rest, quote); end >= 0 {
-				return rest[:end]
+			if before, _, ok := strings.Cut(rest, string(quote)); ok {
+				return before
 			}
 		}
 	}
@@ -133,11 +133,11 @@ func extractFallbackToolName(opening string) string {
 }
 
 func extractHermesFunctionName(text string) string {
-	idx := strings.Index(text, "<function=")
-	if idx < 0 {
+	_, after, ok := strings.Cut(text, "<function=")
+	if !ok {
 		return ""
 	}
-	rest := text[idx+len("<function="):]
+	rest := after
 	end := strings.IndexAny(rest, ">\n\r ")
 	if end < 0 {
 		return ""
@@ -405,10 +405,7 @@ func longestFallbackOpeningSuffix(text string) int {
 }
 
 func longestSuffixMatchingPrefix(text, marker string) int {
-	maxLength := len(text)
-	if len(marker)-1 < maxLength {
-		maxLength = len(marker) - 1
-	}
+	maxLength := min(len(marker)-1, len(text))
 	for length := maxLength; length > 0; length-- {
 		if strings.HasSuffix(text, marker[:length]) {
 			return length

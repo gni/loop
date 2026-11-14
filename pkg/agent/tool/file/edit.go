@@ -136,10 +136,9 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	if content == initialContent {
 		changed := false
 		observed.Changed = &changed
-		var warning string
-		observed.Diagnostics, warning = inspectSyntax(safePath, data)
+		warning, validationErr := inspectCandidate(ctx, safePath, data, observed)
 		discardIfUncommitted()
-		return "No changes made: replacement already matches file contents." + warning, nil
+		return "No changes made: replacement already matches file contents." + warning, validationErr
 	}
 	diff, err := GenerateDisplayDiffContext(ctx.Context(), initialContent, content, 3)
 	if err != nil {
@@ -158,6 +157,11 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		discardIfUncommitted()
 		return "", fmt.Errorf("edited file exceeds size limit of %d bytes", limits.For(ctx).MaxReadFileBytes)
 	}
+	warning, err := inspectCandidate(ctx, safePath, finalBytes, observed)
+	if err != nil {
+		discardIfUncommitted()
+		return "", err
+	}
 	if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
 		if !mutationCommitted(err, safePath) {
 			discardIfUncommitted()
@@ -167,8 +171,6 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 
 	changed := true
 	observed.Changed = &changed
-	var warning string
-	observed.Diagnostics, warning = inspectSyntax(safePath, finalBytes)
 	if warning != "" {
 		diff += warning
 	}

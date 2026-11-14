@@ -29,6 +29,7 @@ type contextKey string
 const (
 	contextKeyGenerationDuration = contextKey("generation_duration_callback")
 	contextKeyChunkDropObserver  = contextKey("chunk_drop_observer")
+	contextKeyHTTPAttempts       = contextKey("http_attempts")
 )
 
 type Tool = tool.Tool
@@ -128,6 +129,11 @@ func copyProviderCapabilities(destination, source *OpenAICompatibleProvider) {
 		destination.ContextLimitMu.Lock()
 		destination.DetectedContextLimit, destination.ContextLimitChecked = limit, known
 		destination.ContextLimitMu.Unlock()
+	}
+	if budget := source.ContextBudgetSnapshot(); budget != nil {
+		destination.setContextBudget(*budget)
+	} else {
+		destination.clearContextBudget()
 	}
 }
 
@@ -240,6 +246,10 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 		messages = transformed
 	}
 	messages = inferenceMessages(ctx, messages)
+	ctx, budgetErr := run.EnsureRequestBudget(ctx)
+	if budgetErr != nil {
+		return nil, 0, 0, budgetErr
+	}
 	release, err := a.acquireInference(ctx)
 	if err != nil {
 		return nil, 0, 0, err
@@ -250,8 +260,21 @@ func (a *Agent) StreamChatCompletionsIsolated(ctx context.Context, messages []db
 	var dropped atomic.Int64
 	ctx = context.WithValue(ctx, contextKeyGenerationDuration, func(d time.Duration) { duration = d })
 	ctx = context.WithValue(ctx, contextKeyChunkDropObserver, ChunkDropObserver(func() { dropped.Add(1) }))
+	var attempts atomic.Int64
+	ctx = context.WithValue(ctx, contextKeyHTTPAttempts, &attempts)
 	tools := a.inferenceTools(ctx, allowlist)
+	names := make([]string, 0, len(tools))
+	for _, definition := range tools {
+		names = append(names, definition.Function.Name)
+	}
+	run.NoteVisibleTools(ctx, names)
+	run.NoteToolAllowlist(ctx, allowlist)
+	started := time.Now()
 	msg, err := provider.StreamChatCompletions(ctx, messages, tools, chunks)
+	if msg != nil {
+		run.RecordRequestUsage(ctx, msg.PromptTokens, msg.CompletionTokens)
+	}
+	a.recordInferenceMetrics(provider, started, len(tools), int(attempts.Load()), msg, err)
 	a.retainProviderCapabilities(provider)
 	return msg, duration, dropped.Load(), err
 }
@@ -262,6 +285,7 @@ func (a *Agent) inferenceTools(ctx context.Context, allowlist []string) []tool.T
 		return nil
 	}
 	tools := a.Registry.GetAvailableTools(allowlist)
+	tools = a.selectInferenceTools(ctx, tools, allowlist)
 	if current := run.TaskSnapshot(ctx); current != nil && !task.NeedsProgress(current) {
 		available := make([]tool.Tool, 0, len(tools))
 		for _, definition := range tools {

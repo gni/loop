@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +63,7 @@ type ChatHistory struct {
 	turns                                           []*displayTurn
 	active                                          *displayTurn
 	appearance                                      string
+	replayPending, allowActiveReplay                bool
 	notice                                          string
 	resetSequence                                   atomic.Uint64
 	closed                                          atomic.Bool
@@ -140,6 +140,7 @@ func (h *ChatHistory) appearanceKey() string {
 // changes. Scrolling, streaming and ordinary redraws use actual display rows.
 func (h *ChatHistory) BeginTurn() {
 	TerminalMu.Lock()
+	h.replayPending = false
 	h.searchQuery, h.searchNotice = "", ""
 	h.searchEditing = false
 	h.searchDraft = ""
@@ -239,7 +240,14 @@ func (h *ChatHistory) paintLocked() {
 		if h.hasOlderLocked() {
 			text += " · more above"
 		}
-		text += " · [Back to latest: End] · Shift+drag: select"
+		getUI().StateMu.Lock()
+		approval := getUI().InApprovalPrompt
+		getUI().StateMu.Unlock()
+		if approval {
+			text += " · Approval pending · End: choices"
+		} else {
+			text += " · [Back to latest: End] · Shift+drag: select"
+		}
 		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateCells(text, max(1, width-1)))
 	}
 	if h.searchNotice != "" {
@@ -290,7 +298,7 @@ func (h *ChatHistory) queuePaintLocked() {
 			return
 		}
 		getUI().StateMu.Lock()
-		modal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
+		modal := getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 		getUI().StateMu.Unlock()
 		if !modal && (h.browsing || h.needsPaint) {
 			h.paintLocked()
@@ -298,11 +306,30 @@ func (h *ChatHistory) queuePaintLocked() {
 	})
 }
 
-// RepaintTurns is used by explicit collapse/expand and final syntax refresh.
-// Replace only agent blocks, preserving command listings at their positions.
+// RepaintTurns runs on the foreground renderer during an active turn. Replace
+// only agent blocks, preserving command listings at their positions.
 func (h *ChatHistory) RepaintTurns() {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
+	h.repaintActiveTurnLocked()
+}
+
+// RepaintPendingTurn lets the foreground stream consume a resize or appearance
+// change without taking a renderer lock from the terminal input/resize thread.
+func (h *ChatHistory) RepaintPendingTurn() bool {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if h.closed.Load() || !h.replayPending {
+		return false
+	}
+	h.repaintActiveTurnLocked()
+	return true
+}
+
+func (h *ChatHistory) repaintActiveTurnLocked() {
+	h.replayPending = false
+	h.allowActiveReplay = true
+	defer func() { h.allowActiveReplay = false }()
 	if len(h.turns) > 0 {
 		h.turns[len(h.turns)-1].appearance = ""
 		h.turns[len(h.turns)-1].failedLayout = ""
@@ -333,6 +360,10 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		for candidate, turn := range h.turns {
 			visible := turn == h.active || (turn.end > viewTop && turn.start < viewTop+h.buffer.Height)
 			if visible && turn.fragment == nil && turn.appearance != key && !attempted[turn] {
+				if turn == h.active && h.reader.ActiveTurn.Load() && !h.allowActiveReplay {
+					h.replayPending = true
+					continue
+				}
 				i = candidate
 				break
 			}
@@ -358,17 +389,25 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		if len(messages) == 0 {
 			continue
 		}
-		var out bytes.Buffer
-		PrintSessionHistory(&out, messages, theme, h.a.Config)
+		rows := h.buffer.NewHistoryPage()
+		out := &turnReplayWriter{historyPageWriter: historyPageWriter{rows: rows}}
+		PrintSessionHistory(out, messages, theme, h.a.Config)
 		if turn == h.active && replay != nil {
 			if messages[len(messages)-1].Role == "user" {
-				fmt.Fprintln(&out, style.ActivityDivider(theme))
+				fmt.Fprintln(out, style.ActivityDivider(theme))
 			}
-			replay(&out, h.a.Config.CollapseResults, theme)
+			replay(out, h.a.Config.CollapseResults, theme)
+		}
+		if err := errors.Join(rows.Err(), out.err); err != nil {
+			h.historyErr = fmt.Errorf("rebuild display turn: %w", err)
+			_ = rows.Close()
+			continue
 		}
 		changed = true
 		start, end := turn.start, turn.end
-		delta, padding := h.buffer.ReplaceRange(start, end, strings.TrimRight(out.String(), "\r\n"))
+		old, delta, padding := h.buffer.SwapHistoryRange(start, end, rows)
+		_ = old.Close()
+		_ = rows.Close()
 		turn.start += padding
 		turn.end = end + delta + padding
 		turn.appearance = key

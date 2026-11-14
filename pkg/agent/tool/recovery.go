@@ -12,7 +12,7 @@ import (
 )
 
 func RecoveryFor(name, arguments string, err error) *diagnostic.Recovery {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return nil
 	}
 	var failure *diagnostic.Error
@@ -28,6 +28,9 @@ func RecoveryFor(name, arguments string, err error) *diagnostic.Recovery {
 		code = diagnostic.MissingPath
 	} else if errors.Is(err, os.ErrPermission) {
 		code = diagnostic.PermissionDenied
+	}
+	if errors.Is(err, context.DeadlineExceeded) && code != diagnostic.CommandFailed {
+		return nil
 	}
 	recovery := &diagnostic.Recovery{Code: code}
 	var next map[string]any
@@ -51,6 +54,15 @@ func RecoveryFor(name, arguments string, err error) *diagnostic.Recovery {
 		}
 	case diagnostic.PermissionDenied:
 		recovery.Instruction = "The filesystem denied this operation. Check the target and report the permission issue; repeating the call will not grant access."
+	case diagnostic.SyntaxInvalid:
+		recovery.Instruction = "The candidate was not saved. Correct the syntax in the replacement; read the indicated region if needed. Do not retry unchanged content."
+	case diagnostic.InvalidArguments:
+		recovery.Instruction = "Use the tool's declared argument schema and correct the invalid fields before retrying."
+	case diagnostic.CommandFailed:
+		recovery.Instruction = "Inspect the retained diagnostics and exit code, correct the cause, then rerun a relevant bounded check. Do not treat this execution as successful."
+		if errors.Is(err, context.DeadlineExceeded) {
+			recovery.Instruction = "The command timed out and may already have changed files or started processes. Inspect its retained output and current state before retrying; correct the cause or choose a bounded timeout."
+		}
 	default:
 		return nil
 	}

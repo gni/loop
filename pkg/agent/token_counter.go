@@ -28,6 +28,22 @@ type requestTokenCounter struct {
 	cache      map[[32]byte]cachedTokenCount
 	order      [][32]byte
 	retryAfter time.Time
+	scale      float64
+}
+
+func (c *requestTokenCounter) estimateScale() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return max(1, c.scale)
+}
+
+func (c *requestTokenCounter) observe(measured, estimated int) {
+	if measured <= 0 || estimated <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.scale = max(c.scale, float64(measured)/float64(estimated))
+	c.mu.Unlock()
 }
 
 func (p *OpenAICompatibleProvider) requestCounter() *requestTokenCounter {
@@ -48,9 +64,21 @@ func (p *OpenAICompatibleProvider) countRequestTokens(ctx context.Context, messa
 	}
 	state := p.requestCounter()
 	state.mu.Lock()
-	coolingDown := time.Now().Before(state.retryAfter)
-	state.mu.Unlock()
+	now := time.Now()
+	coolingDown := now.Before(state.retryAfter)
+	usableCache := false
 	if coolingDown {
+		for _, cached := range state.cache {
+			if now.Before(cached.expires) {
+				usableCache = true
+				break
+			}
+		}
+	}
+	state.mu.Unlock()
+	// An unavailable counter with no live cached counts needs no request
+	// encoding. Warm counts still take the normal hash lookup below.
+	if coolingDown && !usableCache {
 		return 0, false
 	}
 	reqBody, err := p.chatCompletionRequest(messages, tools, output)
@@ -62,12 +90,25 @@ func (p *OpenAICompatibleProvider) countRequestTokens(ctx context.Context, messa
 	if err != nil || len(data) > 4<<20 {
 		return 0, false
 	}
-	key := sha256.Sum256(data)
+	keyData := data
+	if reqBody.MaxTokens != 0 || reqBody.MaxCompletionTokens != 0 {
+		keyRequest := reqBody
+		keyRequest.MaxTokens, keyRequest.MaxCompletionTokens = 0, 0
+		keyData, err = marshalChatCompletionRequest(keyRequest)
+		if err != nil {
+			return 0, false
+		}
+	}
+	key := sha256.Sum256(keyData)
 	state.mu.Lock()
 	cached, exists := state.cache[key]
+	coolingDown = time.Now().Before(state.retryAfter)
 	state.mu.Unlock()
 	if exists && time.Now().Before(cached.expires) {
 		return cached.count, true
+	}
+	if coolingDown {
+		return 0, false
 	}
 	endpoint, err := url.Parse(completionURL(p.Config.Endpoint))
 	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
@@ -113,6 +154,7 @@ func (p *OpenAICompatibleProvider) countRequestTokens(ctx context.Context, messa
 				}
 				state.cache[key] = cachedTokenCount{*result.InputTokens, time.Now().Add(time.Minute)}
 				state.mu.Unlock()
+				state.observe(*result.InputTokens, requestTokens(reqBody.Messages)+EstimateToolSchemaTokens(tools))
 				return *result.InputTokens, true
 			}
 		}

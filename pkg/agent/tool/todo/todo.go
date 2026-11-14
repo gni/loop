@@ -12,7 +12,7 @@ import (
 )
 
 type todoTool struct {
-	mu    sync.RWMutex
+	mu    sync.Mutex
 	items []domaintool.TodoItem
 }
 
@@ -77,8 +77,8 @@ func matchTaskID(targetID, itemID string, index int) bool {
 	}
 	strip := func(s string) string {
 		for _, prefix := range []string{"task-", "task_", "step-", "step_", "#"} {
-			if strings.HasPrefix(s, prefix) {
-				return strings.TrimPrefix(s, prefix)
+			if after, ok := strings.CutPrefix(s, prefix); ok {
+				return after
 			}
 		}
 		return s
@@ -87,22 +87,35 @@ func matchTaskID(targetID, itemID string, index int) bool {
 	return st == si || si == tgt || st == itm
 }
 
-func findTaskIndex(tasks []domaintool.TodoItem, targetID string) int {
+func findTaskIndex(tasks []domaintool.TodoItem, targetID string) (int, error) {
+	for i, item := range tasks {
+		if strings.EqualFold(strings.TrimSpace(targetID), strings.TrimSpace(item.ID)) {
+			return i, nil
+		}
+	}
+	matched := -1
 	for i, it := range tasks {
 		if matchTaskID(targetID, it.ID, i) {
-			return i
+			if matched >= 0 {
+				return -1, fmt.Errorf("task ID %q is ambiguous; use an exact ID from the plan", targetID)
+			}
+			matched = i
 		}
 	}
-	return -1
+	return matched, nil
 }
 
-func firstNonEmptyList(lists ...[]domaintool.TodoItem) []domaintool.TodoItem {
-	for _, l := range lists {
-		if len(l) > 0 {
-			return l
+func nextTaskID(items []domaintool.TodoItem) string {
+	used := make(map[string]bool, len(items))
+	for _, item := range items {
+		used[strings.ToLower(strings.TrimSpace(item.ID))] = true
+	}
+	for number := len(items) + 1; ; number++ {
+		id := fmt.Sprintf("task-%d", number)
+		if !used[id] {
+			return id
 		}
 	}
-	return nil
 }
 
 func demoteOtherInProgress(tasks []domaintool.TodoItem, activeIdx int) {
@@ -150,7 +163,7 @@ func resolveTodoAction(action, status, taskID, taskDesc string) (string, string)
 	return action, status
 }
 
-func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []domaintool.TodoItem) (items []domaintool.TodoItem, listOutput string, isList bool, err error) {
+func (t *todoTool) applyActionObject(raw map[string]any, currentTasks []domaintool.TodoItem) (items []domaintool.TodoItem, listOutput string, isList bool, err error) {
 	rawAction := strings.ToLower(domaintool.ExtractMapString(raw, "action", "op", "operation", "command", "type"))
 	taskID, taskDesc, rawStatus := domaintool.ExtractTodoFields(raw)
 	rawStatus = strings.ToLower(rawStatus)
@@ -185,7 +198,10 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if taskID == "" {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "update is ambiguous: provide task_id, or send the complete tasks array"))
 		}
-		matchedIdx := findTaskIndex(currentTasks, taskID)
+		matchedIdx, err := findTaskIndex(currentTasks, taskID)
+		if err != nil {
+			return nil, "", false, err
+		}
 		if matchedIdx == -1 {
 			return nil, "", false, fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
 		}
@@ -207,13 +223,16 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if taskID == "" {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_task_id", "task_id is required to remove a task"))
 		}
-		matchedIdx := findTaskIndex(currentTasks, taskID)
+		matchedIdx, err := findTaskIndex(currentTasks, taskID)
+		if err != nil {
+			return nil, "", false, err
+		}
 		if matchedIdx == -1 {
 			return nil, "", false, fmt.Errorf(domaintool.RuntimeMessage("todo_task_not_found", "task '%s' not found in current plan"), taskID)
 		}
 		updated := make([]domaintool.TodoItem, 0, len(currentTasks)-1)
 		for i, it := range currentTasks {
-			if !matchTaskID(taskID, it.ID, i) {
+			if i != matchedIdx {
 				updated = append(updated, it)
 			}
 		}
@@ -223,7 +242,9 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 		if taskDesc == "" {
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_description", "task description is required to add a task"))
 		}
-		taskID = domaintool.FirstNonEmpty(taskID, fmt.Sprintf("task-%d", len(currentTasks)+1))
+		if taskID == "" {
+			taskID = nextTaskID(currentTasks)
+		}
 		status = domaintool.FirstNonEmpty(status, "pending")
 		if strings.EqualFold(status, "in_progress") {
 			demoteOtherInProgress(currentTasks, -1)
@@ -242,7 +263,11 @@ func (t *todoTool) applyActionObject(raw map[string]interface{}, currentTasks []
 			}}, "", false, nil
 		}
 		if taskID != "" {
-			if i := findTaskIndex(currentTasks, taskID); i != -1 {
+			i, err := findTaskIndex(currentTasks, taskID)
+			if err != nil {
+				return nil, "", false, err
+			}
+			if i != -1 {
 				currentTasks[i].Task = taskDesc
 				if status != "" {
 					currentTasks[i].Status = status
@@ -323,8 +348,9 @@ func (t *todoTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		if err := ts.SetTodos(validated); err != nil {
 			return "", fmt.Errorf(domaintool.RuntimeMessage("todo_state_store_failed", "failed to store todo state: %w"), err)
 		}
+	} else {
+		t.items = append([]domaintool.TodoItem(nil), validated...)
 	}
-	t.items = append([]domaintool.TodoItem(nil), validated...)
 
 	return t.formatCounts(validated), nil
 }
@@ -376,13 +402,20 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 			TodoList []domaintool.TodoItem `json:"todo_list"`
 			Actions  []domaintool.TodoItem `json:"actions"`
 		}
-		decodeErr := json.Unmarshal([]byte(trimmed), &container)
-		items = firstNonEmptyList(container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList, container.Actions)
-		if decodeErr != nil && len(items) == 0 {
-			return nil, "", invalidArguments(decodeErr)
+		if err := json.Unmarshal([]byte(trimmed), &container); err != nil {
+			return nil, "", invalidArguments(err)
+		}
+		lists := [][]domaintool.TodoItem{container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList, container.Actions}
+		for _, list := range lists {
+			if list != nil {
+				if items != nil {
+					return nil, "", invalidArguments(errors.New("provide only one plan list"))
+				}
+				items = list
+			}
 		}
 		if container.Markdown != nil {
-			if len(items) > 0 || container.Action != "" {
+			if items != nil || container.Action != "" {
 				return nil, "", invalidArguments(errors.New("provide markdown, tasks, or an action separately"))
 			}
 			parsed, err := parseMarkdownPlan(*container.Markdown)
@@ -393,7 +426,7 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 		}
 
 		if len(items) == 0 {
-			var raw map[string]interface{}
+			var raw map[string]any
 			if err := json.Unmarshal([]byte(trimmed), &raw); err == nil {
 				updated, listOut, isList, actionErr := t.applyActionObject(raw, currentTasks)
 				if actionErr != nil {
@@ -402,12 +435,20 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 				if isList {
 					return nil, listOut, nil
 				}
-				items = updated
+				if updated != nil {
+					items = updated
+				} else {
+					action := domaintool.ExtractMapString(raw, "action", "op", "operation", "command", "type")
+					id, description, status := domaintool.ExtractTodoFields(raw)
+					if action != "" || id != "" || description != "" || status != "" {
+						return nil, "", invalidArguments(errors.New("missing valid action parameters"))
+					}
+				}
 			}
 		}
 	}
 
-	if len(items) == 0 {
+	if items == nil {
 		if isJSON {
 			return nil, "", invalidArguments(errors.New("missing tasks array or valid action parameters"))
 		}
@@ -415,6 +456,9 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 	}
 
 	if len(items) == 0 {
+		if isJSON && items != nil {
+			return items, "", nil
+		}
 		return nil, "", errors.New(domaintool.RuntimeMessage("todo_empty_list", "empty task list: please provide at least one task in 'tasks'"))
 	}
 

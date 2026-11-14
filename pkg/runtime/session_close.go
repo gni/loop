@@ -12,6 +12,10 @@ func (s *Session) Wait(ctx context.Context) error {
 	s.mu.Lock()
 	idle := s.idle
 	s.mu.Unlock()
+	return waitForIdle(ctx, idle)
+}
+
+func waitForIdle(ctx context.Context, idle <-chan struct{}) error {
 	select {
 	case <-idle:
 		return nil
@@ -23,11 +27,12 @@ func (s *Session) Wait(ctx context.Context) error {
 func (s *Session) Abort(ctx context.Context) error {
 	s.mu.Lock()
 	cancel := s.cancel
+	idle := s.idle
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	return s.Wait(ctx)
+	return waitForIdle(ctx, idle)
 }
 
 // Close starts cleanup once. A caller timing out does not abandon cleanup,
@@ -67,6 +72,7 @@ func (s *Session) finishClose() {
 		s.Agent.CancelLifetime()
 	}
 	_ = s.Wait(context.Background())
+	s.eventHooks.Wait()
 	s.runMu.Lock()
 	// Storage contention must not keep processes alive or block exit forever.
 	disposeErr := s.Agent.Dispose(context.Background())

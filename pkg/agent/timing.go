@@ -50,3 +50,14 @@ func (r *TimingRecorder) TotalMs(namespace string) int64 {
 	defer r.mu.Unlock()
 	return r.namespaces[namespace].total.Milliseconds()
 }
+
+// Snapshot returns completed duration totals without retaining individual traces.
+func (r *TimingRecorder) Snapshot() map[string]int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	values := make(map[string]int64, len(r.namespaces))
+	for name, entry := range r.namespaces {
+		values[name] = entry.total.Milliseconds()
+	}
+	return values
+}

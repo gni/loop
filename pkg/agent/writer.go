@@ -15,12 +15,15 @@ type lockedStreamBuffer struct {
 }
 
 func (l *lockedStreamBuffer) Write(p []byte) (int, error) {
-	if l == nil || l.buf == nil {
+	if l == nil {
 		return len(p), nil
 	}
 	if l.mu != nil {
 		l.mu.Lock()
 		defer l.mu.Unlock()
+	}
+	if l.buf == nil {
+		return len(p), nil
 	}
 	return l.buf.Write(p)
 }

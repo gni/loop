@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -55,13 +56,22 @@ func Commands(directories []string) []Command {
 }
 
 func RunCommand(ctx context.Context, command Command, args []string, workspace string, messages []message.Message, timeout time.Duration) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	data, err := json.Marshal(messages)
 	if err != nil {
 		return "", err
 	}
-	result, err := process.Run(ctx, process.Options{Executable: command.Path, Arguments: args, Directory: workspace, Input: strings.NewReader(string(data)), Timeout: timeout})
+	result, err := process.Run(ctx, process.Options{Executable: command.Path, Arguments: args, Directory: workspace, Input: bytes.NewReader(data), Timeout: timeout})
 	if err != nil {
-		return result.Stdout, fmt.Errorf("extension failed: %w (details: %s)", err, strings.TrimSpace(result.Stderr))
+		if result.ExitCode != nil && *result.ExitCode == 0 {
+			return result.Stdout, fmt.Errorf("extension completed with exit code 0, but capturing its output failed; effects may already be applied: %w", err)
+		}
+		if details := strings.TrimSpace(result.Stderr); details != "" {
+			return result.Stdout, fmt.Errorf("extension failed: %w (details: %s)", err, details)
+		}
+		return result.Stdout, fmt.Errorf("extension failed: %w", err)
 	}
 	return result.Stdout, nil
 }

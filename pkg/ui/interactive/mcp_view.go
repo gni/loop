@@ -188,7 +188,7 @@ func renderMCPManager(m *mcpManager, names []string, statuses map[string]agent.M
 		}
 	}
 	if wide {
-		for index := 0; index < bodyHeight; index++ {
+		for index := range bodyHeight {
 			l, r := "", ""
 			if index < len(left) {
 				l = left[index]
@@ -230,7 +230,7 @@ func renderMCPManager(m *mcpManager, names []string, statuses map[string]agent.M
 	}
 	for _, line := range controls {
 		var parts []string
-		for _, part := range strings.Split(line, "   ") {
+		for part := range strings.SplitSeq(line, "   ") {
 			key, label, _ := strings.Cut(part, " ")
 			parts = append(parts, title.Render(key)+muted.Render(" "+label))
 		}

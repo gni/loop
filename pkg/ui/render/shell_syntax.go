@@ -308,3 +308,9 @@ func (sr *StreamRenderer) NewShellOutputWriter(w io.Writer, arguments string) io
 	sr.mu.Unlock()
 	return NewShellOutputWriter(w, ExtractToolTarget("bash", arguments), theme)
 }
+
+// RenderShellOutputNotice uses the live cache's line count without loading or
+// highlighting an entire command log just to show its collapsed state.
+func (sr *StreamRenderer) RenderShellOutputNotice(w io.Writer, lines int, theme style.UITheme) {
+	renderCollapsedNotice(w, lines, theme)
+}

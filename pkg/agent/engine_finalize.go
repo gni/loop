@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
@@ -103,14 +104,15 @@ func (e *TurnEngine) finalizeToolCall(
 		rawOutput = strings.TrimRight(rawOutput, "\r\n") + fmt.Sprintf("\n\n[Command exit code: %d]", *rich.Evidence.ExitCode)
 		rawOutput = strings.TrimLeft(rawOutput, "\n")
 	}
+	rich.Evidence.Digest = fmt.Sprintf("%x", sha256.Sum256([]byte(rawOutput)))
 	if !isRepetitionError(toolErr) {
 		e.guard.RecordObservedResult(tc.Function.Name, tc.Function.Arguments, rawOutput, toolErr, rich.Evidence)
-	}
-	if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
-		if tc.Function.Name == "task_state" && toolErr == nil {
-			rawOutput = task.AddProgressAdvisory(rawOutput, reminder)
-		} else {
-			rawOutput += "\n\n[" + reminder + "]"
+		if reminder := e.guard.GetAdvisoryReminder(tc.Function.Name, tc.Function.Arguments); reminder != "" {
+			if tc.Function.Name == "task_state" && toolErr == nil {
+				rawOutput = task.AddProgressAdvisory(rawOutput, reminder)
+			} else {
+				rawOutput += "\n\n[" + reminder + "]"
+			}
 		}
 	}
 	recovery := tool.RecoveryFor(tc.Function.Name, tc.Function.Arguments, toolErr)
@@ -136,12 +138,37 @@ func (e *TurnEngine) finalizeToolCall(
 
 	exec := executionContext(e, a)
 	budget := limits.ToolOutputBytes(exec)
-	pruned, spillPath, truncated := tool.SpillToolOutput(exec, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, budget)
+	if !rich.Evidence.HasErrors() {
+		for _, check := range rich.Evidence.Checks {
+			if check.Kind != "syntax" && check.Status == evidence.Passed {
+				budget = min(budget, 1024)
+			}
+		}
+	}
+	skillName := ""
+	if toolErr == nil && tc.Function.Name == "load_skill" {
+		skillName, _ = tool.ParseSkillName(tc.Function.Arguments)
+	}
+	// Selected skill instructions are context, not a command log preview.
+	// The request budget still enforces the model's overall context limit.
+	pruned, spillPath, truncated := rawOutput, "", false
+	if skillName == "" {
+		pruned, spillPath, truncated = tool.SpillToolOutput(exec, e.policy.SessionKey, tc.ID, tc.Function.Name, rawOutput, budget)
+	}
+	if tc.Function.Name == "read" && rich.Output != "" && !strings.Contains(pruned, rich.Output) {
+		if observer, ok := exec.(interface{ InvalidateReadCoverage(string) }); ok {
+			observer.InvalidateReadCoverage(rich.Evidence.Target)
+		}
+	}
 	structured := rich.Structured
 	if truncated || len(structured) > budget {
 		structured = nil
 	}
-	a.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: pruned, IsError: toolErr != nil})
+	var metrics any
+	if a.EventSink != nil {
+		metrics = map[string]any{"duration_ms": rich.Evidence.DurationMS, "repeat_count": e.guard.ConsecutiveIdenticalCount(), "checks": rich.Evidence.Checks}
+	}
+	a.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: pruned, IsError: toolErr != nil, Data: metrics})
 	if e.policy.ToolBatch != nil {
 		e.policy.ToolBatch.SetResult(idx, pruned, toolErr)
 		e.policy.ToolBatch.Finish(idx, toolErr != nil)
@@ -195,7 +222,7 @@ func (e *TurnEngine) finalizeToolCall(
 	}
 	a.stateMu.Unlock()
 
-	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, SpillPath: spillPath, ContentBlocks: rich.Content, Structured: structured, Recovery: recovery, Evidence: evidence.Clone(rich.Evidence), IsError: toolErr != nil, TaskState: e.observeTaskTool(tc, rich.Evidence, toolErr != nil)})
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: pruned, SkillName: skillName, SpillPath: spillPath, ContentBlocks: rich.Content, Structured: structured, Recovery: recovery, Evidence: evidence.Clone(rich.Evidence), IsError: toolErr != nil, TaskState: e.observeTaskTool(tc, rich.Evidence, toolErr != nil)})
 	if afterCall != nil {
 		afterCall(tc, pruned, toolErr)
 	}

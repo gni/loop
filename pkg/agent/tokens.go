@@ -10,13 +10,13 @@ import (
 	"loop/pkg/db"
 )
 
-const charsPerToken = 3.2
+const charsPerToken = 2.5
 
 func TokensFromChars(chars int) int {
 	if chars <= 0 {
 		return 0
 	}
-	tokens := int(math.Round(float64(chars) / charsPerToken))
+	tokens := int(math.Ceil(float64(chars) / charsPerToken))
 	if tokens == 0 {
 		return 1
 	}
@@ -31,7 +31,7 @@ func EstimateToolSchemaTokens(tools []tool.Tool) int {
 	if err != nil {
 		return 0
 	}
-	return TokensFromChars(len(data))
+	return TokensFromChars(len(data)) + 8*len(tools)
 }
 
 func messageChars(m db.Message) int {
@@ -52,7 +52,7 @@ func messageChars(m db.Message) int {
 func EstimateMessageTokens(m db.Message) int {
 	// Provider usage describes an entire request, not the size of this message.
 	// Compaction must budget the content actually retained in the history.
-	return TokensFromChars(messageChars(m) + len(m.Role) + len(m.Name) + len(m.ToolCallID) + 12)
+	return TokensFromChars(messageChars(m)+len(m.Role)+len(m.Name)+len(m.ToolCallID)) + 8
 }
 
 func EstimateMessagesTokens(messages []db.Message) int {
@@ -61,11 +61,7 @@ func EstimateMessagesTokens(messages []db.Message) int {
 	// the compacted request, so estimate from retained content instead.
 	for _, m := range messages {
 		if (m.Role == "system" || m.Role == "user") && m.Usage != nil {
-			chars := 0
-			for _, retained := range messages {
-				chars += messageChars(retained) + len(retained.Role) + len(retained.Name) + len(retained.ToolCallID) + 12
-			}
-			return TokensFromChars(chars)
+			return requestTokens(messages)
 		}
 	}
 	trailingTokens := 0
@@ -73,7 +69,7 @@ func EstimateMessagesTokens(messages []db.Message) int {
 		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
 			return messages[i].PromptTokens + messages[i].CompletionTokens + trailingTokens
 		}
-		trailingTokens += TokensFromChars(messageChars(messages[i]))
+		trailingTokens += EstimateMessageTokens(messages[i])
 	}
 	return trailingTokens
 }
@@ -92,15 +88,15 @@ func CacheTokenTotals(history []db.Message) (int, int) {
 	return reads, writes
 }
 
-var DefaultContextTiers = []int{32768, 65536, 131072, 262144, 524288, 1048576}
+var DefaultContextTiers = []int{8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576}
 
 func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit int, minWindow int, autoAdapt bool) int {
 	maxCeiling := configuredLimit
 	if maxCeiling <= 0 {
-		maxCeiling = 128000
+		maxCeiling = config.DefaultContextWindowLimit
 	}
-	if serverLimit > 0 && (serverLimit < maxCeiling || configuredLimit == 128000) {
-		maxCeiling = serverLimit
+	if serverLimit > 0 {
+		maxCeiling = min(maxCeiling, serverLimit)
 	}
 
 	if !autoAdapt {
@@ -108,13 +104,14 @@ func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit
 	}
 
 	if minWindow <= 0 {
-		minWindow = 32768
+		minWindow = config.DefaultMinContextWindow
 	}
 	if minWindow > maxCeiling {
 		minWindow = maxCeiling
 	}
 
-	neededTokens := currentTokens + 4096
+	reserve := min(4096, max(1, maxCeiling/4))
+	neededTokens := min(currentTokens, maxCeiling) + reserve
 
 	tiers := []int{minWindow}
 	for _, t := range DefaultContextTiers {
@@ -140,8 +137,8 @@ func GetAdaptiveContextLimit(currentTokens int, serverLimit int, configuredLimit
 
 func ResolveAdaptiveContextLimit(cfg *config.Config, serverLimit, currentTokens int) int {
 	autoAdapt := true
-	minWindow := 32768
-	configuredLimit := 128000
+	minWindow := config.DefaultMinContextWindow
+	configuredLimit := config.DefaultContextWindowLimit
 	if cfg != nil {
 		autoAdapt = cfg.AutoAdaptContext
 		if cfg.MinContextWindow > 0 {
@@ -186,7 +183,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	// Reasoning tokens and evicted history are not resubmitted to the provider.
 	if a != nil {
 		messages = inferenceMessages(a.Context(), messages)
-		if a.Config == nil || a.Config.AutoAdaptContext {
+		if historyCompressionEnabled(a.Config) {
 			messages = CompactHistoricalToolOutputs(messages)
 		}
 	} else {
@@ -195,10 +192,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	messages, _ = sanitizeRequestMessages(messages)
 	messages = EnforceToolPairingInvariance(messages)
 
-	chars := 0
-	for _, m := range messages {
-		chars += messageChars(m) + len(m.Role) + len(m.Name) + len(m.ToolCallID) + 12
-	}
+	messageTokens := requestTokens(messages)
 
 	toolTokens := 0
 	if a != nil && a.Registry != nil {
@@ -212,7 +206,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 		toolTokens = EstimateToolSchemaTokens(tools)
 	}
 
-	if estimate := TokensFromChars(chars) + toolTokens; estimate > 0 {
+	if estimate := messageTokens + toolTokens; estimate > 0 {
 		return estimate, 0, true
 	}
 	return 0, 0, false
@@ -235,12 +229,19 @@ func (a *Agent) GetLatestAssistantCompletionTokens(messages []db.Message) int {
 
 func (a *Agent) GetEffectiveContextLimit(currentPromptTokens int) int {
 	if a == nil {
-		return 128000
+		return config.DefaultContextWindowLimit
 	}
 	serverLimit := 0
 	a.LLMProviderMu.RLock()
 	if detector, ok := a.LLMProvider.(ContextLimitDetector); ok {
 		serverLimit = detector.GetDetectedContextLimit()
+	}
+	if provider, ok := a.LLMProvider.(*OpenAICompatibleProvider); ok {
+		if limit := provider.selectedModel().ContextWindow; limit > 0 {
+			if serverLimit <= 0 || limit < serverLimit {
+				serverLimit = limit
+			}
+		}
 	}
 	a.LLMProviderMu.RUnlock()
 

@@ -21,7 +21,7 @@ type OAuthConfig struct {
 }
 
 type ProviderConfig struct {
-	ChatCapabilities ChatCapabilities  `json:"chat_capabilities,omitempty"`
+	ChatCapabilities ChatCapabilities  `json:"chat_capabilities"`
 	Models           []model.Model     `json:"models,omitempty"`
 	OAuth            *OAuthConfig      `json:"oauth,omitempty"`
 	API              string            `json:"api,omitempty"`
@@ -55,11 +55,11 @@ func (p *ProviderConfig) UnmarshalJSON(data []byte) error {
 
 func parseEnvVarKey(key string) (string, bool) {
 	trimmed := strings.TrimSpace(key)
-	if strings.HasPrefix(trimmed, "$") {
-		return strings.TrimPrefix(trimmed, "$"), true
+	if after, ok := strings.CutPrefix(trimmed, "$"); ok {
+		return after, true
 	}
-	if strings.HasPrefix(trimmed, "env:") {
-		return strings.TrimPrefix(strings.TrimPrefix(trimmed, "env:"), "$"), true
+	if after, ok := strings.CutPrefix(trimmed, "env:"); ok {
+		return strings.TrimPrefix(after, "$"), true
 	}
 	return "", false
 }

@@ -103,12 +103,16 @@ func RunExtension(
 
 	targetCmd := "/" + strings.ToLower(name)
 	var additional []string
+	workspace := ""
 	if a != nil && a.Config != nil {
 		additional = a.Config.ExtensionDirectories
 	}
+	if a != nil {
+		workspace = a.GetWorkspaceRoot()
+	}
 	var extPath string
 	blockedProjectExt := false
-	for _, ext := range ListExtensions(a.GetWorkspaceRoot(), additional...) {
+	for _, ext := range ListExtensions(workspace, additional...) {
 		if ext.Name != targetCmd {
 			continue
 		}
@@ -144,7 +148,7 @@ func RunExtension(
 	if a != nil && a.Config != nil && a.Config.ExtensionTimeout > 0 {
 		timeout = time.Duration(a.Config.ExtensionTimeout) * time.Second
 	}
-	output, err := resources.RunCommand(parentCtx, resources.Command{Name: targetCmd, Path: extPath}, args, a.GetWorkspaceRoot(), history, timeout)
+	output, err := resources.RunCommand(parentCtx, resources.Command{Name: targetCmd, Path: extPath}, args, workspace, history, timeout)
 	if output != "" {
 		if _, writeErr := io.WriteString(w, output); writeErr != nil {
 			return true, writeErr

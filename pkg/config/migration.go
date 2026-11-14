@@ -51,6 +51,9 @@ func NormalizeConfigJSON(data []byte) ([]byte, error) {
 	// Workspace resource permission comes from trust, never from a config file.
 	delete(values, "disable_project_plugins")
 	delete(values, "project_resources")
+	if err := expandContextProfile(values); err != nil {
+		return nil, err
+	}
 	return json.Marshal(values)
 }
 

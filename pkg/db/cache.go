@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"loop/pkg/domain/message"
@@ -22,11 +23,32 @@ const (
 	maxCachedTotalBytes = 8 << 20
 )
 
+type cachedFile struct {
+	size        int64
+	modified    time.Time
+	identity    os.FileInfo
+	changeStamp int64
+	stampKnown  bool
+}
+
+func cacheFile(info os.FileInfo) cachedFile {
+	stamp, known := storage.FileChangeStamp(info)
+	return cachedFile{size: info.Size(), modified: info.ModTime(), identity: info, changeStamp: stamp, stampKnown: known}
+}
+
+func (c cachedFile) matches(info os.FileInfo) bool {
+	if c.size != info.Size() || !c.modified.Equal(info.ModTime()) || c.identity == nil || !os.SameFile(c.identity, info) {
+		return false
+	}
+	stamp, known := storage.FileChangeStamp(info)
+	return c.stampKnown == known && (!known || c.changeStamp == stamp)
+}
+
 type cachedEntries struct {
-	size             int64
-	modified         time.Time
+	cachedFile
 	entries          []session.Record
 	complete         bool
+	hasConversation  bool
 	count            int
 	lastID, lastType string
 	settingsHash     *[sha256.Size]byte
@@ -41,7 +63,7 @@ func cloneRecord(entry session.Record) session.Record {
 }
 
 func cacheForEntries(info os.FileInfo, entries []session.Record) cachedEntries {
-	c := cachedEntries{size: info.Size(), modified: info.ModTime(), count: len(entries), complete: true, entries: entries}
+	c := cachedEntries{cachedFile: cacheFile(info), count: len(entries), complete: true, entries: entries}
 	if len(entries) > 0 {
 		last := entries[len(entries)-1]
 		c.lastID, c.lastType = last.ID, last.Type
@@ -50,6 +72,9 @@ func cacheForEntries(info os.FileInfo, entries []session.Record) cachedEntries {
 		}
 	}
 	path := session.LeafPath(entries, "")
+	for _, entry := range path {
+		c.hasConversation = conversationAfterRecord(c.hasConversation, entry)
+	}
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i].Type == "settings" {
 			hash := sha256.Sum256(path[i].Data)
@@ -60,12 +85,23 @@ func cacheForEntries(info os.FileInfo, entries []session.Record) cachedEntries {
 	return c
 }
 
+func conversationAfterRecord(current bool, entry session.Record) bool {
+	switch entry.Type {
+	case "context", "compaction":
+		return slices.ContainsFunc(entry.Messages, isConversationMessage)
+	case "", "message", "prompt":
+		return current || isConversationMessage(entry.Message)
+	default:
+		return current
+	}
+}
+
 func (s *JSONLStore) cached(id string, info os.FileInfo) (cachedEntries, bool) {
 	c, ok := s.core.cache[id]
 	if !ok {
 		return c, false
 	}
-	if c.size != info.Size() || !c.modified.Equal(info.ModTime()) {
+	if !c.matches(info) {
 		delete(s.core.cache, id)
 		return cachedEntries{}, false
 	}
@@ -122,11 +158,15 @@ func (s *JSONLStore) appendStateContext(ctx context.Context, id string) (cachedE
 		return cachedEntries{}, err
 	}
 	defer f.Close()
-	c := cachedEntries{size: info.Size(), modified: info.ModTime(), complete: info.Size() <= maxCachedFileBytes}
+	c := cachedEntries{cachedFile: cacheFile(info), complete: info.Size() <= maxCachedFileBytes}
 	// Validate envelopes one at a time. Bodies are released immediately once
 	// the retention limit is exceeded. Settings digests follow parent links so
 	// deduplication uses the active branch even after a branch-marker append.
-	ids := make(map[string]*[sha256.Size]byte)
+	type branchState struct {
+		settingsHash    *[sha256.Size]byte
+		hasConversation bool
+	}
+	ids := make(map[string]branchState)
 	var previous string
 	scanner := newJSONLScanner(contextReader{ctx, f})
 	line := 0
@@ -154,16 +194,18 @@ func (s *JSONLStore) appendStateContext(ctx context.Context, id string) (cachedE
 			if _, exists := ids[id]; exists {
 				return cachedEntries{}, fmt.Errorf("duplicate session entry %q", entry.ID)
 			}
-			hash, exists := ids[parent]
+			state, exists := ids[parent]
 			if parent != "" && !exists {
 				return cachedEntries{}, fmt.Errorf("entry %q has unknown or forward parent %q", id, parent)
 			}
 			if entry.Type == "settings" {
 				digest := sha256.Sum256(entry.Data)
-				hash = &digest
+				state.settingsHash = &digest
 			}
-			ids[id] = hash
-			c.settingsHash = hash
+			state.hasConversation = conversationAfterRecord(state.hasConversation, entry)
+			ids[id] = state
+			c.settingsHash = state.settingsHash
+			c.hasConversation = state.hasConversation
 			if entry.Type != "branch" {
 				previous = id
 			}

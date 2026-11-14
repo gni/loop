@@ -16,25 +16,21 @@ import (
 // file edits, shell commands and other side effects are never replayed.
 func restorePlan(entries []session.Record) ([]tool.TodoItem, error) {
 	var plan []tool.TodoItem
-	pending := map[string]string{}
+	var matcher message.ToolResultMatcher
 	hasCheckpoint, hasToolHistory := false, false
 	replayMessage := func(msg message.Message) {
+		match, matched := matcher.Next(msg)
 		if msg.Role == "assistant" {
 			for _, call := range msg.ToolCalls {
 				if tool.NormalizeName(call.Function.Name) == "todo" {
-					pending[call.ID] = call.Function.Arguments
 					hasToolHistory = true
 				}
 			}
 		}
-		if msg.Role != "tool" {
+		if !matched || tool.NormalizeName(match.Call.Function.Name) != "todo" {
 			return
 		}
-		arguments, ok := pending[msg.ToolCallID]
-		if !ok {
-			return
-		}
-		delete(pending, msg.ToolCallID)
+		arguments := match.Call.Function.Arguments
 		text := strings.ToLower(strings.TrimSpace(msg.Content))
 		if msg.IsError || strings.HasPrefix(text, "system alert:") || strings.HasPrefix(text, "error:") {
 			return
@@ -57,7 +53,7 @@ func restorePlan(entries []session.Record) ([]tool.TodoItem, error) {
 				hasCheckpoint = true
 				// A snapshot may precede the tool-result record that acknowledges it.
 				// Those calls are already included and must not be applied twice.
-				clear(pending)
+				matcher.Reset()
 			}
 		case "", "message":
 			replayMessage(entry.Message)

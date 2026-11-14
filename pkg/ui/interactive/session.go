@@ -111,8 +111,8 @@ func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput
 			return "", true, nil
 		}
 
-		if strings.HasPrefix(inputStr, "d ") {
-			numStr := strings.TrimSpace(strings.TrimPrefix(inputStr, "d "))
+		if after, ok := strings.CutPrefix(inputStr, "d "); ok {
+			numStr := strings.TrimSpace(after)
 			num, err := strconv.Atoi(numStr)
 			if err != nil || num < 1 || num > len(sessions) {
 				fmt.Fprint(rlOutput, "invalid session number to delete.\r\n")

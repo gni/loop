@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -37,12 +38,7 @@ var (
 )
 
 func isPrioritySchemaKey(key string) bool {
-	for _, pk := range schemaPriorityKeys {
-		if key == pk {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schemaPriorityKeys, key)
 }
 
 // MarshalJSON guarantees deterministic property ordering with file paths first.
@@ -202,7 +198,7 @@ type TodoItem struct {
 }
 
 // ExtractMapString returns the first non-empty string representation among keys in raw.
-func ExtractMapString(raw map[string]interface{}, keys ...string) string {
+func ExtractMapString(raw map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if v, ok := raw[k]; ok && v != nil {
 			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
@@ -214,7 +210,7 @@ func ExtractMapString(raw map[string]interface{}, keys ...string) string {
 }
 
 // ExtractTodoFields extracts normalized id, description, and status fields from a loosely-typed map.
-func ExtractTodoFields(raw map[string]interface{}) (id, task, status string) {
+func ExtractTodoFields(raw map[string]any) (id, task, status string) {
 	id = ExtractMapString(raw, todoIDKeys...)
 	for _, k := range todoDescKeys {
 		if s, ok := raw[k].(string); ok {
@@ -248,7 +244,7 @@ func (ti *TodoItem) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -279,7 +275,7 @@ func ParseMarkdownTodoLines(raw string, idPrefix string) []TodoItem {
 		idPrefix = "task-"
 	}
 	var parsed []TodoItem
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -344,7 +340,7 @@ func DefaultAskUserSelection(options []AskUserOption, recommended string) string
 
 // ParseToolArguments unmarshals arguments into dest; if arguments is a plain string
 // or quoted JSON string, onString is invoked with that string content.
-func ParseToolArguments(arguments string, dest interface{}, onString func(string)) error {
+func ParseToolArguments(arguments string, dest any, onString func(string)) error {
 	trimmed := strings.TrimSpace(arguments)
 	if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") && len(trimmed) >= 2 {
 		var unquoted string

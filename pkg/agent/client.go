@@ -58,9 +58,9 @@ type mcpCapabilities struct {
 }
 
 type MCPTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
 }
 
 func (c *mcpClient) applyHeaders(req *http.Request, contentType string) {
@@ -100,7 +100,7 @@ func (c *mcpClient) postJSON(ctx context.Context, payload []byte) (*http.Respons
 	return response, transporthttp.RedactError(err)
 }
 
-func decodeRPCResponse(raw string, resultDest interface{}) error {
+func decodeRPCResponse(raw string, resultDest any) error {
 	var env struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -305,7 +305,7 @@ func (c *mcpClient) close() {
 			c.cancel()
 		}
 		if c.cmd != nil && c.cmd.Process != nil {
-			_ = process.TerminateProcessGroup(c.cmd, 300*time.Millisecond)
+			_ = process.KillProcessGroup(c.cmd)
 		}
 		c.writeMu.Lock()
 		if c.stdin != nil {
@@ -368,7 +368,7 @@ func (c *mcpClient) handleMessage(data string) {
 	c.requestMu.Unlock()
 }
 
-func (c *mcpClient) prepareRPCRequest(method string, params interface{}) (int64, chan string, []byte, error) {
+func (c *mcpClient) prepareRPCRequest(method string, params any) (int64, chan string, []byte, error) {
 	c.requestMu.Lock()
 	if c.closed {
 		c.requestMu.Unlock()
@@ -380,7 +380,7 @@ func (c *mcpClient) prepareRPCRequest(method string, params interface{}) (int64,
 	c.requests[id] = ch
 	c.requestMu.Unlock()
 
-	reqMap := map[string]interface{}{
+	reqMap := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
@@ -416,7 +416,7 @@ func (c *mcpClient) awaitRPCResponse(ctx context.Context, id int64, ch <-chan st
 	}
 }
 
-func (c *mcpClient) requestWithTimeout(parent context.Context, method string, params interface{}, timeout time.Duration) (string, error) {
+func (c *mcpClient) requestWithTimeout(parent context.Context, method string, params any, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	stop := context.AfterFunc(c.context(), cancel)
@@ -466,14 +466,14 @@ func (c *mcpClient) requestWithTimeout(parent context.Context, method string, pa
 	return c.awaitRPCResponse(ctx, id, ch, "MCP connection closed while waiting for '%s'", "request timeout or cancellation", method)
 }
 
-func (c *mcpClient) request(method string, params interface{}) (string, error) {
+func (c *mcpClient) request(method string, params any) (string, error) {
 	return c.requestWithTimeout(c.context(), method, params, c.requestTimeout())
 }
 
 func (c *mcpClient) handshake() error {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"protocolVersion": "2025-11-25",
-		"capabilities":    map[string]interface{}{},
+		"capabilities":    map[string]any{},
 		"clientInfo": map[string]string{
 			"name":    "loop-client",
 			"version": "1.0.0",
@@ -494,7 +494,7 @@ func (c *mcpClient) handshake() error {
 	c.protocolVersion = initialized.ProtocolVersion
 	c.capabilities = initialized.Capabilities
 
-	data, _ := json.Marshal(map[string]interface{}{
+	data, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	})
@@ -535,8 +535,8 @@ func (c *mcpClient) listTools() ([]MCPTool, error) {
 	var cursor string
 	seenCursors := make(map[string]bool)
 	seenNames := make(map[string]bool)
-	for page := 0; page < maxPages; page++ {
-		var params interface{}
+	for page := range maxPages {
+		var params any
 		if cursor != "" {
 			params = map[string]string{"cursor": cursor}
 		}

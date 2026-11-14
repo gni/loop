@@ -75,6 +75,18 @@ func (a *Agent) RecordRead(absPath string, data []byte) {
 	}
 }
 
+func (a *Agent) RecordReadRange(path string, data []byte, start, end int, complete bool) {
+	if a != nil && a.FileObservations != nil {
+		a.FileObservations.RecordReadRange(path, data, start, end, complete)
+	}
+}
+
+func (a *Agent) InvalidateReadCoverage(path string) {
+	if a != nil && a.FileObservations != nil {
+		a.FileObservations.InvalidateCoverage(path)
+	}
+}
+
 func (a *Agent) CheckMutationAllowed(absPath string, isEdit bool) error {
 	if a == nil {
 		return nil

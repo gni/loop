@@ -21,7 +21,11 @@ type handoffArguments struct {
 }
 
 func prepareHandoff(ctx tool.AgentContext, arguments string, inherited []string) (string, error) {
-	if len(arguments) > maxHandoffBytes*6 {
+	budget := maxHandoffBytes
+	if capacity, ok := ctx.(interface{ GetEffectiveContextLimit(int) int }); ok {
+		budget = min(budget, max(1024, capacity.GetEffectiveContextLimit(0)))
+	}
+	if len(arguments) > budget*6 {
 		return "", fmt.Errorf("handoff arguments exceed the size limit; send a focused task and paths")
 	}
 	if err := ctx.Context().Err(); err != nil {
@@ -75,8 +79,8 @@ func prepareHandoff(ctx tool.AgentContext, arguments string, inherited []string)
 	for _, instruction := range inherited {
 		inheritedBytes += len(instruction)
 	}
-	if handoff.Len()+inheritedBytes > maxHandoffBytes {
-		return "", fmt.Errorf("handoff and inherited user instructions require %d bytes; limit is %d. Narrow the delegated task or keep it in the parent agent. User instructions will not be silently truncated", handoff.Len()+inheritedBytes, maxHandoffBytes)
+	if handoff.Len()+inheritedBytes > budget {
+		return "", fmt.Errorf("handoff and inherited user instructions require %d bytes; limit is %d. Narrow the delegated task or keep it in the parent agent. User instructions will not be silently truncated", handoff.Len()+inheritedBytes, budget)
 	}
 	return handoff.String(), nil
 }

@@ -60,20 +60,14 @@ func (c *mcpClient) startStdio() error {
 	c.processDone = make(chan struct{})
 	c.stdin = stdin
 
-	go func() {
-		defer stderr.Close()
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
-		for scanner.Scan() {
-			mcpLog("[MCP Stderr %s] bytes=%d [content omitted]\n", c.name, len(scanner.Bytes()))
-		}
-	}()
+	go c.drainStdioStderr(stderr)
 
 	stdoutDone := make(chan struct{})
 	go func() {
 		defer close(stdoutDone)
 		defer stdout.Close()
 		defer c.failPendingRequests()
+		defer func() { _ = process.KillProcessGroup(cmd) }()
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
@@ -106,6 +100,19 @@ func (c *mcpClient) startStdio() error {
 	}()
 
 	return c.completeHandshake()
+}
+
+func (c *mcpClient) drainStdioStderr(stderr io.ReadCloser) {
+	defer stderr.Close()
+	scanner := bufio.NewScanner(stderr)
+	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+	for scanner.Scan() {
+		mcpLog("[MCP Stderr %s] bytes=%d [content omitted]\n", c.name, len(scanner.Bytes()))
+	}
+	if err := scanner.Err(); err != nil {
+		mcpLog("stdio stderr scan stopped for '%s': %v; draining remaining output\n", c.name, err)
+		_, _ = io.Copy(io.Discard, stderr)
+	}
 }
 
 func (c *mcpClient) sendStdio(data string) error {

@@ -11,12 +11,15 @@ import (
 // FormatDefensiveError turns syntax errors into concise, actionable error messages.
 func FormatDefensiveError(toolName string, err error) string {
 	errStr := err.Error()
+	if isRepetitionError(err) {
+		return errStr
+	}
 	lowerErr := strings.ToLower(errStr)
 	// Todo diagnostics already describe their schema or plan-state error.
 	if toolName == "todo" {
 		return errStr
 	}
-	if strings.HasPrefix(toolName, "mcp__") || toolName == "read_mcp_resource" ||
+	if strings.HasPrefix(toolName, "mcp__") || strings.HasPrefix(toolName, "plugin__") || toolName == "read_mcp_resource" ||
 		toolName == "list_mcp_resources" || toolName == "list_mcp_resource_templates" {
 		return fmt.Sprintf("error [%s]: %s", toolName, errStr)
 	}

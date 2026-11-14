@@ -27,7 +27,7 @@ func hasFourHexDigits(s string, idx int) bool {
 	if idx+4 > len(s) {
 		return false
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if !isHexByte(s[idx+i]) {
 			return false
 		}

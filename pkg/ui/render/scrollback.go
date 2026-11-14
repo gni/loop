@@ -238,7 +238,7 @@ func (b *Scrollback) csi(sequence string) {
 		return
 	}
 	var values []int
-	for _, s := range strings.Split(body, ";") {
+	for s := range strings.SplitSeq(body, ";") {
 		n, _ := strconv.Atoi(s)
 		values = append(values, n)
 	}
@@ -428,28 +428,42 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 		mapping := make([]int, len(oldRows)+1)
 		var rows []*scrollRow
 		for i := 0; i < len(oldRows); {
-			start := i
+			base := len(rows)
 			var group strings.Builder
-			prefixes := []string{}
-			cursorPrefix := ""
+			position := promptCursor{}
 			for {
 				line := oldRows[i]
-				prefixes = append(prefixes, style.StripAnsi(group.String()))
+				text := line.String()
+				plain := style.StripAnsi(text)
+				rowStart := position
+				if plain != "" {
+					first, _ := utf8.DecodeRuneInString(plain)
+					rowStart.prepare(first, width)
+				}
+				// Row anchors refer to their first character. At a wrap boundary
+				// that character starts the next row; the output cursor below
+				// still retains its distinct pending-wrap position.
+				mapping[i] = base + rowStart.row
 				if i == oldAnchor {
-					plain := style.StripAnsi(line.String())
-					var prefix strings.Builder
+					cursor := position
 					cells := 0
 					for _, r := range plain {
 						w := promptRuneWidth(r)
 						if cells+w > col {
 							break
 						}
-						prefix.WriteRune(r)
+						count, _ := cursor.prepare(r, width)
+						cursor.advance(r, count)
 						cells += w
 					}
-					cursorPrefix = style.StripAnsi(group.String()) + prefix.String() + strings.Repeat(" ", max(0, col-cells))
+					for remaining := col - cells; remaining > 0; remaining-- {
+						count, _ := cursor.prepare(' ', width)
+						cursor.advance(' ', count)
+					}
+					anchor, col = base+cursor.row, cursor.column
 				}
-				group.WriteString(line.String())
+				position.advanceText(plain, width)
+				group.WriteString(text)
 				if b.archive != nil {
 					b.archive.evict(line)
 				}
@@ -457,16 +471,6 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 				if !line.soft || i == len(oldRows) {
 					break
 				}
-			}
-			base := len(rows)
-			for j, prefix := range prefixes {
-				layout := LayoutPrompt(prefix, len([]rune(prefix)), width)
-				mapping[start+j] = base + layout.CursorRow
-			}
-			if oldAnchor >= start && oldAnchor < i {
-				layout := LayoutPrompt(cursorPrefix, len([]rune(cursorPrefix)), width)
-				anchor = base + layout.CursorRow
-				col = layout.CursorColumn
 			}
 			wrapped := ChatHistoryRows(group.String(), width)
 			for j, text := range wrapped {

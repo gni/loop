@@ -2,13 +2,14 @@ package file
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"loop/pkg/domain/ignore"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
@@ -74,8 +75,8 @@ func resolveMissingReadTarget(safePath, targetPath, workspaceRoot string) (strin
 		}
 	}
 	for _, ext := range fallbackDirExts {
-		if strings.HasSuffix(safePath, ext) {
-			trimmed := strings.TrimSuffix(safePath, ext)
+		if before, ok := strings.CutSuffix(safePath, ext); ok {
+			trimmed := before
 			if dInfo, dErr := os.Stat(trimmed); dErr == nil && dInfo.IsDir() {
 				return trimmed, dInfo, "", true
 			}
@@ -101,7 +102,14 @@ func (t *readTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	return result.Output, err
 }
 
-func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, blocks *[]message.ContentBlock) (string, error) {
+func safeReadPath(ctx domaintool.AgentContext, path string) (string, error) {
+	if reader, ok := ctx.(interface{ SafeReadPath(string) (string, error) }); ok {
+		return reader.SafeReadPath(path)
+	}
+	return ctx.SafePath(path)
+}
+
+func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, blocks *[]message.ContentBlock, observed *evidence.Record) (string, error) {
 	if err := ctx.Context().Err(); err != nil {
 		return "", err
 	}
@@ -115,6 +123,7 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	}
 
 	targetPath := ExtractFilePath(arguments, args.Path)
+	observed.Target = targetPath
 	if targetPath == "" {
 		return "", fmt.Errorf("missing required argument: path")
 	}
@@ -141,54 +150,21 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 		return "", fmt.Errorf("path '%s' contains glob wildcards. The 'read' tool requires a specific file path; use the 'find_files' tool instead to search files matching this pattern (e.g. find_files(pattern: '%s'))", targetPath, targetPath)
 	}
 
-	safePath, err := ctx.SafePath(targetPath)
+	safePath, info, entryHeader, err := resolveReadTarget(ctx, targetPath)
+	observed.Target = safePath
 	if err != nil {
 		return "", err
 	}
-
-	if ignore.HasComponent(safePath, ctx.GetWorkspaceRoot(), false) {
-		return "", fmt.Errorf("cannot read: path '%s' is inside a dependency or ignored folder (venv, node_modules, etc.)", targetPath)
-	}
-
 	workspaceRoot := ctx.GetWorkspaceRoot()
-	var entryHeader string
-	info, err := os.Stat(safePath)
-	if err != nil {
-		resolvedPath, resolvedInfo, header, found := resolveMissingReadTarget(safePath, targetPath, workspaceRoot)
-		if !found {
-			return "", fmt.Errorf("failed to read file info: %w", err)
-		}
-		safePath = resolvedPath
-		info = resolvedInfo
-		entryHeader = header
-	}
-
 	if info.IsDir() {
-		resolvedPath, resolvedInfo, header, foundEntry := resolveDirEntrypoint(safePath, targetPath, workspaceRoot)
-		if !foundEntry {
-			if DirectoryTreeLister != nil {
-				tree, treeErr := DirectoryTreeLister(ctx.Context(), safePath, workspaceRoot, 2, 150)
-				if treeErr != nil {
-					return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, treeErr)
-				}
-				return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n%s", targetPath, tree), nil
+		if DirectoryTreeLister != nil {
+			tree, treeErr := DirectoryTreeLister(ctx.Context(), safePath, workspaceRoot, 2, 150)
+			if treeErr != nil {
+				return "", fmt.Errorf("path '%s' is a directory and failed to list contents: %w", targetPath, treeErr)
 			}
-			return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", targetPath), nil
+			return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n%s", targetPath, tree), nil
 		}
-		safePath = resolvedPath
-		info = resolvedInfo
-		entryHeader = header
-	}
-
-	// The fallback extension or directory entrypoint can be a symlink even when
-	// the originally requested path was safe. Validate the final target again.
-	validatedPath, err := ctx.SafePath(safePath)
-	if err != nil {
-		return "", err
-	}
-	safePath = validatedPath
-	if ignore.HasComponent(safePath, workspaceRoot, false) {
-		return "", fmt.Errorf("cannot read ignored path %s", targetPath)
+		return fmt.Sprintf("[Path '%s' is a directory. Use 'list_directory' to view directories, or call 'read' with a specific file path to view its content:]\n\n(directory)", targetPath), nil
 	}
 	unlock, err := LockPathContext(ctx.Context(), safePath)
 	if err != nil {
@@ -218,8 +194,14 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
+	observed.Revision = fmt.Sprintf("%x", sha256.Sum256(data))
 
-	if fo, ok := ctx.(domaintool.FileObserver); ok {
+	coverage, tracksRanges := ctx.(interface {
+		RecordReadRange(string, []byte, int, int, bool)
+	})
+	if tracksRanges {
+		coverage.RecordReadRange(safePath, data, 0, 0, false)
+	} else if fo, ok := ctx.(domaintool.FileObserver); ok {
 		fo.RecordRead(safePath, data)
 	}
 
@@ -252,5 +234,15 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	for _, line := range lines[offset-1 : end] {
 		window = append(window, TruncateLine(line, bounds.ReadMaxLineLength))
 	}
-	return renderReadPage(entryHeader, window, offset, len(lines), budget)
+	text, shownEnd, clipped, err := renderReadPageCoverage(entryHeader, window, offset, len(lines), budget)
+	if err == nil && tracksRanges {
+		complete := !clipped
+		for i := offset; i <= shownEnd; i++ {
+			if window[i-offset] != lines[i-1] {
+				complete = false
+			}
+		}
+		coverage.RecordReadRange(safePath, data, offset, shownEnd, complete)
+	}
+	return text, err
 }

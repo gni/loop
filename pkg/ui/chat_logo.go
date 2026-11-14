@@ -192,13 +192,13 @@ func renderLoopLogo(cols, rows, frame int, appearance ...logoAppearance) []strin
 	}
 	bits := [4][2]rune{{1, 8}, {2, 16}, {4, 32}, {64, 128}}
 	lines := make([]string, rows)
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		var line strings.Builder
-		for col := 0; col < cols; col++ {
+		for col := range cols {
 			var mask rune
 			brightness, count := 0.0, 0
-			for y := 0; y < 4; y++ {
-				for x := 0; x < 2; x++ {
+			for y := range 4 {
+				for x := range 2 {
 
 					value := light[(row*4+y)*width+col*2+x]
 					if value < 30 {

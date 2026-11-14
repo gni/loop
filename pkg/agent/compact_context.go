@@ -4,47 +4,61 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"loop/pkg/agent/run"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 )
 
 func isContextSummary(msg db.Message) bool {
-	return msg.ContextKind == "summary" || msg.Role == "system" ||
-		strings.HasPrefix(msg.Content, "[System: Below is a summary of the earlier conversation history:")
+	return msg.Role == "system" || msg.IsContextSummary()
 }
 
 // compactionTranscript reserves space for prior summaries and user instructions,
 // then fills the remaining budget from the newest execution evidence. Output
 // stays chronological, with explicit gaps instead of silently dropping the tail.
 func compactionTranscript(messages []db.Message, maxBytes int) string {
-	messages = compactRuntimeMessages(messages)
-	seenTasks := make(map[string]bool)
-	for i := len(messages) - 1; i >= 0; i-- {
-		if state := messages[i].TaskState; state != nil {
-			if seenTasks[state.ID] {
-				messages[i].TaskState = nil
-			} else {
-				seenTasks[state.ID] = true
-			}
-		}
+	if maxBytes <= 0 {
+		return ""
 	}
-
+	messages = compactRuntimeMessages(messages)
+	const gapNotice = "[earlier transcript records omitted to fit local context]\n\n"
+	const tailNotice = "[transcript records omitted to fit local context]\n"
 	selected := make(map[int]string)
-	remaining := max(0, maxBytes-512)
-	selectMessage := func(index, maxSegmentBytes int) {
-		if _, exists := selected[index]; exists || remaining < 128 {
+	remaining := maxBytes - len(tailNotice)
+	selectMessage := func(index, maxAllocation int) {
+		if _, exists := selected[index]; exists || maxAllocation <= 0 {
 			return
 		}
-		segment := compactionSegment(messages[index], maxSegmentBytes)
+		_, leftSelected := selected[index-1]
+		_, rightSelected := selected[index+1]
+		leftGap := index > 0 && !leftSelected
+		rightGap := index+1 < len(messages) && !rightSelected
+		// Selecting a record splits, shrinks or closes an omitted run. Account
+		// for that exact marker change before allocating its content.
+		overhead := 2
+		if leftGap && rightGap {
+			overhead += len(gapNotice)
+		} else if !leftGap && !rightGap {
+			overhead -= len(gapNotice)
+		}
+		if index == len(messages)-1 {
+			overhead += len(gapNotice) - len(tailNotice)
+		}
+		contentBudget := min(maxAllocation, remaining) - overhead
+		if contentBudget <= 0 {
+			return
+		}
+		segment := compactionSegment(messages[index], contentBudget)
 		if segment == "" {
 			return
 		}
-		segment = truncateTranscriptSegment(segment, remaining)
+		segment = truncateTranscriptSegment(segment, contentBudget)
 		selected[index] = segment
-		remaining -= len(segment)
+		remaining -= len(segment) + overhead
 	}
 	// The most recent prior summary carries facts from earlier compactions.
 	for index := len(messages) - 1; index >= 0; index-- {
@@ -58,10 +72,10 @@ func compactionTranscript(messages []db.Message, maxBytes int) string {
 	for index := len(messages) - 1; index >= 0 && beforeInstructions-remaining < instructionBudget; index-- {
 		msg := messages[index]
 		if msg.Role == "user" && msg.ContextKind != "runtime" && !isContextSummary(msg) {
-			selectMessage(index, 1600)
+			selectMessage(index, min(1600, instructionBudget-(beforeInstructions-remaining)))
 		}
 	}
-	for index := len(messages) - 1; index >= 0 && remaining >= 128; index-- {
+	for index := len(messages) - 1; index >= 0; index-- {
 		selectMessage(index, 1200)
 	}
 	var transcript strings.Builder
@@ -69,7 +83,7 @@ func compactionTranscript(messages []db.Message, maxBytes int) string {
 	for index := range messages {
 		if segment, exists := selected[index]; exists {
 			if omitted {
-				transcript.WriteString("[earlier transcript records omitted to fit local context]\n\n")
+				transcript.WriteString(gapNotice)
 				omitted = false
 			}
 			transcript.WriteString(segment)
@@ -79,12 +93,15 @@ func compactionTranscript(messages []db.Message, maxBytes int) string {
 		}
 	}
 	if omitted {
-		transcript.WriteString("[transcript records omitted to fit local context]\n")
+		transcript.WriteString(tailNotice)
 	}
 	return truncateTranscriptSegment(transcript.String(), maxBytes)
 }
 
 func compactionSegment(msg db.Message, maxBytes int) string {
+	if isSkillInstruction(msg) {
+		return fmt.Sprintf("Loaded skill %q: instructions retained separately.", msg.SkillName)
+	}
 	if isContextSummary(msg) {
 		return "Prior Context Summary: " + truncateTranscriptSegment(msg.Content, maxBytes)
 	}
@@ -96,9 +113,6 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 		return "User: " + truncateTranscriptSegment(msg.Content, maxBytes)
 	case "assistant":
 		var output strings.Builder
-		if msg.TaskState != nil {
-			fmt.Fprintln(&output, run.TaskBrief(msg.TaskState))
-		}
 		if msg.Content != "" {
 			fmt.Fprintf(&output, "Agent: %s\n", truncateTranscriptSegment(msg.Content, maxBytes))
 		}
@@ -118,7 +132,14 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 		outcome := msg.ToolOutcome
 		if msg.Evidence != nil {
 			outcome = msg.Evidence.Outcome
-			observed, _ := json.Marshal(msg.Evidence)
+			// Timing belongs to executor metadata, not the narrative summary.
+			record := *msg.Evidence
+			record.DurationMS, record.MutationAt = nil, 0
+			record.Checks = slices.Clone(record.Checks)
+			for i := range record.Checks {
+				record.Checks[i].StartedAt = 0
+			}
+			observed, _ := json.Marshal(record)
 			detail = "Observed tool effects: " + truncateTranscriptSegment(string(observed), min(768, maxBytes/2)) + "\n" + detail
 		}
 		if msg.IsError && msg.Recovery != nil {
@@ -131,21 +152,19 @@ func compactionSegment(msg db.Message, maxBytes int) string {
 
 func observedCompactionFiles(messages []db.Message) (map[string]bool, map[string]bool) {
 	reads, changes := make(map[string]bool), make(map[string]bool)
-	calls := make(map[string]db.ToolCall)
-	for _, msg := range messages {
+	matches := message.MatchToolResults(messages)
+	for index, msg := range messages {
 		if isContextSummary(msg) {
 			collectPriorSummaryFiles(msg.Content, reads, changes)
-		}
-		for _, call := range msg.ToolCalls {
-			calls[call.ID] = call
 		}
 		if msg.Role != "tool" {
 			continue
 		}
-		call, exists := calls[msg.ToolCallID]
+		match, exists := matches[index]
 		if !exists {
 			continue
 		}
+		call := match.Call
 		path := filetool.ExtractFilePath(call.Function.Arguments)
 		if path == "" {
 			continue

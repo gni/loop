@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,10 +44,10 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 		cfg.Nostop.IntervalSeconds = &seconds
 	}
 
-	if endpoint != "" {
+	if cmd.Flags().Changed("endpoint") {
 		cfg.Endpoint = endpoint
 	}
-	if modelName != "" {
+	if cmd.Flags().Changed("model") {
 		cfg.Model = modelName
 	}
 	if cmd.Flags().Changed("yes") {
@@ -65,28 +66,28 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if cmd.Flags().Changed("tokens") {
 		cfg.ShowTokens = showTokens
 	}
-	if maxStepsFlag != 0 {
+	if cmd.Flags().Changed("steps") {
 		cfg.MaxReasoningSteps = maxStepsFlag
 	}
 	if cmd.Flags().Changed("recap") {
 		cfg.RecapInterval = recapIntervalFlag
 	}
-	if reasoningEffortFlag != "" {
+	if cmd.Flags().Changed("reasoning") {
 		cfg.ReasoningEffort = reasoningEffortFlag
 	}
-	if contextLimitFlag != 0 {
+	if cmd.Flags().Changed("context-limit") {
 		cfg.ContextWindowLimit = contextLimitFlag
 	}
 	if cmd.Flags().Changed("direct") {
 		cfg.DirectCommands = directCommandsFlag
 	}
-	if maxCompletionTokensFlag != 0 {
+	if cmd.Flags().Changed("max-completion-tokens") {
 		cfg.MaxCompletionTokens = maxCompletionTokensFlag
 	}
 	if cmd.Flags().Changed("compact") {
 		cfg.CompactPrompt = compactPrompt
 	}
-	if debugFileFlag != "" {
+	if cmd.Flags().Changed("debug-file") {
 		cfg.DebugLogFile = debugFileFlag
 	}
 	if cmd.Flags().Changed("max-subagent-depth") {
@@ -131,8 +132,8 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVarP(&resumeSession, "resume", "r", false, "Resume the latest conversation session instead of starting a new one")
 	cmd.PersistentFlags().StringVar(&reasoningEffortFlag, "reasoning", "", "Override LLM reasoning effort (e.g. low, medium, high)")
 	cmd.PersistentFlags().IntVar(&maxStepsFlag, "steps", 0, "Override maximum reasoning steps limit (e.g. 30)")
-	cmd.PersistentFlags().IntVar(&contextLimitFlag, "context-limit", 0, "Override context window limit (default: 128000)")
-	cmd.PersistentFlags().IntVar(&maxCompletionTokensFlag, "max-completion-tokens", 0, "Override maximum completion/output tokens limit (default: 16384)")
+	cmd.PersistentFlags().IntVar(&contextLimitFlag, "context-limit", 0, fmt.Sprintf("Override context window limit (default: %d)", config.DefaultContextWindowLimit))
+	cmd.PersistentFlags().IntVar(&maxCompletionTokensFlag, "max-completion-tokens", 0, fmt.Sprintf("Override maximum completion/output tokens limit (default: %d)", config.DefaultMaxCompletionTokens))
 	cmd.PersistentFlags().BoolVar(&directCommandsFlag, "direct", false, "Enable direct execution of local shell commands (default: true in config)")
 	cmd.PersistentFlags().BoolVar(&compactPrompt, "compact", false, "Enable highly compressed system instructions for smaller models")
 	cmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: loop_debug.log in workspace)")

@@ -31,7 +31,7 @@ type mcpState struct {
 	mcpConnecting  map[string]*mcpConnectAttempt
 }
 
-func mcpLog(format string, args ...interface{}) {
+func mcpLog(format string, args ...any) {
 	if mcpDebugLogging {
 		fmt.Fprint(os.Stderr, transporthttp.RedactDiagnostic(fmt.Sprintf(format, args...)))
 	}
@@ -153,13 +153,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 
 	sort.Strings(eager)
 
-	workers := a.GetLimits().MCPServerWorkers
-	if workers > len(eager) {
-		workers = len(eager)
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(min(a.GetLimits().MCPServerWorkers, len(eager)), 1)
 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
@@ -485,14 +479,12 @@ func (a *Agent) StopMCPServers() {
 	workers := min(len(clients), max(1, a.GetLimits().MCPServerWorkers))
 	jobs := make(chan *mcpClient)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for client := range jobs {
 				client.close()
 			}
-		}()
+		})
 	}
 	for _, client := range clients {
 		jobs <- client

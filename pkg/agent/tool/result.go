@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"time"
 
 	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
@@ -18,7 +19,29 @@ func (r *ToolRegistry) ExecuteResult(ctx AgentContext, name, arguments string) (
 }
 
 // ExecutePreparedResult executes arguments already normalized and validated by Prepare.
-func ExecutePreparedResult(ctx AgentContext, executor ToolExecutor, arguments string) (ToolResult, error) {
+func ExecutePreparedResult(ctx AgentContext, executor ToolExecutor, arguments string) (result ToolResult, err error) {
+	started := time.Now()
+	defer func() {
+		result.Evidence = evidence.Clone(result.Evidence)
+		if result.Evidence == nil {
+			outcome := evidence.Succeeded
+			if err != nil {
+				outcome = evidence.Failed
+			}
+			result.Evidence = &evidence.Record{Kind: "tool", Target: executor.Name(), Outcome: outcome}
+		}
+		elapsed := time.Since(started).Milliseconds()
+		result.Evidence.DurationMS = &elapsed
+		if result.Evidence.Changed != nil && *result.Evidence.Changed && result.Evidence.MutationAt == 0 {
+			result.Evidence.MutationAt = time.Now().UnixNano()
+		}
+		for i := range result.Evidence.Checks {
+			check := &result.Evidence.Checks[i]
+			if check.StartedAt == 0 && result.Evidence.Kind != "subagent" && result.Evidence.TaskID == "" {
+				check.StartedAt = started.UnixNano()
+			}
+		}
+	}()
 	if rich, ok := executor.(domaintool.ResultExecutor); ok {
 		result, err := rich.ExecuteResult(ctx, arguments)
 		if err == nil && (result.IsError || result.Evidence != nil && result.Evidence.Outcome == evidence.Failed) {

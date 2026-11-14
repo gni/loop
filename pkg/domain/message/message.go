@@ -1,6 +1,7 @@
 package message
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"loop/pkg/domain/diagnostic"
@@ -46,11 +47,15 @@ const CacheControlEphemeral = "ephemeral"
 
 // Message represents a single conversational turn in the reasoning thread.
 type Message struct {
-	TaskState             *task.State          `json:"task_state,omitempty"`
-	InheritedInstructions []string             `json:"inherited_instructions,omitempty"`
-	Evidence              *evidence.Record     `json:"evidence,omitempty"`
-	Recovery              *diagnostic.Recovery `json:"recovery,omitempty"`
-	ContextKind           string               `json:"context_kind,omitempty"`
+	// CompactionTailMessages identifies the retained suffix at the time a
+	// summary was created; later input can be measured without counting it again.
+	CompactionTailMessages int                  `json:"compaction_tail_messages,omitempty"`
+	TaskState              *task.State          `json:"task_state,omitempty"`
+	InheritedInstructions  []string             `json:"inherited_instructions,omitempty"`
+	Evidence               *evidence.Record     `json:"evidence,omitempty"`
+	Recovery               *diagnostic.Recovery `json:"recovery,omitempty"`
+	ContextKind            string               `json:"context_kind,omitempty"`
+	SkillName              string               `json:"skill_name,omitempty"`
 	// ToolOutcome records uncertainty after interruption; provider wire adapters
 	// omit this local execution metadata.
 	ToolOutcome       string          `json:"tool_outcome,omitempty"`
@@ -105,4 +110,18 @@ func (m Message) HasToolCalls() bool {
 // TotalTokens returns the sum of prompt and completion tokens for this turn.
 func (m Message) TotalTokens() int {
 	return m.PromptTokens + m.CompletionTokens
+}
+
+// EqualPersisted compares the JSON representation used by session storage.
+// Omitted empty fields remain equal after a save/load round trip.
+func EqualPersisted(left, right Message) (bool, error) {
+	a, err := json.Marshal(left)
+	if err != nil {
+		return false, err
+	}
+	b, err := json.Marshal(right)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(a, b), nil
 }

@@ -60,6 +60,7 @@ type Report struct {
 	StepsCompleted int      `json:"steps_completed,omitempty"`
 	StepsTotal     int      `json:"steps_total,omitempty"`
 	Pending        int      `json:"pending,omitempty"`
+	Verification   string   `json:"verification,omitempty"`
 }
 
 func ProgressReport(state *State, inspect bool) Report {
@@ -67,6 +68,7 @@ func ProgressReport(state *State, inspect bool) Report {
 		return Report{}
 	}
 	r := Report{Status: state.Status, StepsTotal: len(state.Plan), Pending: len(state.Pending())}
+	r.Verification = state.Verification.Stage
 	for _, item := range state.Plan {
 		if item.Status == Completed {
 			r.StepsCompleted++

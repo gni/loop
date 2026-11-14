@@ -123,20 +123,29 @@ func (s *JSONLStore) setLatestSessionIDUnlocked(sessionID string) error {
 	}
 
 	path := s.sessionPath(sessionID)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	before, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
 		return err
 	}
+	// Validate before touching mtime, so selecting a session cannot bless a
+	// stale record snapshot or append cursor after an external edit.
+	if c, ok := s.core.cache[sessionID]; ok && !c.matches(before) {
+		delete(s.core.cache, sessionID)
+	}
+	if sum, ok := s.core.summaryCache[sessionID]; ok && !sum.matches(before) {
+		delete(s.core.summaryCache, sessionID)
+	}
 	now := time.Now()
 	if os.Chtimes(path, now, now) == nil {
 		if info, statErr := os.Stat(path); statErr == nil {
-			if c, ok := s.core.cache[sessionID]; ok && c.size == info.Size() {
-				c.modified = info.ModTime()
+			if c, ok := s.core.cache[sessionID]; ok && c.size == info.Size() && os.SameFile(before, info) {
+				c.cachedFile = cacheFile(info)
 				s.core.cache[sessionID] = c
 			}
-			if sum, ok := s.core.summaryCache[sessionID]; ok && sum.size == info.Size() {
-				sum.modified = info.ModTime()
+			if sum, ok := s.core.summaryCache[sessionID]; ok && sum.size == info.Size() && os.SameFile(before, info) {
+				sum.cachedFile = cacheFile(info)
 				s.core.summaryCache[sessionID] = sum
 			}
 		}

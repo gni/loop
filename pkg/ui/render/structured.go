@@ -9,15 +9,15 @@ import (
 	"strings"
 )
 
-func renderStructuredSummary(w io.Writer, value interface{}, theme style.UITheme) {
+func renderStructuredSummary(w io.Writer, value any, theme style.UITheme) {
 	width, _ := terminal.GetDimensions()
-	describe := func(value interface{}) string {
+	describe := func(value any) string {
 		switch v := value.(type) {
 		case string:
 			return strings.Join(strings.Fields(SanitizeTerminalText(v)), " ")
-		case []interface{}:
+		case []any:
 			return fmt.Sprintf("%d items", len(v))
-		case map[string]interface{}:
+		case map[string]any:
 			for _, key := range []string{"name", "title", "status", "message", "path"} {
 				if text, ok := v[key].(string); ok {
 					return SanitizeTerminalText(text)
@@ -30,12 +30,12 @@ func renderStructuredSummary(w io.Writer, value interface{}, theme style.UITheme
 			return fmt.Sprint(v)
 		}
 	}
-	line := func(label string, value interface{}) {
+	line := func(label string, value any) {
 		text := "⎿  " + label + describe(value)
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Text).Render(style.TruncateCells(text, max(1, width-1))))
 	}
 	switch v := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		keys := make([]string, 0, len(v))
 		for key := range v {
 			keys = append(keys, key)
@@ -49,7 +49,7 @@ func renderStructuredSummary(w io.Writer, value interface{}, theme style.UITheme
 			label := strings.ReplaceAll(SanitizeTerminalText(key), "_", " ")
 			line(label+": ", v[key])
 		}
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			line("", "No results")
 			return

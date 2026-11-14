@@ -22,11 +22,11 @@ func IsNumberedList(trimmed string) (bool, string, string) {
 	if len(trimmed) < 3 {
 		return false, "", ""
 	}
-	spIdx := strings.Index(trimmed, " ")
-	if spIdx == -1 {
+	before, after, ok := strings.Cut(trimmed, " ")
+	if !ok {
 		return false, "", ""
 	}
-	prefix := trimmed[:spIdx]
+	prefix := before
 	if len(prefix) < 2 || !strings.HasSuffix(prefix, ".") {
 		return false, "", ""
 	}
@@ -36,7 +36,7 @@ func IsNumberedList(trimmed string) (bool, string, string) {
 			return false, "", ""
 		}
 	}
-	return true, prefix, trimmed[spIdx+1:]
+	return true, prefix, after
 }
 
 func extractBulletPrefix(trimmed string) (string, string, bool) {
@@ -150,10 +150,10 @@ func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, s
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
+		if after, ok := strings.CutPrefix(trimmed, "```"); ok {
 			if !inCodeBlock {
 				language = "plaintext"
-				if fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))); len(fields) > 0 {
+				if fields := strings.Fields(strings.TrimSpace(after)); len(fields) > 0 {
 					language = fields[0]
 				}
 			}

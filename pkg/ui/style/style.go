@@ -164,7 +164,7 @@ func (s Style) Padding(args ...int) Style {
 	return s
 }
 
-func (s Style) Border(b interface{}, _ ...bool) Style {
+func (s Style) Border(b any, _ ...bool) Style {
 	if bt, ok := b.(int); ok {
 		s.borderType = bt
 	} else {
@@ -192,7 +192,7 @@ func (s Style) Render(args ...string) string {
 		}
 
 		var wrappedLines []string
-		for _, line := range strings.Split(str, "\n") {
+		for line := range strings.SplitSeq(str, "\n") {
 			wrappedLines = append(wrappedLines, wrapSingleAnsiLine(line, contentMaxWidth)...)
 		}
 		str = strings.Join(wrappedLines, "\n")

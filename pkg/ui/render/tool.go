@@ -209,7 +209,7 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		}
 		trimmedBody := strings.TrimSpace(body)
 		if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) || (strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
-			var temp interface{}
+			var temp any
 			if json.Unmarshal([]byte(trimmedBody), &temp) == nil {
 				if collapse && toolName != "bash" && !isCodeContentTool(toolName) {
 					renderStructuredSummary(w, temp, theme)
@@ -320,7 +320,7 @@ func renderWriteSummary(w io.Writer, theme style.UITheme, toolName string, argsJ
 
 // CountDiffLines counts the number of added and deleted lines from diff output.
 func CountDiffLines(diffText string) (added int, deleted int) {
-	for _, rawLine := range strings.Split(diffText, "\n") {
+	for rawLine := range strings.SplitSeq(diffText, "\n") {
 		trimmed := strings.TrimSpace(style.StripAnsi(rawLine))
 		if trimmed == "" || trimmed == "..." {
 			continue

@@ -60,7 +60,13 @@ func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output 
 
 // SpillToolOutput uses the execution context's limits and cancellation.
 func SpillToolOutput(ctx AgentContext, sessionID, toolCallID, toolName, output string, maxBytes int) (string, string, bool) {
-	return spillAndPruneOutput(ctx.Context(), ctx.GetWorkspaceRoot(), sessionID, toolCallID, toolName, output, maxBytes, limits.For(ctx))
+	return SpillToolOutputContext(ctx.Context(), ctx, sessionID, toolCallID, toolName, output, maxBytes)
+}
+
+// SpillToolOutputContext allows a bounded cleanup context to retain results
+// after execution is cancelled, while preserving the executor's output limits.
+func SpillToolOutputContext(ctx context.Context, exec AgentContext, sessionID, toolCallID, toolName, output string, maxBytes int) (string, string, bool) {
+	return spillAndPruneOutput(ctx, exec.GetWorkspaceRoot(), sessionID, toolCallID, toolName, output, maxBytes, limits.For(exec))
 }
 
 func spillAndPruneOutput(ctx context.Context, workspace, sessionID, callID, name, output string, budget int, bounds limits.Limits) (string, string, bool) {
@@ -106,6 +112,35 @@ func spillAndPruneOutput(ctx context.Context, workspace, sessionID, callID, name
 }
 
 func outputPreview(output, locator string, budget, lineCount int, bounds limits.Limits) string {
+	if len(output) > budget {
+		if diagnostics := criticalOutputLines(output, budget/3); diagnostics != "" {
+			return diagnostics + "\n" + basicOutputPreview(output, locator, budget-len(diagnostics)-1, lineCount, bounds)
+		}
+	}
+	return basicOutputPreview(output, locator, budget, lineCount, bounds)
+}
+
+func criticalOutputLines(output string, budget int) string {
+	var lines []string
+	used := 0
+	for len(output) > 0 && len(lines) < 8 {
+		line, rest, _ := strings.Cut(output, "\n")
+		output = rest
+		lower := strings.ToLower(line)
+		if !strings.Contains(lower, "error:") && !strings.Contains(lower, "failed") && !strings.Contains(lower, "fatal") && !strings.Contains(lower, "panic:") && !strings.Contains(lower, "exception") {
+			continue
+		}
+		line = file.UTF8SafePrefix(line, 350)
+		if used+len(line)+1 > budget {
+			continue
+		}
+		lines = append(lines, line)
+		used += len(line) + 1
+	}
+	return strings.Join(lines, "\n")
+}
+
+func basicOutputPreview(output, locator string, budget, lineCount int, bounds limits.Limits) string {
 	notice := "[Output truncated; full output unavailable.]"
 	if locator != "" {
 		notice = locator

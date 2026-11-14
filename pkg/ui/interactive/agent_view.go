@@ -124,7 +124,7 @@ func renderAgentManager(mam *swarm.MultiAgentManager, names []string, active str
 		right = append(right, text.Render(line))
 	}
 	if wide {
-		for i := 0; i < bodyHeight; i++ {
+		for i := range bodyHeight {
 			l, r := "", ""
 			if i < len(left) {
 				l = left[i]

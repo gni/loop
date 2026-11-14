@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -57,12 +58,7 @@ func (m Model) Supports(input string) bool {
 	if len(m.Input) == 0 {
 		return true
 	}
-	for _, modality := range m.Input {
-		if modality == input {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Input, input)
 }
 
 func (p Pricing) Cost(input, output, cacheRead, cacheWrite int) *float64 {

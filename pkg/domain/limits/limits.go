@@ -8,6 +8,7 @@
 package limits
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -328,9 +329,7 @@ var (
 func cloneLimits(l Limits) Limits {
 	if l.ReasoningTokenBudgets != nil {
 		budgets := make(map[string]int, len(l.ReasoningTokenBudgets))
-		for k, v := range l.ReasoningTokenBudgets {
-			budgets[k] = v
-		}
+		maps.Copy(budgets, l.ReasoningTokenBudgets)
 		l.ReasoningTokenBudgets = budgets
 	}
 	return l

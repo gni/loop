@@ -1,6 +1,7 @@
 package search
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 
 func (t *symbolTool) focusedContext(ctx domaintool.AgentContext, root string, files map[string]indexedFile, matches []symbolMatch) string {
 	var output strings.Builder
-	output.WriteString("\n\nFocused Go context (bounded source excerpts; use read before editing):\n")
+	output.WriteString("\n\nFocused source context (bounded excerpts; use read before editing):\n")
 	selected, names := 0, make(map[string]bool)
 	importsShown := make(map[string]bool)
 	for _, match := range matches {
@@ -69,7 +70,7 @@ func (t *symbolTool) focusedContext(ctx domaintool.AgentContext, root string, fi
 		}
 	}
 	if selected == 0 {
-		output.WriteString("No Go declaration selected. Use a symbol name or read the matching file.\n")
+		output.WriteString("No declaration selected. Use a symbol name or read the matching file.\n")
 	}
 	type candidate struct {
 		path string
@@ -102,7 +103,7 @@ func (t *symbolTool) focusedContext(ctx domaintool.AgentContext, root string, fi
 	if len(callers) > 12 {
 		fmt.Fprintf(&output, "[Showing 12 of %d candidate calls; narrow query or scope.]\n", len(callers))
 	}
-	budget := min(12<<10, limits.For(ctx).MaxOutputBytes)
+	budget := min(12<<10, limits.ToolOutputBytes(ctx))
 	result := output.String()
 	if len(result) > budget {
 		result = file.UTF8SafePrefix(result, max(0, budget-96)) + "\n[Focused context truncated; narrow query or use targeted reads.]"
@@ -149,6 +150,9 @@ func currentIndexedSource(ctx domaintool.AgentContext, path string, indexed inde
 	}
 	if len(data) > maxBytes || int64(len(data)) != indexed.size || !after.ModTime().Equal(indexed.modified) {
 		return nil, fmt.Errorf("file changed while reading")
+	}
+	if sha256.Sum256(data) != indexed.digest {
+		return nil, fmt.Errorf("source fingerprint changed since indexing")
 	}
 	return strings.Split(string(data), "\n"), nil
 }

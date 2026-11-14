@@ -1,6 +1,7 @@
 package search
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"io/fs"
@@ -32,12 +33,15 @@ type codeSymbol struct {
 }
 
 type indexedFile struct {
-	size     int64
-	modified time.Time
-	symbols  []codeSymbol
-	imports  []importReference
-	calls    []callReference
-	partial  bool
+	digest      [32]byte
+	changeStamp int64
+	size        int64
+	modified    time.Time
+	symbols     []codeSymbol
+	imports     []importReference
+	calls       []callReference
+	partial     bool
+	retry       bool // Source was unread or metadata was clipped by a scan-wide limit.
 }
 
 type symbolMatch struct {
@@ -55,13 +59,13 @@ type symbolTool struct {
 func NewSymbolTool() domaintool.ToolExecutor { return &symbolTool{} }
 func (t *symbolTool) Name() string           { return "search_symbols" }
 func (t *symbolTool) PromptSnippet() string {
-	return domaintool.FormatToolSnippet(t.Name(), "Locate Go declarations and repository files")
+	return domaintool.FormatToolSnippet(t.Name(), "Locate Go, JS/TS and Python declarations and repository files")
 }
 func (t *symbolTool) PromptGuidelines() []string {
-	return []string{"Use search_symbols to locate Go definitions. Set include_context=true for a bounded pack of source excerpts, imports, and candidate callers. Candidate callers match syntax names without resolving receiver types; they are not a complete reference graph. Read current target files before editing."}
+	return []string{"Use search_symbols for Go, JS/TS and Python declarations. include_context returns bounded excerpts; Go also includes imports and candidate callers. Script declarations are lexical locations. Read current files before editing."}
 }
 func (t *symbolTool) Definition() domaintool.Tool {
-	return domaintool.NewFunctionTool(t.Name(), "Search a bounded local index of Go functions, methods, types, variables, constants, and repository file paths. No server or model request. Reconciles changed and deleted files on each search. Honors search ignores and skips symlinks. Read returned locations before editing; this does not observe whole file contents.", map[string]domaintool.SchemaProp{
+	return domaintool.NewFunctionTool(t.Name(), "Search bounded Go AST declarations, lexical JS/TS and Python declarations, and file paths. No model/server. Refreshes changed sources, honors ignores, skips symlinks. Read locations before editing; index excerpts do not establish whole-file observation.", map[string]domaintool.SchemaProp{
 		"query":           domaintool.StringProp("Name or path fragment; space-separated terms must all match."),
 		"path":            domaintool.StringProp("Optional file or directory scope within the workspace (default: .)."),
 		"limit":           domaintool.NumberProp("Maximum results, 1-100 (default: 30)."),
@@ -147,36 +151,44 @@ func (t *symbolTool) Execute(ctx domaintool.AgentContext, arguments string) (str
 			return nil
 		}
 		entry, cached := t.files[path]
-		if !cached || entry.partial || entry.size != info.Size() || !entry.modified.Equal(info.ModTime()) {
-			entry = indexedFile{size: info.Size(), modified: info.ModTime()}
-			if strings.EqualFold(filepath.Ext(path), ".go") {
-				maxBytes := min(indexMaxFileBytes, limits.For(ctx).MaxReadFileBytes)
-				if info.Size() > int64(maxBytes) || readBytes+info.Size() > indexMaxReadBytes {
-					entry.partial = true
-				} else if safe, safeErr := ctx.SafePath(path); safeErr != nil || safe != path {
-					entry.partial = true
-				} else if source, openErr := storage.OpenRegularFile(path); openErr != nil {
-					entry.partial = true
+		stamp, stampKnown := storage.FileChangeStamp(info)
+		needsCheck := !cached || entry.retry || entry.size != info.Size() || !entry.modified.Equal(info.ModTime()) || !stampKnown || entry.changeStamp != stamp
+		if parser := parserFor(path); parser != nil && needsCheck {
+			maxBytes := min(indexMaxFileBytes, limits.For(ctx).MaxReadFileBytes)
+			if info.Size() > int64(maxBytes) || readBytes+info.Size() > indexMaxReadBytes {
+				entry = indexedFile{size: info.Size(), modified: info.ModTime()}
+				entry.partial, entry.retry = true, true
+			} else if safe, safeErr := ctx.SafePath(path); safeErr != nil || safe != path {
+				entry = indexedFile{size: info.Size(), modified: info.ModTime(), partial: true, retry: true}
+			} else if source, openErr := storage.OpenRegularFile(path); openErr != nil {
+				entry = indexedFile{size: info.Size(), modified: info.ModTime(), partial: true, retry: true}
+			} else {
+				data, readErr := io.ReadAll(io.LimitReader(source, int64(maxBytes)+1))
+				_ = source.Close()
+				readBytes += int64(len(data))
+				if readErr != nil || len(data) > maxBytes {
+					entry = indexedFile{size: info.Size(), modified: info.ModTime(), partial: true, retry: true}
 				} else {
-					data, readErr := io.ReadAll(io.LimitReader(source, int64(maxBytes)+1))
-					_ = source.Close()
-					readBytes += int64(len(data))
-					if readErr != nil || len(data) > maxBytes {
-						entry.partial = true
+					digest := sha256.Sum256(data)
+					if !cached || entry.retry || entry.digest != digest {
+						metadata := parser.Parse(path, data)
+						entry = indexedFile{size: info.Size(), modified: info.ModTime(), changeStamp: stamp, digest: digest, symbols: metadata.symbols, imports: metadata.imports, calls: metadata.calls, partial: metadata.partial}
 					} else {
-						metadata := parseGoMetadata(path, data)
-						entry.symbols, entry.imports, entry.calls, entry.partial = metadata.symbols, metadata.imports, metadata.calls, metadata.partial
+						entry.size, entry.modified = info.Size(), info.ModTime()
+						entry.changeStamp = stamp
 					}
 				}
 			}
+		} else if parserFor(path) == nil {
+			entry = indexedFile{size: info.Size(), modified: info.ModTime()}
 		}
 		if len(entry.symbols) > indexMaxSymbols-symbolCount {
 			entry.symbols = entry.symbols[:max(0, indexMaxSymbols-symbolCount)]
-			entry.partial = true
+			entry.partial, entry.retry = true, true
 		}
 		if len(entry.calls) > indexMaxCalls-callCount {
 			entry.calls = entry.calls[:max(0, indexMaxCalls-callCount)]
-			entry.partial = true
+			entry.partial, entry.retry = true, true
 		}
 		callCount += len(entry.calls)
 		symbolCount += len(entry.symbols)
@@ -187,19 +199,18 @@ func (t *symbolTool) Execute(ctx domaintool.AgentContext, arguments string) (str
 	if err != nil {
 		return "", err
 	}
-	// Commit only completed scans. Missing paths disappear from the cache.
-	t.files = next
+	t.commitIndex(scope, next)
 	var matches []symbolMatch
 	terms := strings.Fields(query)
 	for path, entry := range next {
 		rel := RelSlashPath(root, path)
+		lowerRel := strings.ToLower(rel)
 		candidates := append([]codeSymbol{{name: filepath.Base(path), kind: "file", line: 1}}, entry.symbols...)
 		for _, symbol := range candidates {
 			name := strings.ToLower(symbol.name)
-			haystack := name + " " + strings.ToLower(rel)
 			found := true
 			for _, term := range terms {
-				if !strings.Contains(haystack, term) {
+				if !strings.Contains(name, term) && !strings.Contains(lowerRel, term) {
 					found = false
 					break
 				}
@@ -239,7 +250,7 @@ func (t *symbolTool) Execute(ctx domaintool.AgentContext, arguments string) (str
 	result := file.TruncateHead(lines, limit, limits.For(ctx).MaxOutputBytes)
 	output := result.Content
 	if len(matches) == 0 {
-		output = "No matching indexed definitions or paths. Broaden the query or use grep for references and non-Go definitions."
+		output = "No matching indexed definitions or paths. Broaden the query or use grep for references and other languages."
 	}
 	if len(matches) > result.ShownLines {
 		output += fmt.Sprintf("\nShowing %d of %d matches; narrow query or path for the rest.", result.ShownLines, len(matches))
@@ -257,4 +268,59 @@ func (t *symbolTool) Execute(ctx domaintool.AgentContext, arguments string) (str
 		return "", err
 	}
 	return output, nil
+}
+
+// Keep entries outside a completed narrow scan, without exposing them in its
+// results or exceeding the index limits. Rescanned scopes replace old entries,
+// including paths that have been removed or are now ignored.
+func (t *symbolTool) commitIndex(scope string, next map[string]indexedFile) {
+	var sourceBytes int64
+	for _, entry := range next {
+		sourceBytes += indexedSourceBytes(entry)
+	}
+	if (scope == t.root || len(t.files) == 0) && sourceBytes <= indexMaxReadBytes {
+		t.files = next
+		return
+	}
+	paths := make([]string, 0, len(next))
+	for path := range next {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	cache := make(map[string]indexedFile, min(indexMaxFiles, len(next)+len(t.files)))
+	symbolCount, callCount := 0, 0
+	sourceBytes = 0
+	retain := func(path string, entry indexedFile) {
+		bytes := indexedSourceBytes(entry)
+		if len(cache) >= indexMaxFiles || symbolCount+len(entry.symbols) > indexMaxSymbols || callCount+len(entry.calls) > indexMaxCalls || sourceBytes+bytes > indexMaxReadBytes {
+			return
+		}
+		cache[path] = entry
+		symbolCount += len(entry.symbols)
+		callCount += len(entry.calls)
+		sourceBytes += bytes
+	}
+	for _, path := range paths {
+		retain(path, next[path])
+	}
+	paths = paths[:0]
+	for path := range t.files {
+		if path != scope && !strings.HasPrefix(path, scope+string(filepath.Separator)) {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		retain(path, t.files[path])
+	}
+	t.files = cache
+}
+
+// Script declaration names can retain their entire masked source string. Bound
+// the source represented by cached metadata as well as the declaration counts.
+func indexedSourceBytes(entry indexedFile) int64 {
+	if cap(entry.symbols)+cap(entry.imports)+cap(entry.calls) == 0 {
+		return 0
+	}
+	return entry.size
 }

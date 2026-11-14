@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	bashtool "loop/pkg/agent/tool/bash"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/output"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/process"
@@ -31,8 +33,12 @@ type Task struct {
 	StartTime      time.Time
 	EndTime        time.Time
 	Err            error
+	ExitCode       *int
+	Directory      string
 	mu             sync.Mutex
 	LastOutputTime time.Time
+	stdoutBytes    int64
+	stderrBytes    int64
 }
 
 type TaskInfo struct {
@@ -70,21 +76,23 @@ func (tw *taskWriter) Write(p []byte) (n int, err error) {
 	targetBuf := tw.task.Stdout
 	if tw.isStderr {
 		targetBuf = tw.task.Stderr
+		tw.task.stderrBytes += int64(len(p))
+	} else {
+		tw.task.stdoutBytes += int64(len(p))
 	}
 	appendTaskOutput(targetBuf, p)
 	if tw.filter == nil {
 		tw.filter = output.NewSafeShellOutputWriter(&tw.filtered)
 	}
 	_, _ = tw.filter.Write(p)
-	filtered := append([]byte(nil), tw.filtered.Bytes()...)
-	tw.filtered.Reset()
 	tw.task.LastOutputTime = time.Now()
 	tw.task.mu.Unlock()
 
 	drain := false
 	if tw.agent.StreamingTask == tw.task.ID && tw.agent.Tasks[tw.task.ID] == tw.task {
-		drain = tw.agent.queueTaskOutputLocked(tw.w, filtered)
+		drain = tw.agent.queueTaskOutputLocked(tw.w, append([]byte(nil), tw.filtered.Bytes()...))
 	}
+	tw.filtered.Reset()
 	tw.agent.TasksMu.Unlock()
 	if drain {
 		go tw.agent.drainTaskOutput()
@@ -190,9 +198,7 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 			return "", fmt.Errorf("background working directory is unavailable: %s", directory)
 		}
 	}
-	for key, value := range options.Environment {
-		environment[key] = value
-	}
+	maps.Copy(environment, options.Environment)
 	if a.IsShellScanDefaultsEnabled() {
 		shellCommand = bashtool.WithScanDefaults(command, workspace)
 	}
@@ -234,6 +240,7 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 	a.TasksMu.Unlock()
 
 	task.Cmd = cmd
+	task.Directory = cmd.Dir
 	stdout := &taskWriter{task: task, agent: a, w: w, isStderr: false}
 	stderr := &taskWriter{task: task, agent: a, w: w, isStderr: true}
 
@@ -282,6 +289,12 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 		close(stopWatcher)
 		task.mu.Lock()
 		task.EndTime = time.Now()
+		if cmd.ProcessState != nil {
+			code := cmd.ProcessState.ExitCode()
+			if code >= 0 {
+				task.ExitCode = &code
+			}
+		}
 		if task.Status == "running" {
 			if waitErr != nil {
 				task.Status = "failed"
@@ -301,7 +314,7 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 		}
 		drain := false
 		if wasStreaming {
-			drain = a.queueTaskOutputLocked(w, []byte(fmt.Sprintf("\n[task %s finished with status: %s]\n", task.ID, finalStatus)))
+			drain = a.queueTaskOutputLocked(w, fmt.Appendf(nil, "\n[task %s finished with status: %s]\n", task.ID, finalStatus))
 		}
 		a.TasksMu.Unlock()
 		if drain {
@@ -383,7 +396,7 @@ func (a *Agent) ResolveTaskID(id string) string {
 }
 
 func (a *Agent) GetTaskStatus(id string) (string, string, error) {
-	return a.taskStatus(id, 4000)
+	return a.taskStatus(id, taskStatusTailBytes)
 }
 
 // GetFullTaskStatus returns all output still retained by the task buffers.
@@ -402,18 +415,11 @@ func (a *Agent) taskStatus(id string, maxBytes int) (string, string, error) {
 
 	var sb bytes.Buffer
 	writeTail := func(b []byte) {
-		start := 0
-		if maxBytes > 0 {
-			start = max(0, len(b)-maxBytes)
-		}
-		// A byte limit must not split the first UTF-8 character in the tail.
-		for start > 0 && start < len(b) && !utf8.RuneStart(b[start]) {
-			start++
-		}
+		tail, start := taskOutputTail(b, maxBytes)
 		if start > 0 {
 			fmt.Fprintf(&sb, "...(truncated %d bytes)...\n", start)
 		}
-		sb.Write(b[start:])
+		sb.Write(tail)
 	}
 	writeTail(task.Stdout.Bytes())
 	if task.Stdout.Len() > 0 && task.Stderr.Len() > 0 && !bytes.HasSuffix(task.Stdout.Bytes(), []byte{'\n'}) {
@@ -424,11 +430,7 @@ func (a *Agent) taskStatus(id string, maxBytes int) (string, string, error) {
 		if sb.Len() > 0 && !bytes.HasSuffix(sb.Bytes(), []byte{'\n'}) {
 			sb.WriteByte('\n')
 		}
-		diagnostic := task.Err.Error()
-		if errors.Is(task.Err, exec.ErrWaitDelay) {
-			diagnostic = "command exited, but a child kept output pipes open; remaining child processes were stopped"
-		}
-		fmt.Fprintf(&sb, "[task error: %s]", diagnostic)
+		fmt.Fprintf(&sb, "[task error: %s]", taskDiagnostic(task.Err))
 	}
 
 	output := sb.String()
@@ -446,6 +448,17 @@ func (a *Agent) GetTaskCommand(id string) string {
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.Command
+}
+
+// GetTaskEvidence returns observed process state, never guesses from status text.
+func (a *Agent) GetTaskEvidence(id string) *evidence.Record {
+	_, task, err := a.lookupTask(id)
+	if err != nil {
+		return nil
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return task.evidenceLocked()
 }
 
 func (a *Agent) ListTasks() []TaskInfo {
@@ -574,13 +587,15 @@ func (a *Agent) killAllTasksLocked() int {
 	return killed
 }
 
+// ClearTasks stops running processes and returns the number of removed tasks.
 func (a *Agent) ClearTasks() int {
 	if a == nil {
 		return 0
 	}
 	a.TasksMu.Lock()
 	defer a.TasksMu.Unlock()
-	killed := a.killAllTasksLocked()
+	count := len(a.Tasks)
+	a.killAllTasksLocked()
 	a.stateMu.Lock()
 	a.sessionGeneration++
 	a.stateMu.Unlock()
@@ -591,7 +606,7 @@ func (a *Agent) ClearTasks() int {
 	a.taskOutput.bytes = 0
 	a.taskOutput.dropped = false
 	a.taskOutput.generation++
-	return killed
+	return count
 }
 
 func (a *Agent) pruneFinishedTasksLocked(maxTasks int) {

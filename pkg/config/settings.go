@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,11 +42,8 @@ func (c *Config) NormalizeSafety() {
 		return
 	}
 	c.normalizeValues()
-	for _, name := range c.DisabledTools {
-		if isAskUserToolName(name) {
-			c.SetAskUserMode("disabled")
-			break
-		}
+	if slices.ContainsFunc(c.DisabledTools, isAskUserToolName) {
+		c.SetAskUserMode("disabled")
 	}
 	if c.GuidedMode {
 		c.AutoApprove = false
@@ -63,6 +61,8 @@ func (cfg *Config) normalizeValues() {
 		cfg.AskUserMode = mode
 	}
 	cfg.ToolProtocol = strings.ToLower(strings.TrimSpace(cfg.ToolProtocol))
+	cfg.ContextProfile = strings.ToLower(strings.TrimSpace(cfg.ContextProfile))
+	cfg.HistoryCompression = strings.ToLower(strings.TrimSpace(cfg.HistoryCompression))
 	if cfg.CompressionThreshold > 0 {
 		if value, err := ParseCompressionThreshold(strconv.FormatFloat(cfg.CompressionThreshold, 'g', -1, 64)); err == nil {
 			cfg.CompressionThreshold = value
@@ -77,10 +77,9 @@ type settingDescriptor struct {
 
 // Build schema metadata once; configuration values remain instance-owned.
 var settingsSchema = func() []settingDescriptor {
-	t := reflect.TypeOf(Config{})
+	t := reflect.TypeFor[Config]()
 	fields := make([]settingDescriptor, 0, t.NumField())
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		key := strings.Split(field.Tag.Get("json"), ",")[0]
 		if key != "" && key != "-" {
 			fields = append(fields, settingDescriptor{key: key, field: field})
@@ -180,6 +179,8 @@ func (cfg *Config) SetValue(key, value string) error {
 			return nil
 		case "active_provider":
 			return cfg.ActivateProvider(value)
+		case "context_profile":
+			return cfg.ApplyContextProfile(value)
 		}
 		target.Elem().SetString(value)
 	case reflect.Bool:

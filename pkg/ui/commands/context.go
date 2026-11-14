@@ -62,7 +62,7 @@ func handleContextCommand(
 		fmt.Fprintln(w, "  Commands:")
 		fmt.Fprintln(w, "    /context auto            - enable dynamic context tier scaling")
 		fmt.Fprintln(w, "    /context off             - disable dynamic tier scaling")
-		fmt.Fprintln(w, "    /context <limit>         - set static context limit (e.g. 32768, 65536, 128000)")
+		fmt.Fprintln(w, "    /context <limit>         - set context ceiling (e.g. 8192, 16384, 32768)")
 		fmt.Fprintln(w, headerStyle.Render("╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"))
 		return
 	}

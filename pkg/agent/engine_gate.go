@@ -20,10 +20,12 @@ func (e *TurnEngine) verifyGuidedGate(ctx context.Context, sr StreamRenderer, lo
 		return nil
 	}
 
-	todos := e.agent.GetTodos()
-	if state, ok := executionContext(e, e.agent).(tool.TodoState); ok {
-		todos = state.GetTodos()
+	execCtx := executionContext(e, e.agent)
+	getTodos := e.agent.GetTodos
+	if state, ok := execCtx.(tool.TodoState); ok {
+		getTodos = state.GetTodos
 	}
+	todos := currentTaskPlan(execCtx.Context(), getTodos)
 	needsPlanApproval, blockErr := e.guided.CheckPlanAllowed(todos, toolName)
 	if blockErr != nil {
 		return blockErr
@@ -97,7 +99,7 @@ func (e *TurnEngine) renderPreApprovalDiffPreview(w io.Writer, theme style.UIThe
 	}
 	header := style.NewStyle().Foreground(theme.Secondary).Italic(true).Render("  proposed diff preview:")
 	fmt.Fprintln(w, header)
-	for _, line := range strings.Split(strings.TrimRight(diffPreview, "\r\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(diffPreview, "\r\n"), "\n") {
 		fmt.Fprintf(w, "  %s\n", line)
 	}
 }
@@ -171,8 +173,11 @@ func (e *TurnEngine) renderSubagentToolPrefix(w io.Writer, theme style.UITheme) 
 		prefixStyle.Render(e.policy.AgentName))
 }
 
-func (e *TurnEngine) checkGuardPreExecution(tc db.ToolCall) error {
+func (e *TurnEngine) checkGuardPreExecution(ctx context.Context, tc db.ToolCall) error {
 	guardErr := e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments)
+	if guardErr != nil && e.refreshReadGuard(ctx, tc) {
+		guardErr = e.guard.CheckPreExecution(tc.Function.Name, tc.Function.Arguments)
+	}
 	if guardErr != nil {
 		e.consecutiveGuardRejections++
 		if e.agent != nil && e.agent.DebugLogger != nil {

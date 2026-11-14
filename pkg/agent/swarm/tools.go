@@ -1,20 +1,28 @@
 package swarm
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"loop/pkg/agent/run"
+	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/limits"
+	"loop/pkg/domain/task"
+	domaintool "loop/pkg/domain/tool"
 )
 
 type SubagentExecutor struct {
 	mu       sync.Mutex
 	subagent *MultiAgent
 	def      tool.Tool
+	gate     chan struct{}
 }
 
 func (s *SubagentExecutor) Name() string          { return s.def.Function.Name }
@@ -37,6 +45,37 @@ func drainSubagentOutput(ch <-chan db.Message) {
 }
 
 func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (string, error) {
+	result, err := s.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (s *SubagentExecutor) ExecuteResult(ctx tool.AgentContext, arguments string) (domaintool.ToolResult, error) {
+	var assessment *task.State
+	output, err := s.execute(ctx, arguments, &assessment)
+	status := evidence.Succeeded
+	if err != nil {
+		status = evidence.Failed
+	}
+	verification := ""
+	observed := &evidence.Record{Kind: "subagent", Target: s.Name(), Outcome: status}
+	if assessment != nil {
+		verification = assessment.Verification.Stage
+		observed.Checks = evidence.CloneChecks(assessment.Verification.Checks)
+		observed.FileRevisions = assessment.Revisions
+		observed.MutationAt = assessment.Verification.ChangedAt
+		changed := len(assessment.Revisions) > 0
+		observed.Changed = &changed
+	}
+	structured, _ := json.Marshal(struct {
+		Agent        string `json:"agent"`
+		Status       string `json:"status"`
+		Summary      string `json:"summary"`
+		Verification string `json:"verification,omitempty"`
+	}{s.Name(), status, output, verification})
+	return domaintool.ToolResult{Output: output, Structured: structured, IsError: err != nil, Evidence: observed}, err
+}
+
+func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, assessment **task.State) (string, error) {
 	inherited := run.DelegationInstructions(ctx.Context())
 	prompt, err := prepareHandoff(ctx, arguments, inherited)
 	if err != nil {
@@ -50,9 +89,30 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	if managerBase == nil || managerBase.Config == nil || managerBase.Config.MaxSubagentDepth <= 0 {
 		return "", fmt.Errorf("subagents are disabled")
 	}
+	settings, err := managerBase.Configuration()
+	if err != nil {
+		return "", err
+	}
+	seconds := settings.SubagentTimeout
+	if seconds <= 0 {
+		seconds = 300
+	}
+	timeout := time.Duration(seconds) * time.Second
+	executionCtx, cancel := context.WithTimeout(ctx.Context(), timeout)
+	defer cancel()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.gate == nil {
+		s.gate = make(chan struct{}, 1)
+	}
+	gate := s.gate
+	s.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-executionCtx.Done():
+		return "", executionCtx.Err()
+	}
 	if err := ctx.Context().Err(); err != nil {
 		return "", err
 	}
@@ -60,11 +120,58 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	drainSubagentOutput(s.subagent.Output)
 
 	taskID := "subtask_" + db.NewUUID()
+	defer func() {
+		if *assessment != nil {
+			return
+		}
+		s.subagent.HistoryMu.RLock()
+		defer s.subagent.HistoryMu.RUnlock()
+		start := -1
+		for i, msg := range s.subagent.History {
+			if msg.Role == "user" && msg.ToolCallID == taskID {
+				start = i
+			}
+		}
+		if start < 0 {
+			return
+		}
+		end := len(s.subagent.History)
+		for i := start + 1; i < end; i++ {
+			msg := s.subagent.History[i]
+			if msg.IsUserInput() && msg.ToolCallID != taskID {
+				end = i
+				break
+			}
+		}
+		for i := end - 1; i >= start; i-- {
+			if state := s.subagent.History[i].TaskState; state != nil {
+				*assessment = task.Clone(state)
+				break
+			}
+		}
+	}()
 	if err := s.subagent.supervisor.RegisterTask(taskID, s.subagent.Name, prompt); err != nil {
 		return "", err
 	}
+	s.subagent.HistoryMu.Lock()
+	if s.subagent.requests == nil {
+		s.subagent.requests = make(map[string]context.Context)
+	}
+	s.subagent.requests[taskID] = executionCtx
+	s.subagent.HistoryMu.Unlock()
+	enqueued := false
+	defer func() {
+		if !enqueued {
+			s.subagent.HistoryMu.Lock()
+			delete(s.subagent.requests, taskID)
+			s.subagent.HistoryMu.Unlock()
+		}
+	}()
 
 	select {
+	case <-executionCtx.Done():
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", executionCtx.Err())
+		return "", executionCtx.Err()
 	case <-ctx.Context().Done():
 		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
 		return "", ctx.Context().Err()
@@ -79,16 +186,11 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		Content:               prompt,
 		InheritedInstructions: inherited,
 	}:
+		enqueued = true
 	}
-
-	const timeout = 60 * time.Minute
-	const maxResponseRunes = 10000
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
-	timeoutTimer := time.NewTimer(timeout)
-	defer timeoutTimer.Stop()
 
 	checkTask := func() (string, bool, error) {
 		task, err := s.subagent.supervisor.GetTask(taskID)
@@ -97,13 +199,12 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 		}
 		switch task.Status {
 		case "completed":
+			*assessment = task.TaskState
 			drainSubagentOutput(s.subagent.Output)
-			runes := []rune(task.Response)
-			if len(runes) > maxResponseRunes {
-				return string(runes[:maxResponseRunes]) + fmt.Sprintf("\n\n... [Response truncated: subagent returned %d characters. To prevent context overflow, output is capped at %d characters. If you need the full detailed report, please instruct the subagent to write its response directly to a file on disk.]", len(runes), maxResponseRunes), true, nil
-			}
-			return task.Response, true, nil
+			preview, _, _ := tool.SpillToolOutput(ctx, "subagent:"+s.subagent.Name, taskID, s.Name(), task.Response, min(2048, limits.ToolOutputBytes(ctx)))
+			return preview, true, nil
 		case "failed":
+			*assessment = task.TaskState
 			drainSubagentOutput(s.subagent.Output)
 			return "", true, fmt.Errorf("subagent execution failed: %s", task.Error)
 		default:
@@ -114,7 +215,6 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 	for {
 		select {
 		case <-ctx.Context().Done():
-			s.subagent.CancelActiveTurn()
 			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
 			drainSubagentOutput(s.subagent.Output)
 			return "", ctx.Context().Err()
@@ -122,9 +222,8 @@ func (s *SubagentExecutor) Execute(ctx tool.AgentContext, arguments string) (str
 			errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
 			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
 			return "", errSub
-		case <-timeoutTimer.C:
-			s.subagent.CancelActiveTurn()
-			errTimeout := fmt.Errorf("subagent '%s' execution timed out after %v", s.subagent.Name, timeout)
+		case <-executionCtx.Done():
+			errTimeout := fmt.Errorf("subagent '%s' execution stopped after %v: %w", s.subagent.Name, timeout, executionCtx.Err())
 			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errTimeout)
 			drainSubagentOutput(s.subagent.Output)
 			return "", errTimeout
@@ -160,6 +259,9 @@ func parseSubagentName(arguments string) (string, error) {
 	name := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Name, args.AgentName, args.SubagentName, args.Agent, args.Subagent))
 	if name == "" {
 		return "", fmt.Errorf("missing required argument: name")
+	}
+	if err := subagent.ValidateAgentName(name); err != nil {
+		return "", err
 	}
 	return name, nil
 }

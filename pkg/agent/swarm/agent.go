@@ -3,12 +3,14 @@ package swarm
 import (
 	"bytes"
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
@@ -30,6 +32,7 @@ type MultiAgent struct {
 	SubagentsMu   sync.RWMutex
 	BaseAgent     *agent.Agent
 	Parent        *MultiAgent
+	parentMu      sync.RWMutex
 	Manager       *MultiAgentManager
 	Context       context.Context
 	Cancel        context.CancelFunc
@@ -41,6 +44,7 @@ type MultiAgent struct {
 	ActiveContext context.Context
 	ActiveCancel  context.CancelFunc
 	ActiveStarted time.Time
+	requests      map[string]context.Context
 
 	StreamBuffer   *bytes.Buffer
 	StreamBufferMu sync.Mutex
@@ -91,15 +95,12 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	}
 
 	allowlist := ma.GetToolAllowlist()
-	canSpawn := false
-	for _, toolName := range allowlist {
-		if tool.IsSpawnTool(toolName) {
-			canSpawn = true
-			break
-		}
-	}
+	canSpawn := slices.ContainsFunc(allowlist, tool.IsSpawnTool)
 
 	cfg := ma.BaseAgent.BaseSystemPromptConfig(allowlist, canSpawn)
+	if ctx, _, _, ok := ma.activeTurn(); ok {
+		cfg.Task = run.Objective(ctx)
+	}
 	cfg.BaseInstruction = ma.SystemPrompt
 	if canSpawn {
 		cfg.ActiveAgents = activeAgents
@@ -108,6 +109,13 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	}
 	cfg.AllSkills = cfg.Skills
 	cfg.Skills = ma.GetEffectiveSkills()
+	ma.HistoryMu.RLock()
+	if ma.HasAllSkills {
+		cfg.LoadedSkills = append([]tool.Skill(nil), ma.LocalSkills...)
+	} else {
+		cfg.LoadedSkills = append([]tool.Skill(nil), ma.Skills...)
+	}
+	ma.HistoryMu.RUnlock()
 	cfg.GuidedMode = false
 	cfg.ActiveTasks = nil
 
@@ -168,9 +176,23 @@ func (ma *MultiAgent) GetEffectiveSkills() []tool.Skill {
 	return append([]tool.Skill(nil), ma.Skills...)
 }
 
+// parent snapshots the hierarchy independently of the manager registry lock.
+// Running agents may inspect depth while the manager reparents their branch.
+func (ma *MultiAgent) parent() *MultiAgent {
+	ma.parentMu.RLock()
+	defer ma.parentMu.RUnlock()
+	return ma.Parent
+}
+
+func (ma *MultiAgent) setParent(parent *MultiAgent) {
+	ma.parentMu.Lock()
+	ma.Parent = parent
+	ma.parentMu.Unlock()
+}
+
 func (ma *MultiAgent) Depth() int {
 	depth := 0
-	for curr := ma.Parent; curr != nil; curr = curr.Parent {
+	for curr := ma.parent(); curr != nil; curr = curr.parent() {
 		depth++
 	}
 	return depth
@@ -193,8 +215,8 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 		if ma.BaseAgent.Registry.IsDisabled(name) {
 			continue
 		}
-		if strings.HasPrefix(name, "subagent__") {
-			targetName := strings.TrimPrefix(name, "subagent__")
+		if after, ok := strings.CutPrefix(name, "subagent__"); ok {
+			targetName := after
 			ma.SubagentsMu.RLock()
 			_, isChild := ma.Subagents[targetName]
 			ma.SubagentsMu.RUnlock()

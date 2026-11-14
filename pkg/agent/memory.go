@@ -30,7 +30,16 @@ func (a *Agent) LoadMemoryContext() string {
 		return ""
 	}
 	var output strings.Builder
+	policy := "auto"
+	if a.Config != nil && a.Config.MemoryPolicy != "" {
+		policy = strings.ToLower(strings.TrimSpace(a.Config.MemoryPolicy))
+	}
+	objective := a.knowledgeObjective()
 	read := func(path, kind string) bool {
+		optional := strings.HasSuffix(strings.ToUpper(path), "MEMORY.MD")
+		if optional && policy == "off" {
+			return false
+		}
 		content, exists, err := resources.ReadCachedTextFile(path, 256<<10)
 		if !exists && err == nil {
 			return false
@@ -40,6 +49,9 @@ func (a *Agent) LoadMemoryContext() string {
 			return true
 		}
 		if text := strings.TrimSpace(content); text != "" {
+			if optional && policy == "auto" && !strings.Contains(strings.ToLower(objective), "memory.md") {
+				text = relevantKnowledge(text, objective, max(512, min(4096, a.GetEffectiveContextLimit(0)/8)))
+			}
 			fmt.Fprintf(&output, "\n\n%s (%s):\n%s", kind, path, text)
 		}
 		return true

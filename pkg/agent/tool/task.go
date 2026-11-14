@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool/file"
+	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -41,10 +42,10 @@ func taskIDString(v any) (string, error) {
 func parseTaskID(arguments string) (string, error) {
 	var raw string
 	var args struct {
-		TaskID    interface{} `json:"task_id"`
-		TaskIDAlt interface{} `json:"taskId"`
-		ID        interface{} `json:"id"`
-		Task      interface{} `json:"task"`
+		TaskID    any `json:"task_id"`
+		TaskIDAlt any `json:"taskId"`
+		ID        any `json:"id"`
+		Task      any `json:"task"`
 	}
 	if err := ParseToolArguments(arguments, &args, func(s string) { raw = s }); err != nil {
 		return "", err
@@ -108,40 +109,67 @@ func (t *taskStatusTool) Definition() Tool {
 }
 
 func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, error) {
+	result, err := t.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (t *taskStatusTool) ExecuteResult(ctx AgentContext, arguments string) (ToolResult, error) {
+	result := ToolResult{}
+	if err := ctx.Context().Err(); err != nil {
+		result.IsError = true
+		return result, err
+	}
 	taskID, err := resolveTaskIDArg(ctx, arguments, "task_missing_arg_status", "missing required argument 'task_id'. Provide the ID of the background task (e.g. 'task_1').")
 	if err != nil {
-		return "", err
+		result.IsError = true
+		return result, err
 	}
 
 	var options struct {
 		Full bool `json:"full"`
 	}
-	_ = json.Unmarshal([]byte(arguments), &options)
-	readStatus := ctx.GetTaskStatus
-	if options.Full {
-		if full, ok := ctx.(domaintool.FullTaskStatusProvider); ok {
-			readStatus = full.GetFullTaskStatus
+	if strings.HasPrefix(strings.TrimSpace(arguments), "{") {
+		if err := json.Unmarshal([]byte(arguments), &options); err != nil {
+			result.IsError = true
+			return result, fmt.Errorf("invalid task status options: %w", err)
 		}
 	}
-	status, output, err := readStatus(taskID)
+	var status, output, cmdStr string
+	var snapshot *domaintool.BackgroundTaskSnapshot
+	if provider, ok := ctx.(domaintool.TaskOutputSnapshotProvider); ok {
+		snapshot, output, err = run.ReadBackgroundTaskOutput(ctx.Context(), taskID, options.Full, provider)
+	}
+	if snapshot != nil && err == nil {
+		status, cmdStr, result.Evidence = snapshot.Status, snapshot.Command, snapshot.Evidence
+	} else if err == nil {
+		readStatus := ctx.GetTaskStatus
+		if options.Full {
+			if full, ok := ctx.(domaintool.FullTaskStatusProvider); ok {
+				readStatus = full.GetFullTaskStatus
+			}
+		}
+		status, output, err = readStatus(taskID)
+		if err == nil {
+			fullOutput := output
+			if versioned, ok := ctx.(domaintool.TaskOutputVersionProvider); ok {
+				output = run.NewBackgroundOutput(ctx.Context(), taskID, output, versioned.GetTaskOutputVersion(taskID))
+			} else {
+				output = run.NewBackgroundOutput(ctx.Context(), taskID, output)
+			}
+			if options.Full {
+				output = fullOutput
+			}
+			if provider, ok := ctx.(interface{ GetTaskEvidence(string) *evidence.Record }); ok {
+				result.Evidence = provider.GetTaskEvidence(taskID)
+			}
+			if provider, ok := ctx.(domaintool.TaskCommandProvider); ok {
+				cmdStr = provider.GetTaskCommand(taskID)
+			}
+		}
+	}
 	if err != nil {
-		return "", errors.New(RuntimeMessagef("task_status_not_found", "task %q not found. The task may have already completed, was killed, or does not exist.", taskID))
-	}
-
-	fullOutput := output
-	if versioned, ok := ctx.(domaintool.TaskOutputVersionProvider); ok {
-		output = run.NewBackgroundOutput(ctx.Context(), taskID, output, versioned.GetTaskOutputVersion(taskID))
-	} else {
-		output = run.NewBackgroundOutput(ctx.Context(), taskID, output)
-	}
-
-	if options.Full {
-		output = fullOutput
-	}
-
-	var cmdStr string
-	if tc, ok := ctx.(domaintool.TaskCommandProvider); ok {
-		cmdStr = tc.GetTaskCommand(taskID)
+		result.IsError = true
+		return result, fmt.Errorf("get status for task %q: %w", taskID, err)
 	}
 	if cmdStr != "" {
 		displayCmd := strings.TrimSpace(cmdStr)
@@ -151,10 +179,11 @@ func (t *taskStatusTool) Execute(ctx AgentContext, arguments string) (string, er
 		if len(displayCmd) > 50 {
 			displayCmd = file.UTF8SafePrefix(displayCmd, 47) + "..."
 		}
-		return RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, displayCmd, status, output), nil
+		result.Output = RuntimeMessagef("task_status_cmd_output", "Task %s (%s) is currently: %s\n\nOutput:\n%s", taskID, displayCmd, status, output)
+	} else {
+		result.Output = RuntimeMessagef("task_status_output", "Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output)
 	}
-
-	return RuntimeMessagef("task_status_output", "Task %s is currently: %s\n\nOutput:\n%s", taskID, status, output), nil
+	return result, nil
 }
 
 type taskKillTool struct{}

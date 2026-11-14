@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/domain/diagnostic"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -36,14 +38,17 @@ func (r *ToolRegistry) Prepare(name, arguments string) (ToolExecutor, string, er
 	if len(arguments) > 8<<20 {
 		return nil, "", fmt.Errorf("tool arguments exceed 8 MiB")
 	}
-	if !json.Valid([]byte(arguments)) {
-		return nil, "", fmt.Errorf("invalid JSON tool arguments for %q", name)
+	value, err := jsonschema.UnmarshalJSON(strings.NewReader(arguments))
+	if err != nil {
+		return nil, "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: name, Cause: fmt.Errorf("invalid JSON tool arguments for %q: %w", name, err)}
 	}
-	var value any
-	if err := json.Unmarshal([]byte(arguments), &value); err != nil {
-		return nil, "", fmt.Errorf("JSON validation failed: %w", err)
+	if err := validateArgumentNumbers(value); err != nil {
+		return nil, "", fmt.Errorf("tool %q arguments: %w", name, err)
 	}
-	value = normalizeToolArguments(executor.Name(), arguments, value)
+	value, err = normalizeToolArguments(executor.Name(), arguments, value)
+	if err != nil {
+		return nil, "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: name, Cause: fmt.Errorf("tool %q arguments: %w", name, err)}
+	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return nil, "", err
@@ -77,16 +82,46 @@ func (r *ToolRegistry) Prepare(name, arguments string) (ToolExecutor, string, er
 	}
 	r.mu.Unlock()
 	if err := cached.schema.Validate(value); err != nil {
-		return nil, "", fmt.Errorf("tool %q arguments: %w", name, err)
+		return nil, "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: name, Cause: fmt.Errorf("tool %q arguments: %w", name, err)}
 	}
 	return executor, string(encoded), nil
 }
 
-func normalizeToolArguments(name, arguments string, value any) any {
+// Keep the existing finite numeric range while preserving exact JSON values.
+// Reject underflow as well: treating a tiny nonzero value as zero changes the
+// requested operation and can overflow exact arithmetic in schema validation.
+func validateArgumentNumbers(value any) error {
+	switch value := value.(type) {
+	case json.Number:
+		number, err := value.Float64()
+		mantissa := value.String()
+		if end := strings.IndexAny(mantissa, "eE"); end >= 0 {
+			mantissa = mantissa[:end]
+		}
+		if err != nil || number == 0 && strings.ContainsAny(mantissa, "123456789") {
+			return fmt.Errorf("numeric argument is outside the supported range")
+		}
+	case map[string]any:
+		for _, item := range value {
+			if err := validateArgumentNumbers(item); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if err := validateArgumentNumbers(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeToolArguments(name, arguments string, value any) (any, error) {
 	name = NormalizeName(name)
 	object, ok := value.(map[string]any)
 	if !ok {
-		return value
+		return value, nil
 	}
 	copyAlias := func(target string, aliases ...string) {
 		if _, exists := object[target]; exists {
@@ -100,41 +135,46 @@ func normalizeToolArguments(name, arguments string, value any) any {
 		}
 	}
 	switch name {
-	case "read", "write", "edit", "list_directory":
-		if name == "edit" {
-			if path, edits, err := filetool.ParseEditArguments(arguments); err == nil {
-				updates := make([]any, len(edits))
-				for i, edit := range edits {
-					update := map[string]any{"oldText": edit.OldText, "newText": edit.NewText}
-					if edit.Path != "" && edit.Path != path {
-						update["path"] = edit.Path
-					}
-					updates[i] = update
-				}
-				// Keep only the canonical request, including per-edit paths.
-				return map[string]any{"path": path, "updates": updates}
-			}
-			return value
+	case "write":
+		path, content, err := filetool.ParseWriteArguments(arguments)
+		if err != nil {
+			return value, err
 		}
-		if path := filetool.ExtractFilePath(arguments); path != "" {
+		return map[string]any{"path": path, "content": content}, nil
+	case "edit":
+		path, edits, err := filetool.ParseEditArguments(arguments)
+		if err != nil {
+			return value, err
+		}
+		updates := make([]any, len(edits))
+		for i, edit := range edits {
+			update := map[string]any{"oldText": edit.OldText, "newText": edit.NewText}
+			if edit.Path != "" && edit.Path != path {
+				update["path"] = edit.Path
+			}
+			updates[i] = update
+		}
+		// Keep only the canonical request, including per-edit paths.
+		return map[string]any{"path": path, "updates": updates}, nil
+	case "read", "list_directory":
+		path, _ := object["path"].(string)
+		if path = filetool.ExtractFilePath(arguments, path); path != "" {
 			object["path"] = path
-		}
-		if name == "write" {
-			if content, ok := filetool.ExtractFileContent(arguments); ok {
-				object["content"] = content
-			}
 		}
 	case "find_files":
 		copyAlias("pattern", "glob")
-		if path := filetool.ExtractFilePath(arguments); path != "" {
+		path, _ := object["path"].(string)
+		if path = filetool.ExtractFilePath(arguments, path); path != "" {
 			object["path"] = path
 		}
 	case "bash":
 		copyAlias("command", "cmd", "arguments")
 		copyAlias("dir", "cwd")
 	case "todo":
-		copyAlias("tasks", "actions")
-		delete(object, "actions")
+		if _, canonical := object["tasks"]; !canonical {
+			copyAlias("tasks", "actions")
+			delete(object, "actions")
+		}
 	case "get_task_status", "stop_task":
 		copyAlias("task_id", "id", "task", "taskId")
 	case "load_skill":
@@ -145,24 +185,29 @@ func normalizeToolArguments(name, arguments string, value any) any {
 			object["name"] = ""
 		}
 	}
-	return object
+	return object, nil
 }
 
-// CanonicalArguments is used at the model adapter boundary. Direct tool callers
-// still receive normalization and strict schema validation through Prepare.
+// CanonicalArguments normalizes model arguments and guard fingerprints. Direct
+// tool callers still receive strict schema validation through Prepare.
 func CanonicalArguments(name, arguments string) string {
 	if len(arguments) > 8<<20 {
 		return arguments
 	}
-	var value any
-	if json.Unmarshal([]byte(arguments), &value) != nil {
+	value, err := jsonschema.UnmarshalJSON(strings.NewReader(arguments))
+	if err != nil {
 		repaired := domaintool.RepairJSON(arguments)
-		if json.Unmarshal([]byte(repaired), &value) != nil {
+		value, err = jsonschema.UnmarshalJSON(strings.NewReader(repaired))
+		if err != nil {
 			return arguments
 		}
 		arguments = repaired
 	}
-	value = normalizeToolArguments(name, arguments, value)
+	if normalized, normalizeErr := normalizeToolArguments(name, arguments, value); normalizeErr == nil {
+		value = normalized
+	}
+	// Keep invalid requests invalid while giving their JSON a stable identity.
+	// Prepare remains responsible for rejecting conflicting or missing fields.
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return arguments

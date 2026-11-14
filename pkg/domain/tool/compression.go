@@ -3,23 +3,29 @@ package tool
 // Descriptions explain behavior; field names, types, enums and required lists
 // already describe the arguments. Keep only parameter hints that add meaning.
 var compactToolDescriptions = map[string]string{
-	"bash":             "Run shell commands. Working directory persists; background starts a task.",
-	"list_directory":   "List directory entries.",
-	"find_files":       "Find paths by glob.",
-	"read":             "Read a file; offset/limit paginate. Use list_directory for directories.",
-	"grep":             "Search file content by regex (literal=true for fixed text). glob filters files.",
-	"write":            "Create or fully replace a file; never bypass an edit mismatch.",
-	"edit":             "Replace unique oldText with newText. On mismatch re-read and retry a smaller block; never bypass with write.",
-	"todo":             "Manage the todo plan, separate from background tasks; at most one in_progress. Prefer markdown for full plans; actions update individuals.",
-	"ask_user":         "Ask for needed clarification or approval with clear choices. The UI adds Other.",
-	"load_skill":       "Load a reference guide by name.",
-	"load_mcp":         "Connect a deferred MCP server by name.",
-	"get_task_status":  "Inspect background task status and output.",
-	"stop_task":        "Stop a background task.",
-	"create_subagent":  "Create an autonomous agent for a bounded task.",
-	"remove_subagent":  "Stop and remove an agent.",
-	"list_subagents":   "List active agents.",
-	"inspect_subagent": "Inspect an agent's execution history.",
+	"bash":                        "Run shell commands. Working directory persists; background starts a task.",
+	"list_directory":              "List directory entries.",
+	"find_files":                  "Find paths by glob.",
+	"read":                        "Read a file; offset/limit paginate. Use list_directory for directories.",
+	"grep":                        "Search file content by regex (literal=true for fixed text). glob filters files.",
+	"search_symbols":              "Find Go, JS/TS and Python declarations. include_context adds bounded source; Go also adds imports/candidate callers. Read before editing.",
+	"write":                       "Create or fully replace a file; never bypass an edit mismatch.",
+	"edit":                        "Replace unique oldText with newText. On mismatch re-read and retry a smaller block; never bypass with write.",
+	"todo":                        "Manage the todo plan, separate from background tasks; at most one in_progress. Prefer markdown for full plans; actions update individuals.",
+	"ask_user":                    "Ask for needed clarification or approval with clear choices. The UI adds Other.",
+	"load_skill":                  "Load instructions by exact name, or query names/descriptions without loading. Returned paths locate supporting files.",
+	"load_mcp":                    "Connect a deferred MCP server; omit name to list deferred servers.",
+	"search_tools":                "Expose matching tools; their schemas become available on the next step.",
+	"task_state":                  "Optionally assess request progress after work starts. Update only for changed outcomes or blockers; resolve pending work before completed.",
+	"list_mcp_resources":          "List resources from a selected server, or all resource-capable servers.",
+	"list_mcp_resource_templates": "List resource templates from a selected server, or all resource-capable servers.",
+	"read_mcp_resource":           "Read an MCP resource by server and URI; non-image binary data is saved as an artifact.",
+	"get_task_status":             "Inspect background task status and output.",
+	"stop_task":                   "Stop a background task.",
+	"create_subagent":             "Create an autonomous agent for a bounded task.",
+	"remove_subagent":             "Stop and remove an agent.",
+	"list_subagents":              "List active agents.",
+	"inspect_subagent":            "Inspect an agent's execution history.",
 }
 
 var compactParameterHints = map[string]map[string]string{
@@ -28,6 +34,20 @@ var compactParameterHints = map[string]map[string]string{
 	"list_directory": {"offset": "1-based entry.", "depth": "Recursion depth."},
 	"find_files":     {"offset": "1-based result."},
 	"grep":           {"offset": "1-based match."},
+	"search_symbols": {
+		"query":           "All space-separated terms must match.",
+		"limit":           "1-100 results (default 30).",
+		"include_context": "Candidate callers match syntax names, not resolved types.",
+	},
+	"search_tools": {"limit": "Up to 20 results."},
+	"load_skill":   {"query": "Metadata search only; use name to load instructions."},
+	"task_state": {
+		"summary":           "Result or blocker; required for terminal status.",
+		"remaining":         "Replace remaining work; [] clears it. The todo plan is separate.",
+		"verification_note": "Explain skipped checks; cannot assert verification success.",
+	},
+	"list_mcp_resources":          {"cursor": "Continue on the server that returned this cursor."},
+	"list_mcp_resource_templates": {"cursor": "Continue on the server that returned this cursor."},
 	"todo": {
 		"markdown": "Full plan: - [ ] task-1: Work; [>] active, [x] done. One row per task; stable IDs. Do not combine with tasks or action.",
 		"tasks":    "Full plan replacement.",
@@ -45,7 +65,7 @@ func CompactToolGuidelines(name string, guidelines []string) []string {
 		return guidelines
 	}
 	switch name {
-	case "read", "write", "edit", "ask_user", "bash", "list_directory", "find_files", "grep", "todo", "get_task_status", "stop_task":
+	case "read", "write", "edit", "ask_user", "bash", "list_directory", "find_files", "grep", "todo", "get_task_status", "stop_task", "task_state", "search_symbols":
 		return nil
 	}
 	return guidelines

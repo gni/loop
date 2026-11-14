@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -54,6 +55,7 @@ type ToolRegistry struct {
 	mu       sync.RWMutex
 	tools    map[string]ToolExecutor
 	hidden   map[string]bool
+	exposed  map[string]bool
 	schemas  map[string]compiledSchema
 	disabled map[string]bool
 
@@ -86,6 +88,7 @@ func (r *ToolRegistry) Unregister(name string) {
 	delete(r.tools, name)
 	delete(r.schemas, name)
 	delete(r.hidden, name)
+	delete(r.exposed, name)
 }
 
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
@@ -96,6 +99,7 @@ func (r *ToolRegistry) UnregisterPrefix(prefix string) {
 			delete(r.tools, name)
 			delete(r.schemas, name)
 			delete(r.hidden, name)
+			delete(r.exposed, name)
 		}
 	}
 }
@@ -247,9 +251,7 @@ func (r *ToolRegistry) GetAllExecutors() map[string]ToolExecutor {
 	defer r.mu.RUnlock()
 
 	res := make(map[string]ToolExecutor, len(r.tools))
-	for k, v := range r.tools {
-		res[k] = v
-	}
+	maps.Copy(res, r.tools)
 	return res
 }
 
@@ -260,11 +262,23 @@ func (r *ToolRegistry) Hide(name string) {
 		r.hidden = make(map[string]bool)
 	}
 	r.hidden[NormalizeName(name)] = true
+	delete(r.exposed, NormalizeName(name))
 }
 func (r *ToolRegistry) Expose(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.hidden, NormalizeName(name))
+	if r.exposed == nil {
+		r.exposed = make(map[string]bool)
+	}
+	r.exposed[NormalizeName(name)] = true
+}
+
+// IsExposed identifies capabilities explicitly selected through discovery.
+func (r *ToolRegistry) IsExposed(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.exposed[NormalizeName(name)]
 }
 
 func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExecutor) {

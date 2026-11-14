@@ -64,7 +64,7 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 }
 
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, error) {
-	if len(*messages) > 4 && a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
+	if a.autoCompactionDue(*messages, promptTokens, completionTokens, effectiveLimit) {
 		if err := a.CompressHistory(ctx, messages, sessionID, theme, w); err != nil {
 			return promptTokens, effectiveLimit, err
 		}
@@ -72,6 +72,30 @@ func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessi
 		return recomputed, limit, nil
 	}
 	return promptTokens, effectiveLimit, nil
+}
+
+// Automatic compaction requires new history since the latest summary. Counting
+// the already retained suffix again can otherwise summarize it after every hi.
+// Explicit compression and recovery after a real overflow bypass this gate.
+func (a *Agent) autoCompactionDue(messages []db.Message, promptTokens, completionTokens, effectiveLimit int) bool {
+	if len(messages) <= 4 || !a.CompactionTrigger(promptTokens, completionTokens, effectiveLimit) {
+		return false
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		msg := messages[index]
+		if !msg.IsContextSummary() {
+			continue
+		}
+		tail := msg.CompactionTailMessages
+		if tail <= 0 || tail > len(messages)-index-1 {
+			// Older summaries have no boundary; allow a fresh compaction once.
+			return true
+		}
+		newHistory := messages[index+1+tail:]
+		minimumGrowth := max(64, min(2048, effectiveLimit/8))
+		return requestTokens(newHistory) >= minimumGrowth
+	}
+	return true
 }
 
 func keepRecentMessageCount(messages []db.Message, budgets ...int) int {
@@ -111,21 +135,21 @@ func sortedMapKeys(m map[string]bool) []string {
 }
 
 func collectPriorSummaryFiles(content string, readFilesMap, modifiedFilesMap map[string]bool) {
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		var listStr string
 		var target map[string]bool
-		if strings.HasPrefix(trimmed, "- Files Read:") {
-			listStr = strings.TrimSpace(strings.TrimPrefix(trimmed, "- Files Read:"))
+		if after, ok := strings.CutPrefix(trimmed, "- Files Read:"); ok {
+			listStr = strings.TrimSpace(after)
 			target = readFilesMap
-		} else if strings.HasPrefix(trimmed, "- Files Modified:") {
-			listStr = strings.TrimSpace(strings.TrimPrefix(trimmed, "- Files Modified:"))
+		} else if after, ok := strings.CutPrefix(trimmed, "- Files Modified:"); ok {
+			listStr = strings.TrimSpace(after)
 			target = modifiedFilesMap
 		}
 		if target == nil || listStr == "" {
 			continue
 		}
-		for _, item := range strings.Split(listStr, ",") {
+		for item := range strings.SplitSeq(listStr, ",") {
 			if p := strings.TrimSpace(item); p != "" {
 				target[p] = true
 			}
@@ -134,10 +158,17 @@ func collectPriorSummaryFiles(content string, readFilesMap, modifiedFilesMap map
 }
 
 func truncateTranscriptSegment(text string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(text) <= maxBytes {
 		return text
 	}
-	return filetool.UTF8SafePrefix(text, maxBytes) + "... (truncated)"
+	const notice = "... (truncated)"
+	if maxBytes <= len(notice) {
+		return filetool.UTF8SafePrefix(notice, maxBytes)
+	}
+	return filetool.UTF8SafePrefix(text, maxBytes-len(notice)) + notice
 }
 
 func (a *Agent) CompressHistory(
@@ -154,7 +185,18 @@ func (a *Agent) CompressHistory(
 		return err
 	}
 	a.emit(Event{Type: "compaction_start", SessionID: sessionID})
-	defer func() { a.emit(Event{Type: "compaction_end", SessionID: sessionID, IsError: compressionErr != nil}) }()
+	started := time.Now()
+	beforeCount, beforeTokens := len(*messages), 0
+	if a.EventSink != nil {
+		beforeTokens = requestTokens(*messages)
+	}
+	defer func() {
+		var metrics any
+		if a.EventSink != nil {
+			metrics = map[string]any{"elapsed_ms": time.Since(started).Milliseconds(), "before_messages": beforeCount, "after_messages": len(*messages), "before_tokens_estimate": beforeTokens, "after_tokens_estimate": requestTokens(*messages)}
+		}
+		a.emit(Event{Type: "compaction_end", SessionID: sessionID, IsError: compressionErr != nil, Data: metrics})
+	}()
 
 	keepMsgCount := keepRecentMessageCount(*messages, max(512, a.GetEffectiveContextLimit(0)/3))
 	keepIdx := len(*messages) - keepMsgCount
@@ -251,8 +293,10 @@ func (a *Agent) CompressHistory(
 	newMessages = append(newMessages, (*messages)[0])
 	newMessages = append(newMessages, pinnedTaskInstructions(ctx, keptMessages, *messages)...)
 	newMessages = append(newMessages, summaryMsg)
+	newMessages = append(newMessages, pinnedSkillInstructions(toCompress, keptMessages)...)
 	newMessages = append(newMessages, keptMessages...)
 	newMessages = EnforceToolPairingInvariance(newMessages)
+	markCompactionBoundary(newMessages, summaryMsg.Usage)
 
 	if sessionID != "" {
 		if err := a.AppendEntryContext(ctx, sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
@@ -278,4 +322,13 @@ func (a *Agent) CompressHistory(
 	fmt.Fprintln(w, CompressionSummaryPreview(summaryMsg.Content))
 	fmt.Fprintln(w)
 	return
+}
+
+func markCompactionBoundary(messages []db.Message, summaryUsage *message.Usage) {
+	for index := range messages {
+		if summaryUsage != nil && messages[index].ContextKind == "summary" && messages[index].Usage == summaryUsage {
+			messages[index].CompactionTailMessages = len(messages) - index - 1
+			return
+		}
+	}
 }

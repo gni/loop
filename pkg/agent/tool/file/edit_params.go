@@ -31,26 +31,6 @@ func ParseEditArguments(arguments string) (string, []ReplaceEdit, error) {
 	return path, edits, nil
 }
 
-func editString(m map[string]any, keys []string) (string, bool, error) {
-	var result string
-	found := false
-	for _, key := range keys {
-		v, exists := m[key]
-		if !exists {
-			continue
-		}
-		s, ok := v.(string)
-		if !ok {
-			return "", false, fmt.Errorf("%s must be a string", key)
-		}
-		if found && s != result {
-			return "", false, fmt.Errorf("conflicting aliases for %s", keys[0])
-		}
-		result, found = s, true
-	}
-	return result, found, nil
-}
-
 func parseEditValue(value any, inheritedPath string, depth int) (string, []ReplaceEdit, error) {
 	if depth > 16 {
 		return "", nil, fmt.Errorf("edit arguments are nested too deeply")
@@ -80,7 +60,7 @@ func parseEditValue(value any, inheritedPath string, depth int) (string, []Repla
 	if !ok {
 		return "", nil, fmt.Errorf("each edit must be an object")
 	}
-	path, hasPath, err := editString(m, pathMapKeys)
+	path, hasPath, err := argumentString(m, pathMapKeys)
 	if err != nil {
 		return "", nil, err
 	}
@@ -102,11 +82,11 @@ func parseEditValue(value any, inheritedPath string, depth int) (string, []Repla
 			nested, nestedFound = v, true
 		}
 	}
-	old, hasOld, err := editString(m, oldTextKeys)
+	old, hasOld, err := argumentString(m, oldTextKeys)
 	if err != nil {
 		return "", nil, err
 	}
-	newText, hasNew, err := editString(m, newTextKeys)
+	newText, hasNew, err := argumentString(m, newTextKeys)
 	if err != nil {
 		return "", nil, err
 	}

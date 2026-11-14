@@ -188,6 +188,40 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	return cleanTarget, nil
 }
 
+// SafeReadPath also permits supporting files inside installed skill packages.
+// This does not grant mutation access or allow links to escape a skill folder.
+func (a *Agent) SafeReadPath(inputPath string) (string, error) {
+	path, pathErr := a.SafePath(inputPath)
+	if pathErr == nil || !filepath.IsAbs(inputPath) {
+		return path, pathErr
+	}
+	cleanTarget := filepath.Clean(inputPath)
+	evalTarget, err := filepath.EvalSymlinks(cleanTarget)
+	if err != nil {
+		return "", pathErr
+	}
+	if err := a.isProtectedRuntimePath(cleanTarget); err != nil {
+		return "", err
+	}
+	if err := a.isProtectedRuntimePath(evalTarget); err != nil {
+		return "", err
+	}
+	for _, skill := range a.GetActiveSkills() {
+		if skill.Path == "" {
+			continue
+		}
+		root := filepath.Dir(skill.Path)
+		if !withinRoot(root, cleanTarget) {
+			continue
+		}
+		evalRoot, err := filepath.EvalSymlinks(root)
+		if err == nil && withinRoot(evalRoot, evalTarget) {
+			return cleanTarget, nil
+		}
+	}
+	return "", pathErr
+}
+
 func withinRoot(cleanRoot, target string) bool {
 	if target == cleanRoot {
 		return true

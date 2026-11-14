@@ -15,6 +15,9 @@ const (
 	EditNotFound     Code = "edit_not_found"
 	AmbiguousEdit    Code = "ambiguous_edit"
 	PermissionDenied Code = "permission_denied"
+	SyntaxInvalid    Code = "syntax_invalid"
+	InvalidArguments Code = "invalid_arguments"
+	CommandFailed    Code = "command_failed"
 )
 
 type Error struct {

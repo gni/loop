@@ -16,15 +16,27 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	action := string(key)
 	mouse := strings.HasPrefix(action, "\x1b[<") || strings.HasPrefix(action, "\x1b[M")
 	getUI().StateMu.Lock()
-	modal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
+	approval := getUI().InApprovalPrompt
+	modal := getUI().InInteractiveMenu || terminal.Default().InAltScreen()
 	getUI().StateMu.Unlock()
-	if modal || (!h.reader.ActiveTurn.Load() && !h.reader.IsAtMainPrompt.Load()) {
+	if modal || (!approval && !h.reader.ActiveTurn.Load() && !h.reader.IsAtMainPrompt.Load()) {
 		if mouse {
 			return nil
 		}
 		return key
 	}
-	if handled := h.filterSearchInput(key); handled {
+	// Approval arrows and shortcuts belong to the choice menu. Bring it back
+	// into view before forwarding input; scroll keys must never select a choice.
+	if approval && !mouse && !approvalHistoryNavigation(action) {
+		TerminalMu.Lock()
+		browsing := h.browsing
+		TerminalMu.Unlock()
+		if browsing {
+			h.Latest()
+		}
+		return key
+	}
+	if !approval && h.filterSearchInput(key) {
 		return nil
 	}
 	TerminalMu.Lock()
@@ -50,13 +62,13 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	case "\x1b[1;5F":
 		action = "latest"
 	case "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~":
-		if h.browsing {
+		if h.browsing || approval {
 			action = "top"
 		} else {
 			navigation = false
 		}
 	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~", "\x1b":
-		if h.browsing || h.searchQuery != "" {
+		if h.browsing || h.searchQuery != "" || approval {
 			action = "latest"
 		} else {
 			navigation = false
@@ -172,6 +184,18 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		return nil
 	}
 	return key
+}
+
+// Reserve only explicit history navigation while an approval is pending.
+// In particular, Escape still cancels and Up/Down still move the selection.
+func approvalHistoryNavigation(key string) bool {
+	switch key {
+	case "\x1b[5~", "\x1b[6~", "\x1b[1;5H", "\x1b[1;5F",
+		"\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~",
+		"\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
+		return true
+	}
+	return false
 }
 
 // Search input stays out of the prompt so an unfinished message survives.

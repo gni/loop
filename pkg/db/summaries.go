@@ -28,7 +28,7 @@ func appendPreviewSnippet(builder *strings.Builder, runeCount *int, text string)
 	if *runeCount > 64 || text == "" {
 		return
 	}
-	for _, field := range strings.Fields(text) {
+	for field := range strings.FieldsSeq(text) {
 		if builder.Len() > 0 {
 			builder.WriteByte(' ')
 			*runeCount++
@@ -55,7 +55,7 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 	if err != nil {
 		return cachedSummary{}, false
 	}
-	if sum, ok := s.core.summaryCache[sessionID]; ok && sum.size == info.Size() && sum.modified.Equal(info.ModTime()) {
+	if sum, ok := s.core.summaryCache[sessionID]; ok && sum.matches(info) {
 		return sum, true
 	}
 
@@ -67,12 +67,27 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 
 	var startTime, firstTimestamp string
 	var cwd, displayName, parentSession string
-	var msgCount, contextMsgCount, totalTokens int
+	var msgCount, baselineCount, totalTokens int
+	var baselineKnown bool
 	hasConversation := false
 	var previewBuilder, contextPreviewBuilder strings.Builder
 	var previewRunes, contextPreviewRunes int
 	var prompts []string
 	var lastPrompt string
+	seenPrompts := make(map[string]bool)
+	appendPrompt := func(msg message.Message, fromContext bool) {
+		const manualPrefix = "[user manually executed"
+		if !msg.IsUserInput() || msg.IsShellContext() || len(msg.Content) >= len(manualPrefix) && strings.EqualFold(msg.Content[:len(manualPrefix)], manualPrefix) {
+			return
+		}
+		text := strings.TrimSpace(msg.Content)
+		if text == "" || text == lastPrompt || fromContext && seenPrompts[text] {
+			return
+		}
+		prompts = append(prompts, text)
+		seenPrompts[text] = true
+		lastPrompt = text
+	}
 
 	scanner := newJSONLScanner(contextReader{ctx, f})
 	lineNo := 0
@@ -103,20 +118,31 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 			continue
 		}
 		if record.Type == "context" || record.Type == "compaction" {
-			contextMsgCount = 0
+			contextMsgCount := 0
+			contextHasConversation := false
 			contextPreviewBuilder.Reset()
 			contextPreviewRunes = 0
 			for _, m := range record.Messages {
-				if isSkippedSlashRecord(m) || m.Role == "" {
+				if isSkippedSlashRecord(m) || m.Role == "" || m.IsInternalContext() {
 					continue
 				}
 				contextMsgCount++
+				appendPrompt(m, true)
 				if isConversationMessage(m) {
-					hasConversation = true
+					contextHasConversation = true
 				}
-				if m.Role != message.RoleSystem && m.Content != "" {
+				if m.Content != "" {
 					appendPreviewSnippet(&contextPreviewBuilder, &contextPreviewRunes, m.Content)
 				}
+			}
+			if msgCount == 0 && !baselineKnown || record.ResetHistory {
+				// Imported snapshots seed the visible transcript. Compaction
+				// preserves it; only an explicit history edit replaces it.
+				baselineCount, msgCount, baselineKnown = contextMsgCount, 0, true
+				hasConversation = contextHasConversation
+				previewBuilder.Reset()
+				previewBuilder.WriteString(contextPreviewBuilder.String())
+				previewRunes = contextPreviewRunes
 			}
 			if firstTimestamp == "" && record.Timestamp != "" {
 				firstTimestamp = record.Timestamp
@@ -129,6 +155,9 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 		if record.Type == "prompt" {
 			continue
 		}
+		if record.Message.IsInternalContext() {
+			continue
+		}
 
 		if isConversationMessage(record.Message) {
 			hasConversation = true
@@ -139,28 +168,18 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 		}
 		totalTokens += record.Message.PromptTokens + record.Message.CompletionTokens
 
-		if record.Message.Role != message.RoleSystem && record.Message.Content != "" {
+		if record.Message.Content != "" {
 			appendPreviewSnippet(&previewBuilder, &previewRunes, record.Message.Content)
 		}
-		if record.Message.Role == message.RoleUser && !strings.HasPrefix(strings.ToLower(record.Message.Content), "[user manually executed") {
-			trimmed := strings.TrimSpace(record.Message.Content)
-			if trimmed != "" && trimmed != lastPrompt {
-				prompts = append(prompts, trimmed)
-				lastPrompt = trimmed
-			}
-		}
+		appendPrompt(record.Message, false)
 	}
 
 	if scanner.Err() != nil || ctx.Err() != nil {
 		return cachedSummary{}, false
 	}
 
-	effectiveCount := msgCount
+	effectiveCount := baselineCount + msgCount
 	rawPreview := previewBuilder.String()
-	if effectiveCount == 0 && contextMsgCount > 0 {
-		effectiveCount = contextMsgCount
-		rawPreview = contextPreviewBuilder.String()
-	}
 
 	if startTime == "" {
 		startTime = info.ModTime().Format("2006-01-02 15:04:05")
@@ -179,8 +198,7 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 	}
 
 	sum := cachedSummary{
-		size:       info.Size(),
-		modified:   info.ModTime(),
+		cachedFile: cacheFile(info),
 		hasVisible: hasConversation,
 		startTime:  startTime,
 		prompts:    prompts,

@@ -91,7 +91,7 @@ func (a *Agent) runExecAfterHook(tc db.ToolCall, output string, toolErr error) (
 		errStr = toolErr.Error()
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"tool_call_id": tc.ID,
 		"name":         tc.Function.Name,
 		"arguments":    tc.Function.Arguments,

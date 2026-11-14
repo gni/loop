@@ -7,20 +7,17 @@ import (
 
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 )
 
-func messageTokenChars(msg db.Message) int {
-	return messageChars(msg) + len(msg.Role) + len(msg.Name) + len(msg.ToolCallID) + 12
-}
-
 func requestTokens(messages []db.Message) int {
-	chars := 0
+	tokens := 0
 	for _, msg := range messages {
-		chars += messageTokenChars(msg)
+		tokens += EstimateMessageTokens(msg)
 	}
-	return TokensFromChars(chars)
+	return tokens
 }
 
 func (p *OpenAICompatibleProvider) budgetRequest(messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
@@ -28,34 +25,46 @@ func (p *OpenAICompatibleProvider) budgetRequest(messages []db.Message, tools []
 }
 
 func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
-	contextLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), requestTokens(messages)+EstimateToolSchemaTokens(tools))
+	schemaTokens := EstimateToolSchemaTokens(tools)
+	contextLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), requestTokens(messages)+schemaTokens)
+	taskLimit := run.RequestTokenLimit(ctx)
+	if taskLimit < 0 {
+		return nil, 0, run.ErrTokenBudget
+	}
+	if taskLimit > 0 {
+		contextLimit = min(contextLimit, taskLimit)
+	}
 	selected := p.selectedModel()
 	if selected.ContextWindow > 0 {
 		contextLimit = min(contextLimit, selected.ContextWindow)
 	}
-	output := limits.DefaultMaxCompletionTokens
+	output := config.DefaultMaxCompletionTokens
 	if p.Config != nil && p.Config.MaxCompletionTokens > 0 {
 		output = p.Config.MaxCompletionTokens
 	}
 	if selected.MaxOutput > 0 {
 		output = min(output, selected.MaxOutput)
 	}
-	floor := min(output, limits.For(p).CompletionTokenFloor)
+	output = min(output, max(1, contextLimit/4))
+	floor := min(output, limits.For(p).CompletionTokenFloor, max(1, contextLimit/16))
 	// JSON framing, tool wrappers, and tokenizer differences are not captured
 	// by the character-based fallback estimate. Preserve a small safety margin.
-	headroom := max(64, contextLimit/40)
+	headroom := max(64, contextLimit/20)
 	available := contextLimit - floor - headroom
 	if available <= 0 {
+		if taskLimit > 0 {
+			return nil, 0, run.ErrTokenBudget
+		}
 		return nil, 0, &run.InferenceFailure{Kind: run.ContextOverflow, Cause: fmt.Errorf("reserved output exceeds model context limit %d", contextLimit)}
 	}
 	clean := EnforceToolPairingInvariance(messages)
-	schemaTokens := EstimateToolSchemaTokens(tools)
+	originalCount := len(clean)
 	// A measured request may have a different token density than the fallback.
 	// Retain the conservative ratio if the server becomes unavailable mid-trim.
-	ratio := 1.0
+	ratio := p.requestCounter().estimateScale()
 	used := 0
 	measured := false
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := range 4 {
 		if ctx != nil && ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
@@ -64,21 +73,42 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 		if measured {
 			ratio = max(ratio, float64(used)/float64(max(1, approximate)))
 		} else {
-			used = int(math.Ceil(float64(approximate) * ratio))
+			scaled := math.Ceil(float64(approximate) * ratio)
+			maximum := int(^uint(0) >> 1)
+			if scaled >= float64(maximum) {
+				used = maximum
+			} else {
+				used = int(scaled)
+			}
 		}
-		if used <= available {
-			return clean, min(output, contextLimit-used-headroom), nil
+		budget := contextBreakdown(clean, schemaTokens)
+		budget.Limit, budget.Input, budget.Headroom = contextLimit, used, headroom
+		budget.Output = max(0, min(output, contextLimit-used-headroom))
+		budget.Measured, budget.Removed = measured, originalCount-len(clean)
+		p.setContextBudget(budget)
+		preferredAvailable := contextLimit - output - headroom
+		if used <= preferredAvailable {
+			run.RecordRequestBudget(ctx, used, budget.Output)
+			return clean, budget.Output, nil
 		}
 		if attempt == 3 {
+			if used <= available {
+				run.RecordRequestBudget(ctx, used, budget.Output)
+				return clean, budget.Output, nil
+			}
 			break
 		}
-		target := available - schemaTokens
+		target := preferredAvailable - schemaTokens
 		if measured || ratio > 1 {
 			// Leave a little room for the changed template when pruning old units.
-			target = int(float64(available)*float64(approximate)/float64(max(1, used))*0.9) - schemaTokens
+			target = int(float64(preferredAvailable)*float64(approximate)/float64(max(1, used))*0.95) - schemaTokens
 		}
 		trimmed := EnforceToolPairingInvariance(trimMessagesToTokenBudget(clean, max(0, target)))
 		if len(trimmed) == len(clean) {
+			if used <= available {
+				run.RecordRequestBudget(ctx, used, budget.Output)
+				return clean, budget.Output, nil
+			}
 			break
 		}
 		clean = trimmed
@@ -87,5 +117,9 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 	if measured {
 		qualifier = ""
 	}
-	return nil, 0, &run.InferenceFailure{Kind: run.ContextOverflow, Cause: fmt.Errorf("task instructions and latest evidence require %s%d tokens plus %d reserved output; context limit is %d", qualifier, used, floor, contextLimit)}
+	breakdown := contextBreakdown(clean, schemaTokens)
+	if taskLimit > 0 {
+		return nil, 0, fmt.Errorf("%w: required input and output cannot fit the remaining %d tokens", run.ErrTokenBudget, taskLimit)
+	}
+	return nil, 0, &run.InferenceFailure{Kind: run.ContextOverflow, Cause: fmt.Errorf("required context needs %s%d input tokens plus %d output and %d safety tokens; limit %d (system %d, tools %d, task %d, evidence %d, history %d estimated)", qualifier, used, floor, headroom, contextLimit, breakdown.System, breakdown.Tools, breakdown.Task, breakdown.Evidence, breakdown.History)}
 }

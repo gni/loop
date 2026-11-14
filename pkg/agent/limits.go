@@ -3,14 +3,16 @@ package agent
 import "loop/pkg/domain/limits"
 
 func (a *Agent) GetToolOutputByteLimit() int {
+	budget := limits.DefaultRetainedOutputBytes
 	if a != nil {
 		a.LLMProviderMu.RLock()
-		defer a.LLMProviderMu.RUnlock()
 		if a.Config != nil && a.Config.MaxToolOutputBytes > 0 {
-			return a.Config.MaxToolOutputBytes
+			budget = a.Config.MaxToolOutputBytes
 		}
+		a.LLMProviderMu.RUnlock()
+		budget = min(budget, max(512, a.GetEffectiveContextLimit(0)/2))
 	}
-	return limits.DefaultRetainedOutputBytes
+	return budget
 }
 
 func (a *Agent) GetLimits() limits.Limits {

@@ -74,6 +74,9 @@ func buildConfigSettingItems(cloned *config.Config) []*settingItem {
 			},
 		},
 		intConfigItem("context_window_limit", "context window limit", "Maximum prompt context size allocated before compression (tokens)", cloned),
+		optionConfigItem("context_profile", "context profile", "Local presets group existing efficiency settings; numeric fields remain editable", []string{"custom", "local-8k", "local-16k", "local-32k", "8k", "16k", "32k", "64k", "128k", "256k", "512k", "1m"}, cloned),
+		optionConfigItem("tool_exposure", "tool exposure", "Core tools with discovery, automatic sizing, or the full catalog", []string{"auto", "core", "full"}, cloned),
+		optionConfigItem("history_compression", "history compression", "Safely shorten redundant history independently of adaptive context", []string{"safe", "off"}, cloned),
 		boolConfigItem("auto_adapt_context", "auto adapt context", "Automatically scale context window dynamically according to prompt size", cloned),
 		intConfigItem("min_context_window", "min context window", "Smallest token window allowed during dynamic context scaling (tokens)", cloned),
 		{
@@ -90,13 +93,16 @@ func buildConfigSettingItems(cloned *config.Config) []*settingItem {
 		},
 		intConfigItem("max_completion_tokens", "max completion tokens", "Hard upper ceiling on generated tokens per single LLM turn", cloned),
 		intConfigItem("max_reasoning_steps", "max reasoning steps", "Safety ceiling on autonomous tool execution turns before stopping", cloned),
+		boolConfigItem("adaptive_steps", "adaptive steps", "Extend work when new evidence appears and reassess stalled loops", cloned),
 		boolConfigItem("direct_commands", "direct commands", "Execute non-tool plain text as system shell instructions when recognized", cloned),
 		boolConfigItem("compact_prompt", "compact prompt", "Use short builtin schemas and avoid repeating native tool listings", cloned),
 		boolConfigItem("stream_writes", "stream writes", "Show file-write previews as content arrives", cloned),
 		boolConfigItem("local_plugins", "local plugins", "Load executable plugins and custom commands", cloned),
 		boolConfigItem("context_files", "context files", "Read project instructions and memory files", cloned),
+		optionConfigItem("memory_policy", "memory policy", "Automatic excerpts, full optional memory, or optional memory off; directives remain intact", []string{"auto", "full", "off"}, cloned),
 		boolConfigItem("persistent_bash", "persistent bash", "Keep shell state between commands", cloned),
 		boolConfigItem("atomic_writes", "atomic writes", "Replace files only after the new content is ready", cloned),
+		boolConfigItem("strict_syntax", "strict syntax", "Reject invalid Go and JSON before saving; off permits incremental edits", cloned),
 		boolConfigItem("prompt_cache_breakpoints", "prompt cache breakpoints", "Send cache hints to providers that support them", cloned),
 		boolConfigItem("mcp", "MCP", "Permit configured MCP servers to connect and expose tools", cloned),
 		boolConfigItem("parallel_tool_calls", "parallel tool calls", "Execute multiple simultaneous model tool invocations concurrently", cloned),
@@ -108,6 +114,8 @@ func buildConfigSettingItems(cloned *config.Config) []*settingItem {
 		selectConfigItem("syntax_theme", "syntax theme", "Chroma syntax highlighting style for code preview blocks", style.GetSyntaxThemeNames, &cloned.SyntaxTheme, "syntax theme"),
 		intConfigItem("timeout", "timeout", "Client HTTP and upstream completion request timeout threshold in seconds", cloned),
 		intConfigItem("max_subagent_depth", "max subagent depth", "Maximum hierarchical nesting depth for subagent tree delegations", cloned),
+		intConfigItem("subagent_timeout", "subagent timeout", "Maximum child execution time in seconds, including queueing", cloned),
+		intConfigItem("subagent_token_budget", "subagent token budget", "Maximum total inference tokens allocated to each child task", cloned),
 		intConfigItem("max_tool_output_bytes", "max tool output bytes", "Spill threshold in bytes before tool outputs are saved to disk scratch files", cloned),
 		intConfigItem("repeat_guard_limit", "repeat guard limit", "Loop repetition detection limit preventing cyclical infinite tool invocations", cloned),
 		intListConfigItem("repeat_reminder_thresholds", "repeat reminder thresholds", "Comma-separated repetition counts that inject escalating reminder messages (e.g. 3,5,8)", &cloned.RepeatReminderThresholds),
@@ -183,6 +191,11 @@ func intConfigItem(id, name, desc string, cfg *config.Config) *settingItem {
 			return cfg.SetValue(id, value)
 		},
 	}
+}
+
+func optionConfigItem(id, name, desc string, options []string, cfg *config.Config) *settingItem {
+	value := func() string { current, _ := cfg.SettingValue(id); return current }
+	return &settingItem{id: id, name: name, description: desc, options: options, value: value, onEdit: func(text string) error { return cfg.SetValue(id, text) }, onAction: func() error { return cfg.SetValue(id, cycleOption(options, value())) }}
 }
 
 func selectConfigItem(id, name, desc string, getNames func() []string, target *string, label string) *settingItem {

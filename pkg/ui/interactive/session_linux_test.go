@@ -2,6 +2,7 @@ package interactive
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -49,7 +50,7 @@ func TestSessionExplorerTerminalEnter(t *testing.T) {
 		_ = master.SetReadDeadline(time.Now().Add(5 * time.Second))
 		var rendered bytes.Buffer
 		buf := make([]byte, 4096)
-		for !bytes.Contains(rendered.Bytes(), []byte("enter select")) {
+		for !bytes.Contains(rendered.Bytes(), []byte("Enter select")) {
 			n, err := master.Read(buf)
 			rendered.Write(buf[:n])
 			if err != nil {
@@ -61,7 +62,9 @@ func TestSessionExplorerTerminalEnter(t *testing.T) {
 		_, err := master.Write([]byte("\x1b[B\r"))
 		inputDone <- err
 	}()
-	id, fresh, err := RunSessionExplorer(style.GetTheme("plain"), slave, slave)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, fresh, err := RunSessionExplorerContext(ctx, style.GetTheme("plain"), slave, slave)
 	if err != nil || fresh || id != sessions[1].SessionID {
 		t.Fatalf("terminal selection: id=%q, fresh=%v, err=%v", id, fresh, err)
 	}

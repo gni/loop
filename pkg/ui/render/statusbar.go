@@ -201,9 +201,8 @@ func FormatStatusBarSeparator(width int, indicator string, theme style.UITheme) 
 	collapseStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 
 	indicatorLen := utf8.RuneCountInString(indicator)
-	dashesCount := (width - 1) - indicatorLen - 1 // space + indicator
-	if dashesCount < 1 {
-		dashesCount = 1
-	}
+	dashesCount := max(
+		// space + indicator
+		(width-1)-indicatorLen-1, 1)
 	return borderStyle.Render(strings.Repeat("─", dashesCount)) + " " + collapseStyle.Render(indicator)
 }

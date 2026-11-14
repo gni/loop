@@ -39,3 +39,26 @@ func TestBuildSystemPrompt_ElevatedCoreRules(t *testing.T) {
 		t.Errorf("expected todo rule in core rules, got:\n%s", prompt)
 	}
 }
+
+func TestBuildSystemPrompt_OperatingLoop(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, native := range []bool{false, true} {
+			prompt := BuildSystemPrompt(SystemPromptConfig{
+				CompactPrompt:     compact,
+				NativeToolSchemas: native,
+				BaseInstruction:   "Custom engineering role",
+			})
+			for _, fragment := range []string{
+				"<role>\nCustom engineering role\n</role>",
+				"<operating_loop>", "1. DISCOVER:", "2. PLAN:", "3. EDIT:", "4. VERIFY:", "5. REPORT:", "</operating_loop>",
+				"Never claim a build or test passed without a successful tool result",
+				"Obtain explicit user approval before destructive commands",
+				"Terminal command execution is unavailable",
+			} {
+				if !strings.Contains(prompt, fragment) {
+					t.Errorf("compact=%v native=%v: missing %q", compact, native, fragment)
+				}
+			}
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/ignore"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -92,6 +93,11 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 	if err := ctx.Context().Err(); err != nil {
 		return fmt.Errorf("file mutation canceled: %w", err)
 	}
+	if settings, ok := ctx.(domaintool.SyntaxValidationSettings); ok && settings.IsStrictSyntaxEnabled() {
+		if _, err := inspectCandidate(ctx, safePath, data, &evidence.Record{}); err != nil {
+			return err
+		}
+	}
 	// Recheck containment immediately before committing. The final path must
 	// remain within the original workspace after parent creation.
 	verified, err := ctx.SafePath(safePath)
@@ -150,11 +156,8 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 }
 
 func IsBinary(data []byte) bool {
-	limit := len(data)
-	if limit > 8000 {
-		limit = 8000
-	}
-	for i := 0; i < limit; i++ {
+	limit := min(len(data), 8000)
+	for i := range limit {
 		if data[i] == 0 {
 			return true
 		}
@@ -180,7 +183,7 @@ var omissionRegexes = []*regexp.Regexp{
 
 func DetectOmissionPlaceholders(text string) []string {
 	var matches []string
-	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		for _, rx := range omissionRegexes {
 			if rx.MatchString(trimmed) {

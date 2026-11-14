@@ -131,12 +131,13 @@ func (r *HistoryReader) index() error {
 	// Bodies are deliberately absent from this shape. JSON decoding validates
 	// them without retaining their potentially very large content strings.
 	type meta struct {
-		ID       string                 `json:"id"`
-		Parent   string                 `json:"parentId"`
-		Type     string                 `json:"type"`
-		Version  int                    `json:"version"`
-		Messages historyMessagesPresent `json:"messages"`
-		Message  struct {
+		ResetHistory bool                   `json:"reset_history"`
+		ID           string                 `json:"id"`
+		Parent       string                 `json:"parentId"`
+		Type         string                 `json:"type"`
+		Version      int                    `json:"version"`
+		Messages     historyMessagesPresent `json:"messages"`
+		Message      struct {
 			Role string `json:"role"`
 		} `json:"message"`
 	}
@@ -240,6 +241,12 @@ func (r *HistoryReader) index() error {
 				hasMessages = true
 			}
 		case "context", "compaction":
+			// Explicit history edits replace the transcript. Model compaction
+			// and recovery checkpoints must preserve the older visible chat.
+			if n.ResetHistory {
+				spans = spans[:0]
+				hasMessages = false
+			}
 			if !hasMessages {
 				spans = append(spans, n.span)
 				hasMessages = bool(n.Messages)

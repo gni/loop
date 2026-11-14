@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -284,17 +286,19 @@ func (e *TurnEngine) HaltNotice() string {
 }
 
 func (e *TurnEngine) RecordInterruption(sink HistorySink, calls []db.ToolCall, reason string) {
+	retainCtx, cancel := context.WithTimeout(context.WithoutCancel(executionContext(e, e.agent).Context()), 2*time.Second)
+	defer cancel()
 	for _, call := range calls {
-		e.recordInterruptedCall(sink, call, reason, nil)
+		e.recordInterruptedCall(retainCtx, sink, call, reason, tool.ToolResult{})
 	}
 }
 
-func (e *TurnEngine) recordInterruptedCall(sink HistorySink, call db.ToolCall, reason string, observed *evidence.Record) {
+func (e *TurnEngine) recordInterruptedCall(retainCtx context.Context, sink HistorySink, call db.ToolCall, reason string, result tool.ToolResult) {
 	outcome := evidence.NotExecuted
 	if strings.Contains(reason, "during execution") {
 		outcome = evidence.Unknown
 	}
-	observed = evidence.Clone(observed)
+	observed := evidence.Clone(result.Evidence)
 	if observed == nil {
 		observed = &evidence.Record{Kind: "tool", Target: call.Function.Name, Outcome: outcome}
 	} else if observed.Outcome == "" {
@@ -312,6 +316,16 @@ func (e *TurnEngine) recordInterruptedCall(sink HistorySink, call db.ToolCall, r
 	if observed.ExitCode != nil {
 		text += fmt.Sprintf("\n[Command exit code: %d]", *observed.ExitCode)
 	}
+	if result.Output != "" {
+		text += "\n\nOutput collected before interruption:\n" + result.Output
+	}
+	exec := executionContext(e, e.agent)
+	budget := limits.ToolOutputBytes(exec)
+	text, spillPath, truncated := tool.SpillToolOutputContext(retainCtx, exec, e.policy.SessionKey, call.ID, call.Function.Name, text, budget)
+	structured := result.Structured
+	if truncated || len(structured) > budget {
+		structured = nil
+	}
 	if e.policy.ToolBatch != nil {
 		e.policy.ToolBatch.CancelByProviderID(call.ID)
 	}
@@ -319,7 +333,7 @@ func (e *TurnEngine) recordInterruptedCall(sink HistorySink, call db.ToolCall, r
 		e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &call, Output: text, IsError: true})
 	}
 	sink.Append(db.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: text, ToolOutcome: outcome,
-		Evidence: observed, TaskState: e.observeTaskTool(call, observed, true), IsError: true})
+		SpillPath: spillPath, ContentBlocks: result.Content, Structured: structured, Evidence: observed, TaskState: e.observeTaskTool(call, observed, true), IsError: true})
 }
 
 type EngineLoader interface {

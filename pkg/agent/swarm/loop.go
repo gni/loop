@@ -11,6 +11,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
+	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -59,7 +60,7 @@ func calcStreamTPS(tokens int, start time.Time, now time.Time) float64 {
 
 func latestUserPrompt(history []db.Message) string {
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == "user" {
+		if history[i].IsUserInput() {
 			return history[i].Content
 		}
 	}
@@ -92,6 +93,14 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				if !ok || ma.Context.Err() != nil {
 					return
 				}
+				ma.HistoryMu.Lock()
+				requestCtx := ma.requests[msg.ToolCallID]
+				delete(ma.requests, msg.ToolCallID)
+				ma.HistoryMu.Unlock()
+				if requestCtx != nil && requestCtx.Err() != nil {
+					ma.supervisor.UpdateTaskStatus(msg.ToolCallID, "failed", "", requestCtx.Err())
+					continue
+				}
 
 				ma.HistoryMu.Lock()
 				ma.History = append(ma.History, msg)
@@ -111,6 +120,10 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				)
 
 				turnCtx, turnCancel := context.WithCancel(run.WithInheritedInstructions(ma.Context, msg.InheritedInstructions))
+				stopRequest := func() bool { return false }
+				if requestCtx != nil {
+					stopRequest = context.AfterFunc(requestCtx, turnCancel)
+				}
 				ma.setActiveTurn(turnCtx, turnCancel, time.Now())
 
 				var response db.Message
@@ -123,6 +136,7 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				}
 
 				turnCancel()
+				stopRequest()
 				ma.setActiveTurn(nil, nil, time.Time{})
 
 				if err != nil {
@@ -201,7 +215,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			allowApproval = guidedMode
 		}
 	}
-	if ma.Parent != nil {
+	if ma.parent() != nil {
 		guidedMode = false
 		allowApproval = false
 	}
@@ -214,7 +228,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		RunHooks:      runHooks,
 		GuidedMode:    guidedMode,
 		SessionKey:    "subagent:" + ma.Name,
-		ShowRecapLine: ma.Parent == nil,
+		ShowRecapLine: ma.parent() == nil,
 		ExecContext: func() tool.AgentContext {
 			return &multiAgentContext{AgentContext: ma.BaseAgent, ma: ma}
 		},
@@ -235,7 +249,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		responseHeaderStarted bool
 		generationDuration    time.Duration
 	)
-	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, RecoveryAttempts: run.DefaultRecoveryAttempts}, run.Driver{
+	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, AdaptiveSteps: runConfig.AdaptiveSteps, MaxTokens: runConfig.SubagentTokenBudget, RecoveryAttempts: run.DefaultRecoveryAttempts}, run.Driver{
 		Observe: ma.BaseAgent.RunObserver("subagent:" + ma.Name),
 		Prepare: func(ctx context.Context, iter int) error {
 			if err := sink.Err(); err != nil {
@@ -306,7 +320,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			responseHeaderStarted = false
 			var subagentStreamChars, subagentCompletionTokens int
 			var subagentGenStart, lastDraw time.Time
-			subagentCtxLimit := 128000
+			subagentCtxLimit := config.DefaultContextWindowLimit
 			if ma.BaseAgent != nil {
 				estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, allowlist)
 				subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
@@ -320,7 +334,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 
 			updateSubagentStatus := func(generating bool, tps float64, tokens int) {
-				activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.Parent == nil && ma.Manager.CurrentActiveAgent() == nil)
+				activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.parent() == nil && ma.Manager.CurrentActiveAgent() == nil)
 				if activeSelected && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
 					ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
 					ma.BaseAgent.UI.DrawStatusBar(rawW, theme)

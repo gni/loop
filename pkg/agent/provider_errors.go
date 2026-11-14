@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"regexp"
+	"sync/atomic"
 
 	"loop/pkg/agent/run"
 	transporthttp "loop/pkg/transport/http"
@@ -44,6 +45,21 @@ var (
 
 func IsContextOverflow(err error) bool {
 	return isContextOverflow(err)
+}
+
+// A restarted local server can lower capacity at the same URL. Refresh only
+// after a submitted request overflows, before the runner chooses compaction size.
+func (p *OpenAICompatibleProvider) refreshContextAfterOverflow(ctx context.Context, err error) {
+	if ctx.Err() != nil || !isContextOverflow(err) {
+		return
+	}
+	var status *transporthttp.StatusError
+	attempts, _ := ctx.Value(contextKeyHTTPAttempts).(*atomic.Int64)
+	if (attempts == nil || attempts.Load() == 0) && !errors.As(err, &status) {
+		return
+	}
+	p.ResetThinkingCapabilities()
+	p.ProbeServerCapabilities(ctx)
 }
 
 func isContextOverflow(err error) bool {

@@ -65,7 +65,7 @@ func startREPLInputReader(kiReader *interceptor.KeyInterceptorReader) <-chan byt
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			for i := 0; i < n; i++ {
+			for i := range n {
 				rawChan <- buf[i]
 			}
 		}

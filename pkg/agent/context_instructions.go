@@ -7,6 +7,7 @@ import (
 
 	"loop/pkg/agent/run"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 )
 
 func isPinnedInstruction(msg db.Message) bool {
@@ -26,7 +27,8 @@ func taskInstructionMessages(ctx context.Context, messages []db.Message) []db.Me
 	for _, instruction := range instructions {
 		needed[instruction] = true
 	}
-	for index := range output {
+	retained := make(map[int]string, len(instructions))
+	for index := len(output) - 1; index >= 0; index-- {
 		msg := &output[index]
 		if msg.Role != "user" {
 			continue
@@ -34,9 +36,16 @@ func taskInstructionMessages(ctx context.Context, messages []db.Message) []db.Me
 		content := strings.TrimSpace(msg.Content)
 		if msg.ContextKind == "objective" {
 			content = strings.TrimPrefix(content, "[Original task; later user instructions take precedence]\n")
+			if msg.TaskState != nil {
+				objective := strings.TrimSpace(msg.TaskState.Objective)
+				if needed[objective] && strings.HasSuffix(content, "\n\n"+objective) {
+					content = objective
+				}
+			}
 		}
-		if _, current := needed[content]; current {
+		if needed[content] {
 			needed[content] = false
+			retained[index] = content
 			msg.ContextKind = "instruction"
 		} else if isPinnedInstruction(*msg) {
 			// A prior task's anchor must not crowd out the active task.
@@ -53,17 +62,27 @@ func taskInstructionMessages(ctx context.Context, messages []db.Message) []db.Me
 
 	// Keep the entire ordered instruction sequence together when compaction has
 	// removed any original message. Later updates remain authoritative.
-	var retained strings.Builder
-	retained.WriteString("User task and updates retained verbatim, in order. Later user instructions take precedence:\n")
+	var combined strings.Builder
+	combined.WriteString("User task and updates retained verbatim, in order. Later user instructions take precedence:\n")
 	for index, instruction := range instructions {
-		fmt.Fprintf(&retained, "\n--- User instruction %d ---\n%s\n", index+1, instruction)
+		fmt.Fprintf(&combined, "\n--- User instruction %d ---\n%s\n", index+1, instruction)
 	}
-	for index := range output {
-		if isPinnedInstruction(output[index]) && len(output[index].ContentBlocks) == 0 {
-			output[index].ContextKind = ""
+	view := output[:0]
+	for index, msg := range output {
+		// The ordered block replaces these exact instructions. Keep messages
+		// carrying attachments in place so their context remains associated.
+		if instruction, ok := retained[index]; ok && len(msg.ContentBlocks) == 0 && len(msg.ToolCalls) == 0 {
+			content := strings.TrimSpace(msg.Content)
+			if !strings.HasSuffix(content, "\n\n"+instruction) {
+				continue
+			}
+			// Preserve integration notices prepended to the objective.
+			msg.Content = strings.TrimPrefix(strings.TrimSuffix(content, "\n\n"+instruction), "[Original task; later user instructions take precedence]\n")
+			msg.ContextKind = ""
 		}
+		view = append(view, msg)
 	}
-	return append(output, db.Message{Role: "user", ContextKind: "instruction", Content: retained.String()})
+	return append(view, db.Message{Role: "user", ContextKind: "instruction", Content: combined.String()})
 }
 
 // Adjacent user messages are coalesced only after budgeting. Doing it earlier
@@ -73,11 +92,20 @@ func mergeAdjacentUserMessages(messages []db.Message) []db.Message {
 	for _, msg := range messages {
 		if msg.Role == "user" && len(output) > 0 && output[len(output)-1].Role == "user" {
 			previous := &output[len(output)-1]
-			if previous.Content == msg.Content && len(msg.ContentBlocks) == 0 {
+			if previous.Content == msg.Content && len(previous.ContentBlocks) == 0 && len(msg.ContentBlocks) == 0 {
 				continue
 			}
-			previous.Content += "\n\n" + msg.Content
-			previous.ContentBlocks = append(append(previous.ContentBlocks[:0:0], previous.ContentBlocks...), msg.ContentBlocks...)
+			if len(previous.ContentBlocks) > 0 {
+				// Later steering belongs after the earlier attachments.
+				blocks := append(previous.ContentBlocks[:0:0], previous.ContentBlocks...)
+				if msg.Content != "" {
+					blocks = append(blocks, message.ContentBlock{Type: "text", Text: msg.Content})
+				}
+				previous.ContentBlocks = append(blocks, msg.ContentBlocks...)
+			} else {
+				previous.Content += "\n\n" + msg.Content
+				previous.ContentBlocks = append(previous.ContentBlocks[:0:0], msg.ContentBlocks...)
+			}
 			continue
 		}
 		output = append(output, msg)

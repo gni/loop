@@ -10,9 +10,9 @@ import (
 
 const (
 	defaultMaxReasoningSteps   = 100
-	defaultMaxCompletionTokens = 8192
-	defaultContextWindowLimit  = 128000
-	defaultMinContextWindow    = 32768
+	defaultMaxCompletionTokens = DefaultMaxCompletionTokens
+	defaultContextWindowLimit  = DefaultContextWindowLimit
+	defaultMinContextWindow    = DefaultMinContextWindow
 )
 
 func resolveDefaultSkillsDir() string {
@@ -68,9 +68,13 @@ func DefaultConfig() *Config {
 		SkillsDir:                resolveDefaultSkillsDir(),
 		MCPServers:               make(map[string]MCPServerConfig),
 		MaxReasoningSteps:        defaultMaxReasoningSteps,
+		AdaptiveSteps:            true,
+		SubagentTimeout:          300,
+		SubagentTokenBudget:      32768,
 		MaxCompletionTokens:      defaultMaxCompletionTokens,
 		ContextWindowLimit:       defaultContextWindowLimit,
-		AutoAdaptContext:         false,
+		AutoAdaptContext:         true,
+		HistoryCompression:       "safe",
 		MinContextWindow:         defaultMinContextWindow,
 		CompressionThreshold:     0.85,
 		ReasoningEffort:          "off",
@@ -133,11 +137,20 @@ func (cfg *Config) applyDefaults() {
 	if cfg.MaxReasoningSteps == 0 {
 		cfg.MaxReasoningSteps = defaultMaxReasoningSteps
 	}
+	if cfg.SubagentTimeout == 0 {
+		cfg.SubagentTimeout = 300
+	}
+	if cfg.SubagentTokenBudget == 0 {
+		cfg.SubagentTokenBudget = 32768
+	}
 	if cfg.ContextWindowLimit == 0 {
 		cfg.ContextWindowLimit = defaultContextWindowLimit
 	}
 	if cfg.MinContextWindow <= 0 {
 		cfg.MinContextWindow = defaultMinContextWindow
+	}
+	if cfg.HistoryCompression == "" {
+		cfg.HistoryCompression = "safe"
 	}
 	if cfg.CompressionThreshold == 0.0 {
 		cfg.CompressionThreshold = 0.85

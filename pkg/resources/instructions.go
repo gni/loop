@@ -22,9 +22,10 @@ type cachedAncestors struct {
 }
 
 type cachedTextFile struct {
-	modTime time.Time
-	size    int64
-	content string
+	changeStamp int64
+	modTime     time.Time
+	size        int64
+	content     string
 }
 
 var (
@@ -48,7 +49,8 @@ func ReadCachedTextFile(path string, maxBytes int64) (string, bool, error) {
 		return "", true, fmt.Errorf("file exceeds %d KiB", maxBytes>>10)
 	}
 	instructionsCacheMu.Lock()
-	if cached, ok := fileContentCache[path]; ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+	stamp, known := storage.FileChangeStamp(info)
+	if cached, ok := fileContentCache[path]; ok && known && cached.changeStamp == stamp && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
 		instructionsCacheMu.Unlock()
 		return cached.content, true, nil
 	}
@@ -60,7 +62,7 @@ func ReadCachedTextFile(path string, maxBytes int64) (string, bool, error) {
 	}
 	text := string(data)
 	instructionsCacheMu.Lock()
-	fileContentCache[path] = cachedTextFile{modTime: info.ModTime(), size: info.Size(), content: text}
+	fileContentCache[path] = cachedTextFile{changeStamp: stamp, modTime: info.ModTime(), size: info.Size(), content: text}
 	instructionsCacheMu.Unlock()
 	return text, true, nil
 }

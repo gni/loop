@@ -104,13 +104,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 
 	keyColWidth := 24
 	if colWidth > 0 {
-		keyColWidth = colWidth - 16
-		if keyColWidth < 14 {
-			keyColWidth = 14
-		}
-		if keyColWidth > 26 {
-			keyColWidth = 26
-		}
+		keyColWidth = min(max(colWidth-16, 14), 26)
 	}
 
 	if utf8.RuneCountInString(nameStr) > keyColWidth-1 {
@@ -118,10 +112,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 	}
 
 	if colWidth > 0 && !hasAnsiVal {
-		maxValRunes := colWidth - keyColWidth - 6
-		if maxValRunes < 6 {
-			maxValRunes = 6
-		}
+		maxValRunes := max(colWidth-keyColWidth-6, 6)
 		if utf8.RuneCountInString(valStr) > maxValRunes {
 			valStr = style.TruncateCells(valStr, maxValRunes)
 		}

@@ -94,5 +94,8 @@ func Plan(ctx context.Context, fallback func() []tool.TodoItem) []tool.TodoItem 
 	if get, ok := ctx.Value(planKey{}).(func() []tool.TodoItem); ok {
 		return get()
 	}
-	return fallback()
+	if fallback != nil {
+		return fallback()
+	}
+	return nil
 }

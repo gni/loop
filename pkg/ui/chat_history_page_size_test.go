@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
@@ -325,30 +326,43 @@ func TestChatHistoryCollapseToggle(t *testing.T) {
 	defer h.Close()
 
 	h.PrintInitialHistory()
-	linesUncollapsed := h.buffer.Base() + h.buffer.Height
-	t.Logf("Uncollapsed lines: %d, turns=%d", linesUncollapsed, len(h.turns))
-	if len(h.turns) > 0 {
-		t.Logf("Turn 0: start=%d, end=%d, appearance=%s, size=%d, msgs=%d",
-			h.turns[0].start, h.turns[0].end, h.turns[0].appearance, h.turns[0].size, len(h.turns[0].messages))
+	// Initial history is prepared asynchronously. Observe completion under the
+	// same lock used by the worker before reading rows or changing appearance.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		TerminalMu.Lock()
+		loaded := !h.initialLoading && h.pageJob == nil
+		TerminalMu.Unlock()
+		if loaded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial history did not finish loading")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	// Toggle collapse to true
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if h.historyErr != nil {
+		t.Fatalf("load history: %v", h.historyErr)
+	}
+	if len(h.turns) != 1 {
+		t.Fatalf("expected one loaded turn, got %d", len(h.turns))
+	}
+	turn := h.turns[0]
+	uncollapsed := turn.end - turn.start
+
 	cfg.CollapseResults = true
-	h.RepaintTurns()
-	linesCollapsed := h.buffer.Base() + h.buffer.Height
-	t.Logf("Collapsed lines: %d", linesCollapsed)
-	if len(h.turns) > 0 {
-		t.Logf("Turn 0 after collapse: start=%d, end=%d, appearance=%s",
-			h.turns[0].start, h.turns[0].end, h.turns[0].appearance)
+	h.repaintActiveTurnLocked()
+	collapsed := turn.end - turn.start
+	if collapsed >= uncollapsed {
+		t.Fatalf("collapse did not shorten turn: expanded=%d collapsed=%d", uncollapsed, collapsed)
 	}
 
-	// Toggle back to false
 	cfg.CollapseResults = false
-	h.RepaintTurns()
-	linesExpanded := h.buffer.Base() + h.buffer.Height
-	t.Logf("Expanded lines again: %d", linesExpanded)
-	if len(h.turns) > 0 {
-		t.Logf("Turn 0 after expand: start=%d, end=%d, appearance=%s",
-			h.turns[0].start, h.turns[0].end, h.turns[0].appearance)
+	h.repaintActiveTurnLocked()
+	if expanded := turn.end - turn.start; expanded != uncollapsed {
+		t.Fatalf("expansion restored %d rows, want %d", expanded, uncollapsed)
 	}
 }

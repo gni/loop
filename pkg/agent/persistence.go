@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"loop/pkg/config"
@@ -130,9 +128,29 @@ func (a *Agent) loadSessionMessages(ctx context.Context, id string) ([]db.Messag
 	return msgs, nil
 }
 
+// RewriteSession replaces visible history as well as model context. Internal
+// checkpoints use rewriteSession so compaction never erases older visible chat.
+func (a *Agent) RewriteSession(ctx context.Context, id string, msgs []db.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == "" || a.Ephemeral {
+		return nil
+	}
+	_, contextual := a.Store.(session.ContextEntryAppender)
+	_, legacy := a.Store.(session.EntryAppender)
+	if a.Store != nil && !contextual && !legacy {
+		return a.rewriteSession(ctx, id, msgs)
+	}
+	return a.AppendEntryContext(ctx, id, session.Record{Type: "context", Messages: msgs, ResetHistory: true})
+}
+
 func (a *Agent) rewriteSession(ctx context.Context, id string, msgs []db.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if id == "" || a.Ephemeral {
+		return nil
 	}
 	if a.Store != nil {
 		if store, ok := a.Store.(session.SessionRewriter); ok {
@@ -150,7 +168,7 @@ func (a *Agent) rewriteSession(ctx context.Context, id string, msgs []db.Message
 // CheckpointSession saves an unsaved tail as ordinary messages so display
 // history and model context agree. A changed projection requires a context entry.
 func (a *Agent) CheckpointSession(ctx context.Context, id string, msgs []db.Message) error {
-	if id == "" {
+	if id == "" || a.Ephemeral {
 		return nil
 	}
 	active := false
@@ -162,6 +180,20 @@ func (a *Agent) CheckpointSession(ctx context.Context, id string, msgs []db.Mess
 	}
 	if !active {
 		return nil
+	}
+	checkpointer, _ := a.Store.(session.Checkpointer)
+	if a.Store == nil {
+		store, err := db.DefaultStore()
+		if err != nil {
+			return err
+		}
+		checkpointer = store
+	}
+	if checkpointer != nil {
+		if err := checkpointer.CheckpointSessionContext(ctx, id, msgs); err != nil {
+			return err
+		}
+		return a.SavePendingSessionName(ctx, id)
 	}
 	saved, err := a.loadSessionMessages(ctx, id)
 	if err != nil {
@@ -176,15 +208,11 @@ func (a *Agent) CheckpointSession(ctx context.Context, id string, msgs []db.Mess
 		}
 		// Compare persisted fields, allowing omitted empty slices and other
 		// in-memory representation details to round-trip through JSON.
-		stored, err := json.Marshal(msg)
+		equal, err := message.EqualPersisted(msg, msgs[i])
 		if err != nil {
 			return err
 		}
-		current, err := json.Marshal(msgs[i])
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(stored, current) {
+		if !equal {
 			return a.rewriteSession(ctx, id, msgs)
 		}
 	}

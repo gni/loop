@@ -38,8 +38,8 @@ func ModelDiscoveryURL(endpoint, api string) (string, error) {
 	}
 	path := strings.TrimRight(u.Path, "/")
 	for _, suffix := range []string{"/chat/completions", "/responses", "/messages", "/models"} {
-		if strings.HasSuffix(path, suffix) {
-			path = strings.TrimSuffix(path, suffix)
+		if before, ok := strings.CutSuffix(path, suffix); ok {
+			path = before
 			break
 		}
 	}

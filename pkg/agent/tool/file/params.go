@@ -2,11 +2,32 @@ package file
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
 	domaintool "loop/pkg/domain/tool"
 )
+
+func argumentString(m map[string]any, keys []string) (string, bool, error) {
+	var result string
+	found := false
+	for _, key := range keys {
+		v, exists := m[key]
+		if !exists {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			return "", false, fmt.Errorf("%s must be a string", key)
+		}
+		if found && s != result {
+			return "", false, fmt.Errorf("conflicting aliases for %s", keys[0])
+		}
+		result, found = s, true
+	}
+	return result, found, nil
+}
 
 type ReplaceEdit struct {
 	OldText                  string `json:"oldText,omitempty"`
@@ -70,9 +91,9 @@ var (
 	contentKeys  = []string{"content", "Content", "code_content", "codeContent", "CodeContent", "write_content", "writeContent", "file_content", "fileContent", "text", "Text", "body", "Body", "data", "Data", "contents", "Contents"}
 )
 
-func parseGenericJSON(trimmed string) (map[string]interface{}, []interface{}) {
+func parseGenericJSON(trimmed string) (map[string]any, []any) {
 	if strings.HasPrefix(trimmed, "[") {
-		var slice []interface{}
+		var slice []any
 		if err := json.Unmarshal([]byte(trimmed), &slice); err == nil && len(slice) > 0 {
 			return nil, slice
 		}
@@ -84,7 +105,7 @@ func parseGenericJSON(trimmed string) (map[string]interface{}, []interface{}) {
 		return nil, nil
 	}
 	if strings.HasPrefix(trimmed, "{") {
-		var m map[string]interface{}
+		var m map[string]any
 		if err := json.Unmarshal([]byte(trimmed), &m); err == nil && m != nil {
 			return m, nil
 		}
@@ -104,7 +125,7 @@ func ExtractWrappedFloats(rawJSON string, keys ...string) map[string]float64 {
 	}
 	out := make(map[string]float64, len(keys))
 	for _, w := range wrapperKeys {
-		sub, ok := generic[w].(map[string]interface{})
+		sub, ok := generic[w].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -143,7 +164,7 @@ func ExtractFilePath(rawJSON string, candidatePaths ...string) string {
 
 	genericMap, genericSlice := parseGenericJSON(trimmedJSON)
 	if len(genericSlice) > 0 {
-		if firstItem, ok := genericSlice[0].(map[string]interface{}); ok {
+		if firstItem, ok := genericSlice[0].(map[string]any); ok {
 			if p := findPathInGenericMap(firstItem); p != "" {
 				return p
 			}
@@ -171,12 +192,12 @@ func ExtractFilePath(rawJSON string, candidatePaths ...string) string {
 	return ""
 }
 
-func findPathInGenericMap(m map[string]interface{}) string {
+func findPathInGenericMap(m map[string]any) string {
 	if s := findTrimmedStringInMap(m, pathMapKeys...); s != "" {
 		return s
 	}
 	for _, w := range wrapperKeys {
-		if subMap, ok := m[w].(map[string]interface{}); ok {
+		if subMap, ok := m[w].(map[string]any); ok {
 			if p := findPathInGenericMap(subMap); p != "" {
 				return p
 			}
@@ -184,15 +205,15 @@ func findPathInGenericMap(m map[string]interface{}) string {
 	}
 	for _, lk := range editListKeys {
 		switch val := m[lk].(type) {
-		case []interface{}:
+		case []any:
 			if len(val) > 0 {
-				if firstItem, ok := val[0].(map[string]interface{}); ok {
+				if firstItem, ok := val[0].(map[string]any); ok {
 					if p := findPathInGenericMap(firstItem); p != "" {
 						return p
 					}
 				}
 			}
-		case map[string]interface{}:
+		case map[string]any:
 			if p := findPathInGenericMap(val); p != "" {
 				return p
 			}
@@ -229,14 +250,14 @@ func ExtractFileContent(rawJSON string, candidateContents ...string) (string, bo
 	return "", false
 }
 
-func findContentInGenericMap(m map[string]interface{}) (string, bool) {
+func findContentInGenericMap(m map[string]any) (string, bool) {
 	for _, k := range contentKeys {
 		if s, ok := m[k].(string); ok {
 			return s, true
 		}
 	}
 	for _, w := range wrapperKeys {
-		if subMap, ok := m[w].(map[string]interface{}); ok {
+		if subMap, ok := m[w].(map[string]any); ok {
 			if c, ok := findContentInGenericMap(subMap); ok {
 				return c, true
 			}
@@ -245,7 +266,7 @@ func findContentInGenericMap(m map[string]interface{}) (string, bool) {
 	return "", false
 }
 
-func findTrimmedStringInMap(m map[string]interface{}, keys ...string) string {
+func findTrimmedStringInMap(m map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if s, ok := m[k].(string); ok {
 			if trimmed := strings.TrimSpace(s); trimmed != "" {

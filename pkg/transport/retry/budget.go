@@ -20,6 +20,17 @@ func WithBudget(ctx context.Context, attempts int) context.Context {
 	return context.WithValue(ctx, contextKey{}, b)
 }
 
+// Check reports whether another attempt is available without reserving it.
+func Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b, _ := ctx.Value(contextKey{}).(*budget); b != nil && b.remaining.Load() <= 0 {
+		return ErrExhausted
+	}
+	return nil
+}
+
 // Claim reserves one network attempt. Calls outside a runner retain their
 // transport's own retry limit.
 func Claim(ctx context.Context) error {
@@ -30,8 +41,10 @@ func Claim(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	if b.remaining.Add(-1) < 0 {
-		return ErrExhausted
+	for remaining := b.remaining.Load(); remaining > 0; remaining = b.remaining.Load() {
+		if b.remaining.CompareAndSwap(remaining, remaining-1) {
+			return nil
+		}
 	}
-	return nil
+	return ErrExhausted
 }

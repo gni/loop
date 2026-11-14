@@ -60,23 +60,17 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	}
 
 	formatCell := func(p kvPair) string {
-		kPad := 29 - utf8.RuneCountInString(p.key)
-		if kPad < 1 {
-			kPad = 1
-		}
+		kPad := max(29-utf8.RuneCountInString(p.key), 1)
 		return fmt.Sprintf("%s%s%s", keyStyle.Render(p.key), strings.Repeat(" ", kPad), p.val)
 	}
 
 	var rowsBuilder strings.Builder
 	if termW >= 140 {
 		rows := (len(pairs) + 1) / 2
-		colWidth := (termW - 10) / 2
-		if colWidth < 34 {
-			colWidth = 34
-		}
+		colWidth := max((termW-10)/2, 34)
 		sep := style.NewStyle().Foreground(theme.Border).Render(" │ ")
 
-		for r := 0; r < rows; r++ {
+		for r := range rows {
 			left := formatCell(pairs[r])
 			if r+rows < len(pairs) {
 				right := formatCell(pairs[r+rows])

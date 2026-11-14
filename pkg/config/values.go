@@ -72,7 +72,7 @@ func ParseToolList(val string) []string {
 		return nil
 	}
 	var result []string
-	for _, p := range strings.Split(trimmed, ",") {
+	for p := range strings.SplitSeq(trimmed, ",") {
 		if t := strings.TrimSpace(p); t != "" {
 			result = append(result, t)
 		}

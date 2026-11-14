@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"loop/pkg/domain/diagnostic"
 	"loop/pkg/domain/evidence"
+	"loop/pkg/domain/output"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/process"
-	"loop/pkg/ui/style"
 )
 
 type bashTool struct {
@@ -71,8 +72,18 @@ func (t *bashTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) 
 			return domaintool.ToolResult{Output: output, IsError: err != nil}, err
 		}
 	}
+	started := time.Now()
 	observed := &evidence.Record{Kind: "command", Outcome: evidence.NotExecuted}
 	output, err := t.execute(ctx, arguments, observed)
+	if err != nil && observed.Outcome != evidence.NotExecuted {
+		err = &diagnostic.Error{Code: diagnostic.CommandFailed, Target: observed.Target, Cause: err}
+	}
+	if check := evidence.CommandCheck(observed.Target, observed.ExitCode, observed.Outcome); check != nil {
+		check.Target = observed.Directory
+		check.StartedAt = started.UnixNano()
+		check.ObserveOutput(output)
+		observed.Checks = []evidence.Check{*check}
+	}
 	return domaintool.ToolResult{Output: output, IsError: err != nil, Evidence: observed}, err
 }
 
@@ -117,6 +128,19 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		return "", fmt.Errorf("command cancelled before execution: %w", err)
 	}
 
+	workspaceRoot := ctx.GetWorkspaceRoot()
+	previousDir := t.currentDir
+	if previousDir == "" {
+		previousDir = workspaceRoot
+	}
+	defer func() {
+		currentDir := t.currentDir
+		if currentDir == "" {
+			currentDir = workspaceRoot
+		}
+		observed.WorkingDirectoryChanged = currentDir != previousDir
+	}()
+
 	persistentBash := true
 	if cp, ok := ctx.(domaintool.PersistentShellSettings); ok {
 		persistentBash = cp.IsPersistentBashEnabled()
@@ -125,7 +149,6 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		t.currentDir = ""
 	}
 
-	workspaceRoot := ctx.GetWorkspaceRoot()
 	workDir := t.currentDir
 	if workDir == "" {
 		workDir = workspaceRoot
@@ -150,6 +173,7 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		}
 	}
 
+	observed.Directory = workDir
 	normalized, isBgCmd := backgroundCommand(args.Command)
 	if args.Background != nil {
 		isBgCmd = *args.Background
@@ -206,16 +230,16 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	}
 
 	cmd.WaitDelay = 100 * time.Millisecond
-	stdout := &process.Buffer{Limit: 8 << 20}
-	stderr := &process.Buffer{Limit: 8 << 20}
+	stdout := &process.Buffer{Limit: 8 << 20, TailBytes: 64 << 10}
+	stderr := &process.Buffer{Limit: 8 << 20, TailBytes: 64 << 10}
 	outWriter := io.Writer(stdout)
 	errWriter := io.Writer(stderr)
 	live := newLiveShellOutput(ctx)
 	var finishStdout func()
 	if live != nil {
 		liveOut, liveErr, finish := live.Streams()
-		outWriter = io.MultiWriter(stdout, bestEffortLiveWriter{liveOut})
-		errWriter = io.MultiWriter(stderr, bestEffortLiveWriter{liveErr})
+		outWriter = io.MultiWriter(stdout, process.BestEffortWriter{Writer: liveOut})
+		errWriter = io.MultiWriter(stderr, process.BestEffortWriter{Writer: liveErr})
 		finishStdout = finish
 	}
 	if err := timeoutCtx.Err(); err != nil {
@@ -236,14 +260,18 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		_ = process.KillProcessGroup(cmd)
 		err = <-done
 	case err = <-done:
-		if cmd.ProcessState != nil {
-			if code := cmd.ProcessState.ExitCode(); code >= 0 {
-				observed.ExitCode = &code
-			}
+	}
+	if cmd.ProcessState != nil {
+		if code := cmd.ProcessState.ExitCode(); code >= 0 {
+			observed.ExitCode = &code
+		}
+		if timeoutCtx.Err() == nil {
 			observed.Outcome = evidence.Succeeded
 			if err != nil || !cmd.ProcessState.Success() {
 				observed.Outcome = evidence.Failed
 			}
+		} else if err == nil && cmd.ProcessState.Success() {
+			observed.Outcome = evidence.Succeeded
 		}
 	}
 	if timeoutCtx.Err() != nil {
@@ -254,17 +282,13 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		live.Finish()
 	}
 
-	if timeoutCtx.Err() == context.Canceled {
-		return "", fmt.Errorf("command cancelled by user: %w", context.Canceled)
-	}
-
 	output := cleanShellOutput(stdout.String())
 	errOutput := cleanShellOutput(stderr.String())
 	if stdout.Overflow {
-		output += "\n[stdout capture limit reached at 8 MiB; later bytes discarded]\n"
+		output += "\n[stdout capture limit reached at 8 MiB; middle output omitted]\n"
 	}
 	if stderr.Overflow {
-		errOutput += "\n[stderr capture limit reached at 8 MiB; later bytes discarded]\n"
+		errOutput += "\n[stderr capture limit reached at 8 MiB; middle output omitted]\n"
 	}
 
 	if directory != nil && timeoutCtx.Err() == nil {
@@ -309,7 +333,7 @@ func shellTimeout(ctx domaintool.AgentContext) time.Duration {
 
 func cleanShellOutput(raw string) string {
 	valid := strings.ToValidUTF8(raw, "\uFFFD")
-	stripped := style.StripAnsi(valid)
+	stripped := output.PlainShellText(valid)
 	if !strings.Contains(stripped, "\r") {
 		return stripped
 	}

@@ -57,6 +57,20 @@ func (s *Session) reserve(ctx context.Context) (context.Context, error) {
 	return ctx, nil
 }
 
+// releaseRun completes the reservation shared by inference and commands.
+func (s *Session) releaseRun() {
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.running = false
+	s.cancel = nil
+	idle := s.idle
+	s.mu.Unlock()
+	s.runMu.Unlock()
+	close(idle)
+}
+
 func (s *Session) Start(ctx context.Context, prompt string) (<-chan Outcome, error) {
 	ctx, err := s.reserve(ctx)
 	if err != nil {
@@ -107,21 +121,12 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		if err := s.persistSettingsIfActiveContext(ctx); err != nil {
 			runErr = errors.Join(runErr, err)
 		}
-		result = result.WithError(runErr)
+		result = result.WithErrorContext(ctx, runErr)
 		snapshot := result.Clone()
-		s.mu.Lock()
-		if s.cancel != nil {
-			s.cancel()
-		}
-		s.running = false
-		s.cancel = nil
-		idle := s.idle
-		s.mu.Unlock()
-		s.runMu.Unlock()
-		close(idle)
+		s.releaseRun()
 		if err := s.eventContext(context.WithoutCancel(ctx), agent.Event{Type: "agent_settled", SessionID: runID, Result: &snapshot}); err != nil {
 			runErr = errors.Join(runErr, err)
-			result = result.WithError(runErr)
+			result = result.WithErrorContext(context.WithoutCancel(ctx), runErr)
 		}
 	}()
 	if setup != nil {

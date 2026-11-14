@@ -136,14 +136,27 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 
 	activeSkills := preloadedSkills
 	if activeSkills == nil {
-		activeSkills = mam.BaseAgent.ReloadSkills()
+		var err error
+		activeSkills, err = mam.BaseAgent.ReloadSkillsChecked()
+		if err != nil {
+			return fmt.Errorf("reload skills: %w", err)
+		}
 	}
 
 	referenceSkills := make([]tool.Skill, 0, len(skillNames))
 	assignedNames := make(map[string]struct{})
 	if inheritAllSkills {
-		referenceSkills = append(referenceSkills, activeSkills...)
-		for _, skill := range referenceSkills {
+		localNames := make(map[string]bool, len(localSkills))
+		for _, skill := range localSkills {
+			localNames[strings.ToLower(strings.TrimSpace(skill.Name))] = true
+		}
+		for _, skill := range activeSkills {
+			// Private instructions keep precedence when the inherited catalog
+			// later acquires a skill with the same name, including on restore.
+			if localNames[strings.ToLower(skill.Name)] {
+				continue
+			}
+			referenceSkills = append(referenceSkills, skill)
 			assignedNames[strings.ToLower(skill.Name)] = struct{}{}
 		}
 	} else {
@@ -335,7 +348,7 @@ func (mam *MultiAgentManager) removeAgentFor(ctx tool.AgentContext, name string)
 
 	// The persisted definition must be removed before changing in-memory state.
 	// Otherwise a failed disk removal would resurrect this agent on restart.
-	if err := mam.deleteAgentDef(name); err != nil {
+	if err := mam.persistAgentRemoval(ma); err != nil {
 		mam.mu.Unlock()
 		return fmt.Errorf("remove saved subagent %q: %w", name, err)
 	}
@@ -347,20 +360,21 @@ func (mam *MultiAgentManager) removeAgentFor(ctx tool.AgentContext, name string)
 		mam.BaseAgent.SpawnedAgentsMu.Unlock()
 	}
 
-	if ma.Parent != nil {
-		ma.Parent.SubagentsMu.Lock()
-		delete(ma.Parent.Subagents, name)
-		ma.Parent.SubagentsMu.Unlock()
+	parent := ma.parent()
+	if parent != nil {
+		parent.SubagentsMu.Lock()
+		delete(parent.Subagents, name)
+		parent.SubagentsMu.Unlock()
 	}
 
 	ma.SubagentsMu.Lock()
 	for childName, child := range ma.Subagents {
 		if child != nil {
-			child.Parent = ma.Parent
-			if ma.Parent != nil {
-				ma.Parent.SubagentsMu.Lock()
-				ma.Parent.Subagents[childName] = child
-				ma.Parent.SubagentsMu.Unlock()
+			child.setParent(parent)
+			if parent != nil {
+				parent.SubagentsMu.Lock()
+				parent.Subagents[childName] = child
+				parent.SubagentsMu.Unlock()
 			}
 		}
 	}
@@ -372,7 +386,7 @@ func (mam *MultiAgentManager) removeAgentFor(ctx tool.AgentContext, name string)
 	}
 
 	if mam.ActiveAgent == ma {
-		mam.ActiveAgent = ma.Parent
+		mam.ActiveAgent = parent
 	}
 	mam.mu.Unlock()
 	ma.stop()
@@ -425,10 +439,10 @@ func (mam *MultiAgentManager) GetParentName(name string) string {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
 	ag, exists := mam.Agents[name]
-	if !exists || ag.Parent == nil {
+	if !exists || ag.parent() == nil {
 		return ""
 	}
-	return ag.Parent.Name
+	return ag.parent().Name
 }
 
 func (mam *MultiAgentManager) GetAgentSystemPrompt(name string) string {

@@ -13,14 +13,15 @@ import (
 
 func inferenceMessages(ctx context.Context, messages []db.Message) []db.Message {
 	messages = compactRuntimeMessages(messages)
-	messages = taskInstructionMessages(ctx, messages)
-	return taskContextMessages(ctx, messages)
+	messages = skillContextMessages(messages)
+	messages = taskContextMessages(ctx, messages)
+	return taskInstructionMessages(ctx, messages)
 }
 
 // compactRuntimeMessages changes only the inference view. Saved messages,
 // execution evidence, errors and the terminal transcript remain available.
 func compactRuntimeMessages(messages []db.Message) []db.Message {
-	calls := make(map[string]db.ToolCall)
+	matches := message.MatchToolResults(messages)
 	lastRecap := -1
 	for i, msg := range messages {
 		if msg.ContextKind == "runtime" && strings.HasPrefix(msg.Content, "[recap ") {
@@ -30,9 +31,6 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 	out := make([]db.Message, 0, len(messages))
 	outCalls := make([]db.ToolCall, 0, len(messages))
 	for i, msg := range messages {
-		for _, call := range msg.ToolCalls {
-			calls[call.ID] = call
-		}
 		if i != lastRecap && msg.ContextKind == "runtime" && strings.HasPrefix(msg.Content, "[recap ") {
 			continue
 		}
@@ -42,7 +40,7 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 			continue
 		}
 		originalContent := msg.Content
-		call := calls[msg.ToolCallID]
+		call := matches[i].Call
 		name := tool.NormalizeName(msg.Name)
 		if name == "" {
 			name = tool.NormalizeName(call.Function.Name)

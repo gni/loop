@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"fmt"
+	"strings"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
@@ -32,40 +33,53 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 
 	var targetSkill *tool.Skill
 	for _, s := range mam.BaseAgent.GetActiveSkills() {
-		if s.Name == skillName {
+		if strings.EqualFold(s.Name, skillName) {
 			skillCopy := s
 			targetSkill = &skillCopy
 			break
 		}
 	}
 	if targetSkill == nil {
-		return fmt.Errorf("reference skill '%s' not found in config skills directory", skillName)
+		return fmt.Errorf("reference skill '%s' not found in configured skills", skillName)
 	}
 
 	ma.HistoryMu.Lock()
-	alreadyHas := false
-	for _, s := range ma.Skills {
-		if s.Name == skillName {
-			alreadyHas = true
+	assigned := false
+	for index, s := range ma.Skills {
+		if strings.EqualFold(s.Name, targetSkill.Name) {
+			ma.Skills[index] = *targetSkill
+			assigned = true
 			break
 		}
 	}
-	if alreadyHas {
-		ma.HistoryMu.Unlock()
-		return nil
+	if !assigned {
+		ma.Skills = append(ma.Skills, *targetSkill)
 	}
-	ma.Skills = append(ma.Skills, *targetSkill)
-
-	ma.History = append(ma.History, db.Message{
-		Role:    "system",
-		Content: fmt.Sprintf("loaded reference skill '%s':\n\n%s", targetSkill.Name, targetSkill.Content),
-	})
+	if ma.HasAllSkills {
+		// Inheriting a catalog makes skills available; manual loading applies
+		// just the selected instructions, rather than every catalog entry.
+		content := tool.FormatSkillInstructions(*targetSkill)
+		loaded := false
+		for index := len(ma.History) - 1; index >= 0; index-- {
+			if previous := ma.History[index]; strings.EqualFold(previous.SkillName, targetSkill.Name) && !previous.IsError {
+				loaded = previous.Content == content
+				break
+			}
+		}
+		if !loaded {
+			ma.History = append(ma.History, db.Message{Role: "system", ContextKind: "skill", SkillName: targetSkill.Name, Content: content})
+		}
+	}
+	status := "idle"
+	if ma.ActiveCancel != nil {
+		status = "running"
+	}
 	ma.HistoryMu.Unlock()
 
 	if err := mam.saveAgentDef(ma); err != nil {
 		return fmt.Errorf("save skills for subagent %q: %w", agentName, err)
 	}
-	return nil
+	return mam.SaveAgentState(ma, status)
 }
 
 func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
@@ -80,14 +94,30 @@ func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
 	ma.Skills = nil
 	ma.LocalSkills = nil
 	ma.HasAllSkills = false
+	history := ma.History[:0]
+	for _, msg := range ma.History {
+		if msg.SkillName != "" {
+			if msg.Role != "tool" {
+				continue
+			}
+			msg.SkillName = ""
+			msg.Content = "Skill instructions cleared."
+		}
+		history = append(history, msg)
+	}
+	ma.History = history
 	ma.History = append(ma.History, db.Message{
 		Role:    "system",
 		Content: "cleared all loaded reference skills.",
 	})
+	status := "idle"
+	if ma.ActiveCancel != nil {
+		status = "running"
+	}
 	ma.HistoryMu.Unlock()
 
 	if err := mam.saveAgentDef(ma); err != nil {
 		return fmt.Errorf("clear skills for subagent %q: %w", agentName, err)
 	}
-	return nil
+	return mam.SaveAgentState(ma, status)
 }

@@ -408,7 +408,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		}
 
 		kiReader.ActiveTurn.Store(true)
-		collapseRedrawn := false
+		turnRedrawn := false
 		// Consume redraw requests on the foreground renderer so committed
 		// history and the current inference form one consistent frame.
 		a.OnStreamProgress = func() bool {
@@ -419,11 +419,12 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				return false
 			}
 			collapseReplay := kiReader.ApplyPendingCollapse()
-			if !collapseReplay {
+			if collapseReplay {
+				chatHistory.RepaintTurns()
+			} else if !chatHistory.RepaintPendingTurn() {
 				return false
 			}
-			chatHistory.RepaintTurns()
-			collapseRedrawn = collapseRedrawn || collapseReplay
+			turnRedrawn = true
 			return true
 		}
 		ppWriter.BeginScrollEntry()
@@ -436,6 +437,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		chatHistory.BeginTurn()
 		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader, attachmentSource, preExpanded, fromQueue)
+		turnRedrawn = chatHistory.RepaintPendingTurn() || turnRedrawn
 		a.OnStreamProgress = nil
 		kiReader.ActiveTurn.Store(false)
 		chatHistory.FinishTurn(nil)
@@ -443,7 +445,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		// one authoritative replay, after tool calls and text reach history.
 		redrawCollapse := kiReader.ApplyPendingCollapse()
 		redrawSyntax := ppWriter.ConsumeSyntaxRefresh()
-		if collapseRedrawn || redrawCollapse || redrawSyntax {
+		if turnRedrawn || redrawCollapse || redrawSyntax {
 			chatHistory.RepaintTurns()
 		}
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)

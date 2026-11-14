@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"loop/pkg/agent/subagent"
@@ -17,10 +18,8 @@ func createManagedAgent(mam *swarm.MultiAgentManager, sr *SessionReader, signals
 		if err := subagent.ValidateAgentName(name); err != nil {
 			return err
 		}
-		for _, existing := range mam.ListAgents() {
-			if name == existing {
-				return fmt.Errorf("An agent named %q already exists.", name)
-			}
+		if slices.Contains(mam.ListAgents(), name) {
+			return fmt.Errorf("An agent named %q already exists.", name)
 		}
 		return nil
 	})

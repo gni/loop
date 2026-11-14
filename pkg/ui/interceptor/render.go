@@ -16,7 +16,7 @@ type CRNLWriter struct {
 
 func (cw CRNLWriter) Write(p []byte) (int, error) {
 	var buf []byte
-	for i := 0; i < len(p); i++ {
+	for i := range p {
 		if p[i] == '\n' && (i == 0 || p[i-1] != '\r') {
 			buf = append(buf, '\r')
 		}

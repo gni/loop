@@ -2,9 +2,14 @@ package agent
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/domain/diagnostic"
+	"loop/pkg/domain/evidence"
 )
 
 const maxGuardOutcomes = 128
@@ -15,6 +20,99 @@ type observedOutcome struct {
 	failed     bool
 	inspection bool
 	noProgress bool
+	file       string
+	revision   string
+	failure    diagnostic.Code
+}
+
+// A successful current read resolves observation prerequisites for that file.
+// Keep other diagnostics until their cause or the repository actually changes.
+func (g *TurnExecutionGuard) recoverFileOutcomes(name string, observed *evidence.Record, err error) (revisionChanged bool) {
+	if observed == nil || observed.Target == "" || !filepath.IsAbs(observed.Target) {
+		return false
+	}
+	path := filepath.Clean(observed.Target)
+	var failure *diagnostic.Error
+	stale := errors.As(err, &failure) && failure.Code == diagnostic.RevisionChanged
+	currentRead := name == "read" && err == nil && observed.Kind == "read" && observed.Revision != ""
+	if !stale && !currentRead {
+		return false
+	}
+	for key, outcome := range g.outcomes {
+		if outcome.file == path && (strings.HasPrefix(key, "read:") && outcome.revision != "" && outcome.revision != observed.Revision || outcome.failed && outcome.failure == diagnostic.RevisionChanged) {
+			revisionChanged = true
+			break
+		}
+	}
+	removed := false
+	for key, outcome := range g.outcomes {
+		if outcome.file != path {
+			continue
+		}
+		if strings.HasPrefix(key, "read:") && (stale || outcome.revision != "" && outcome.revision != observed.Revision) {
+			delete(g.outcomes, key)
+			removed = true
+			revisionChanged = true
+		} else if currentRead && outcome.failed && (outcome.failure == diagnostic.ReadRequired || outcome.failure == diagnostic.RevisionChanged || revisionChanged) {
+			delete(g.outcomes, key)
+			removed = true
+			revisionChanged = revisionChanged || outcome.failure == diagnostic.RevisionChanged
+		}
+	}
+	if removed {
+		g.finishFileOutcomeRemoval()
+	}
+	return revisionChanged
+}
+
+func (g *TurnExecutionGuard) forgetReadResult(key string) {
+	delete(g.outcomes, key)
+	g.finishFileOutcomeRemoval()
+}
+
+func (g *TurnExecutionGuard) finishFileOutcomeRemoval() {
+	g.pruneOutcomeOrder()
+	g.targetStreak, g.lastTarget = 0, ""
+	if _, retained := g.outcomes[g.lastCallKey]; !retained {
+		g.callStreak, g.lastCallKey = 0, ""
+	}
+}
+
+func (g *TurnExecutionGuard) recordFileOutcome(key string, observed *evidence.Record, err error) {
+	if observed == nil || observed.Target == "" || !filepath.IsAbs(observed.Target) || (observed.Kind != "read" && observed.Kind != "file") {
+		return
+	}
+	outcome := g.outcomes[key]
+	outcome.file, outcome.revision = filepath.Clean(observed.Target), observed.Revision
+	var failure *diagnostic.Error
+	if errors.As(err, &failure) {
+		outcome.failure = failure.Code
+	}
+	g.outcomes[key] = outcome
+}
+
+func (g *TurnExecutionGuard) pruneOutcomeOrder() {
+	order := g.outcomeOrder[:0]
+	for _, key := range g.outcomeOrder {
+		if _, retained := g.outcomes[key]; retained {
+			order = append(order, key)
+		}
+	}
+	clear(g.outcomeOrder[len(order):])
+	g.outcomeOrder = order
+}
+
+func (g *TurnExecutionGuard) forgetCommandResults() {
+	for key := range g.outcomes {
+		if strings.HasPrefix(key, "bash:") {
+			delete(g.outcomes, key)
+		}
+	}
+	g.pruneOutcomeOrder()
+	if strings.HasPrefix(g.lastCallKey, "bash:") {
+		g.callStreak, g.lastCallKey = 0, ""
+	}
+	g.failureStreak, g.lastFailedKey = 0, ""
 }
 
 // recordOutcome detects unchanged failures and inspections even when the model

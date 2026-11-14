@@ -14,6 +14,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/output"
 	"loop/pkg/process"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
@@ -24,17 +25,30 @@ import (
 const maxManualCommandCaptureBytes = 512 << 10
 
 func sanitizedCommandOutput(buffer *process.Buffer) string {
-	out := tool.SanitizeUTF8([]byte(buffer.String()))
+	out := output.PlainShellText(tool.SanitizeUTF8([]byte(buffer.String())))
 	if buffer.Overflow {
 		out += "\n...[output truncated]..."
 	}
 	return out
 }
 
+func manualCommandMessage(a *agent.Agent, command, output, sessionID string) db.Message {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(a.Context()), 2*time.Second)
+	defer cancel()
+	preview, path, shortened := tool.SpillToolOutputContext(ctx, a, sessionID, db.NewUUID(), "bash", output, a.GetToolOutputByteLimit())
+	if shortened && path == "" {
+		preview = output
+	}
+	return db.Message{
+		Role: "user", ContextKind: "shell", SpillPath: path,
+		Content: fmt.Sprintf("[user manually executed local shell command: `%s`]\n%s", command, preview),
+	}
+}
+
 func parseManualCommand(line string, enabled bool) (bool, string) {
 	line = strings.TrimLeft(line, " \t")
-	if strings.HasPrefix(line, "!") {
-		return true, strings.TrimLeft(strings.TrimPrefix(line, "!"), " \t")
+	if after, ok := strings.CutPrefix(line, "!"); ok {
+		return true, strings.TrimLeft(after, " \t")
 	}
 	if !enabled {
 		return false, ""
@@ -79,7 +93,7 @@ func (shell *manualShell) execute(
 		}
 		fmt.Fprintf(ppWriter, "changed directory to: %s\n", directory)
 		contextMsg := fmt.Sprintf("[user changed the shell directory for manual commands to: `%s`]", directory)
-		msg := db.Message{Role: "user", Content: contextMsg}
+		msg := db.Message{Role: "user", ContextKind: "shell", Content: contextMsg}
 		if err := a.AppendInteractiveMessage(messages, currentSessionID, msg); err != nil {
 			fmt.Fprintf(ppWriter, "could not save command history: %v\n", err)
 		}
@@ -123,15 +137,17 @@ func (shell *manualShell) execute(
 	for key, value := range a.GetExecutionEnv() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	stdout := &process.Buffer{Limit: maxManualCommandCaptureBytes}
-	stderr := &process.Buffer{Limit: maxManualCommandCaptureBytes}
+	stdout := &process.Buffer{Limit: maxManualCommandCaptureBytes, TailBytes: 64 << 10}
+	stderr := &process.Buffer{Limit: maxManualCommandCaptureBytes, TailBytes: 64 << 10}
 	cw := interceptor.CRNLWriter{W: ppWriter}
 	console := render.NewShellOutputWriter(cw, cmdStr, theme)
-	cmd.Stdout = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), stdout)
-	cmd.Stderr = io.MultiWriter(interceptor.NewSafeShellOutputWriter(console), stderr)
+	outWriter := io.MultiWriter(stdout, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
+	errWriter := io.MultiWriter(stderr, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
 	stopIndicator := startManualCommandIndicator(theme, a.Config != nil && a.Config.ShowMicroseconds)
-	err := cmd.Run()
-	_ = process.KillProcessGroup(cmd)
+	wait, err := process.StartCapture(cmd, outWriter, errWriter)
+	if err == nil {
+		err = wait()
+	}
 	stopIndicator()
 
 	if a.FileObservations != nil {
@@ -159,8 +175,7 @@ func (shell *manualShell) execute(
 		combined = "(command completed with no output)"
 	}
 
-	contextMsg := fmt.Sprintf("[user manually executed local shell command: `%s`]\n%s", cmdStr, combined)
-	msg := db.Message{Role: "user", Content: contextMsg}
+	msg := manualCommandMessage(a, cmdStr, combined, currentSessionID)
 	if err := a.AppendInteractiveMessage(messages, currentSessionID, msg); err != nil {
 		fmt.Fprintf(ppWriter, "could not save command history: %v\n", err)
 	}

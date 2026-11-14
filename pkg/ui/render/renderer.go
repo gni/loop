@@ -66,6 +66,7 @@ type StreamRenderer struct {
 	// Recorded model-visible fragments for active-turn redraws. A full
 	// history replay uses these instead of the terminal write byte stream.
 	liveReplayEvents       []liveReplayEvent
+	liveReplayText         strings.Builder
 	liveReplayTextFlushed  bool
 	trackedRowsInvalidated bool
 }

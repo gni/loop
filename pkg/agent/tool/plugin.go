@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	domaintool "loop/pkg/domain/tool"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"loop/pkg/domain/evidence"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/process"
 	"loop/pkg/storage"
 )
@@ -34,21 +35,28 @@ func (p *pluginTool) Definition() Tool {
 }
 
 func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error) {
+	result, err := p.ExecuteResult(ctx, arguments)
+	return result.Output, err
+}
+
+func (p *pluginTool) ExecuteResult(ctx AgentContext, arguments string) (result ToolResult, runErr error) {
+	result.Evidence = &evidence.Record{Kind: "plugin", Target: p.Name(), Outcome: evidence.NotExecuted}
+	defer func() { result.IsError = runErr != nil }()
 	gate, ok := ctx.(domaintool.ShellExecutionGate)
 	if !ok || !gate.IsShellExecutionAllowed() {
-		return "", fmt.Errorf("executable plugins require a trusted workspace")
+		return result, fmt.Errorf("executable plugins require a trusted workspace")
 	}
 	absPath, err := filepath.Abs(p.path)
 	if err != nil {
-		return "", fmt.Errorf("invalid plugin path: %w", err)
+		return result, fmt.Errorf("invalid plugin path: %w", err)
 	}
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("plugin file error: %w", err)
+		return result, fmt.Errorf("plugin file error: %w", err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("plugin path is a directory")
+		return result, fmt.Errorf("plugin path is a directory")
 	}
 
 	parent := context.Background()
@@ -61,11 +69,28 @@ func (p *pluginTool) Execute(ctx AgentContext, arguments string) (string, error)
 			environment = append(environment, key+"="+value)
 		}
 	}
-	result, err := process.Run(parent, process.Options{Executable: absPath, Directory: ctx.GetWorkspaceRoot(), Environment: environment, Input: strings.NewReader(arguments), Timeout: 10 * time.Second, OutputLimit: maxPluginOutputBytes, ErrorLimit: maxPluginErrorBytes})
-	if err != nil {
-		return result.Stdout, fmt.Errorf("plugin execution failed: %w (details: %s)", err, strings.TrimSpace(result.Stderr))
+	observed, err := process.Run(parent, process.Options{Executable: absPath, Directory: ctx.GetWorkspaceRoot(), Environment: environment, Input: strings.NewReader(arguments), Timeout: 10 * time.Second, OutputLimit: maxPluginOutputBytes, ErrorLimit: maxPluginErrorBytes})
+	result.Output = observed.Stdout
+	result.Evidence.ExitCode = observed.ExitCode
+	if observed.Started {
+		result.Evidence.Outcome = evidence.Unknown
 	}
-	return result.Stdout, nil
+	if observed.ExitCode != nil {
+		result.Evidence.Outcome = evidence.Succeeded
+		if *observed.ExitCode != 0 {
+			result.Evidence.Outcome = evidence.Failed
+		}
+	}
+	if err != nil {
+		if observed.ExitCode != nil && *observed.ExitCode == 0 {
+			return result, fmt.Errorf("plugin completed with exit code 0, but capturing its output failed; effects may already be applied: %w", err)
+		}
+		if details := strings.TrimSpace(observed.Stderr); details != "" {
+			return result, fmt.Errorf("plugin execution failed: %w (details: %s)", err, details)
+		}
+		return result, fmt.Errorf("plugin execution failed: %w", err)
+	}
+	return result, nil
 }
 
 func dedupeExistingDirs(candidates []string) []string {

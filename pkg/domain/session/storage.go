@@ -18,6 +18,12 @@ type SessionRewriter interface {
 	RewriteSessionContext(context.Context, string, []message.Message) error
 }
 
+// Checkpointer saves a complete snapshot while retaining unchanged message
+// records. Stores without this optional capability use the legacy comparison.
+type Checkpointer interface {
+	CheckpointSessionContext(context.Context, string, []message.Message) error
+}
+
 type EntryAppender interface {
 	AppendEntry(string, Record) error
 }

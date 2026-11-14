@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	domaintool "loop/pkg/domain/tool"
@@ -65,10 +67,14 @@ var xmlArgumentSchemas = func() map[string]map[string]tool.SchemaProp {
 	return schemas
 }()
 
-func xmlArgumentValue(name, key, value string) interface{} {
+func xmlArgumentValue(name, key, value string) any {
 	switch xmlArgumentSchemas[name][key].Type {
 	case "number":
-		if number, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) {
+		trimmed := strings.TrimSpace(value)
+		if number, err := strconv.ParseFloat(trimmed, 64); err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) {
+			if json.Valid([]byte(trimmed)) {
+				return json.Number(trimmed)
+			}
 			return number
 		}
 	case "integer":
@@ -80,13 +86,13 @@ func xmlArgumentValue(name, key, value string) interface{} {
 			return boolean
 		}
 	case "array":
-		var array []interface{}
-		if json.Unmarshal([]byte(value), &array) == nil && array != nil {
+		decoded, err := jsonschema.UnmarshalJSON(strings.NewReader(value))
+		if array, ok := decoded.([]any); err == nil && ok {
 			return array
 		}
 	case "object":
-		var object map[string]interface{}
-		if json.Unmarshal([]byte(value), &object) == nil && object != nil {
+		decoded, err := jsonschema.UnmarshalJSON(strings.NewReader(value))
+		if object, ok := decoded.(map[string]any); err == nil && ok {
 			return object
 		}
 	}
@@ -108,10 +114,11 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 	body = strings.TrimSpace(body)
 
 	// If body is already valid JSON, merge tag attributes into it if not present
-	var temp map[string]interface{}
-	if json.Unmarshal([]byte(body), &temp) == nil {
+	decoded, decodeErr := jsonschema.UnmarshalJSON(strings.NewReader(body))
+	temp, isObject := decoded.(map[string]any)
+	if decodeErr == nil && (isObject || decoded == nil) {
 		if temp == nil {
-			temp = make(map[string]interface{})
+			temp = make(map[string]any)
 		}
 		for k, v := range attrs {
 			if _, exists := temp[k]; !exists {
@@ -124,7 +131,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 		return BuildToolCall(name, body)
 	}
 
-	argsMap := make(map[string]interface{})
+	argsMap := make(map[string]any)
 	for k, v := range attrs {
 		argsMap[k] = xmlArgumentValue(name, k, v)
 	}
@@ -243,7 +250,7 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 		}
 		name := funcMatch[1]
 		rawBody := strings.TrimSpace(funcMatch[2])
-		params := make(map[string]interface{})
+		params := make(map[string]any)
 		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
 			params[p[1]] = xmlArgumentValue(tool.NormalizeName(name), p[1], strings.TrimSpace(p[2]))
 		}
@@ -357,8 +364,8 @@ func ParseFallbackToolCallsStrict(content string) ([]db.ToolCall, error) {
 // BuildToolCall normalizes tool names and formats arguments into a db.ToolCall.
 func BuildToolCall(name string, args string) db.ToolCall {
 	name = tool.NormalizeName(name)
-	var temp map[string]interface{}
-	isJSON := json.Unmarshal([]byte(args), &temp) == nil
+	trimmed := strings.TrimSpace(args)
+	isJSON := json.Valid([]byte(trimmed)) && (strings.HasPrefix(trimmed, "{") || trimmed == "null")
 
 	finalArgs := args
 	if !isJSON {

@@ -3,12 +3,14 @@ package swarm
 import (
 	"context"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
 
 	"loop/pkg/agent/tool"
 	bashtool "loop/pkg/agent/tool/bash"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
 )
@@ -16,6 +18,13 @@ import (
 type multiAgentContext struct {
 	tool.AgentContext
 	ma *MultiAgent
+}
+
+func (mac *multiAgentContext) SafeReadPath(path string) (string, error) {
+	if reader, ok := mac.AgentContext.(interface{ SafeReadPath(string) (string, error) }); ok {
+		return reader.SafeReadPath(path)
+	}
+	return mac.SafePath(path)
 }
 
 func (mac *multiAgentContext) BeginFileMutation(ctx context.Context, path string, data []byte, mode os.FileMode) (func(), error) {
@@ -41,9 +50,7 @@ func (mac *multiAgentContext) GetExecutionEnv() map[string]string {
 		env = make(map[string]string)
 	}
 	if provider, ok := mac.AgentContext.(domaintool.ExecutionEnvironment); ok {
-		for key, value := range provider.GetExecutionEnv() {
-			env[key] = value
-		}
+		maps.Copy(env, provider.GetExecutionEnv())
 	}
 	env["LOOP_SUBAGENT"] = mac.ma.Name
 	return env
@@ -69,9 +76,7 @@ func (mac *multiAgentContext) SpawnTaskWithOptions(ctx context.Context, command 
 	var err error
 	if spawner, ok := mac.AgentContext.(domaintool.BackgroundTaskSpawner); ok {
 		environment := mac.GetExecutionEnv()
-		for key, value := range options.Environment {
-			environment[key] = value
-		}
+		maps.Copy(environment, options.Environment)
 		environment["LOOP_SUBAGENT"] = mac.ma.Name
 		options.Environment = environment
 		id, err = spawner.SpawnTaskWithOptions(ctx, command, w, options)
@@ -115,6 +120,34 @@ func (mac *multiAgentContext) IsAtomicWritesEnabled() bool {
 	return !ok || settings.IsAtomicWritesEnabled()
 }
 
+func (mac *multiAgentContext) IsStrictSyntaxEnabled() bool {
+	settings, ok := mac.AgentContext.(domaintool.SyntaxValidationSettings)
+	return ok && settings.IsStrictSyntaxEnabled()
+}
+
+func (mac *multiAgentContext) RecordReadRange(path string, data []byte, start, end int, complete bool) {
+	if observer, ok := mac.AgentContext.(interface {
+		RecordReadRange(string, []byte, int, int, bool)
+	}); ok {
+		observer.RecordReadRange(path, data, start, end, complete)
+	} else if observer, ok := mac.AgentContext.(domaintool.FileObserver); ok {
+		observer.RecordRead(path, data)
+	}
+}
+
+func (mac *multiAgentContext) InvalidateReadCoverage(path string) {
+	if observer, ok := mac.AgentContext.(interface{ InvalidateReadCoverage(string) }); ok {
+		observer.InvalidateReadCoverage(path)
+	}
+}
+
+func (mac *multiAgentContext) GetEffectiveContextLimit(tokens int) int {
+	if mac.ma != nil && mac.ma.BaseAgent != nil {
+		return mac.ma.BaseAgent.GetEffectiveContextLimit(tokens)
+	}
+	return 8192
+}
+
 func (mac *multiAgentContext) GetShellTimeout() time.Duration {
 	if settings, ok := mac.AgentContext.(domaintool.ShellTimeoutSettings); ok {
 		return settings.GetShellTimeout()
@@ -142,6 +175,20 @@ func (mac *multiAgentContext) GetTaskOutputVersion(id string) int64 {
 		return provider.GetTaskOutputVersion(id)
 	}
 	return 0
+}
+
+func (mac *multiAgentContext) GetTaskOutputSnapshot(id string, full bool) (*domaintool.BackgroundTaskSnapshot, error) {
+	if provider, ok := mac.AgentContext.(domaintool.TaskOutputSnapshotProvider); ok {
+		return provider.GetTaskOutputSnapshot(id, full)
+	}
+	return nil, nil
+}
+
+func (mac *multiAgentContext) GetTaskEvidence(id string) *evidence.Record {
+	if provider, ok := mac.AgentContext.(interface{ GetTaskEvidence(string) *evidence.Record }); ok {
+		return provider.GetTaskEvidence(id)
+	}
+	return nil
 }
 
 func (mac *multiAgentContext) Context() context.Context {
@@ -237,7 +284,15 @@ func (mac *multiAgentContext) GetActiveSkills() []tool.Skill {
 }
 
 func (mac *multiAgentContext) ReloadSkills() []tool.Skill {
-	reloaded := mac.AgentContext.ReloadSkills()
+	skills, _ := mac.ReloadSkillsChecked()
+	return skills
+}
+
+func (mac *multiAgentContext) ReloadSkillsChecked() ([]tool.Skill, error) {
+	reloaded, err := tool.ReloadSkillsChecked(mac.AgentContext)
+	if err != nil {
+		return mac.ma.GetEffectiveSkills(), err
+	}
 	mac.ma.HistoryMu.Lock()
 	defer mac.ma.HistoryMu.Unlock()
 
@@ -247,21 +302,28 @@ func (mac *multiAgentContext) ReloadSkills() []tool.Skill {
 	}
 	if mac.ma.HasAllSkills {
 		mac.ma.Skills = make([]tool.Skill, 0, len(reloaded)+len(mac.ma.LocalSkills))
-		mac.ma.Skills = append(mac.ma.Skills, reloaded...)
+		for _, skill := range reloaded {
+			if _, isLocal := localNames[strings.ToLower(skill.Name)]; !isLocal {
+				mac.ma.Skills = append(mac.ma.Skills, skill)
+			}
+		}
 		mac.ma.Skills = append(mac.ma.Skills, mac.ma.LocalSkills...)
-		return reloaded
+		return append([]tool.Skill(nil), mac.ma.Skills...), nil
 	}
 
-	for i, existing := range mac.ma.Skills {
+	assigned := make([]tool.Skill, 0, len(mac.ma.Skills))
+	for _, existing := range mac.ma.Skills {
 		if _, isLocal := localNames[strings.ToLower(existing.Name)]; isLocal {
+			assigned = append(assigned, existing)
 			continue
 		}
 		for _, r := range reloaded {
-			if r.Name == existing.Name {
-				mac.ma.Skills[i] = r
+			if strings.EqualFold(r.Name, existing.Name) {
+				assigned = append(assigned, r)
 				break
 			}
 		}
 	}
-	return reloaded
+	mac.ma.Skills = assigned
+	return append([]tool.Skill(nil), assigned...), nil
 }

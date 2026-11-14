@@ -14,6 +14,18 @@ func (cfg *Config) ValidateSettings() error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
+	if value := strings.ToLower(strings.TrimSpace(cfg.ToolExposure)); value != "" && value != "auto" && value != "core" && value != "full" {
+		return fmt.Errorf("tool_exposure must be auto, core or full")
+	}
+	if value := strings.ToLower(strings.TrimSpace(cfg.MemoryPolicy)); value != "" && value != "auto" && value != "full" && value != "off" {
+		return fmt.Errorf("memory_policy must be auto, full or off")
+	}
+	if _, _, err := parseContextProfile(cfg.ContextProfile); err != nil {
+		return err
+	}
+	if policy := strings.ToLower(strings.TrimSpace(cfg.HistoryCompression)); policy != "" && policy != "safe" && policy != "off" {
+		return fmt.Errorf("history_compression must be safe or off")
+	}
 	if err := cfg.ValidateTimeouts(); err != nil {
 		return err
 	}
@@ -79,7 +91,7 @@ func (cfg *Config) ValidateTimeouts() error {
 	for _, setting := range []struct {
 		key   string
 		value int
-	}{{"timeout", cfg.Timeout}, {"shell_timeout", cfg.ShellTimeout}, {"extension_timeout", cfg.ExtensionTimeout}} {
+	}{{"timeout", cfg.Timeout}, {"shell_timeout", cfg.ShellTimeout}, {"extension_timeout", cfg.ExtensionTimeout}, {"subagent_timeout", cfg.SubagentTimeout}} {
 		if err := validateTimeoutValue(setting.key, int64(setting.value)); err != nil {
 			return err
 		}

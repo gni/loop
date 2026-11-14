@@ -2,13 +2,13 @@ package file
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/domain/diagnostic"
 	"loop/pkg/domain/evidence"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/storage"
@@ -64,29 +64,14 @@ func (t *writeTool) ExecuteResult(ctx domaintool.AgentContext, arguments string)
 }
 
 func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, observed *evidence.Record) (string, error) {
-	var args struct {
-		Path    string  `json:"path"`
-		Content *string `json:"content"`
-	}
-	_ = json.Unmarshal([]byte(arguments), &args)
-
-	targetPath := ExtractFilePath(arguments, args.Path)
-	if targetPath == "" {
-		return "", fmt.Errorf("missing required argument: path")
+	targetPath, content, err := ParseWriteArguments(arguments)
+	if err != nil {
+		unchanged := false
+		observed.Changed = &unchanged
+		return "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: "write", Cause: err}
 	}
 	if strings.ContainsAny(targetPath, "*?") {
 		return "", fmt.Errorf("cannot write to wildcard path '%s': please provide an exact target file path", targetPath)
-	}
-
-	var content string
-	if args.Content != nil {
-		content = *args.Content
-	} else {
-		extracted, found := ExtractFileContent(arguments)
-		if !found {
-			return "", fmt.Errorf("missing required argument: content")
-		}
-		content = extracted
 	}
 
 	safePath, err := ctx.SafePath(targetPath)
@@ -128,13 +113,17 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 				observed.Changed = &unchanged
 				observer.RecordRead(safePath, data)
 				discardIfUncommitted()
-				var warning string
-				observed.Diagnostics, warning = inspectSyntax(safePath, data)
-				return "No changes made: file already contains the requested content." + warning, nil
+				warning, validationErr := inspectCandidate(ctx, safePath, data, observed)
+				return "No changes made: file already contains the requested content." + warning, validationErr
 			}
 		}
 	}
 
+	warning, err := inspectCandidate(ctx, safePath, []byte(content), observed)
+	if err != nil {
+		discardIfUncommitted()
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(safePath), 0755); err != nil {
 		discardIfUncommitted()
 		return "", fmt.Errorf("failed to create directory: %w", err)
@@ -154,8 +143,6 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 		displayPath = rel
 	}
 	msg := fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), displayPath)
-	var warning string
-	observed.Diagnostics, warning = inspectSyntax(safePath, []byte(content))
 	if warning != "" {
 		msg += warning
 	}

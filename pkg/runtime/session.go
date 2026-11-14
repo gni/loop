@@ -43,17 +43,18 @@ type Options struct {
 }
 
 type State struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name,omitempty"`
-	Workspace string          `json:"workspace"`
-	Running   bool            `json:"running"`
-	Closed    bool            `json:"closed"`
-	Model     string          `json:"model"`
-	Provider  string          `json:"provider"`
-	Messages  []db.Message    `json:"messages,omitempty"`
-	Steering  []string        `json:"steering"`
-	FollowUp  []string        `json:"follow_up"`
-	Todos     []tool.TodoItem `json:"todos"`
+	ContextBudget *agent.ContextBudget `json:"context_budget,omitempty"`
+	ID            string               `json:"id"`
+	Name          string               `json:"name,omitempty"`
+	Workspace     string               `json:"workspace"`
+	Running       bool                 `json:"running"`
+	Closed        bool                 `json:"closed"`
+	Model         string               `json:"model"`
+	Provider      string               `json:"provider"`
+	Messages      []db.Message         `json:"messages,omitempty"`
+	Steering      []string             `json:"steering"`
+	FollowUp      []string             `json:"follow_up"`
+	Todos         []tool.TodoItem      `json:"todos"`
 }
 
 type Session struct {
@@ -63,6 +64,7 @@ type Session struct {
 	ID           string
 	Workspace    string
 	mu           sync.Mutex
+	eventHooks   sync.WaitGroup
 	runMu        sync.Mutex
 	messages     []db.Message
 	steering     []string

@@ -3,6 +3,7 @@ package interactive
 import (
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,9 +20,7 @@ func CloneProviderConfig(cfg *config.Config) *config.Config {
 	if err != nil || cloned == nil {
 		fallback := *cfg
 		fallback.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
-		for name, provider := range cfg.Providers {
-			fallback.Providers[name] = provider
-		}
+		maps.Copy(fallback.Providers, cfg.Providers)
 		return &fallback
 	}
 	if cloned.Providers == nil {

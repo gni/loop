@@ -88,8 +88,13 @@ func readSpillPage(ctx context.Context, workspace, path, header string, offset, 
 }
 
 func renderReadPage(header string, lines []string, offset, total, budget int) (string, error) {
+	text, _, _, err := renderReadPageCoverage(header, lines, offset, total, budget)
+	return text, err
+}
+
+func renderReadPageCoverage(header string, lines []string, offset, total, budget int) (string, int, bool, error) {
 	if offset > total {
-		return "", fmt.Errorf("offset %d is beyond end of file (%d lines total)", offset, total)
+		return "", 0, false, fmt.Errorf("offset %d is beyond end of file (%d lines total)", offset, total)
 	}
 	if len(header) < budget {
 		cut := TruncateHead(lines, len(lines), budget-len(header))
@@ -101,7 +106,7 @@ func renderReadPage(header string, lines []string, offset, total, budget int) (s
 				notice = ReadTruncationNotice(offset, shownEnd, total, shownEnd+1)
 			}
 			if used+len(notice) <= budget {
-				return header + strings.Join(lines[:count], "\n") + notice, nil
+				return header + strings.Join(lines[:count], "\n") + notice, shownEnd, false, nil
 			}
 			used -= len(lines[count-1]) + 1
 		}
@@ -115,10 +120,10 @@ func renderReadPage(header string, lines []string, offset, total, budget int) (s
 			if available := budget - len(header) - len(notice) - len(marker); available > 0 {
 				prefix := UTF8SafePrefix(lines[0], available)
 				if prefix != "" {
-					return header + prefix + marker + notice, nil
+					return header + prefix + marker + notice, offset, true, nil
 				}
 			}
 		}
 	}
-	return "", fmt.Errorf("line %d and its continuation notice cannot fit the %d-byte output budget", offset, budget)
+	return "", 0, false, fmt.Errorf("line %d and its continuation notice cannot fit the %d-byte output budget", offset, budget)
 }

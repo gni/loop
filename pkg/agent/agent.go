@@ -414,6 +414,12 @@ func (a *Agent) IsShellScanDefaultsEnabled() bool {
 	return a.Config != nil && a.Config.ShellScanDefaults
 }
 
+func (a *Agent) IsStrictSyntaxEnabled() bool {
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
+	return a.Config != nil && a.Config.StrictSyntax
+}
+
 func (a *Agent) IsAtomicWritesEnabled() bool {
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()

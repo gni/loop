@@ -19,49 +19,83 @@ type PromptLayout struct {
 
 func promptRuneWidth(r rune) int { return style.RuneWidth(r) }
 
+type promptCursor struct {
+	row, column int
+}
+
+func promptCellWidth(r rune, column, columns int) int {
+	if r == '\t' {
+		return min(4-column%4, columns)
+	}
+	return promptRuneWidth(r)
+}
+
+func (c *promptCursor) prepare(r rune, columns int) (cells int, wrapped bool) {
+	cells = promptCellWidth(r, c.column, columns)
+	wrapped = r != '\n' && c.column > 0 && c.column+cells > columns
+	if wrapped {
+		c.row++
+		c.column = 0
+	}
+	return cells, wrapped
+}
+
+func (c *promptCursor) advance(r rune, cells int) {
+	if r == '\n' {
+		c.row++
+		c.column = 0
+	} else if r == '\t' || !unicode.IsControl(r) {
+		c.column += cells
+	}
+}
+
+func (c *promptCursor) advanceText(text string, columns int) {
+	for _, r := range text {
+		cells, _ := c.prepare(r, columns)
+		c.advance(r, cells)
+	}
+}
+
 func LayoutPrompt(text string, position, columns int) PromptLayout {
 	columns = max(1, columns)
 	runes := []rune(text)
 	position = min(max(0, position), len(runes))
 	layout := PromptLayout{}
 	var content strings.Builder
-	start, col := 0, 0
+	start := 0
+	cursor := promptCursor{}
 	finish := func(end int) {
 		layout.Rows = append(layout.Rows, PromptRow{Text: content.String(), Start: start, End: end})
 		content.Reset()
-		col = 0
 	}
 	for i, r := range runes {
-		cells := promptRuneWidth(r)
-		if r == '\t' {
-			cells = min(4-col%4, columns)
-		}
-		if r != '\n' && col > 0 && col+cells > columns {
+		cells, wrapped := cursor.prepare(r, columns)
+		if wrapped {
 			finish(i)
 			start = i
 		}
 		if i == position {
-			layout.CursorRow = len(layout.Rows)
-			layout.CursorColumn = col
+			layout.CursorRow = cursor.row
+			layout.CursorColumn = cursor.column
 		}
 		if r == '\n' {
 			finish(i)
 			start = i + 1
+			cursor.advance(r, cells)
 			continue
 		}
 		switch {
 		case r == '\t':
 			content.WriteString(strings.Repeat(" ", cells))
-			col += cells
 		case unicode.IsControl(r):
 		default:
 			content.WriteRune(r)
-			col += cells
 		}
+		cursor.advance(r, cells)
 	}
 	if position == len(runes) {
-		layout.CursorRow = len(layout.Rows)
-		layout.CursorColumn = col
+		layout.CursorRow = cursor.row
+		layout.CursorColumn = cursor.column
 	}
 	finish(len(runes))
 	return layout
@@ -78,10 +112,7 @@ func MovePromptVertical(text string, position, columns, direction int) (int, boo
 	runes := []rune(text)
 	col, pos := 0, row.Start
 	for pos < row.End {
-		cells := promptRuneWidth(runes[pos])
-		if runes[pos] == '\t' {
-			cells = min(4-col%4, max(1, columns))
-		}
+		cells := promptCellWidth(runes[pos], col, max(1, columns))
 		if col+cells > layout.CursorColumn {
 			break
 		}

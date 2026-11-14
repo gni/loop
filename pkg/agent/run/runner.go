@@ -38,6 +38,8 @@ type Policy struct {
 	Continuous       bool
 	RequestAttempts  int
 	RecoveryAttempts int
+	AdaptiveSteps    bool
+	MaxTokens        int
 }
 
 // Driver supplies side effects. Infer may stream presentation, but it cannot
@@ -81,10 +83,12 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 			return
 		}
 		switch {
-		case errors.Is(runErr, context.Canceled), errors.Is(runErr, context.DeadlineExceeded):
+		case ctx.Err() != nil:
 			result.Status = Cancelled
 		case errors.Is(runErr, ErrBlocked):
 			result.Status = Blocked
+		case errors.Is(runErr, ErrTokenBudget), errors.Is(runErr, retry.ErrExhausted):
+			result.Status = LimitReached
 		case result.Status != LimitReached:
 			result.Status = Failed
 		}
@@ -98,13 +102,23 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 	if policy.RequestAttempts <= 0 {
 		policy.RequestAttempts = DefaultRequestAttempts
 	}
+	if policy.MaxTokens > 0 {
+		ctx = withTotalTokenBudget(ctx, policy.MaxTokens)
+	}
 	observe := func(event Event) error {
 		if driver.Observe == nil {
 			return nil
 		}
 		return driver.Observe(event)
 	}
-	for step := 1; policy.Continuous || step <= policy.MaxSteps; step++ {
+	stepBudget := policy.MaxSteps
+	adaptive := policy.AdaptiveSteps && TaskSnapshot(ctx) != nil
+	if adaptive {
+		stepBudget = InitialStepBudget(ctx, policy.MaxSteps)
+	}
+	noProgress := 0
+	version := ProgressVersion(ctx)
+	for step := 1; policy.Continuous || step <= stepBudget; step++ {
 		result.Steps = step
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -123,10 +137,24 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 		var msg *message.Message
 		for {
 			var err error
+			inferenceCtx := stepCtx
+			if policy.MaxTokens > 0 {
+				remaining := RequestTokenLimit(stepCtx)
+				if remaining <= 0 {
+					return result, ErrTokenBudget
+				}
+				inferenceCtx = WithRequestBudget(stepCtx, remaining)
+			}
 			if err := observe(Event{Type: "inference_start", Step: step}); err != nil {
 				return result, err
 			}
-			msg, err = driver.Infer(stepCtx, step)
+			msg, err = driver.Infer(inferenceCtx, step)
+			if policy.MaxTokens > 0 {
+				input, output := allocatedRequestTokens(inferenceCtx)
+				if input == 0 && output == 0 && msg != nil {
+					RecordRequestUsage(inferenceCtx, msg.PromptTokens, msg.CompletionTokens)
+				}
+			}
 			if observeErr := observe(Event{Type: "inference_end", Step: step}); observeErr != nil {
 				return result, errors.Join(err, observeErr)
 			}
@@ -140,6 +168,9 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 				break
 			}
 			if ctx.Err() == nil && !errors.Is(err, retry.ErrExhausted) && !compacted && driver.Compact != nil && driver.IsContextOverflow != nil && driver.IsContextOverflow(err) {
+				if budgetErr := retry.Check(stepCtx); budgetErr != nil {
+					return result, errors.Join(err, budgetErr)
+				}
 				compacted = true
 				if compactErr := driver.Compact(stepCtx); compactErr != nil {
 					return result, errors.Join(err, compactErr)
@@ -151,8 +182,11 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 					return result, errors.Join(err, recordErr)
 				}
 			}
-			if ctx.Err() != nil || errors.Is(err, retry.ErrExhausted) || recoveries >= policy.RecoveryAttempts || driver.IsRecoverable == nil || !driver.IsRecoverable(err) {
+			if ctx.Err() != nil || errors.Is(err, retry.ErrExhausted) || errors.Is(err, ErrTokenBudget) || recoveries >= policy.RecoveryAttempts || driver.IsRecoverable == nil || !driver.IsRecoverable(err) {
 				return result, err
+			}
+			if budgetErr := retry.Check(stepCtx); budgetErr != nil {
+				return result, errors.Join(err, budgetErr)
 			}
 			recoveries++
 			if driver.Pause != nil {
@@ -202,6 +236,21 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 		if err := driver.Execute(ctx, step, msg); err != nil {
 			return result, err
 		}
+		if adaptive {
+			next := ProgressVersion(ctx)
+			if next == version {
+				noProgress++
+			} else {
+				noProgress = 0
+				version = next
+			}
+			if noProgress >= 6 {
+				return result, fmt.Errorf("%w: no new execution evidence in %d steps; reassess the task or report the blocker", ErrBlocked, noProgress)
+			}
+			if step >= stepBudget-2 && noProgress < 2 {
+				stepBudget = min(policy.MaxSteps, stepBudget+8)
+			}
+		}
 		if err := observe(Event{Type: "turn_end", Step: step, Message: msg}); err != nil {
 			return result, err
 		}
@@ -212,5 +261,5 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 		}
 	}
 	result.Status = LimitReached
-	return result, fmt.Errorf("maximum reasoning steps reached (%d)", policy.MaxSteps)
+	return result, fmt.Errorf("reasoning step budget reached (%d of %d maximum)", stepBudget, policy.MaxSteps)
 }

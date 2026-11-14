@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
@@ -102,37 +103,48 @@ func handleUndoCommand(
 	w io.Writer,
 	kiReader *interceptor.KeyInterceptorReader,
 ) {
-	if a == nil || messages == nil || len(*messages) == 0 {
+	if a == nil || messages == nil {
 		fmt.Fprintln(w, "nothing to undo: conversation history is empty.")
 		return
 	}
 
-	a.MessagesMu.Lock()
+	a.MessagesMu.RLock()
+	snapshot := message.CloneAll(*messages)
+	a.MessagesMu.RUnlock()
 	lastUserIdx := -1
-	for i := len(*messages) - 1; i >= 0; i-- {
-		if (*messages)[i].Role == "user" {
+	for i := len(snapshot) - 1; i >= 0; i-- {
+		if snapshot[i].IsUserInput() {
 			lastUserIdx = i
 			break
 		}
 	}
 
 	if lastUserIdx < 0 {
-		a.MessagesMu.Unlock()
 		fmt.Fprintln(w, "nothing to undo: no user turn found in history.")
 		return
 	}
 
-	userMsg := (*messages)[lastUserIdx]
+	userMsg := snapshot[lastUserIdx]
 	userPreview := strings.TrimSpace(userMsg.Content)
-	if len(userPreview) > 60 {
-		userPreview = userPreview[:60] + "..."
+	if runes := []rune(userPreview); len(runes) > 60 {
+		userPreview = string(runes[:60]) + "..."
 	}
 
-	removedCount := len(*messages) - lastUserIdx
-	*messages = (*messages)[:lastUserIdx]
+	remaining := snapshot[:lastUserIdx:lastUserIdx]
+	id := ""
+	if currentSessionID != nil {
+		id = *currentSessionID
+	}
+	if err := a.RewriteSession(a.Context(), id, remaining); err != nil {
+		fmt.Fprintf(w, "could not undo turn: %v\n", err)
+		return
+	}
+	removedCount := len(snapshot) - lastUserIdx
+	a.MessagesMu.Lock()
+	*messages = remaining
 	a.MessagesMu.Unlock()
 
-	if a.Guided.SnapshotCount() > 0 {
+	if a.Guided != nil && a.Guided.SnapshotCount() > 0 {
 		restored, err := a.RollbackChanges()
 		if err != nil {
 			fmt.Fprintf(w, "warning: file rollback encountered error: %v\n", err)
@@ -144,13 +156,12 @@ func handleUndoCommand(
 		}
 	}
 
-	if !a.Ephemeral && currentSessionID != nil && *currentSessionID != "" {
-		if err := db.RewriteSessionContext(a.Context(), *currentSessionID, *messages); err != nil {
-			fmt.Fprintf(w, "warning: failed to persist session after undo: %v\n", err)
+	a.SyncSessionSystemPrompt(messages, "")
+	if a.SyncSessionState != nil {
+		if err := a.SyncSessionState(*messages, a.ToolSelection, id, false); err != nil {
+			fmt.Fprintf(w, "turn removed, but could not sync runtime state: %v\n", err)
 		}
 	}
-
-	a.SyncSessionSystemPrompt(messages, "")
 
 	if history := ui.GetUI().ChatHistory; history != nil {
 		ui.MarkSessionReloaded()

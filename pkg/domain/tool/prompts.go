@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"loop/pkg/domain/document"
 	"loop/pkg/storage"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ type ToolPrompt struct {
 
 type SystemPrompts struct {
 	DefaultIdentity      string   `json:"default_identity"`
+	OperatingLoop        string   `json:"operating_loop"`
 	CoreRules            []string `json:"core_rules"`
 	MultiAgentGuidelines string   `json:"multi_agent_guidelines"`
 	CompressionPrompt    string   `json:"compression_prompt"`
@@ -171,9 +173,7 @@ func applyCatalogLocked(catalog PromptCatalog) {
 	MasterAgentTemplates = catalog.AgentToolTemplates
 	MasterRuntimeMessages = catalog.RuntimeMessages
 	nextTools := make(map[string]ToolPrompt, len(catalog.ToolPrompts))
-	for k, v := range catalog.ToolPrompts {
-		nextTools[k] = v
-	}
+	maps.Copy(nextTools, catalog.ToolPrompts)
 	MasterToolPrompts = nextTools
 }
 
@@ -217,6 +217,7 @@ func overrideString(dst *string, src string) {
 
 func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
 	overrideString(&base.SystemPrompts.DefaultIdentity, user.SystemPrompts.DefaultIdentity)
+	overrideString(&base.SystemPrompts.OperatingLoop, user.SystemPrompts.OperatingLoop)
 	if len(user.SystemPrompts.CoreRules) > 0 {
 		base.SystemPrompts.CoreRules = user.SystemPrompts.CoreRules
 	}
@@ -233,9 +234,7 @@ func mergeCatalog(base *PromptCatalog, user PromptCatalog) {
 		if existing.ParamDescriptions == nil {
 			existing.ParamDescriptions = map[string]string{}
 		}
-		for k, v := range p.ParamDescriptions {
-			existing.ParamDescriptions[k] = v
-		}
+		maps.Copy(existing.ParamDescriptions, p.ParamDescriptions)
 		existing.Name = name
 		base.ToolPrompts[name] = existing
 	}

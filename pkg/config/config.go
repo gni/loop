@@ -50,7 +50,7 @@ type Config struct {
 	ReducedMotion            bool                       `json:"reduced_motion"`
 	LogoBrightness           int                        `json:"logo_brightness"`
 	PromptMaxLines           int                        `json:"prompt_max_lines,omitempty"`
-	Nostop                   NostopConfig               `json:"nostop,omitempty"`
+	Nostop                   NostopConfig               `json:"nostop"`
 	Sources                  map[string]string          `json:"-"`
 	ProjectPath              string                     `json:"-"`
 	ProjectBase              *Config                    `json:"-"`
@@ -60,6 +60,7 @@ type Config struct {
 	PromptDirectories        []string                   `json:"prompt_directories,omitempty"`
 	SkillDirectories         []string                   `json:"skill_directories,omitempty"`
 	ContextFiles             bool                       `json:"context_files"`
+	MemoryPolicy             string                     `json:"memory_policy,omitempty"`
 	ShellTimeout             int                        `json:"shell_timeout,omitempty"`
 	ShellScanDefaults        bool                       `json:"shell_scan_defaults"`
 	ExtensionTimeout         int                        `json:"extension_timeout,omitempty"`
@@ -87,10 +88,15 @@ type Config struct {
 	SkillsDir                string                     `json:"skills_dir"`
 	MCPServers               map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
 	MCP                      bool                       `json:"mcp"`
-	ChatCapabilities         ChatCapabilities           `json:"chat_capabilities,omitempty"`
+	ChatCapabilities         ChatCapabilities           `json:"chat_capabilities"`
 	MaxReasoningSteps        int                        `json:"max_reasoning_steps"`
+	AdaptiveSteps            bool                       `json:"adaptive_steps"`
+	SubagentTimeout          int                        `json:"subagent_timeout,omitempty"`
+	SubagentTokenBudget      int                        `json:"subagent_token_budget,omitempty"`
 	ContextWindowLimit       int                        `json:"context_window_limit"`
+	ContextProfile           string                     `json:"context_profile,omitempty"`
 	AutoAdaptContext         bool                       `json:"auto_adapt_context"`
+	HistoryCompression       string                     `json:"history_compression,omitempty"`
 	MinContextWindow         int                        `json:"min_context_window,omitempty"`
 	CompressionThreshold     float64                    `json:"compression_threshold"`
 	ReasoningEffort          string                     `json:"reasoning_effort,omitempty"`
@@ -103,6 +109,7 @@ type Config struct {
 	MaxCompletionTokens      int                        `json:"max_completion_tokens,omitempty"`
 	CompactPrompt            bool                       `json:"compact_prompt"`
 	ToolProtocol             string                     `json:"tool_protocol,omitempty"`
+	ToolExposure             string                     `json:"tool_exposure,omitempty"`
 	LocalPlugins             bool                       `json:"local_plugins"`
 	DisabledTools            []string                   `json:"disabled_tools,omitempty"`
 	DebugLogFile             string                     `json:"debug_log_file,omitempty"`
@@ -115,12 +122,13 @@ type Config struct {
 	RepeatGuardLimit         int                        `json:"repeat_guard_limit,omitempty"`
 	PersistentBash           bool                       `json:"persistent_bash"`
 	AtomicWrites             bool                       `json:"atomic_writes"`
+	StrictSyntax             bool                       `json:"strict_syntax"`
 	FileObservationGuard     bool                       `json:"file_observation_guard"`
 	PromptCacheBreakpoints   bool                       `json:"prompt_cache_breakpoints"`
 	AskUserMode              string                     `json:"ask_user_mode,omitempty"`
 	ParallelToolCalls        bool                       `json:"parallel_tool_calls"`
 	RecapInterval            int                        `json:"recap_interval,omitempty"`
 	Recap                    bool                       `json:"recap"`
-	Limits                   limits.Limits              `json:"limits,omitempty"`
+	Limits                   limits.Limits              `json:"limits"`
 	PromptsFile              string                     `json:"prompts_file,omitempty"`
 }

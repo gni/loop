@@ -12,6 +12,7 @@ import (
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/storage"
 )
 
 const nonFileToolMaxBytes = 8192
@@ -31,11 +32,15 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				// to user context turns so strict OpenAI-compatible proxies and chat templates
 				// (e.g. vLLM, llama.cpp, ChatML) don't reject them or break KV caching.
 				msg.Role = "user"
+				if msg.ContextKind == "" {
+					msg.ContextKind = "system"
+				}
 			}
 		case "user", "assistant", "tool":
 		default:
 			continue
 		}
+		msg = mergeRequestTextBlocks(msg)
 
 		msg.ReasoningContent = ""
 		if msg.Role == "tool" && msg.Name != "" {
@@ -49,7 +54,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				copy(normalisedTCs, msg.ToolCalls)
 				for i, tc := range normalisedTCs {
 					normalisedTCs[i].Function.Name = tool.NormalizeName(tc.Function.Name)
-					var dummy map[string]interface{}
+					var dummy map[string]any
 					if json.Unmarshal([]byte(tc.Function.Arguments), &dummy) != nil {
 						repaired := domaintool.RepairJSON(tc.Function.Arguments)
 						if json.Unmarshal([]byte(repaired), &dummy) == nil {
@@ -67,7 +72,6 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				continue
 			}
 		} else {
-			msg.Content = truncateNonFileToolContent(msg, nonFileToolMaxBytes)
 			if msg.Content == "" && len(msg.ContentBlocks) == 0 {
 				msg.Content = " "
 			}
@@ -84,56 +88,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 // system instructions, the active task/user updates, and the latest evidence.
 // Assistant calls and their tool responses are removed together.
 func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Message {
-	if len(messages) == 0 {
-		return messages
-	}
-	prefix := 0
-	for prefix < len(messages) && messages[prefix].Role == "system" {
-		prefix++
-	}
-	protected := len(messages) - 1
-	for protected >= prefix && isPinnedRequestContext(messages[protected]) {
-		protected--
-	}
-	if protected >= prefix && messages[protected].Role == "tool" {
-		for protected > prefix && messages[protected].Role == "tool" {
-			protected--
-		}
-	}
-	sizes := make([]int, len(messages))
-	total := 0
-	for index, msg := range messages {
-		sizes[index] = messageTokenChars(msg)
-		total += sizes[index]
-	}
-	if TokensFromChars(total) <= limitTokens {
-		return messages
-	}
-	removed := make([]bool, len(messages))
-	for index := prefix; index < protected && TokensFromChars(total) > limitTokens; {
-		if isPinnedRequestContext(messages[index]) {
-			index++
-			continue
-		}
-		end := index + 1
-		if messages[index].Role == "assistant" && len(messages[index].ToolCalls) > 0 {
-			for end < protected && messages[end].Role == "tool" {
-				end++
-			}
-		}
-		for at := index; at < end; at++ {
-			removed[at] = true
-			total -= sizes[at]
-		}
-		index = end
-	}
-	trimmed := make([]db.Message, 0, len(messages))
-	for index, msg := range messages {
-		if !removed[index] {
-			trimmed = append(trimmed, msg)
-		}
-	}
-	return trimmed
+	return allocateContext(messages, limitTokens)
 }
 
 // chatCapabilities never guesses support from the name of the endpoint.
@@ -156,9 +111,8 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 }
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (ChatCompletionRequest, []db.Message, []byte, error) {
-	autoAdapt := p.Config == nil || p.Config.AutoAdaptContext
 	inputMsgs := messages
-	if autoAdapt {
+	if historyCompressionEnabled(p.Config) {
 		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
 	}
 
@@ -392,7 +346,7 @@ type wireChatMessage struct {
 type chatCompletionWireRequest = chatCompletionRequest[wireChatMessage]
 
 func truncateNonFileToolContent(msg db.Message, maxBytes int) string {
-	if msg.Role == "tool" && msg.Name != "read" && msg.Name != "write" && msg.Name != "edit" && msg.Name != "ask_user" {
+	if msg.Role == "tool" && !historicalToolFailed(msg) && storage.IsSpillPath(msg.SpillPath) && msg.Name != "read" && msg.Name != "write" && msg.Name != "edit" && msg.Name != "ask_user" && msg.Name != "load_skill" {
 		return boundedHistoricalOutput(msg.Content, msg.SpillPath, maxBytes)
 	}
 	return msg.Content

@@ -42,7 +42,7 @@ func RenderSkills(w io.Writer, skills []tool.Skill, theme style.UITheme) {
 	wrap := func(text string, limit, next int) []string {
 		var lines []string
 		var cur string
-		for _, word := range strings.Fields(text) {
+		for word := range strings.FieldsSeq(text) {
 			if (cur == "" && limit < next && len([]rune(word)) > limit) ||
 				(cur != "" && len([]rune(cur))+1+len([]rune(word)) > limit) {
 				lines, cur, limit = append(lines, cur), "", next

@@ -12,7 +12,6 @@ import (
 	"loop/pkg/agent/run"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	"loop/pkg/domain/session"
 	"loop/pkg/ui/style"
 )
 
@@ -64,14 +63,19 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		return RunResult{Status: RunCancelled, Error: err.Error()}, err
 	}
 	prompt = strings.TrimSpace(prompt)
+	hasInput := prompt != "" || len(a.InputBlocks) > 0
 	ctx = run.WithObjective(ctx, prompt)
-	if prompt != "" {
+	if hasInput {
 		ctx = run.WithTask(run.WithPlan(ctx, a.GetTodos), db.NewUUID(), prompt)
 	}
 	ctx, runConfig, snapshotErr := a.SnapshotRun(ctx)
 	if snapshotErr != nil {
 		return RunResult{Status: RunFailed, Error: snapshotErr.Error()}, snapshotErr
 	}
+	a.MessagesMu.RLock()
+	inherited := delegationUserInstructions(*messages)
+	a.MessagesMu.RUnlock()
+	ctx = run.WithDelegationInstructions(ctx, inherited)
 	operationCtx := ctx
 	a.SetTurnState(w, ctx, theme)
 	defer a.ClearTurnState()
@@ -80,7 +84,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		snapshot := message.CloneAll(*messages)
 		a.MessagesMu.RUnlock()
 		if err := a.CheckpointSession(ctx, sessionID, snapshot); err != nil {
-			return (RunResult{}).WithError(err), err
+			return (RunResult{}).WithErrorContext(ctx, err), err
 		}
 	}
 	a.SetActiveSessionID(sessionID)
@@ -96,7 +100,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	a.MessagesMu.RUnlock()
 	if changed {
 		if sessionID != "" {
-			if err := a.AppendEntry(sessionID, session.Record{Type: "context", Messages: repaired}); err != nil {
+			if err := a.rewriteSession(ctx, sessionID, repaired); err != nil {
 				return RunResult{Status: RunFailed, Error: err.Error()}, err
 			}
 		}
@@ -104,10 +108,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		*messages = repaired
 		a.MessagesMu.Unlock()
 	}
-	a.MessagesMu.RLock()
-	inherited := delegationUserInstructions(*messages)
-	a.MessagesMu.RUnlock()
-	ctx = run.WithDelegationInstructions(ctx, inherited)
 	startedAt := len(*messages)
 	a.stateMu.Lock()
 	a.persistenceErr = nil
@@ -131,7 +131,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		if persistenceErr := a.persistenceError(); persistenceErr != nil && !errors.Is(runErr, persistenceErr) {
 			runErr = errors.Join(runErr, persistenceErr)
 		}
-		result = result.WithError(runErr)
+		result = result.WithErrorContext(ctx, runErr)
 		result.TaskState = run.EndTask(ctx, result.Status)
 		a.MessagesMu.RLock()
 		if startedAt <= len(*messages) {
@@ -142,11 +142,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			outputErr := fmt.Errorf("event output: %w", err)
 			a.recordPersistenceError(outputErr)
 			runErr = errors.Join(runErr, outputErr)
-			result = result.WithError(runErr)
+			result = result.WithErrorContext(ctx, runErr)
 			result.TaskState = run.EndTask(ctx, result.Status)
 		}
 	}()
-	if prompt == "" {
+	if !hasInput {
 		return
 	}
 
@@ -160,10 +160,6 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	writerToUse := w
 	rawW := UnwrapWriter(writerToUse)
-
-	if a.Guided != nil {
-		a.Guided.ResetForNewUserTurn(a.GetTodos())
-	}
 
 	var loader *turnLoader
 	if a.UI != nil && !isNonInteractive {
@@ -209,6 +205,16 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		return result, err
 	}
 	a.appendTurnInput(messages, prompt, sessionID)
+	if a.Guided != nil {
+		taskID := ""
+		if current := run.TaskSnapshot(ctx); current != nil {
+			taskID = current.ID
+		}
+		a.Guided.BeginTask(taskID, a.GetTodos())
+		if a.Guided.IsPlanApproved() {
+			run.TrackPlan(ctx)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -294,7 +300,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			a.CurrentStreamBuffer = streamBuf
 			a.CurrentStreamMu.Unlock()
 
-			teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: &lockedStreamBuffer{mu: &a.CurrentStreamMu, buf: streamBuf}}
+			streamCapture := &lockedStreamBuffer{mu: &a.CurrentStreamMu, buf: streamBuf}
+			teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: streamCapture}
 			ncw = &NewlineCounterWriter{Writer: teeWriter}
 			a.SetCurrentWriter(ncw)
 			sr = a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
@@ -303,6 +310,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}); ok {
 				a.CurrentStreamMu.Lock()
 				a.CurrentStreamReplay = replay.ReplayActiveTurn
+				// Semantic replay already owns the source. Retaining terminal
+				// bytes duplicates it and keeps later command output resident too.
+				streamCapture.buf = nil
+				a.CurrentStreamBuffer = nil
 				a.CurrentStreamMu.Unlock()
 			}
 
@@ -393,6 +404,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			updateStreamStatus(false)
 
 			a.CurrentStreamMu.Lock()
+			streamCapture.buf = nil
 			a.CurrentStreamBuffer = nil
 			a.CurrentStreamReplay = nil
 			a.CurrentStreamMu.Unlock()
@@ -512,7 +524,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			return nil
 		},
 	}
-	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, Continuous: nostop, RecoveryAttempts: run.DefaultRecoveryAttempts}, driver)
+	outcome, err := run.Execute(ctx, run.Policy{MaxSteps: maxSteps, AdaptiveSteps: runConfig.AdaptiveSteps, Continuous: nostop, RecoveryAttempts: run.DefaultRecoveryAttempts}, driver)
 	result.Status, result.Turns = outcome.Status, outcome.Steps
 	runErr = err
 	if err != nil {
@@ -522,7 +534,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			loader.Stop()
 		}
 		if outcome.Status == run.LimitReached {
-			fmt.Fprintf(writerToUse, "\nmaximum reasoning steps reached (%d).\n", maxSteps)
+			fmt.Fprintf(writerToUse, "\n%v\n", err)
 		} else if outcome.Status != run.Blocked {
 			var errorWriter io.Writer = writerToUse
 			if ncw != nil {

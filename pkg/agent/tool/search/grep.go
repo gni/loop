@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
@@ -53,14 +54,26 @@ func buildLineMatcher(pattern string, literal, ignoreCase bool) (func(string) bo
 		return nil, nil
 	}
 	if literal {
-		if ignoreCase {
-			lowerPattern := strings.ToLower(pattern)
+		if !ignoreCase {
 			return func(line string) bool {
-				return strings.Contains(strings.ToLower(line), lowerPattern)
+				return strings.Contains(line, pattern)
 			}, nil
 		}
+		// Use the same Unicode case folding as regex searches. Keep the cheaper
+		// ASCII path for ordinary source lines.
+		re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
+		if err != nil {
+			return nil, fmt.Errorf("invalid literal search pattern: %w", err)
+		}
+		if !isASCII(pattern) {
+			return re.MatchString, nil
+		}
+		lowerPattern := strings.ToLower(pattern)
 		return func(line string) bool {
-			return strings.Contains(line, pattern)
+			if !isASCII(line) {
+				return re.MatchString(line)
+			}
+			return strings.Contains(strings.ToLower(line), lowerPattern)
 		}, nil
 	}
 	regexPattern := pattern
@@ -72,6 +85,15 @@ func buildLineMatcher(pattern string, literal, ignoreCase bool) (func(string) bo
 		return nil, fmt.Errorf("invalid regular expression; use literal=true to search exact text: %w", err)
 	}
 	return re.MatchString, nil
+}
+
+func isASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedIntKeys(m map[int]bool) []int {
@@ -267,10 +289,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		} else {
 			linesToShow := make(map[int]bool, len(matchedIndices)*(2*contextLines+1))
 			for mIdx := range matchedIndices {
-				start := mIdx - contextLines
-				if start < 0 {
-					start = 0
-				}
+				start := max(mIdx-contextLines, 0)
 				end := mIdx + contextLines
 				if end >= numLines {
 					end = numLines - 1

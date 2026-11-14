@@ -20,6 +20,7 @@ func (s *Session) Status() State {
 	state.Model, state.Provider = s.Agent.Config.Model, s.Agent.Config.ActiveProvider
 	s.Agent.LLMProviderMu.RUnlock()
 	state.Todos = s.Agent.GetTodos()
+	state.ContextBudget = s.Agent.ContextBudgetSnapshot()
 	return state
 }
 

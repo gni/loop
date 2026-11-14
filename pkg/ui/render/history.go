@@ -10,6 +10,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/domain/message"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
@@ -24,29 +25,26 @@ func extractBacktickCommandAndOutput(content, prefix string) (string, string, bo
 	if !strings.HasPrefix(content, prefix) {
 		return "", "", false
 	}
-	firstTick := strings.Index(content, "`")
-	if firstTick == -1 {
+	_, after, ok := strings.Cut(content, "`")
+	if !ok {
 		return "", "", false
 	}
-	rest := content[firstTick+1:]
-	secondTick := strings.Index(rest, "`")
-	if secondTick == -1 {
+	rest := after
+	before, _, ok := strings.Cut(rest, "`")
+	if !ok {
 		return "", "", false
 	}
-	cmdStr := rest[:secondTick]
+	cmdStr := before
 	var output string
-	if nl := strings.Index(rest, "\n"); nl != -1 {
-		output = rest[nl+1:]
+	if _, after, ok := strings.Cut(rest, "\n"); ok {
+		output = after
 	}
 	return cmdStr, output, true
 }
 
 func printPromptDivider(w io.Writer, borderStyle style.Style) {
 	termW, _ := terminal.GetDimensions()
-	dashesCount := termW - 12
-	if dashesCount < 5 {
-		dashesCount = 5
-	}
+	dashesCount := max(termW-12, 5)
 	fmt.Fprintln(w, borderStyle.Render("─── prompt "+strings.Repeat("─", dashesCount)))
 }
 
@@ -89,20 +87,23 @@ func PrintSessionHistory(
 	collapse := collapseResults || (cfg != nil && cfg.CollapseResults)
 
 	var lastRole, lastUserPrompt string
-	responses := make(map[string]int)
-	for i, msg := range messages {
-		if msg.Role == "tool" {
-			responses[msg.ToolCallID] = i
-		}
+	matches := message.MatchToolResults(messages)
+	responses := make(map[[2]int]bool, len(matches))
+	displayedResults := make(map[string]int)
+	for _, match := range matches {
+		responses[[2]int{match.AssistantIndex, match.CallIndex}] = true
 	}
-	calls := make(map[string]db.ToolCall)
 	for i, msg := range messages {
-		if msg.Role == "system" {
-			if strings.HasPrefix(msg.Content, "[System: Below is a summary of the earlier conversation history:") {
-				fmt.Fprintln(w, borderStyle.Italic(true).Render("[earlier conversation compressed; summary retained for the agent]"))
-				fmt.Fprintln(w, agent.CompressionSummaryPreview(msg.Content))
-				fmt.Fprintln(w)
-			}
+		if msg.Role != "tool" {
+			clear(displayedResults)
+		}
+		if msg.IsContextSummary() {
+			fmt.Fprintln(w, borderStyle.Italic(true).Render("[earlier conversation compressed; summary retained for the agent]"))
+			fmt.Fprintln(w, agent.CompressionSummaryPreview(msg.Content))
+			fmt.Fprintln(w)
+			continue
+		}
+		if msg.IsInternalContext() {
 			continue
 		}
 
@@ -150,9 +151,6 @@ func PrintSessionHistory(
 			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
 
 		case "assistant":
-			for _, tc := range msg.ToolCalls {
-				calls[tc.ID] = tc
-			}
 			reasoningVisible := cfg != nil && cfg.ShowThinking && strings.TrimSpace(msg.ReasoningContent) != ""
 			if cfg != nil {
 				effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
@@ -168,14 +166,14 @@ func PrintSessionHistory(
 				continue
 			}
 			if lastRole == "tool" {
-				for line := 0; line < style.ActivityGapLines; line++ {
+				for range style.ActivityGapLines {
 					fmt.Fprintln(w)
 				}
 			}
 			fmt.Fprintln(w, style.ActivityDivider(theme))
 
 			hasPrintedAnything := false
-			if msg.ReasoningContent != "" {
+			if reasoningVisible {
 				cleanReasoning := agent.StripEchoedPrompt(msg.ReasoningContent, lastUserPrompt)
 				if strings.TrimSpace(cleanReasoning) != "" {
 					effort := strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
@@ -213,11 +211,11 @@ func PrintSessionHistory(
 				fmt.Fprintln(w)
 			}
 			printedUnrespondedToolCount := 0
-			for _, tc := range msg.ToolCalls {
+			for callIndex, tc := range msg.ToolCalls {
 				if tc.Function.Name == "task_state" {
 					continue
 				}
-				if responses[tc.ID] > i {
+				if responses[[2]int{i, callIndex}] {
 					continue
 				}
 
@@ -245,9 +243,16 @@ func PrintSessionHistory(
 
 		case "tool":
 			var toolName, argsJSON string
-			if tc, ok := calls[msg.ToolCallID]; ok {
-				toolName = tc.Function.Name
-				argsJSON = tc.Function.Arguments
+			if match, ok := matches[i]; ok {
+				toolName = match.Call.Function.Name
+				argsJSON = match.Call.Function.Arguments
+				displayedResults[msg.ToolCallID] = i
+			} else if previous, exists := displayedResults[msg.ToolCallID]; exists {
+				// Identical saved acknowledgements are one result. Preserve
+				// differing output or execution evidence, even with the same ID.
+				if equal, err := message.EqualPersisted(messages[previous], msg); err == nil && equal {
+					continue
+				}
 			}
 			if toolName == "" {
 				toolName = msg.Name
@@ -264,7 +269,7 @@ func PrintSessionHistory(
 			}
 
 			if lastRole == "tool" || (lastRole == "assistant" && i > 0 && strings.TrimSpace(messages[i-1].Content) != "") {
-				for line := 0; line < style.ActivityGapLines; line++ {
+				for range style.ActivityGapLines {
 					fmt.Fprintln(w)
 				}
 			}

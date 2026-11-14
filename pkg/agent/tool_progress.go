@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"bytes"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -17,14 +17,14 @@ import (
 type toolProgressWriter struct {
 	mu      sync.Mutex
 	writer  io.Writer
-	content bytes.Buffer
+	content toolProgressBuffer
 }
 
 func (w *toolProgressWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n, err := w.writer.Write(p)
-	_, _ = w.content.Write(p[:n])
+	w.content.append(p[:n])
 	return n, err
 }
 
@@ -39,6 +39,7 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 	}
 
 	live := &toolProgressWriter{writer: a.CurrentWriter()}
+	defer live.content.close()
 	if tc.Function.Name == "bash" {
 		if presenter, ok := sr.(interface {
 			NewShellOutputWriter(io.Writer, string) io.Writer
@@ -52,22 +53,40 @@ func (e *TurnEngine) executeToolWithProgress(executor tool.ToolExecutor, tc db.T
 	a.stateMu.Unlock()
 	a.CurrentStreamMu.Lock()
 	previousReplay := a.CurrentStreamReplay
-	// This callback runs while the foreground loop holds live.mu.
+	// Foreground redraws hold live.mu. Each snapshot also owns its reader so
+	// asynchronous or already queued replays cannot race with writes or cleanup.
 	a.CurrentStreamReplay = func(w io.Writer, collapsed bool, currentTheme style.UITheme) {
 		if previousReplay != nil {
 			previousReplay(w, collapsed, currentTheme)
 		}
-		if live.content.Len() == 0 {
+		snapshot := live.content.snapshot()
+		defer snapshot.Close()
+		if snapshot.size == 0 {
 			return
 		}
-		if collapsed && a.UI != nil {
-			a.UI.RenderToolOutput(w, live.content.String(), false, true, currentTheme, tc.Function.Name, tc.Function.Arguments, false)
+		if snapshot.err != nil {
+			fmt.Fprintln(w, "[Live output cache unavailable; retaining replay in memory.]")
+		}
+		if presenter, ok := sr.(interface {
+			RenderShellOutputNotice(io.Writer, int, style.UITheme)
+		}); collapsed && tc.Function.Name == "bash" && ok {
+			presenter.RenderShellOutputNotice(w, snapshot.lines, currentTheme)
+		} else if collapsed && a.UI != nil {
+			data, err := io.ReadAll(snapshot.Reader)
+			if err != nil {
+				fmt.Fprintf(w, "[Live output replay failed: %v]\n", err)
+			}
+			a.UI.RenderToolOutput(w, string(data), false, true, currentTheme, tc.Function.Name, tc.Function.Arguments, false)
 		} else if presenter, ok := sr.(interface {
 			NewShellOutputWriter(io.Writer, string) io.Writer
 		}); ok && tc.Function.Name == "bash" {
-			_, _ = presenter.NewShellOutputWriter(w, tc.Function.Arguments).Write(live.content.Bytes())
+			if _, err := io.Copy(presenter.NewShellOutputWriter(w, tc.Function.Arguments), snapshot.Reader); err != nil {
+				fmt.Fprintf(w, "[Live output replay failed: %v]\n", err)
+			}
 		} else {
-			_, _ = w.Write(live.content.Bytes())
+			if _, err := io.Copy(w, snapshot.Reader); err != nil {
+				fmt.Fprintf(w, "[Live output replay failed: %v]\n", err)
+			}
 		}
 	}
 	a.CurrentStreamMu.Unlock()

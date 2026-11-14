@@ -13,7 +13,6 @@ import (
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
-	domaintool "loop/pkg/domain/tool"
 )
 
 var (
@@ -40,14 +39,14 @@ type ObservationInvalidator interface {
 type TurnExecutionGuard struct {
 	outcomes               map[string]observedOutcome
 	outcomeOrder           []string
-	targetStreaks          map[string]int
+	targetStreak           int
 	lastTarget             string
 	readWindows            map[string]map[string]bool
 	invalidator            ObservationInvalidator
-	callStreaks            map[string]int
+	callStreak             int
 	lastCallKey            string
-	failedStreaks          map[string]int
-	lastFailedCmd          string
+	failureStreak          int
+	lastFailedKey          string
 	maxConsecutiveCalls    int
 	maxConsecutiveReads    int
 	maxConsecutiveFailures int
@@ -62,10 +61,7 @@ func NewTurnExecutionGuardWithConfig(limit int, thresholds []int) *TurnExecution
 		thresholds = []int{3, 5}
 	}
 	return &TurnExecutionGuard{
-		targetStreaks:          make(map[string]int),
 		readWindows:            make(map[string]map[string]bool),
-		callStreaks:            make(map[string]int),
-		failedStreaks:          make(map[string]int),
 		maxConsecutiveCalls:    limit,
 		maxConsecutiveReads:    limit,
 		maxConsecutiveFailures: limit,
@@ -77,7 +73,7 @@ func (g *TurnExecutionGuard) ConsecutiveIdenticalCount() int {
 	if g == nil {
 		return 0
 	}
-	return g.callStreaks[g.lastCallKey]
+	return g.callStreak
 }
 
 func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidator) {
@@ -91,21 +87,18 @@ func CanonicalizeArguments(arguments string) string {
 	if trimmed == "" {
 		return "{}"
 	}
-	var val interface{}
-	if err := json.Unmarshal([]byte(trimmed), &val); err != nil {
-		repaired := domaintool.RepairJSON(trimmed)
-		if errRep := json.Unmarshal([]byte(repaired), &val); errRep != nil {
-			return trimmed
-		}
-	}
-	if b, err := json.Marshal(val); err == nil {
-		return string(b)
-	}
-	return trimmed
+	return tool.CanonicalArguments("", trimmed)
 }
 
 func buildCallKey(toolName, arguments string) string {
-	return fmt.Sprintf("%s:%x", toolName, sha256.Sum256([]byte(CanonicalizeArguments(arguments))))
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	// Use the same aliases and wrappers as Prepare so checks and recorded
+	// results identify the same call before and after argument normalization.
+	canonical := tool.CanonicalArguments(toolName, arguments)
+	return fmt.Sprintf("%s:%x", toolName, sha256.Sum256([]byte(canonical)))
 }
 
 func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) string {
@@ -113,7 +106,10 @@ func (g *TurnExecutionGuard) GetAdvisoryReminder(toolName, arguments string) str
 		return ""
 	}
 	key := buildCallKey(toolName, arguments)
-	streak := max(g.callStreaks[key], g.outcomes[key].repeats)
+	streak := g.outcomes[key].repeats
+	if key == g.lastCallKey {
+		streak = max(g.callStreak, streak)
+	}
 
 	thresholds := g.reminderThresholds
 	if len(thresholds) == 0 {
@@ -167,20 +163,21 @@ func (g *TurnExecutionGuard) CheckPreExecution(toolName, arguments string) (guar
 	}
 
 	if toolName == "bash" {
-		if cmd := extractBashCommand(arguments); cmd != "" && g.failedStreaks[cmd] >= g.maxConsecutiveFailures {
-			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Stop repeating this failing command; address the error or adjust arguments before retrying"), cmd, g.failedStreaks[cmd])
+		cmd, dir := extractBashRequest(arguments)
+		if cmd != "" && bashFailureKey(cmd, dir) == g.lastFailedKey && g.failureStreak >= g.maxConsecutiveFailures {
+			return fmt.Errorf(RuntimeMessage("loop_failing_command", "loop detected: command '%s' has failed %d times in a row. Stop repeating this failing command; address the error or adjust arguments before retrying"), cmd, g.failureStreak)
 		}
 	}
 
 	if toolName == "read" {
-		if target := g.ExtractTargetFile(toolName, arguments); target != "" && g.targetStreaks[target] >= g.maxConsecutiveReads && readWindowSeen(target, arguments, g.readWindows) {
-			return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its contents are already in context above. Inspect the existing output or proceed with your next action"), target, g.targetStreaks[target])
+		if target := g.ExtractTargetFile(toolName, arguments); target != "" && target == g.lastTarget && g.targetStreak >= g.maxConsecutiveReads && readWindowSeen(target, arguments, g.readWindows) {
+			return fmt.Errorf(RuntimeMessage("loop_repeated_target", "loop detected: target '%s' has already been inspected %d times in a row and its contents are already in context above. Inspect the existing output or proceed with your next action"), target, g.targetStreak)
 		}
 	}
 
 	callKey := buildCallKey(toolName, arguments)
-	if g.callStreaks[callKey] >= g.maxConsecutiveCalls {
-		return fmt.Errorf(RuntimeMessage("loop_identical_call", "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action"), g.callStreaks[callKey])
+	if callKey == g.lastCallKey && g.callStreak >= g.maxConsecutiveCalls {
+		return fmt.Errorf(RuntimeMessage("loop_identical_call", "loop detected: identical tool call repeated %d times in a row. Stop repeating the same call and choose a different action"), g.callStreak)
 	}
 
 	return nil
@@ -196,24 +193,42 @@ func (g *TurnExecutionGuard) RecordObservedResult(toolName, arguments string, ou
 	}
 
 	callKey := buildCallKey(toolName, arguments)
-	target := g.ExtractTargetFile(toolName, arguments)
-	var cmd string
+	target := ""
+	if toolName == "read" {
+		target = g.ExtractTargetFile(toolName, arguments)
+	}
+	var cmd, dir string
 	if toolName == "bash" {
-		cmd = extractBashCommand(arguments)
+		cmd, dir = extractBashRequest(arguments)
+		if observed != nil && observed.WorkingDirectoryChanged {
+			g.forgetCommandResults()
+		}
 	}
 
+	revisionChanged := g.recoverFileOutcomes(toolName, observed, err)
+	_, previouslyObserved := g.outcomes[callKey]
 	sameOutcome := g.recordOutcome(toolName, callKey, arguments, output, err)
 	unchanged := observed != nil && observed.Changed != nil && !*observed.Changed && err == nil
 	outcome := g.outcomes[callKey]
 	outcome.noProgress = unchanged
 	g.outcomes[callKey] = outcome
+	g.recordFileOutcome(callKey, observed, err)
 	// Changing output is progress for inspections and status polling. Mutating
 	// tools retain the existing identical-call guard even on successful no-ops.
 	inspection := tool.PolicyForName(toolName, arguments).ReadOnly
+	if inspection && (revisionChanged || previouslyObserved && !sameOutcome) && err == nil {
+		for key, outcome := range g.outcomes {
+			if outcome.failed && outcome.file == "" {
+				delete(g.outcomes, key)
+			}
+		}
+		g.pruneOutcomeOrder()
+		g.failureStreak, g.lastFailedKey = 0, ""
+	}
 	if callKey == g.lastCallKey && (!inspection || sameOutcome) {
-		g.callStreaks[callKey]++
+		g.callStreak++
 	} else {
-		g.callStreaks = map[string]int{callKey: 1}
+		g.callStreak = 1
 		g.lastCallKey = callKey
 	}
 
@@ -222,24 +237,23 @@ func (g *TurnExecutionGuard) RecordObservedResult(toolName, arguments string, ou
 		newWindow = isReadWindowNew(toolName, target, arguments, g.readWindows)
 	}
 	if toolName == "read" && target != "" && target == g.lastTarget && !newWindow && sameOutcome {
-		g.targetStreaks[target]++
+		g.targetStreak++
 	} else {
-		g.targetStreaks = make(map[string]int)
+		g.targetStreak = 0
 		g.lastTarget = target
 		if toolName == "read" && target != "" {
-			g.targetStreaks[target] = 1
+			g.targetStreak = 1
 		}
 	}
 
 	if toolName == "bash" && cmd != "" {
-		if err != nil && cmd == g.lastFailedCmd {
-			g.failedStreaks[cmd]++
+		failureKey := bashFailureKey(cmd, dir)
+		if err != nil && failureKey == g.lastFailedKey {
+			g.failureStreak++
 		} else {
-			g.failedStreaks = make(map[string]int)
-			g.lastFailedCmd = ""
+			g.failureStreak, g.lastFailedKey = 0, ""
 			if err != nil {
-				g.lastFailedCmd = cmd
-				g.failedStreaks[cmd] = 1
+				g.lastFailedKey, g.failureStreak = failureKey, 1
 			}
 		}
 	}
@@ -248,13 +262,12 @@ func (g *TurnExecutionGuard) RecordObservedResult(toolName, arguments string, ou
 	if isModifying {
 		g.outcomes = make(map[string]observedOutcome)
 		g.outcomeOrder = nil
-		g.targetStreaks = make(map[string]int)
+		g.targetStreak = 0
 		g.lastTarget = ""
 		g.readWindows = make(map[string]map[string]bool)
 
 		if err == nil {
-			g.failedStreaks = make(map[string]int)
-			g.lastFailedCmd = ""
+			g.failureStreak, g.lastFailedKey = 0, ""
 			if g.invalidator != nil && toolName == "bash" {
 				g.invalidator.ForgetAll()
 			}
@@ -321,17 +334,33 @@ func extractPathArg(arguments string, fallback string) string {
 }
 
 func extractBashCommand(arguments string) string {
+	command, _ := extractBashRequest(arguments)
+	return command
+}
+
+func extractBashRequest(arguments string) (string, string) {
 	var raw string
 	var args struct {
 		Command   string `json:"command"`
 		Cmd       string `json:"cmd"`
 		Arguments string `json:"arguments"`
+		Dir       string `json:"dir"`
+		Cwd       string `json:"cwd"`
 	}
 	_ = tool.ParseToolArguments(arguments, &args, func(s string) { raw = s })
-	if v := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Command, args.Cmd, args.Arguments)); v != "" {
-		return v
+	command := strings.TrimSpace(tool.FirstNonEmpty(raw, args.Command, args.Cmd, args.Arguments))
+	if command == "" {
+		command = strings.TrimSpace(arguments)
 	}
-	return strings.TrimSpace(arguments)
+	directory := tool.FirstNonEmpty(args.Dir, args.Cwd)
+	if directory != "" {
+		directory = filepath.Clean(directory)
+	}
+	return command, directory
+}
+
+func bashFailureKey(command, directory string) string {
+	return command + "\x00" + directory
 }
 
 func isBashModifying(cmd string) bool {
@@ -391,18 +420,12 @@ func (g *TurnExecutionGuard) ForgetInspectionResults() {
 			delete(g.outcomes, key)
 		}
 	}
-	order := g.outcomeOrder[:0]
-	for _, key := range g.outcomeOrder {
-		if _, retained := g.outcomes[key]; retained {
-			order = append(order, key)
-		}
-	}
-	g.outcomeOrder = order
-	g.targetStreaks = make(map[string]int)
+	g.pruneOutcomeOrder()
+	g.targetStreak = 0
 	g.lastTarget = ""
 	g.readWindows = make(map[string]map[string]bool)
 	if _, retained := g.outcomes[g.lastCallKey]; !retained {
-		g.callStreaks = make(map[string]int)
+		g.callStreak = 0
 		g.lastCallKey = ""
 	}
 }

@@ -19,6 +19,12 @@ type FileObservation struct {
 	ModTime time.Time
 	Size    int64
 	ReadAt  time.Time
+	Ranges  []LineRange
+}
+
+type LineRange struct {
+	Start, End int
+	Complete   bool
 }
 
 type FileObservationTracker struct {
@@ -77,6 +83,74 @@ func (fot *FileObservationTracker) recordFile(absPath string, data []byte) {
 
 func (fot *FileObservationTracker) RecordRead(absPath string, data []byte) {
 	fot.recordFile(absPath, data)
+}
+
+// Revision safety remains whole-file even when only a source window is shown.
+func (fot *FileObservationTracker) RecordReadRange(path string, data []byte, start, end int, complete bool) {
+	if fot == nil {
+		return
+	}
+	hash := sha256.Sum256(data)
+	revision := hex.EncodeToString(hash[:])
+	fot.mu.Lock()
+	defer fot.mu.Unlock()
+	if fot.disabled {
+		return
+	}
+	path = filepath.Clean(path)
+	entry := fot.observations[path]
+	if entry.SHA256 != revision {
+		entry = FileObservation{Path: path, SHA256: revision, Size: int64(len(data))}
+	}
+	entry.ReadAt = time.Now()
+	if info, err := os.Stat(path); err == nil {
+		entry.ModTime = info.ModTime()
+	}
+	if start > 0 && end >= start {
+		matched := false
+		for i := range entry.Ranges {
+			r := &entry.Ranges[i]
+			if r.Complete == complete && start <= r.End+1 && end >= r.Start-1 {
+				r.Start = min(r.Start, start)
+				r.End = max(r.End, end)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			entry.Ranges = append(entry.Ranges, LineRange{start, end, complete})
+		}
+		if len(entry.Ranges) > 128 {
+			entry.Ranges = append([]LineRange(nil), entry.Ranges[len(entry.Ranges)-128:]...)
+		}
+	}
+	fot.observations[path] = entry
+}
+
+func (fot *FileObservationTracker) Snapshot(path string) (FileObservation, bool) {
+	if fot == nil {
+		return FileObservation{}, false
+	}
+	fot.mu.RLock()
+	defer fot.mu.RUnlock()
+	entry, ok := fot.observations[filepath.Clean(path)]
+	entry.Ranges = append([]LineRange(nil), entry.Ranges...)
+	return entry, ok
+}
+
+// InvalidateCoverage keeps the safety revision while dropping unconfirmed ranges
+// if hooks or final output pruning no longer retain the original source page.
+func (fot *FileObservationTracker) InvalidateCoverage(path string) {
+	if fot == nil {
+		return
+	}
+	fot.mu.Lock()
+	defer fot.mu.Unlock()
+	path = filepath.Clean(path)
+	if entry, ok := fot.observations[path]; ok {
+		entry.Ranges = nil
+		fot.observations[path] = entry
+	}
 }
 
 func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit bool) error {

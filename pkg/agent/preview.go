@@ -26,16 +26,15 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 	if norm != "write" && norm != "edit" {
 		return ""
 	}
-	targetPath := filetool.ExtractFilePath(arguments)
+	var targetPath, newContent string
 	var edits []filetool.ReplaceEdit
+	var err error
 	if norm == "edit" {
-		var err error
 		targetPath, edits, err = filetool.ParseEditArguments(arguments)
-		if err != nil {
-			return ""
-		}
+	} else {
+		targetPath, newContent, err = filetool.ParseWriteArguments(arguments)
 	}
-	if targetPath == "" {
+	if err != nil || targetPath == "" {
 		return ""
 	}
 	safePath, err := a.SafePath(targetPath)
@@ -59,8 +58,7 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 	}
 
 	if norm == "write" {
-		newContent, ok := filetool.ExtractFileContent(arguments)
-		if !ok || len(newContent) > maxBytes || len(filetool.DetectOmissionPlaceholders(newContent)) > 0 {
+		if len(newContent) > maxBytes || len(filetool.DetectOmissionPlaceholders(newContent)) > 0 {
 			return ""
 		}
 		diff, _ := filetool.GenerateDisplayDiffContext(ctx, oldContent, strings.ReplaceAll(newContent, "\r\n", "\n"), 3)

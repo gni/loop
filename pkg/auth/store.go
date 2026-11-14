@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -26,7 +27,7 @@ type Credential struct {
 	Environment  string    `json:"environment,omitempty"`
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at"`
 	ClientID     string    `json:"client_id,omitempty"`
 }
 
@@ -100,9 +101,7 @@ func NewStore(path string) *Store {
 
 func cloneCredentialMap(src map[string]Credential) map[string]Credential {
 	out := make(map[string]Credential, len(src))
-	for k, v := range src {
-		out[k] = v
-	}
+	maps.Copy(out, src)
 	return out
 }
 

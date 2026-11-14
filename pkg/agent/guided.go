@@ -33,6 +33,7 @@ type GuidedController struct {
 	phase        GuidedPhase
 	planApproved bool
 	planKey      string
+	taskID       string
 	snapshots    map[string]FileSnapshot
 	journalPath  string
 	journalHash  string
@@ -100,6 +101,29 @@ func (gc *GuidedController) ResetForNewUserTurn(todos []tool.TodoItem) {
 	if !gc.enabled {
 		return
 	}
+	gc.resetCompletedPlanLocked(todos)
+}
+
+// BeginTask keeps approval with its task, including explicit continuations.
+func (gc *GuidedController) BeginTask(taskID string, todos []tool.TodoItem) {
+	if gc == nil {
+		return
+	}
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if !gc.enabled {
+		return
+	}
+	if gc.taskID != taskID {
+		if gc.taskID != "" || !gc.planApproved || gc.planKey != guidedPlanKey(todos) {
+			gc.resetPlanApprovalLocked()
+		}
+		gc.taskID = taskID
+	}
+	gc.resetCompletedPlanLocked(todos)
+}
+
+func (gc *GuidedController) resetCompletedPlanLocked(todos []tool.TodoItem) {
 	allDone := true
 	for _, t := range todos {
 		if !strings.EqualFold(strings.TrimSpace(t.Status), "completed") {
@@ -119,6 +143,7 @@ func (gc *GuidedController) resetPlanApproval() {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	gc.resetPlanApprovalLocked()
+	gc.taskID = ""
 }
 
 func (gc *GuidedController) resetPlanApprovalLocked() {
@@ -130,7 +155,7 @@ func (gc *GuidedController) resetPlanApprovalLocked() {
 func (gc *GuidedController) CheckToolAllowed(a *Agent, toolName string) (bool, error) {
 	var todos []tool.TodoItem
 	if a != nil {
-		todos = a.GetTodos()
+		todos = currentTaskPlan(a.Context(), a.GetTodos)
 	}
 	return gc.CheckPlanAllowed(todos, toolName)
 }
@@ -145,7 +170,7 @@ func (gc *GuidedController) CheckPlanAllowed(todos []tool.TodoItem, toolName str
 	}
 	if len(todos) == 0 {
 		gc.mu.Lock()
-		gc.phase = GuidedPhaseExplore
+		gc.resetPlanApprovalLocked()
 		gc.mu.Unlock()
 		return false, fmt.Errorf("guided mode: inspect files with read/grep/find_files/list_directory and register a plan with 'todo' before calling '%s'", toolName)
 	}

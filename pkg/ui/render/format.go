@@ -236,10 +236,7 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 			}
 		}
 		symbolLen := utf8.RuneCountInString(style.StripAnsi(symbol))
-		maxPathRunes := targetWidth - symbolLen - utf8.RuneCountInString(toolName) - 6
-		if maxPathRunes < 8 {
-			maxPathRunes = 8
-		}
+		maxPathRunes := max(targetWidth-symbolLen-utf8.RuneCountInString(toolName)-6, 8)
 		if pathRunes := []rune(relPath); len(pathRunes) > maxPathRunes {
 			relPath = string(pathRunes[:maxPathRunes-3]) + "..."
 		}

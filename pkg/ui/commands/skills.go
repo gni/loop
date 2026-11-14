@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -20,19 +21,22 @@ func handleSkillsCommand(a *agent.Agent, parts []string, messages *[]db.Message,
 		name := parts[2]
 		found := false
 		for _, s := range a.GetActiveSkills() {
-			if s.Name != name {
+			if !strings.EqualFold(s.Name, name) {
 				continue
 			}
 			found = true
 			msg := db.Message{
-				Role:    "system",
-				Content: fmt.Sprintf("loaded reference skill '%s':\n\n%s", s.Name, s.Content),
+				Role:        "system",
+				ContextKind: "skill",
+				SkillName:   s.Name,
+				Content:     tool.FormatSkillInstructions(s),
 			}
 			a.MessagesMu.RLock()
 			alreadyLoaded := false
-			for _, previous := range *messages {
-				if previous.Role == "system" && previous.Content == msg.Content {
-					alreadyLoaded = true
+			for index := len(*messages) - 1; index >= 0; index-- {
+				previous := (*messages)[index]
+				if strings.EqualFold(previous.SkillName, s.Name) && !previous.IsError {
+					alreadyLoaded = previous.Content == msg.Content
 					break
 				}
 			}

@@ -1,9 +1,10 @@
 package agent
 
 import (
+	"strings"
+
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
-	"strings"
 )
 
 // syncToolAvailability keeps explicit permissions separate from disabled-by-feature
@@ -80,7 +81,7 @@ func (a *Agent) EnableTools(names ...string) {
 		if normalized == "ask_user" && a.Config.AskUserMode == "disabled" {
 			a.Config.SetAskUserMode("interactive")
 		}
-		if normalized == "load_mcp" || normalized == "search_tools" || normalized == "list_mcp_resources" || normalized == "list_mcp_resource_templates" || normalized == "read_mcp_resource" || strings.HasPrefix(normalized, "mcp__") {
+		if normalized == "load_mcp" || normalized == "list_mcp_resources" || normalized == "list_mcp_resource_templates" || normalized == "read_mcp_resource" || strings.HasPrefix(normalized, "mcp__") {
 			a.Config.MCP = true
 		}
 		if tool.IsSubagentTool(normalized) {
@@ -180,7 +181,7 @@ func (a *Agent) enforceOptionalTools() {
 		return
 	}
 	if !a.Config.MCP {
-		a.Registry.Disable("load_mcp", "search_tools", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource")
+		a.Registry.Disable("load_mcp", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource")
 		for name := range a.Registry.GetAllExecutors() {
 			if strings.HasPrefix(name, "mcp__") {
 				a.Registry.Disable(name)

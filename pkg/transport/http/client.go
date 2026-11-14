@@ -19,8 +19,9 @@ type RetryConfig struct {
 	MaxRetries int
 	BaseDelay  time.Duration
 	Client     *http.Client
-	OnAttempt  func(attempt int)
-	Backoff    func(ceiling time.Duration) time.Duration
+	// OnAttempt runs once before each HTTP client call, using a zero-based index.
+	OnAttempt func(attempt int)
+	Backoff   func(ceiling time.Duration) time.Duration
 	// BeforeAttempt runs after the backoff sleep, before the request is issued. It may
 	// return an error to abort the retry loop (used by the streaming provider to report
 	// a watchdog timeout rather than a plain context cancellation).
@@ -79,6 +80,9 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if err := retry.Claim(ctx); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
 		if attempt > 0 {
 			multiplier := time.Duration(1 << min(attempt-1, 10))
 			ceiling := min(c.config.BaseDelay, maxRetryDelay/multiplier) * multiplier
@@ -97,23 +101,26 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 				return nil, ctx.Err()
 			case <-timer.C:
 			}
-
-			if c.config.OnAttempt != nil {
-				c.config.OnAttempt(attempt)
-			}
 		}
 
-		if c.config.BeforeAttempt != nil {
-			if err := c.config.BeforeAttempt(attempt); err != nil {
-				return nil, err
-			}
-		}
-		if err := retry.Claim(ctx); err != nil {
-			return nil, errors.Join(lastErr, err)
-		}
 		req, err := createReq()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
+			return nil, fmt.Errorf("failed to create request: %w", RedactError(err))
+		}
+		if req == nil {
+			return nil, errors.New("request factory returned no request")
+		}
+		if err = ctx.Err(); err == nil && c.config.BeforeAttempt != nil {
+			err = c.config.BeforeAttempt(attempt)
+		}
+		if err != nil {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			return nil, errors.Join(lastErr, err)
+		}
+		if c.config.OnAttempt != nil {
+			c.config.OnAttempt(attempt)
 		}
 
 		resp, err = c.config.Client.Do(req.WithContext(ctx))
@@ -148,9 +155,6 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 		}
 
 		lastErr = nil
-		if c.config.OnAttempt != nil {
-			c.config.OnAttempt(attempt)
-		}
 		return resp, nil
 	}
 

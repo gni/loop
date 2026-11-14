@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"loop/pkg/buildinfo"
@@ -26,17 +27,16 @@ func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) boo
 	p.ThinkingSupported = supported
 	p.ThinkingSupportChecked = true
 	p.thinkingMu.Unlock()
+	p.ContextLimitMu.Lock()
 	if detected > 0 {
-		p.ContextLimitMu.Lock()
 		p.DetectedContextLimit = detected
-		p.ContextLimitChecked = true
-		p.ContextLimitMu.Unlock()
 	}
+	p.ContextLimitChecked = true
+	p.ContextLimitMu.Unlock()
 	return supported
 }
 
-// probeServerCapabilitiesHTTP performs the /props HTTP probe without holding
-// thinkingMu or ContextLimitMu so status readers never stall on network I/O.
+// Probe metadata without holding status locks. Both routes share one deadline.
 func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) (bool, int) {
 	timeout := 5 * time.Second
 	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
@@ -49,77 +49,87 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 		return false, 0
 	}
 	base, err := url.Parse(p.Config.Endpoint)
-	if err != nil || base.Scheme == "" || base.Host == "" {
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
 		return false, 0
 	}
 	// llama.cpp exposes /props at the server root, even when chat uses /v1.
 	base.Path = "/props"
 	base.RawPath = ""
 	query := url.Values{}
-	query.Set("model", p.Config.Model)
+	query.Set("model", p.Config.ResolveModelAlias(p.Config.Model))
 	base.RawQuery = query.Encode()
 	base.Fragment = ""
-	req, err := http.NewRequestWithContext(checkCtx, "GET", base.String(), nil)
+	supported, detected := false, 0
+	if p.api() == "chat-completions" || p.api() == "responses" {
+		var props struct {
+			NCtx                      int             `json:"n_ctx"`
+			MaxContext                int             `json:"max_context"`
+			EngineMaxContext          int             `json:"engine_max_context"`
+			SupportsReasoning         json.RawMessage `json:"supports_reasoning"`
+			SupportsThinking          json.RawMessage `json:"supports_thinking"`
+			Thinking                  json.RawMessage `json:"thinking"`
+			DefaultGenerationSettings struct {
+				NCtx       int `json:"n_ctx"`
+				MaxContext int `json:"max_context"`
+			} `json:"default_generation_settings"`
+		}
+		if p.readServerMetadata(checkCtx, base.String(), 128*1024, &props) {
+			for _, flag := range []json.RawMessage{props.SupportsReasoning, props.SupportsThinking, props.Thinking} {
+				var enabled bool
+				if json.Unmarshal(flag, &enabled) == nil && enabled {
+					supported = true
+				}
+			}
+			detected = smallestContextLimit(props.NCtx, props.MaxContext, props.EngineMaxContext, props.DefaultGenerationSettings.NCtx, props.DefaultGenerationSettings.MaxContext)
+		}
+	}
+	if detected == 0 {
+		endpoint, err := transporthttp.ModelDiscoveryURL(p.Config.Endpoint, p.api())
+		var catalog modelCatalog
+		if err == nil && p.readServerMetadata(checkCtx, endpoint, 4<<20, &catalog) {
+			selected := strings.TrimPrefix(p.Config.ResolveModelAlias(p.Config.Model), "models/")
+			for _, entry := range append(catalog.Data, catalog.Models...) {
+				if entry.modelID() == selected {
+					detected = smallestContextLimit(detected, entry.contextLimit())
+				}
+			}
+		}
+	}
+	return supported, detected
+}
+
+func (p *OpenAICompatibleProvider) readServerMetadata(ctx context.Context, endpoint string, limit int64, target any) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return false, 0
+		return false
 	}
 	req.Header.Set("loop", buildinfo.Version)
+	api := p.api()
+	if api != "chat-completions" {
+		transporthttp.ApplyProviderAuthHeaders(req.Header, api, p.requestKey(ctx))
+	}
 	if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
 		transporthttp.ApplyProviderHeaders(req.Header, profile.Headers)
 	}
-	transporthttp.ApplyProviderAuthHeaders(req.Header, "chat-completions", p.requestKey(ctx))
+	if api == "chat-completions" {
+		transporthttp.ApplyProviderAuthHeaders(req.Header, api, p.requestKey(ctx))
+	}
 	client := p.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	requestClient := *client
+	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := requestClient.Do(req)
 	if err != nil {
-		return false, 0
+		return false
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-		if readErr == nil && len(bodyBytes) > 0 {
-			var props struct {
-				NCtx                      int             `json:"n_ctx"`
-				MaxContext                int             `json:"max_context"`
-				EngineMaxContext          int             `json:"engine_max_context"`
-				SupportsReasoning         json.RawMessage `json:"supports_reasoning"`
-				SupportsThinking          json.RawMessage `json:"supports_thinking"`
-				Thinking                  json.RawMessage `json:"thinking"`
-				DefaultGenerationSettings struct {
-					NCtx       int `json:"n_ctx"`
-					MaxContext int `json:"max_context"`
-				} `json:"default_generation_settings"`
-			}
-			if json.Unmarshal(bodyBytes, &props) == nil {
-				supported := false
-				for _, flag := range []json.RawMessage{props.SupportsReasoning, props.SupportsThinking, props.Thinking} {
-					var enabled bool
-					if json.Unmarshal(flag, &enabled) == nil && enabled {
-						supported = true
-					}
-				}
-				detected := props.NCtx
-				if detected <= 0 {
-					detected = props.MaxContext
-				}
-				if detected <= 0 {
-					detected = props.EngineMaxContext
-				}
-				if detected <= 0 {
-					detected = props.DefaultGenerationSettings.NCtx
-				}
-				if detected <= 0 {
-					detected = props.DefaultGenerationSettings.MaxContext
-				}
-				return supported, detected
-			}
-		}
-		return false, 0
+	if resp.StatusCode != http.StatusOK {
+		return false
 	}
-	return false, 0
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	return err == nil && int64(len(body)) <= limit && json.Unmarshal(body, target) == nil
 }
 
 // ProbeServerCapabilities reads explicit reasoning metadata, if present, and

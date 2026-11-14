@@ -3,16 +3,18 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"loop/pkg/agent/tool"
 	"sort"
 	"strings"
+
+	"loop/pkg/agent/run"
+	"loop/pkg/agent/tool"
 )
 
 type toolSearch struct{ agent *Agent }
 
 func (t *toolSearch) Name() string { return "search_tools" }
 func (t *toolSearch) Definition() tool.Tool {
-	return tool.NewFunctionTool(t.Name(), "Discover and expose matching tools from configured integrations", map[string]tool.SchemaProp{"query": tool.StringProp("Search words in tool names and descriptions"), "server": tool.StringProp("Optional configured server name"), "limit": tool.NumberProp("Maximum results, up to 20")}, "query")
+	return tool.NewFunctionTool(t.Name(), "Discover and expose matching tools. Their schemas become available on the next step.", map[string]tool.SchemaProp{"query": tool.StringProp("Search words in tool names and descriptions"), "server": tool.StringProp("Optional configured server name"), "limit": tool.NumberProp("Maximum results, up to 20")}, "query")
 }
 func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, error) {
 	var args struct {
@@ -42,7 +44,8 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	}
 	var matches []match
 	words := strings.Fields(strings.ToLower(args.Query))
-	for _, executor := range t.agent.Registry.GetSearchableExecutors(t.agent.ToolSelection) {
+	allowlist := run.ToolSearchAllowlist(ctx.Context(), t.agent.ToolSelection)
+	for _, executor := range t.agent.Registry.GetSearchableExecutors(allowlist) {
 		name := executor.Name()
 		if name == t.Name() {
 			continue
@@ -78,11 +81,20 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	definitions := make([]tool.Tool, 0, min(len(matches), limit))
 	for _, entry := range matches[:min(len(matches), limit)] {
 		t.agent.Registry.Expose(entry.Definition.Function.Name)
+		run.NoteDiscoveredTool(ctx.Context(), entry.Definition.Function.Name)
 		definitions = append(definitions, entry.Definition)
 	}
 	t.agent.markSystemPromptDirty()
 	if len(definitions) == 0 && len(deferred) > 0 {
 		return fmt.Sprintf("no matching connected tools; deferred MCP servers: %s (connect explicitly with load_mcp)", strings.Join(deferred, ", ")), nil
+	}
+	if cfg := t.agent.Config; cfg != nil && cfg.CompactPrompt && !strings.EqualFold(cfg.ToolProtocol, "xml") {
+		names := make([]string, 0, len(definitions))
+		for _, definition := range definitions {
+			names = append(names, definition.Function.Name)
+		}
+		data, err := json.Marshal(map[string]any{"tools": names})
+		return string(data), err
 	}
 	data, err := json.Marshal(definitions)
 	return string(data), err

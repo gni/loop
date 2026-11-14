@@ -103,8 +103,8 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 	ma.HistoryMu.RUnlock()
 
 	parentName := ""
-	if ma.Parent != nil {
-		parentName = ma.Parent.Name
+	if parent := ma.parent(); parent != nil {
+		parentName = parent.Name
 	}
 
 	return ma.stateStore.SaveDefinition(AgentDef{
@@ -115,14 +115,6 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 		LocalSkills:      localSkills,
 		InheritAllSkills: &inheritAllSkills,
 	})
-}
-
-func (mam *MultiAgentManager) deleteAgentDef(name string) error {
-	ma := mam.Agents[name]
-	if ma.stateStore == nil {
-		return nil
-	}
-	return ma.stateStore.DeleteDefinition(name)
 }
 
 func (mam *MultiAgentManager) LoadSavedAgents() error {
@@ -148,7 +140,10 @@ func (mam *MultiAgentManager) LoadSavedAgents() error {
 
 	activeSkills := mam.BaseAgent.GetActiveSkills()
 	if !mam.BaseAgent.HasLoadedSkills() {
-		activeSkills = mam.BaseAgent.ReloadSkills()
+		activeSkills, err = mam.BaseAgent.ReloadSkillsChecked()
+		if err != nil {
+			return fmt.Errorf("reload skills: %w", err)
+		}
 	}
 
 	spawned := make(map[string]bool, len(defs))
@@ -250,4 +245,64 @@ func (mam *MultiAgentManager) ClearAllAgents() error {
 	mam.clearing = false
 	mam.mu.Unlock()
 	return clearErr
+}
+
+// persistAgentRemoval runs under mam.mu. Reparent saved children before deleting
+// their parent so a restart at any successful write boundary has a valid tree.
+// If a write fails, restore attempted definitions before changing the live tree.
+func (mam *MultiAgentManager) persistAgentRemoval(ma *MultiAgent) error {
+	type savedDefinition struct {
+		store *subagent.Storage
+		def   AgentDef
+	}
+	var saved []savedDefinition
+	rollback := func(cause error) error {
+		failures := []error{cause}
+		for i := len(saved) - 1; i >= 0; i-- {
+			if err := saved[i].store.SaveDefinition(saved[i].def); err != nil {
+				failures = append(failures, fmt.Errorf("restore definition %q: %w", saved[i].def.Name, err))
+			}
+		}
+		return errors.Join(failures...)
+	}
+	parentName := ""
+	if parent := ma.parent(); parent != nil {
+		parentName = parent.Name
+	}
+	// Manager mutations own the child map; workers only read it under its lock.
+	names := make([]string, 0, len(ma.Subagents))
+	for name := range ma.Subagents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		child := ma.Subagents[name]
+		if child == nil || child.stateStore == nil {
+			continue
+		}
+		def, err := child.stateStore.LoadDefinition(child.Name)
+		if err != nil {
+			return rollback(fmt.Errorf("load child %q: %w", child.Name, err))
+		}
+		saved = append(saved, savedDefinition{child.stateStore, *def})
+		updated := *def
+		updated.ParentName = parentName
+		if err := child.stateStore.SaveDefinition(updated); err != nil {
+			return rollback(fmt.Errorf("reparent child %q: %w", child.Name, err))
+		}
+	}
+	if ma.stateStore == nil {
+		return nil
+	}
+	def, err := ma.stateStore.LoadDefinition(ma.Name)
+	if err != nil {
+		return rollback(err)
+	}
+	// Deletion can report a directory-sync failure after removing the file.
+	// Retain the parent too so rollback covers that committed-error case.
+	saved = append(saved, savedDefinition{ma.stateStore, *def})
+	if err := ma.stateStore.DeleteDefinition(ma.Name); err != nil {
+		return rollback(err)
+	}
+	return nil
 }

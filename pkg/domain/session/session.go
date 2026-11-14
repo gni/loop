@@ -73,11 +73,14 @@ type SessionHeader struct {
 // Legacy flat lines omit the DAG fields and load as a linear chain (type
 // defaults to "message").
 type Record struct {
+	// ResetHistory marks an explicit transcript edit, rather than a model-only
+	// context checkpoint. Older records omit it and preserve visible history.
+	ResetHistory  bool              `json:"reset_history,omitempty"`
 	ID            string            `json:"id,omitempty"`
 	ParentID      string            `json:"parentId,omitempty"`
 	Type          string            `json:"type,omitempty"` // "message" or "branch"
 	Timestamp     string            `json:"timestamp"`
-	Message       message.Message   `json:"message,omitempty"`
+	Message       message.Message   `json:"message"`
 	Messages      []message.Message `json:"messages,omitempty"`
 	Data          json.RawMessage   `json:"data,omitempty"`
 	Version       int               `json:"version,omitempty"`

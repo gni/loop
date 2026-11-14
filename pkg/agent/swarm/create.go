@@ -33,6 +33,9 @@ func (s *CreateSubagentTool) activeSkillNames() []string {
 	seen := make(map[string]struct{}, len(activeSkills))
 	names := make([]string, 0, len(activeSkills))
 	for _, skill := range activeSkills {
+		if skill.DisableModelInvocation {
+			continue
+		}
 		name := strings.TrimSpace(skill.Name)
 		if name == "" {
 			continue
@@ -154,10 +157,19 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		parentName = mac.ma.Name
 	}
 
-	reloadedSkills := s.mam.BaseAgent.ReloadSkills()
+	reloadedSkills, err := s.mam.BaseAgent.ReloadSkillsChecked()
+	if err != nil {
+		return "", fmt.Errorf("reload skills: %w", err)
+	}
 	availableSkills := make(map[string]string, len(reloadedSkills))
+	manualSkills := make(map[string]bool)
 	for _, skill := range reloadedSkills {
-		availableSkills[strings.ToLower(strings.TrimSpace(skill.Name))] = skill.Name
+		key := strings.ToLower(strings.TrimSpace(skill.Name))
+		if skill.DisableModelInvocation {
+			manualSkills[key] = true
+		} else {
+			availableSkills[key] = skill.Name
+		}
 	}
 
 	localSkills := make([]tool.Skill, 0, len(args.InlineSkills)+len(args.SkillNames))
@@ -178,13 +190,15 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 
 	referenceSkillNames := make([]string, 0, len(args.SkillNames))
 	referenceNamesSeen := make(map[string]struct{}, len(args.SkillNames))
-	var convertedSkillNames []string
 	for _, requestedName := range args.SkillNames {
 		requestedName = strings.TrimSpace(requestedName)
 		if requestedName == "" {
 			continue
 		}
 		key := strings.ToLower(requestedName)
+		if manualSkills[key] {
+			return "", fmt.Errorf("skill %q requires manual loading with /skills load %s", requestedName, requestedName)
+		}
 		if canonicalName, exists := availableSkills[key]; exists {
 			canonicalKey := strings.ToLower(canonicalName)
 			if _, duplicate := referenceNamesSeen[canonicalKey]; !duplicate {
@@ -194,19 +208,10 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 			continue
 		}
 
-		if _, exists := localNames[key]; exists {
-			continue
-		}
-		localNames[key] = struct{}{}
-		convertedSkillNames = append(convertedSkillNames, requestedName)
-		localSkills = append(localSkills, tool.Skill{
-			Name:        requestedName,
-			Description: fmt.Sprintf("Ad-hoc skill created for requested capability '%s'", requestedName),
-			Content:     args.SystemPrompt,
-		})
+		return "", fmt.Errorf("reference skill %q not found; use a registered skill name or define instructions in inline_skills", requestedName)
 	}
 
-	err := s.mam.spawnAgentWithSkillsFor(
+	err = s.mam.spawnAgentWithSkillsFor(
 		ctx,
 		args.Name,
 		args.SystemPrompt,
@@ -221,9 +226,5 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		return "", err
 	}
 
-	result := fmt.Sprintf("Subagent '%s' created successfully.", args.Name)
-	if len(convertedSkillNames) > 0 {
-		result += fmt.Sprintf(" Note: Unknown skill names converted to agent-local skills: %s.", strings.Join(convertedSkillNames, ", "))
-	}
-	return result, nil
+	return fmt.Sprintf("Subagent '%s' created successfully.", args.Name), nil
 }

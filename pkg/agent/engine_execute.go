@@ -109,7 +109,9 @@ func (e *TurnEngine) ExecuteToolCallAt(
 			plan.rich, plan.toolErr = e.executeToolWithProgress(plan.executor, tc, sr)
 			plan.output = plan.rich.Output
 			if ctx.Err() != nil {
-				e.recordInterruptedCall(sink, tc, "cancelled during execution", plan.rich.Evidence)
+				retainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				e.recordInterruptedCall(retainCtx, sink, tc, "cancelled during execution", plan.rich)
+				cancel()
 				if len(remaining) > 1 {
 					e.RecordInterruption(sink, remaining[1:], "cancelled before execution")
 				}
@@ -160,10 +162,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 		plans[batchIndex] = plan
 	}
 
-	workers := a.GetLimits().ParallelToolWorkers
-	if workers < 1 {
-		workers = 1
-	}
+	workers := max(a.GetLimits().ParallelToolWorkers, 1)
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	// Tool execution remains parallel, but the renderer consumes each result
@@ -286,12 +285,14 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 	if ctx.Err() != nil {
 		// All workers have completed, so their started flags are stable.
 		// Calls cancelled while queued must not claim an unknown side effect.
+		retainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
 		for i := next; i < len(plans); i++ {
 			reason := "cancelled before execution"
 			if plans[i].started {
 				reason = "cancelled during execution"
 			}
-			e.recordInterruptedCall(sink, assistantMsg.ToolCalls[startIndex+i], reason, plans[i].rich.Evidence)
+			e.recordInterruptedCall(retainCtx, sink, assistantMsg.ToolCalls[startIndex+i], reason, plans[i].rich)
 		}
 		e.RecordInterruption(sink, assistantMsg.ToolCalls[endIndex:], "cancelled before execution")
 		return true, false

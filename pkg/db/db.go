@@ -29,8 +29,7 @@ func NewUUID() string {
 }
 
 type cachedSummary struct {
-	size       int64
-	modified   time.Time
+	cachedFile
 	hasVisible bool
 	info       session.SessionInfo
 	startTime  string
@@ -72,6 +71,7 @@ type JSONLStore struct {
 
 var _ session.Store = (*JSONLStore)(nil)
 var _ session.ContextStore = (*JSONLStore)(nil)
+var _ session.Checkpointer = (*JSONLStore)(nil)
 
 func NewJSONLStore(dirPath string) (*JSONLStore, error) {
 	clean := filepath.Clean(dirPath)
@@ -225,7 +225,7 @@ func (s *JSONLStore) RewriteSessionContext(ctx context.Context, sessionID string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.AppendEntryContext(ctx, sessionID, session.Record{Type: "context", Messages: messages})
+	return s.CheckpointSessionContext(ctx, sessionID, messages)
 }
 
 func (s *JSONLStore) AppendEntry(sessionID string, record session.Record) (err error) {
@@ -274,19 +274,17 @@ func (s *JSONLStore) appendRecordLocked(ctx context.Context, sessionID string, r
 		}
 		settingsHash = &hash
 	}
-	if !explicitParent {
-		record.ParentID = ""
-		if cached.count > 0 && cached.lastType != "session" {
-			record.ParentID = cached.lastID
-		}
-	}
+	return s.commitSessionRecordsLocked(ctx, sessionID, []session.Record{record}, explicitParent, cached, created, settingsHash)
+}
+
+// The caller holds both storage locks. A tail of messages commits with one sync
+// and rolls back to the original file size if any record cannot be written.
+func (s *JSONLStore) commitSessionRecordsLocked(ctx context.Context, sessionID string, records []session.Record, explicitParent bool, cached cachedEntries, created bool, settingsHash *[sha256.Size]byte) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	// An interrupted append must never leave a reusable stale cache entry.
 	s.invalidateSessionCacheLocked(sessionID)
-	record.ID = session.NewUUID()
-	record.Timestamp = nowTimestamp()
 	f, err := os.OpenFile(s.sessionPath(sessionID), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return err
@@ -316,8 +314,27 @@ func (s *JSONLStore) appendRecordLocked(ctx context.Context, sessionID string, r
 			cached.entries = append(cached.entries, header)
 		}
 	}
-	if err := writeJSONLine(f, record); err != nil {
-		return err
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !explicitParent {
+			record.ParentID = ""
+			if cached.count > 0 && cached.lastType != "session" {
+				record.ParentID = cached.lastID
+			}
+		}
+		record.ID = session.NewUUID()
+		record.Timestamp = nowTimestamp()
+		if err := writeJSONLine(f, record); err != nil {
+			return err
+		}
+		cached.count++
+		cached.lastID, cached.lastType = record.ID, record.Type
+		cached.hasConversation = conversationAfterRecord(cached.hasConversation, record)
+		if cached.complete {
+			cached.entries = append(cached.entries, cloneRecord(record))
+		}
 	}
 	if err := f.Sync(); err != nil {
 		delete(s.core.cache, sessionID)
@@ -331,18 +348,13 @@ func (s *JSONLStore) appendRecordLocked(ctx context.Context, sessionID string, r
 	if err != nil {
 		return err
 	}
-	cached.size, cached.modified = info.Size(), info.ModTime()
-	cached.count++
-	cached.lastID, cached.lastType = record.ID, record.Type
+	cached.cachedFile = cacheFile(info)
 	if settingsHash != nil {
 		cached.settingsHash = settingsHash
 	}
-	if cached.complete {
-		cached.entries = append(cached.entries, cloneRecord(record))
-	}
 	// A branch changes which settings snapshot is active. Rebuild its parent
 	// ancestry before deduplicating a later settings append.
-	if record.Type != "branch" {
+	if cached.lastType != "branch" {
 		s.cacheEntries(sessionID, cached)
 	}
 	return nil

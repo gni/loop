@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
+	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/message"
 )
@@ -81,33 +82,41 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 
 	var sb strings.Builder
 	sb.WriteString(tool.RuntimeMessagef("audit_header", "=== Swarm Audit Trail for Subagent: '%s' ===\n\n", name))
+	truncate := func(text string) string {
+		if len(text) <= limit {
+			return text
+		}
+		return filetool.UTF8SafePrefix(text, limit) + tool.RuntimeMessage("audit_truncation_notice", "\n... (output truncated for audit readability) ...")
+	}
 
 	step := 1
 	for _, msg := range history {
-		if msg.Role == "system" {
-			if strings.HasPrefix(msg.Content, "loaded reference skill") {
-				sb.WriteString(tool.RuntimeMessagef("audit_system_line", "[System] %s\n\n", msg.Content))
+		if msg.IsInternalContext() {
+			if msg.SkillName != "" {
+				sb.WriteString(tool.RuntimeMessagef("audit_system_line", "[System] %s\n\n", fmt.Sprintf("Loaded skill %q.", msg.SkillName)))
+			} else if msg.IsContextSummary() || strings.HasPrefix(msg.Content, "loaded reference skill") {
+				sb.WriteString(tool.RuntimeMessagef("audit_system_line", "[System] %s\n\n", truncate(msg.Content)))
 			}
 			continue
 		}
 
-		if msg.Role == "user" {
+		if msg.IsUserInput() {
 			sb.WriteString(tool.RuntimeMessagef("audit_step_line", "Step %d: [Task Assigned from %s]\n", step, msg.Name))
-			sb.WriteString(tool.RuntimeMessagef("audit_prompt_line", "Prompt: %s\n\n", msg.Content))
+			sb.WriteString(tool.RuntimeMessagef("audit_prompt_line", "Prompt: %s\n\n", truncate(msg.Content)))
 			step++
 			continue
 		}
 
 		if msg.Role == "assistant" {
 			if msg.ReasoningContent != "" {
-				sb.WriteString(tool.RuntimeMessagef("audit_thought_line", "Thought:\n%s\n\n", msg.ReasoningContent))
+				sb.WriteString(tool.RuntimeMessagef("audit_thought_line", "Thought:\n%s\n\n", truncate(msg.ReasoningContent)))
 			}
 			if msg.Content != "" {
-				sb.WriteString(tool.RuntimeMessagef("audit_response_line", "Response:\n%s\n\n", msg.Content))
+				sb.WriteString(tool.RuntimeMessagef("audit_response_line", "Response:\n%s\n\n", truncate(msg.Content)))
 			}
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					sb.WriteString(tool.RuntimeMessagef("audit_action_line", "Action (Tool Call): %s(%s)\n\n", tc.Function.Name, tc.Function.Arguments))
+					sb.WriteString(tool.RuntimeMessagef("audit_action_line", "Action (Tool Call): %s(%s)\n\n", tc.Function.Name, truncate(tc.Function.Arguments)))
 				}
 			}
 			continue
@@ -115,10 +124,10 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 
 		if msg.Role == "tool" {
 			out := msg.Content
-			if len(out) > limit {
-				out = out[:limit] + tool.RuntimeMessage("audit_truncation_notice", "\n... (output truncated for audit readability) ...")
+			if msg.SkillName != "" && tool.NormalizeName(msg.Name) == "load_skill" && !msg.IsError {
+				out = fmt.Sprintf("Loaded skill %q.", msg.SkillName)
 			}
-			sb.WriteString(tool.RuntimeMessagef("audit_result_line", "Result (Tool Output - %s):\n%s\n\n", msg.Name, out))
+			sb.WriteString(tool.RuntimeMessagef("audit_result_line", "Result (Tool Output - %s):\n%s\n\n", msg.Name, truncate(out)))
 			continue
 		}
 	}

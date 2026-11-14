@@ -101,7 +101,7 @@ func (p *JSONStreamParser) CanPrintTitle() bool {
 }
 
 func DetectLangFromContent(content string) string {
-	for _, rawLine := range strings.Split(content, "\n") {
+	for rawLine := range strings.SplitSeq(content, "\n") {
 		trimmed := strings.TrimSpace(rawLine)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") {
 			continue

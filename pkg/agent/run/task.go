@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -17,10 +18,88 @@ import (
 
 type taskKey struct{}
 type taskState struct {
-	mu            sync.Mutex
-	state         task.State
-	reminded      bool
-	processOutput map[string]processOutputCursor
+	mu               sync.Mutex
+	state            task.State
+	reminded         bool
+	processMu        sync.Mutex // Serializes output snapshots and their cursors.
+	processOutput    map[string]processOutputCursor
+	visibleTools     map[string]bool
+	discoveredTools  map[string]bool
+	toolAllowlist    []string
+	toolAllowlistSet bool
+	progress         uint64
+	seenEvidence     map[string]bool
+	planTracked      bool
+}
+
+func NoteDiscoveredTool(ctx context.Context, name string) {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.discoveredTools == nil {
+		state.discoveredTools = make(map[string]bool)
+	}
+	state.discoveredTools[tool.NormalizeName(name)] = true
+}
+
+func ToolDiscovered(ctx context.Context, name string) bool {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.discoveredTools[tool.NormalizeName(name)]
+}
+
+func NoteToolAllowlist(ctx context.Context, allowlist []string) {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.toolAllowlist = slices.Clone(allowlist)
+	state.toolAllowlistSet = true
+}
+
+func ToolSearchAllowlist(ctx context.Context, fallback []string) []string {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return fallback
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.toolAllowlistSet {
+		return slices.Clone(state.toolAllowlist)
+	}
+	return fallback
+}
+
+func NoteVisibleTools(ctx context.Context, names []string) {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.visibleTools = make(map[string]bool, len(names))
+	for _, name := range names {
+		state.visibleTools[tool.NormalizeName(name)] = true
+	}
+}
+
+func ToolVisible(ctx context.Context, name string) bool {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return true
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.visibleTools == nil || state.visibleTools[tool.NormalizeName(name)]
 }
 
 func reopenTask(ctx context.Context) {
@@ -43,13 +122,39 @@ func WithoutTask(ctx context.Context) context.Context {
 }
 
 func TaskSnapshot(ctx context.Context) *task.State {
+	syncTaskPlan(ctx)
+	constraints := Instructions(ctx)
 	state, _ := ctx.Value(taskKey{}).(*taskState)
 	if state == nil {
 		return nil
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if len(constraints) > 0 {
+		state.state.Constraints = latestInstructions(append(state.state.Constraints, constraints...))
+	}
 	return task.Clone(&state.state)
+}
+
+func SuggestVerification(ctx context.Context, checks []evidence.Check) {
+	state, _ := ctx.Value(taskKey{}).(*taskState)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, check := range checks {
+		found := false
+		for _, current := range state.state.Verification.Checks {
+			if current.Kind == check.Kind {
+				found = true
+				break
+			}
+		}
+		if !found {
+			state.state.Verification.Checks = append(state.state.Verification.Checks, check)
+		}
+	}
 }
 
 func UpdateTask(ctx context.Context, update task.Update) error {
@@ -59,6 +164,7 @@ func UpdateTask(ctx context.Context, update task.Update) error {
 
 // UpdateTaskSnapshot commits an assessment and detects repeats under one lock.
 func UpdateTaskSnapshot(ctx context.Context, update task.Update) (*task.State, bool, error) {
+	syncTaskPlan(ctx)
 	status, summary, remaining := update.Status, update.Summary, update.Remaining
 	state, _ := ctx.Value(taskKey{}).(*taskState)
 	if state == nil {
@@ -69,6 +175,9 @@ func UpdateTaskSnapshot(ctx context.Context, update task.Update) (*task.State, b
 	}
 	if len(summary) > 2048 {
 		return nil, false, fmt.Errorf("task summary exceeds 2048 bytes")
+	}
+	if len(update.VerificationNote) > 512 {
+		return nil, false, fmt.Errorf("verification note exceeds 512 bytes")
 	}
 	if remaining != nil {
 		if len(*remaining) > 32 {
@@ -92,6 +201,9 @@ func UpdateTaskSnapshot(ctx context.Context, update task.Update) (*task.State, b
 	}
 	updated := task.Clone(&state.state)
 	updated.Status, updated.Source, updated.Summary = status, "model", strings.TrimSpace(summary)
+	if update.VerificationNote != "" {
+		updated.Verification.Note = strings.TrimSpace(update.VerificationNote)
+	}
 	if update.ExpectedOutcome != "" {
 		updated.ExpectedOutcome = strings.TrimSpace(update.ExpectedOutcome)
 	}
@@ -122,15 +234,24 @@ func ObserveTool(ctx context.Context, call message.ToolCall, observed *evidence.
 		state.state.Status, state.state.Source, state.state.Summary = task.Running, "runtime", ""
 	}
 	if call.Function.Name == "todo" && !failed {
+		state.planTracked = true
 		state.state.Plan = nil
 		for _, item := range plan {
 			state.state.Plan = append(state.state.Plan, task.Item{ID: item.ID, Description: item.Task, Status: item.Status})
 		}
 	}
 	entry := task.Observation{CallID: call.ID, Tool: call.Function.Name, Failed: failed, Evidence: evidence.Clone(observed)}
+	if observed != nil && observed.Outcome == evidence.Succeeded && observed.Revision != "" {
+		if previous := state.state.Revisions[observed.Target]; previous != "" && previous != observed.Revision {
+			state.state.Verification.Invalidate(observed.Target)
+			state.state.Revisions[observed.Target] = observed.Revision
+		}
+	}
+	state.state.Verification.Observe(observed)
 	if entry.Evidence != nil {
 		entry.Evidence.Target = boundedTaskText(entry.Evidence.Target, 512)
 	}
+	observeLedger(state, entry)
 	state.state.Observations = append(state.state.Observations, entry)
 	if len(state.state.Observations) > 24 {
 		state.state.Observations = append([]task.Observation(nil), state.state.Observations[len(state.state.Observations)-24:]...)
@@ -153,7 +274,7 @@ func AssessCompletion(ctx context.Context, msg *message.Message) (reminder strin
 	if state.state.Status == task.Running || (state.state.Status == task.Completed && len(pending) > 0) {
 		if len(pending) > 0 && !state.reminded {
 			state.reminded = true
-			reminder = "Known task work remains.\n" + boundedTaskText(TaskBrief(&state.state), 3072) + "\nContinue the requested work, or report remaining work and blockers in your final reply. If task_state is available, declare blocked, unfinished, or unverified with a reason. Respect user restrictions on checks; do not run additional tests merely to satisfy this reminder."
+			reminder = "Known task work remains.\n" + boundedTaskText(TaskBrief(&state.state), 3072) + "\nFinish the requested work or explain what remains and why. Follow the user's validation restrictions."
 		} else {
 			state.state.Status, state.state.Source = task.Unverified, "runtime"
 			state.state.Summary = "The model returned a final reply without an explicit task assessment."
@@ -192,6 +313,28 @@ func TaskBrief(state *task.State) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Request status: %s (%s assessment).\n", state.Status, state.Source)
+	if state.Verification.Stage != "" {
+		fmt.Fprintf(&b, "Execution evidence: %s. Build/lint/test success requires an observed command exit; completion is a separate assessment.\n", state.Verification.Stage)
+		shown := 0
+		for _, check := range state.Verification.Checks {
+			if check.Status == evidence.Passed || check.Status == "" {
+				continue
+			}
+			if shown == 4 {
+				b.WriteString("Additional check results retained in task metadata.\n")
+				break
+			}
+			shown++
+			fmt.Fprintf(&b, "Check %s (%s): %s\n", check.Kind, check.Status, boundedTaskText(check.Command, 192))
+			if check.Detail != "" {
+				fmt.Fprintf(&b, "Check detail: %s\n", boundedTaskText(check.Detail, 192))
+			}
+		}
+		b.WriteString("Use only relevant checks permitted by the user; report skipped checks and reasons.\n")
+		if state.Verification.Note != "" {
+			fmt.Fprintf(&b, "Verification limitation: %s\n", state.Verification.Note)
+		}
+	}
 	if state.ExpectedOutcome != "" {
 		fmt.Fprintf(&b, "Expected outcome (model interpretation): %s\n", boundedTaskText(state.ExpectedOutcome, 512))
 	}
@@ -206,7 +349,8 @@ func TaskBrief(state *task.State) string {
 		fmt.Fprintf(&b, "Remaining: %s\n", boundedTaskText(item, 256))
 	}
 
-	return boundedTaskText(b.String(), 2048)
+	b.WriteString(boundedTaskText(ledgerBrief(state), 768))
+	return boundedTaskText(b.String(), 3072)
 }
 
 func boundedTaskText(s string, n int) string {
@@ -220,9 +364,13 @@ func boundedTaskText(s string, n int) string {
 }
 
 type processOutputCursor struct {
-	size    int
-	hash    [32]byte
-	version int64
+	size      int
+	hash      [32]byte
+	version   int64
+	stdout    int64
+	stderr    int64
+	startedAt int64
+	streams   bool
 }
 
 // NewBackgroundOutput avoids resending cumulative stdout on every poll.
@@ -232,11 +380,8 @@ func NewBackgroundOutput(ctx context.Context, id, output string, versions ...int
 	if state == nil {
 		return output
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.processOutput == nil {
-		state.processOutput = make(map[string]processOutputCursor)
-	}
+	state.processMu.Lock()
+	defer state.processMu.Unlock()
 	if !utf8.ValidString(output) {
 		delete(state.processOutput, id)
 		return output
@@ -246,15 +391,9 @@ func NewBackgroundOutput(ctx context.Context, id, output string, versions ...int
 		version = versions[0]
 	}
 	previous, exists := state.processOutput[id]
-	if !exists && len(state.processOutput) >= 1024 {
-		// An evicted cursor may repeat output once; it must never hide new data.
-		for oldest := range state.processOutput {
-			delete(state.processOutput, oldest)
-			break
-		}
-	}
+	exists = exists && !previous.streams
 	next := processOutputCursor{size: len(output), hash: sha256.Sum256([]byte(output)), version: version}
-	state.processOutput[id] = next
+	state.rememberProcessOutput(id, next)
 	// Identical text can still be new data after a rolling buffer fills.
 	if exists && version != previous.version && next.size == previous.size && next.hash == previous.hash {
 		return output

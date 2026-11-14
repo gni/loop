@@ -22,18 +22,52 @@ type Options struct {
 }
 
 type Result struct {
-	Stdout string
-	Stderr string
+	Stdout   string
+	Stderr   string
+	Started  bool
+	ExitCode *int
 }
 
+// Buffer drains output while retaining at most Limit bytes. Configure TailBytes
+// before writing to retain recent diagnostics as well as the beginning.
 type Buffer struct {
-	data     bytes.Buffer
-	Limit    int
-	Overflow bool
+	data  bytes.Buffer
+	tail  bytes.Buffer
+	Limit int
+	// TailBytes reserves recent output within Limit; zero keeps prefix capture.
+	TailBytes int
+	Overflow  bool
+}
+
+// BestEffortWriter keeps optional display errors out of command capture.
+type BestEffortWriter struct{ io.Writer }
+
+func (w BestEffortWriter) Write(data []byte) (int, error) {
+	if w.Writer != nil {
+		_, _ = w.Writer.Write(data)
+	}
+	return len(data), nil
 }
 
 func (b *Buffer) Write(data []byte) (int, error) {
 	size := len(data)
+	if b.TailBytes > 0 && b.Limit > 0 {
+		tailLimit := min(b.TailBytes, b.Limit)
+		headSize := min(len(data), max(0, b.Limit-tailLimit-b.data.Len()))
+		_, _ = b.data.Write(data[:headSize])
+		data = data[headSize:]
+		if len(data) > tailLimit-b.tail.Len() {
+			b.Overflow = true
+		}
+		if len(data) >= tailLimit {
+			b.tail.Reset()
+			data = data[len(data)-tailLimit:]
+		} else if drop := b.tail.Len() + len(data) - tailLimit; drop > 0 {
+			b.tail.Next(drop)
+		}
+		_, _ = b.tail.Write(data)
+		return size, nil
+	}
 	remaining := max(0, b.Limit-b.data.Len())
 	if len(data) > remaining {
 		b.Overflow = true
@@ -44,7 +78,19 @@ func (b *Buffer) Write(data []byte) (int, error) {
 }
 
 // String returns the retained output, up to Limit bytes.
-func (b *Buffer) String() string { return b.data.String() }
+func (b *Buffer) String() string {
+	if b.tail.Len() == 0 {
+		return b.data.String()
+	}
+	head, tail := b.data.Bytes(), b.tail.Bytes()
+	const notice = "\n[... output omitted ...]\n"
+	if b.Overflow && b.Limit > len(notice) {
+		tailSize := min(len(tail), b.Limit-len(notice))
+		headSize := min(len(head), b.Limit-len(notice)-tailSize)
+		return string(head[:headSize]) + notice + string(tail[len(tail)-tailSize:])
+	}
+	return string(head) + string(tail)
+}
 
 func Run(ctx context.Context, options Options) (Result, error) {
 	if options.Timeout > 0 {
@@ -60,6 +106,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	if diagnostics.Limit <= 0 {
 		diagnostics.Limit = 32 << 10
 	}
+	diagnostics.TailBytes = min(4096, diagnostics.Limit/4)
 	cmd := exec.CommandContext(ctx, options.Executable, options.Arguments...)
 	cmd.Dir = options.Directory
 	cmd.Env = options.Environment
@@ -67,7 +114,12 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	err := captureCommand(cmd, output, diagnostics)
-	result := Result{Stdout: output.String(), Stderr: diagnostics.String()}
+	result := Result{Stdout: output.String(), Stderr: diagnostics.String(), Started: cmd.Process != nil}
+	if cmd.ProcessState != nil {
+		if code := cmd.ProcessState.ExitCode(); code >= 0 {
+			result.ExitCode = &code
+		}
+	}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
 	}

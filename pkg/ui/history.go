@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"maps"
 	"strings"
 	"sync"
 )
@@ -100,9 +101,7 @@ func (h *CustomHistory) RestoreOlder(entries []string) {
 	if h.restorationCancelled {
 		return
 	}
-	for key, value := range h.fullMap {
-		full[key] = value
-	}
+	maps.Copy(full, h.fullMap)
 	h.fullMap = full
 	h.entries = Deduplicate(append(display, h.entries...))
 }

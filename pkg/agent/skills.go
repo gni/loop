@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,95 +47,81 @@ func loadSkillsFromDirs(warnings io.Writer, dirs ...string) ([]Skill, error) {
 		if absDir == "" {
 			continue
 		}
-		if _, err := os.Stat(absDir); err != nil {
+		info, err := os.Stat(absDir)
+		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return nil, fmt.Errorf("inspect skills directory %q: %w", absDir, err)
 		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("skills path %q is not a directory", absDir)
+		}
+		absDir, err = filepath.EvalSymlinks(absDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve skills directory %q: %w", rawDir, err)
+		}
 
-		err := filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+		addSkill := func(path string) {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
+				return
+			}
+			if visited[resolved] {
+				return
+			}
+			visited[resolved] = true
+			skill, ok := readSkill(path, warnings)
+			if !ok {
+				return
+			}
+			key := strings.ToLower(skill.Name)
+			if seen[key] {
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: duplicate skill name %q\n", path, skill.Name)
+				return
+			}
+			seen[key] = true
+			skills = append(skills, skill)
+		}
+		err = filepath.WalkDir(absDir, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return fmt.Errorf("visit skill path %q: %w", path, err)
 			}
-			if info.IsDir() || strings.ToLower(filepath.Ext(path)) != ".md" {
-				return nil
-			}
-
-			if visited[path] {
-				return nil
-			}
-			visited[path] = true
-			rel, err := filepath.Rel(absDir, path)
-			if err != nil {
-				return fmt.Errorf("resolve skill path %q: %w", path, err)
-			}
-			relParts := strings.Split(filepath.ToSlash(rel), "/")
-			baseName := info.Name()
-			baseNoExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
-
-			if len(relParts) > 2 && !strings.EqualFold(baseNoExt, "SKILL") {
-				return nil
-			}
-
-			if info.Size() > 512<<10 {
-				fmt.Fprintf(warnings, "Warning: skipping skill %q: exceeds 512 KiB\n", path)
-				return nil
-			}
-			content, exists, err := resources.ReadCachedTextFile(path, 512<<10)
-			if err != nil {
-				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
-				return nil
-			}
-			if !exists {
-				return nil
-			}
-
-			fm, body, err := document.Frontmatter(content)
-			if err != nil {
-				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
-				return nil
-			}
-			var name, desc string
-			if fm != nil {
-				name = fm["name"]
-				desc = fm["description"]
-			}
-
-			if name == "" {
-				if strings.EqualFold(baseNoExt, "SKILL") || strings.EqualFold(baseNoExt, "README") {
-					name = filepath.Base(filepath.Dir(path))
-				} else {
-					name = baseNoExt
+			isDir := entry.IsDir()
+			if entry.Type()&os.ModeSymlink != 0 {
+				info, err := os.Stat(path)
+				if err != nil {
+					fmt.Fprintf(warnings, "Warning: skipping skill link %q: %v\n", path, err)
+					return nil
 				}
+				isDir = info.IsDir()
 			}
-
-			if desc == "" {
-				for _, l := range strings.Split(strings.TrimSpace(body), "\n") {
-					l = strings.TrimSpace(l)
-					if l != "" && !strings.HasPrefix(l, "---") {
-						desc = strings.TrimPrefix(l, "# ")
-						break
+			if isDir {
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					return fmt.Errorf("list skill directory %q: %w", path, err)
+				}
+				for _, child := range entries {
+					if !child.IsDir() && strings.EqualFold(child.Name(), "SKILL.md") {
+						addSkill(filepath.Join(path, child.Name()))
+						// README and supporting documents belong to this skill.
+						if entry.IsDir() {
+							return filepath.SkipDir
+						}
+						return nil
 					}
 				}
-				if desc == "" {
-					desc = name + " skill guide"
-				}
-			}
-
-			key := strings.ToLower(name)
-			if seen[key] {
-				fmt.Fprintf(warnings, "Warning: skipping skill %q: duplicate skill name %q\n", path, name)
+				// Inspect linked packages, but do not recursively follow linked
+				// collections or ancestors: those may form cycles.
 				return nil
 			}
-			seen[key] = true
-			skills = append(skills, Skill{
-				Name:                   name,
-				Description:            desc,
-				Path:                   path,
-				Content:                strings.TrimSpace(body),
-				DisableModelInvocation: fm["disable-model-invocation"] == "true",
-			})
+			// Keep legacy <skills>/<name>.md guides. Nested supporting files
+			// are not independent skills; nested SKILL.md packages are found above.
+			if filepath.Dir(path) != absDir || !strings.EqualFold(filepath.Ext(path), ".md") || strings.EqualFold(entry.Name(), "README.md") {
+				return nil
+			}
+			addSkill(path)
 			return nil
 		})
 		if err != nil {
@@ -142,6 +129,54 @@ func loadSkillsFromDirs(warnings io.Writer, dirs ...string) ([]Skill, error) {
 		}
 	}
 	return skills, nil
+}
+
+func readSkill(path string, warnings io.Writer) (Skill, bool) {
+	content, exists, err := resources.ReadCachedTextFile(path, 512<<10)
+	if err != nil {
+		fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
+		return Skill{}, false
+	}
+	if !exists {
+		return Skill{}, false
+	}
+	fm, body, err := document.Frontmatter(content)
+	if err != nil {
+		fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
+		return Skill{}, false
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		fmt.Fprintf(warnings, "Warning: skipping skill %q: no instructions\n", path)
+		return Skill{}, false
+	}
+	name, desc := strings.TrimSpace(fm["name"]), strings.TrimSpace(fm["description"])
+	if name == "" {
+		base := filepath.Base(path)
+		if strings.EqualFold(base, "SKILL.md") {
+			name = filepath.Base(filepath.Dir(path))
+		} else {
+			name = strings.TrimSuffix(base, filepath.Ext(base))
+		}
+	}
+	if desc == "" {
+		for line := range strings.SplitSeq(body, "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "---") {
+				desc = strings.TrimPrefix(line, "# ")
+				break
+			}
+		}
+		if desc == "" {
+			desc = name + " skill guide"
+		}
+	}
+	return Skill{
+		Name:                   name,
+		Description:            desc,
+		Path:                   path,
+		Content:                body,
+		DisableModelInvocation: strings.EqualFold(strings.TrimSpace(fm["disable-model-invocation"]), "true"),
+	}, true
 }
 
 func SkillSearchDirs(skillsDir, workspaceRoot string) []string {
@@ -172,8 +207,11 @@ func SkillSearchDirsForWorkspace(skillsDir, workspaceRoot string, trusted bool) 
 		dirs = append(dirs, resolved)
 	}
 
-	if skillsDir != "" {
+	if skillsDir = strings.TrimSpace(skillsDir); skillsDir != "" {
 		isRel := !filepath.IsAbs(skillsDir) && !strings.HasPrefix(strings.TrimSpace(skillsDir), "~/")
+		if isRel && workspaceRoot != "" {
+			skillsDir = filepath.Join(workspaceRoot, skillsDir)
+		}
 		add(skillsDir, isRel)
 	}
 	if trusted && workspaceRoot != "" {
@@ -186,6 +224,7 @@ func SkillSearchDirsForWorkspace(skillsDir, workspaceRoot string, trusted bool) 
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		add(filepath.Join(home, ".agents", "skills"), false)
+		add(filepath.Join(home, ".loop", "skills"), false)
 	}
 	return dirs
 }

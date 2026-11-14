@@ -26,12 +26,15 @@ type SystemPromptConfig struct {
 	ActiveAgents      []string
 	Skills            []tool.Skill
 	AllSkills         []tool.Skill
+	LoadedSkills      []tool.Skill
 	MemoryContext     string
 	ProjectContext    string
 	ActiveTasks       []TaskInfo
 	UserGuidelines    string
 	Tools             []ToolEntry
 	Allowlist         []string
+	Task              string
+	ContextTokens     int
 }
 
 type ToolEntry struct {
@@ -57,9 +60,9 @@ var noBashReplacer = strings.NewReplacer(
 
 func splitInstruction(instruction string) (identity, guidelines string) {
 	const marker = "Guidelines:"
-	if idx := strings.Index(instruction, marker); idx != -1 {
-		identity = strings.TrimSpace(instruction[:idx])
-		guidelines = strings.TrimLeft(strings.TrimSpace(instruction[idx+len(marker):]), "\n")
+	if before, after, ok := strings.Cut(instruction, marker); ok {
+		identity = strings.TrimSpace(before)
+		guidelines = strings.TrimLeft(strings.TrimSpace(after), "\n")
 		return identity, guidelines
 	}
 	return strings.TrimSpace(instruction), ""
@@ -76,13 +79,16 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	baseInstruction, userGuidelines := splitInstruction(cfg.BaseInstruction)
 	userGuidelines = tool.FirstNonEmpty(userGuidelines, cfg.UserGuidelines)
-	baseInstruction = tool.FirstNonEmpty(baseInstruction, domaintool.SystemPromptsSnapshot().DefaultIdentity)
+	systemPrompts := domaintool.SystemPromptsSnapshot()
+	baseInstruction = tool.FirstNonEmpty(baseInstruction, systemPrompts.DefaultIdentity)
 
 	tools := filterToolEntries(cfg.Tools, cfg.Allowlist)
 	hasBash := false
 	hasAskUser := false
 	canSpawnSubagents := false
+	toolNames := make(map[string]bool, len(tools))
 	for _, entry := range tools {
+		toolNames[entry.Name] = true
 		if entry.Name == "bash" {
 			hasBash = true
 		}
@@ -95,7 +101,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 
 	if !hasBash {
-		if baseInstruction == domaintool.SystemPromptsSnapshot().DefaultIdentity {
+		if baseInstruction == systemPrompts.DefaultIdentity {
 			baseInstruction = "You are a software engineering assistant with tools to inspect files and edit code in the workspace."
 		} else {
 			baseInstruction = sanitizeNoBashInstruction(baseInstruction)
@@ -105,7 +111,14 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	var sb strings.Builder
 	t := tpl()
 
+	sb.WriteString("<role>\n")
 	sb.WriteString(baseInstruction)
+	sb.WriteString("\n</role>")
+	if workflow := strings.TrimSpace(systemPrompts.OperatingLoop); workflow != "" {
+		sb.WriteString("\n\n<operating_loop>\n")
+		sb.WriteString(workflow)
+		sb.WriteString("\n</operating_loop>")
+	}
 	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
 	var toolLines strings.Builder
@@ -117,7 +130,16 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		}
 	}
 	agentTpl := domaintool.AgentTemplatesSnapshot()
+	hasActiveAgents := false
 	for _, name := range cfg.ActiveAgents {
+		toolName := "subagent__" + name
+		if !tool.IsAllowedTool(toolName, cfg.Allowlist) {
+			continue
+		}
+		hasActiveAgents = true
+		if cfg.CompactPrompt && cfg.NativeToolSchemas && toolNames[toolName] {
+			continue
+		}
 		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(agentTpl.SubagentPrompt, name)))
 	}
 	if toolLines.Len() > 0 {
@@ -152,6 +174,12 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	if cfg.SequentialTools && len(tools) > 0 {
 		addRule("Batch independent calls; execution is ordered. Await confirmed tool results before taking dependent actions.")
 	}
+	if canSpawnSubagents {
+		addRule("Delegate independent multi-step work only when useful; perform a single read or command directly. Keep child scope, time and token budgets bounded.")
+	}
+	if toolNames["search_tools"] {
+		addRule("Discover specialized tools with search_tools before calling them; their schemas appear on the next step.")
+	}
 
 	if cfg.SkipObservation {
 		addRule("Observation guard is off: prior reads and revision matches are optional. Use edit for targeted changes, write for replacements; stay inside the workspace.")
@@ -177,7 +205,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	if userGuidelines != "" {
 		var customLines []string
 		seenCustom := make(map[string]bool)
-		for _, line := range strings.Split(userGuidelines, "\n") {
+		for line := range strings.SplitSeq(userGuidelines, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
 				continue
@@ -195,27 +223,63 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 	sb.WriteString(fmt.Sprintf(t.RulesSection, ruleLines.String()))
 
-	if len(cfg.Skills) > 0 {
+	loadedNames := make(map[string]bool, len(cfg.LoadedSkills))
+	if len(cfg.LoadedSkills) > 0 {
+		sb.WriteString("\n\n<loaded_skills>\nApply these assigned skills to the task; user instructions take precedence.\n")
+		for _, skill := range cfg.LoadedSkills {
+			key := strings.ToLower(skill.Name)
+			if loadedNames[key] {
+				continue
+			}
+			loadedNames[key] = true
+			sb.WriteString(tool.FormatSkillInstructions(skill))
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("</loaded_skills>")
+	}
+	if toolNames["load_skill"] && len(cfg.Skills) > 0 {
 		var skillLines strings.Builder
-		for _, s := range cfg.Skills {
-			if s.DisableModelInvocation {
+		catalogBudget := 0
+		if cfg.ContextTokens > 0 {
+			catalogBudget = max(512, min(4096, cfg.ContextTokens/8))
+		}
+		catalog := make([]tool.Skill, 0, len(cfg.Skills))
+		for _, skill := range cfg.Skills {
+			if !skill.DisableModelInvocation && !loadedNames[strings.ToLower(skill.Name)] {
+				catalog = append(catalog, skill)
+			}
+		}
+		skills := relevantSkills(catalog, cfg.Task, catalogBudget)
+		for _, s := range skills {
+			if s.DisableModelInvocation || loadedNames[strings.ToLower(s.Name)] {
 				continue
 			}
 			skillLines.WriteString(fmt.Sprintf(t.SkillLine, s.Name, s.Description))
 		}
-		sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))
+		if skillLines.Len() > 0 {
+			if len(skills) < len(catalog) {
+				skillLines.WriteString("More skills are available through load_skill with query; it lists matches without loading instructions.\n")
+			}
+			sb.WriteString(fmt.Sprintf(t.SkillsSection, skillsDir, skillLines.String()))
+		}
 	}
 
 	var maLines strings.Builder
-	if canSpawnSubagents || len(cfg.ActiveAgents) > 0 {
+	if canSpawnSubagents || hasActiveAgents {
 		maLines.WriteString(t.SubagentSkillAssignment)
 		if len(skillsForGuidance) > 0 {
 			validNames := make([]string, 0, len(skillsForGuidance))
 			for _, s := range skillsForGuidance {
-				validNames = append(validNames, s.Name)
+				if !s.DisableModelInvocation {
+					validNames = append(validNames, s.Name)
+				}
 			}
 			sort.Strings(validNames)
-			maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
+			if len(validNames) > 0 {
+				maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
+			} else {
+				maLines.WriteString(t.MultiAgentNoSkills)
+			}
 		} else {
 			maLines.WriteString(t.MultiAgentNoSkills)
 		}
@@ -272,6 +336,8 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 	}
 
 	return SystemPromptConfig{
+		Task:              a.knowledgeObjective(),
+		ContextTokens:     a.GetEffectiveContextLimit(0),
 		BaseInstruction:   instruction,
 		WorkspaceRoot:     tool.FirstNonEmpty(a.WorkspaceRoot, "."),
 		SkillsDir:         skillsDir,
@@ -293,6 +359,11 @@ func (a *Agent) GetSystemPrompt() string { return a.GetSystemPromptFor(nil) }
 func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 	cfg := a.BaseSystemPromptConfig(allowlist, true)
 	if a != nil {
+		names := make([]string, 0)
+		for _, definition := range a.inferenceTools(a.Context(), allowlist) {
+			names = append(names, definition.Function.Name)
+		}
+		cfg.Tools = filterToolEntries(cfg.Tools, names)
 		a.SpawnedAgentsMu.RLock()
 		for name := range a.SpawnedAgents {
 			cfg.ActiveAgents = append(cfg.ActiveAgents, name)

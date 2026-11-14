@@ -1,6 +1,22 @@
 package agent
 
-import "loop/pkg/agent/tool"
+import (
+	"context"
+
+	"loop/pkg/agent/run"
+	"loop/pkg/agent/tool"
+)
+
+func currentTaskPlan(ctx context.Context, fallback func() []tool.TodoItem) []tool.TodoItem {
+	if current := run.TaskSnapshot(ctx); current != nil {
+		items := make([]tool.TodoItem, len(current.Plan))
+		for i, item := range current.Plan {
+			items[i] = tool.TodoItem{ID: item.ID, Task: item.Description, Status: item.Status}
+		}
+		return items
+	}
+	return fallback()
+}
 
 func (a *Agent) GetTodos() []tool.TodoItem {
 	if a == nil {

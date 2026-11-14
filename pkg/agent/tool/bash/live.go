@@ -52,7 +52,7 @@ func (s *liveShellOutput) Write(p []byte) (int, error) {
 		if s.ctx.Err() != nil {
 			return len(p), nil
 		}
-		end := min(len(p), written+4096)
+		end := written + liveTextPrefix(p[written:], 4096)
 		n, err := s.writer.Write(p[written:end])
 		if n > 0 {
 			s.written = true
@@ -93,59 +93,109 @@ type limitedLiveWriter struct {
 	notified   bool
 	limit      int
 	pending    []byte
+	utf8Tail   []byte
 	nextSample time.Time
 }
 
 func (l *limitedLiveWriter) Write(p []byte) (int, error) {
 	original := len(p)
-	if l.remaining > 0 {
-		show := min(original, l.remaining)
-		if _, err := l.w.Write(p[:show]); err != nil {
+	if original == 0 {
+		return 0, nil
+	}
+	if len(l.utf8Tail) > 0 {
+		for len(p) > 0 && !utf8.FullRune(l.utf8Tail) && !utf8.RuneStart(p[0]) {
+			l.utf8Tail = append(l.utf8Tail, p[0])
+			p = p[1:]
+		}
+		if !utf8.FullRune(l.utf8Tail) && len(p) == 0 {
+			return original, nil
+		}
+		tail := l.utf8Tail
+		if !utf8.Valid(tail) {
+			tail = []byte("\uFFFD")
+		}
+		if err := l.writeComplete(tail); err != nil {
 			return 0, err
 		}
-		l.remaining -= show
-		p = p[show:]
+		l.utf8Tail = l.utf8Tail[:0]
 	}
-	if len(p) == 0 {
-		return original, nil
+	if end := liveTextEnd(p); end < len(p) {
+		l.utf8Tail = append(l.utf8Tail[:0], p[end:]...)
+		p = p[:end]
 	}
-	if !l.notified {
-		l.notified = true
-		_, _ = fmt.Fprintf(l.w, "\n[live output sampled after %d bytes; showing recent output]\n", l.limit)
-	}
-	const sampleBytes = 4096
-	if len(p) >= sampleBytes {
-		l.pending = append(l.pending[:0], p[len(p)-sampleBytes:]...)
-	} else {
-		l.pending = append(l.pending, p...)
-		if len(l.pending) > sampleBytes {
-			l.pending = append(l.pending[:0], l.pending[len(l.pending)-sampleBytes:]...)
-		}
-	}
-	if time.Now().After(l.nextSample) {
-		l.flushSample()
-		l.nextSample = time.Now().Add(250 * time.Millisecond)
+	if err := l.writeComplete(p); err != nil {
+		return 0, err
 	}
 	return original, nil
 }
 
-func (l *limitedLiveWriter) flushSample() {
-	data := l.pending
-	for len(data) > 0 && !utf8.RuneStart(data[0]) {
-		data = data[1:]
+func (l *limitedLiveWriter) writeComplete(p []byte) error {
+	if l.remaining > 0 {
+		show := liveTextPrefix(p, l.remaining)
+		if show > 0 {
+			if err := l.write(p[:show]); err != nil {
+				return err
+			}
+		}
+		l.remaining -= show
+		p = p[show:]
+		if len(p) > 0 {
+			l.remaining = 0
+		}
 	}
-	if len(data) > 0 {
-		_, _ = l.w.Write(data)
+	if len(p) == 0 {
+		return nil
 	}
-	l.pending = l.pending[:0]
+	if !l.notified {
+		notice := fmt.Sprintf("\x1b[0m\n[live output sampled after %d bytes; showing recent output]\n", l.limit)
+		if err := l.write([]byte(notice)); err != nil {
+			return err
+		}
+		l.notified = true
+	}
+	const sampleBytes = 4096
+	if len(p) >= sampleBytes {
+		l.pending = append(l.pending[:0], liveTextSuffix(p, sampleBytes)...)
+	} else {
+		keep := liveTextSuffix(l.pending, sampleBytes-len(p))
+		copy(l.pending, keep)
+		l.pending = l.pending[:len(keep)]
+		l.pending = append(l.pending, p...)
+	}
+	if time.Now().After(l.nextSample) {
+		if err := l.flushSample(); err != nil {
+			return err
+		}
+		l.nextSample = time.Now().Add(250 * time.Millisecond)
+	}
+	return nil
 }
 
-// bestEffortLiveWriter must not stop draining a child process if terminal output fails.
-type bestEffortLiveWriter struct{ io.Writer }
+func (l *limitedLiveWriter) write(p []byte) error {
+	n, err := l.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
 
-func (w bestEffortLiveWriter) Write(p []byte) (int, error) {
-	_, _ = w.Writer.Write(p)
-	return len(p), nil
+func (l *limitedLiveWriter) flushSample() error {
+	if len(l.pending) == 0 {
+		return nil
+	}
+	err := l.write(l.pending)
+	l.pending = l.pending[:0]
+	return err
+}
+
+func (l *limitedLiveWriter) finish() error {
+	if len(l.utf8Tail) > 0 {
+		l.utf8Tail = l.utf8Tail[:0]
+		if err := l.writeComplete([]byte("\uFFFD")); err != nil {
+			return err
+		}
+	}
+	return l.flushSample()
 }
 
 func (s *liveShellOutput) Streams() (io.Writer, io.Writer, func()) {
@@ -154,5 +204,5 @@ func (s *liveShellOutput) Streams() (io.Writer, io.Writer, func()) {
 	errLimit := &limitedLiveWriter{w: s, remaining: liveLimit, limit: liveLimit}
 	stdout := output.NewSafeShellOutputWriter(outLimit)
 	stderr := output.NewSafeShellOutputWriter(errLimit)
-	return stdout, stderr, func() { outLimit.flushSample(); errLimit.flushSample() }
+	return stdout, stderr, func() { _ = outLimit.finish(); _ = errLimit.finish() }
 }

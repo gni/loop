@@ -74,11 +74,11 @@ func HasComponent(path, root string, includeHidden bool) bool {
 		if clean == cleanRoot {
 			return false
 		}
-		if strings.HasPrefix(clean, cleanRoot+"/") {
-			clean = strings.TrimPrefix(clean, cleanRoot+"/")
+		if after, ok := strings.CutPrefix(clean, cleanRoot+"/"); ok {
+			clean = after
 		}
 	}
-	for _, part := range strings.Split(clean, "/") {
+	for part := range strings.SplitSeq(clean, "/") {
 		if IsDirName(part, includeHidden) {
 			return true
 		}

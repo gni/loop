@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"loop/pkg/agent/fallback"
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/buildinfo"
 	"loop/pkg/config"
@@ -34,6 +35,8 @@ type OpenAICompatibleProvider struct {
 	probeMu           sync.Mutex
 	tokenCounterMu    sync.Mutex
 	tokenCounter      *requestTokenCounter
+	contextBudgetMu   sync.RWMutex
+	contextBudget     *ContextBudget
 	ChunkDropObserver ChunkDropObserver
 }
 
@@ -157,12 +160,20 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	tools []tool.Tool,
 	chunkChan chan<- StreamChunk,
 ) (result *db.Message, runErr error) {
+	estimatedInput := 0
+	if p != nil {
+		p.clearContextBudget()
+	}
 	if err := p.validateCapabilities(messages); err != nil {
 		return nil, err
 	}
 	defer func() {
 		runErr = classifyInferenceFailure(runErr)
+		p.refreshContextAfterOverflow(ctx, runErr)
 		if result != nil {
+			if result.PromptTokens > 0 && estimatedInput > 0 {
+				p.requestCounter().observe(result.PromptTokens, estimatedInput)
+			}
 			if runErr != nil {
 				result.ToolCalls = nil
 				result.ContentBlocks = nil
@@ -220,17 +231,27 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		kickTimer()
 	}
 
-	_, _, jsonData, err := p.prepareChatCompletionRequestContext(streamCtx, messages, tools)
+	request, _, jsonData, err := p.prepareChatCompletionRequestContext(streamCtx, messages, tools)
 	if err != nil {
 		return nil, err
 	}
+	estimatedInput = requestTokens(request.Messages) + EstimateToolSchemaTokens(request.Tools)
 
 	resilient := transporthttp.NewResilientClient(transporthttp.RetryConfig{
 		MaxRetries: 3,
 		BaseDelay:  time.Second,
 		Client:     p.HTTPClient,
 		BeforeAttempt: func(int) error {
-			return p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after ")
+			if err := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after "); err != nil {
+				return err
+			}
+			if err := run.RecordRequestAttempt(ctx); err != nil {
+				return err
+			}
+			if counter, _ := ctx.Value(contextKeyHTTPAttempts).(*atomic.Int64); counter != nil {
+				counter.Add(1)
+			}
+			return nil
 		},
 		DescribeError: func(err error) error {
 			return fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", err, transporthttp.RedactURL(p.Config.Endpoint))

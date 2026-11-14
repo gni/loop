@@ -346,10 +346,7 @@ func handleTreeCommand(
 		tagStr := fmt.Sprintf("[%s]", typeTag)
 
 		baseLen := utf8.RuneCountInString(style.StripAnsi(rawTime + "  " + prefix + branchMarker + starMarker + shortEntryID(node.record.ID) + " " + tagStr + " " + leafSuffix))
-		availWidth := termWidth - baseLen - 2
-		if availWidth < 12 {
-			availWidth = 12
-		}
+		availWidth := max(termWidth-baseLen-2, 12)
 		preview := truncateString(rawPreview, availWidth)
 
 		fmt.Fprintf(w, "%s  %s%s%s%s %s %s%s\n",

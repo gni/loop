@@ -42,8 +42,8 @@ var (
 	argWrapperKeys = []string{"parameters", "params", "input", "arguments", "edit"}
 )
 
-func parseToolArgsMap(trimmed string) map[string]interface{} {
-	var argsMap map[string]interface{}
+func parseToolArgsMap(trimmed string) map[string]any {
+	var argsMap map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &argsMap); err != nil {
 		_ = json.Unmarshal([]byte(RepairArgsJSON(trimmed)), &argsMap)
 	}
@@ -71,7 +71,7 @@ func extractRawJSONStrings(raw string) map[string]string {
 	return out
 }
 
-func findMapStringByKeys(m map[string]interface{}, keys []string) string {
+func findMapStringByKeys(m map[string]any, keys []string) string {
 	for _, k := range keys {
 		if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
@@ -80,7 +80,7 @@ func findMapStringByKeys(m map[string]interface{}, keys []string) string {
 	return ""
 }
 
-func findWrappedMapString(m map[string]interface{}, keys []string) string {
+func findWrappedMapString(m map[string]any, keys []string) string {
 	if m == nil {
 		return ""
 	}
@@ -88,7 +88,7 @@ func findWrappedMapString(m map[string]interface{}, keys []string) string {
 		return s
 	}
 	for _, wrapper := range argWrapperKeys {
-		if subMap, ok := m[wrapper].(map[string]interface{}); ok {
+		if subMap, ok := m[wrapper].(map[string]any); ok {
 			if s := findMapStringByKeys(subMap, keys); s != "" {
 				return s
 			}
@@ -97,19 +97,19 @@ func findWrappedMapString(m map[string]interface{}, keys []string) string {
 	return ""
 }
 
-func extractTodoTargetFromMap(argsMap map[string]interface{}) string {
+func extractTodoTargetFromMap(argsMap map[string]any) string {
 	if argsMap == nil {
 		return ""
 	}
 	for _, key := range todoListKeys {
-		taskList, ok := argsMap[key].([]interface{})
+		taskList, ok := argsMap[key].([]any)
 		if !ok {
 			continue
 		}
 		var inProgressTask, firstPendingTask string
 		for _, item := range taskList {
 			switch m := item.(type) {
-			case map[string]interface{}:
+			case map[string]any:
 				_, taskDesc, status := domaintool.ExtractTodoFields(m)
 				if strings.EqualFold(status, "in_progress") && taskDesc != "" {
 					inProgressTask = taskDesc

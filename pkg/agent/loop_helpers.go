@@ -12,9 +12,14 @@ import (
 )
 
 func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string) {
+	a.MessagesMu.RLock()
+	run.RestoreTask(a.Context(), latestHistoricalTask(*messages))
+	a.MessagesMu.RUnlock()
 	if pending := a.TakePendingSystemEvent(); pending != "" {
 		prompt = fmt.Sprintf("[%s]\n\n%s", pending, prompt)
 	}
+	// Optional knowledge is selected once for the new task, not on every step.
+	a.markSystemPromptDirty()
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
 	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks, TaskState: run.TaskSnapshot(a.Context()), InheritedInstructions: run.DelegationInstructions(a.Context())}
@@ -43,13 +48,13 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 	engine.BeginTurn()
 
 	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
-	compactionDue := len(*messages) > 4 && a.CompactionTrigger(globalPromptTokensEst, 0, effectiveLimit)
+	beforeCompression := *messages
 	timer.Time("compaction", "start")
 	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 	if err != nil {
 		return 0, 0, err
 	}
-	if compactionDue {
+	if len(*messages) != len(beforeCompression) || (len(beforeCompression) > 0 && &(*messages)[0] != &beforeCompression[0]) {
 		engine.HistoryCompacted()
 	}
 	if err := a.persistenceError(); err != nil {

@@ -10,9 +10,11 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"loop/pkg/agent/fallback"
+	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
@@ -102,9 +104,13 @@ func (p *OpenAICompatibleProvider) api() string {
 }
 
 func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []tool.Tool) (string, map[string]any, error) {
+	return p.nativeRequestContext(nil, messages, tools)
+}
+
+func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (string, map[string]any, error) {
 	api := p.api()
 	base := strings.TrimRight(p.Config.Endpoint, "/")
-	if p.Config == nil || p.Config.AutoAdaptContext {
+	if historyCompressionEnabled(p.Config) {
 		messages = CompactHistoricalToolOutputs(messages)
 	}
 	messages, _ = sanitizeRequestMessages(messages)
@@ -113,7 +119,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 	} else {
 		tools = prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
 	}
-	clean, maxTokens, err := p.budgetRequest(messages, tools)
+	clean, maxTokens, err := p.budgetRequestContext(ctx, messages, tools)
 	if err != nil {
 		return "", nil, err
 	}
@@ -124,6 +130,21 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 	payload := map[string]any{"model": modelName, "stream": true}
 	var system []string
 	var turns []map[string]any
+	var pendingToolImages []map[string]any
+	flushToolImages := func() {
+		if len(pendingToolImages) == 0 {
+			return
+		}
+		// Keep the complete function-response batch ahead of image input.
+		// Ordinary user image parts also work with pre-Gemini-3 models.
+		parts := append([]map[string]any{{"text": "Attached image(s) from tool result:"}}, pendingToolImages...)
+		if len(turns) > 0 && turns[len(turns)-1]["role"] == "user" {
+			turns[len(turns)-1]["parts"] = append(turns[len(turns)-1]["parts"].([]map[string]any), parts...)
+		} else {
+			turns = append(turns, map[string]any{"role": "user", "parts": parts})
+		}
+		pendingToolImages = nil
+	}
 	for i, msg := range nativeHistory(EnforceToolPairingInvariance(messages)) {
 		if msg.Role == "system" {
 			if i == 0 {
@@ -141,29 +162,32 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
 			continue
 		}
+		if msg.Role != "tool" {
+			flushToolImages()
+		}
 		switch api {
 		case "responses":
 			if msg.Role == "tool" {
-				turns = append(turns, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": msg.Content})
+				var output any = msg.Content
+				if images := responsesBlockParts(msg.ContentBlocks, "input_text"); len(images) > 0 {
+					parts := make([]map[string]any, 0, len(images)+1)
+					if msg.Content != "" {
+						parts = append(parts, map[string]any{"type": "input_text", "text": msg.Content})
+					}
+					output = append(parts, images...)
+				}
+				turns = append(turns, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": output})
 				continue
 			}
 			parts := make([]map[string]any, 0)
+			kind := "input_text"
+			if msg.Role == "assistant" {
+				kind = "output_text"
+			}
 			if msg.Content != "" {
-				kind := "input_text"
-				if msg.Role == "assistant" {
-					kind = "output_text"
-				}
 				parts = append(parts, map[string]any{"type": kind, "text": msg.Content})
 			}
-			for _, block := range msg.ContentBlocks {
-				if block.Type == "image" {
-					image := block.URL
-					if image == "" {
-						image = "data:" + block.MimeType + ";base64," + block.Data
-					}
-					parts = append(parts, map[string]any{"type": "input_image", "image_url": image})
-				}
-			}
+			parts = append(parts, responsesBlockParts(msg.ContentBlocks, kind)...)
 			if len(parts) > 0 {
 				turns = append(turns, map[string]any{"role": msg.Role, "content": parts})
 			}
@@ -188,8 +212,6 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 								source = map[string]any{"type": "url", "url": block.URL}
 							}
 							blocks = append(blocks, map[string]any{"type": "image", "source": source})
-						} else if block.Type == "text" && block.Text != "" && block.Text != msg.Content {
-							blocks = append(blocks, map[string]any{"type": "text", "text": block.Text})
 						}
 					}
 					if len(blocks) > 0 {
@@ -213,6 +235,8 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 							source = map[string]any{"type": "url", "url": block.URL}
 						}
 						content = append(content, map[string]any{"type": "image", "source": source})
+					} else if block.Type == "text" && block.Text != "" {
+						content = append(content, map[string]any{"type": "text", "text": block.Text})
 					}
 				}
 				for _, call := range msg.ToolCalls {
@@ -239,15 +263,12 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 			var parts []map[string]any
 			if msg.Role == "tool" {
 				parts = append(parts, map[string]any{"functionResponse": map[string]any{"name": msg.Name, "id": msg.ToolCallID, "response": map[string]any{"result": msg.Content}}})
+				pendingToolImages = append(pendingToolImages, generateContentBlockParts(msg.ContentBlocks)...)
 			} else {
 				if msg.Content != "" {
 					parts = append(parts, map[string]any{"text": msg.Content})
 				}
-				for _, block := range msg.ContentBlocks {
-					if block.Type == "image" {
-						parts = append(parts, map[string]any{"inlineData": map[string]string{"mimeType": block.MimeType, "data": block.Data}})
-					}
-				}
+				parts = append(parts, generateContentBlockParts(msg.ContentBlocks)...)
 				for _, call := range msg.ToolCalls {
 					var arguments map[string]any
 					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
@@ -273,6 +294,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 			return "", nil, fmt.Errorf("unsupported provider API %q", api)
 		}
 	}
+	flushToolImages()
 	var definitions []map[string]any
 	for _, definition := range tools {
 		function := definition.Function
@@ -326,10 +348,7 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 				payload["thinking"] = map[string]any{"type": "disabled"}
 			}
 		} else if len(p.selectedModel().Reasoning) > 0 && maxTokens > 1024 {
-			budget := p.GetLimits().ReasoningTokenBudgets[effort]
-			if budget < 1024 {
-				budget = 1024
-			}
+			budget := max(p.GetLimits().ReasoningTokenBudgets[effort], 1024)
 			payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": min(budget, maxTokens-1)}
 		}
 		if len(definitions) > 0 {
@@ -371,9 +390,16 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 }
 
 func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []db.Message, tools []tool.Tool, chunks chan<- StreamChunk) (*db.Message, error) {
-	endpoint, payload, err := p.nativeRequest(messages, tools)
+	if !p.ThinkingProbeChecked() {
+		p.ProbeServerCapabilities(ctx)
+	}
+	endpoint, payload, err := p.nativeRequestContext(ctx, messages, tools)
 	if err != nil {
 		return nil, err
+	}
+	estimatedInput := 0
+	if budget := p.ContextBudgetSnapshot(); budget != nil {
+		estimatedInput = budget.EstimatedInput
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -381,7 +407,18 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
 	defer stop()
-	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HTTPClient})
+	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HTTPClient, BeforeAttempt: func(int) error {
+		if err := streamCtx.Err(); err != nil {
+			return err
+		}
+		if err := run.RecordRequestAttempt(ctx); err != nil {
+			return err
+		}
+		if counter, _ := ctx.Value(contextKeyHTTPAttempts).(*atomic.Int64); counter != nil {
+			counter.Add(1)
+		}
+		return nil
+	}})
 	response, err := client.DoWithRetry(streamCtx, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(streamCtx, "POST", endpoint, bytes.NewReader(body))
 		if err != nil {
@@ -403,6 +440,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	defer response.Body.Close()
 	result := &db.Message{Role: "assistant", Provider: p.Config.ActiveProvider, Model: p.Config.Model}
+	defer func() { p.requestCounter().observe(result.PromptTokens, estimatedInput) }()
 	var text, reasoning strings.Builder
 	calls := make(map[int]*db.ToolCall)
 	argumentBuffers := make(toolArgumentBuffers)

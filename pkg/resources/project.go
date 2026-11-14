@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/ignore"
 	"loop/pkg/storage"
 )
@@ -23,6 +25,24 @@ type ProjectMetadata struct {
 	GitBranch      string
 	KeyDirectories []string
 	KeyConfigs     []string
+}
+
+// VerificationChecks proposes commands without executing project code. Approval,
+// user restrictions and per-command limits remain in the normal tool workflow.
+func VerificationChecks(root string) []evidence.Check {
+	meta := inspectProject(root)
+	var checks []evidence.Check
+	for _, entry := range []struct{ kind, command string }{{"build", meta.BuildCommand}, {"test", meta.TestCommand}} {
+		if entry.command == "" {
+			continue
+		}
+		status := evidence.NotExecuted
+		if _, err := exec.LookPath(strings.Fields(entry.command)[0]); err != nil {
+			status = evidence.Unavailable
+		}
+		checks = append(checks, evidence.Check{Kind: entry.kind, Command: entry.command, Target: root, Status: status})
+	}
+	return checks
 }
 
 type cachedProjectContext struct {
@@ -51,8 +71,8 @@ func DetectGitBranch(workspaceRoot string) string {
 			data, err := storage.ReadFile(gitPath, 16<<10)
 			if err == nil {
 				text := strings.TrimSpace(string(data))
-				if strings.HasPrefix(text, "gitdir:") {
-					targetDir := strings.TrimSpace(strings.TrimPrefix(text, "gitdir:"))
+				if after, ok := strings.CutPrefix(text, "gitdir:"); ok {
+					targetDir := strings.TrimSpace(after)
 					if !filepath.IsAbs(targetDir) {
 						targetDir = filepath.Join(curr, targetDir)
 					}
@@ -75,11 +95,11 @@ func readHeadBranch(headFile string) string {
 		return ""
 	}
 	content := strings.TrimSpace(string(data))
-	if strings.HasPrefix(content, "ref: refs/heads/") {
-		return strings.TrimPrefix(content, "ref: refs/heads/")
+	if after, ok := strings.CutPrefix(content, "ref: refs/heads/"); ok {
+		return after
 	}
-	if strings.HasPrefix(content, "ref: ") {
-		return strings.TrimPrefix(content, "ref: ")
+	if after, ok := strings.CutPrefix(content, "ref: "); ok {
+		return after
 	}
 	if len(content) >= 7 {
 		return content[:7]
@@ -287,10 +307,10 @@ func parseGoMod(path string) (moduleName, goVersion string) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			moduleName = strings.TrimSpace(strings.TrimPrefix(line, "module "))
-		} else if strings.HasPrefix(line, "go ") {
-			goVersion = strings.TrimSpace(strings.TrimPrefix(line, "go "))
+		if after, ok := strings.CutPrefix(line, "module "); ok {
+			moduleName = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "go "); ok {
+			goVersion = strings.TrimSpace(after)
 		}
 		if moduleName != "" && goVersion != "" {
 			break
@@ -318,10 +338,10 @@ func parseCargoToml(path string) (packageName, edition string) {
 			continue
 		}
 		if inPackage {
-			if strings.HasPrefix(line, "name =") {
-				packageName = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "name =")), "\"")
-			} else if strings.HasPrefix(line, "edition =") {
-				edition = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "edition =")), "\"")
+			if after, ok := strings.CutPrefix(line, "name ="); ok {
+				packageName = strings.Trim(strings.TrimSpace(after), "\"")
+			} else if after, ok := strings.CutPrefix(line, "edition ="); ok {
+				edition = strings.Trim(strings.TrimSpace(after), "\"")
 			}
 		}
 		if packageName != "" && edition != "" {

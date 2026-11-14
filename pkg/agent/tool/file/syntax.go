@@ -2,6 +2,7 @@ package file
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"loop/pkg/domain/diagnostic"
 	"loop/pkg/domain/evidence"
+	domaintool "loop/pkg/domain/tool"
 )
 
 // ValidateSyntax inspects modified file content for syntax errors using standard
@@ -23,10 +26,6 @@ func ValidateSyntax(filename string, data []byte) string {
 }
 
 func inspectSyntax(filename string, data []byte) ([]evidence.Diagnostic, string) {
-	if len(data) == 0 {
-		return nil, ""
-	}
-
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".go":
@@ -64,4 +63,24 @@ func inspectSyntax(filename string, data []byte) ([]evidence.Diagnostic, string)
 	}
 
 	return nil, ""
+}
+
+func inspectCandidate(ctx domaintool.AgentContext, filename string, data []byte, observed *evidence.Record) (string, error) {
+	observed.Revision = fmt.Sprintf("%x", sha256.Sum256(data))
+	diagnostics, warning := inspectSyntax(filename, data)
+	observed.Diagnostics = diagnostics
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == ".go" || ext == ".json" {
+		status := evidence.Passed
+		if len(diagnostics) > 0 {
+			status = evidence.Failed
+		}
+		observed.Checks = []evidence.Check{{Kind: "syntax", Target: filename, Status: status}}
+	}
+	if settings, ok := ctx.(domaintool.SyntaxValidationSettings); ok && settings.IsStrictSyntaxEnabled() && len(diagnostics) > 0 {
+		unchanged := false
+		observed.Changed = &unchanged
+		return warning, &diagnostic.Error{Code: diagnostic.SyntaxInvalid, Target: filename, Line: diagnostics[0].Line, Cause: fmt.Errorf("syntax rejected before saving %s: %s", filepath.Base(filename), diagnostics[0].Message)}
+	}
+	return warning, nil
 }

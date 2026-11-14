@@ -25,11 +25,14 @@ func (sr *StreamRenderer) appendLiveReplayTextLocked(kind, text string) {
 		return
 	}
 	n := len(sr.liveReplayEvents)
-	if n > 0 && sr.liveReplayEvents[n-1].kind == kind {
-		sr.liveReplayEvents[n-1].text += text
-		return
+	if n == 0 || sr.liveReplayEvents[n-1].kind != kind {
+		sr.liveReplayText.Reset()
+		sr.liveReplayEvents = append(sr.liveReplayEvents, liveReplayEvent{kind: kind})
 	}
-	sr.liveReplayEvents = append(sr.liveReplayEvents, liveReplayEvent{kind: kind, text: text})
+	sr.liveReplayText.WriteString(text)
+	// Builder snapshots share an immutable prefix. Appending future fragments
+	// preserves snapshots already being replayed without copying the whole reply.
+	sr.liveReplayEvents[len(sr.liveReplayEvents)-1].text = sr.liveReplayText.String()
 }
 
 type liveReplayCall struct {
