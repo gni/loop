@@ -79,9 +79,6 @@ func ApplyEdits(ctx context.Context, content string, edits []ReplaceEdit, maxByt
 			return content, fmt.Errorf("edit[%d]: %w", i, err)
 		}
 		if match == nil {
-			if replacementAlreadyApplied(updated, edit.NewText) {
-				continue
-			}
 			return content, &diagnostic.Error{Code: diagnostic.EditNotFound, Cause: fmt.Errorf("edit[%d]: oldText was not found; read the current file and copy an exact, unique block", i)}
 		}
 		updated, err = applyMatches(updated, []*textMatch{match}, maxBytes)

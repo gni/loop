@@ -124,8 +124,7 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		return "", fmt.Errorf("cannot edit binary file; provide a text file")
 	}
 	hasBOM, rawStr := SplitBOM(data)
-	originalEnding := DetectLineEnding(rawStr)
-	content := strings.ReplaceAll(rawStr, "\r\n", "\n")
+	content := rawStr
 	initialContent := content
 
 	content, err = ApplyEdits(ctx.Context(), initialContent, edits, limits.For(ctx).MaxReadFileBytes)
@@ -140,16 +139,12 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		discardIfUncommitted()
 		return "No changes made: replacement already matches file contents." + warning, validationErr
 	}
-	diff, err := GenerateDisplayDiffContext(ctx.Context(), initialContent, content, 3)
+	diff, err := GenerateDisplayDiffContext(ctx.Context(), strings.ReplaceAll(initialContent, "\r\n", "\n"), strings.ReplaceAll(content, "\r\n", "\n"), 3)
 	if err != nil {
 		discardIfUncommitted()
 		return "", err
 	}
-	finalStr := content
-	if originalEnding == "\r\n" {
-		finalStr = strings.ReplaceAll(finalStr, "\n", "\r\n")
-	}
-	finalBytes := []byte(finalStr)
+	finalBytes := []byte(content)
 	if hasBOM {
 		finalBytes = append([]byte{0xef, 0xbb, 0xbf}, finalBytes...)
 	}

@@ -51,9 +51,10 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 	if ctx.Err() != nil || (readErr != nil && !os.IsNotExist(readErr)) || filetool.IsBinary(existingBytes) {
 		return ""
 	}
-	oldContent := ""
+	oldContent, rawContent := "", ""
 	if readErr == nil {
 		_, rawStr := filetool.SplitBOM(existingBytes)
+		rawContent = rawStr
 		oldContent = strings.ReplaceAll(rawStr, "\r\n", "\n")
 	}
 
@@ -77,22 +78,18 @@ func PreviewToolDiff(a *Agent, toolName, arguments string) string {
 			return ""
 		}
 	}
-	previewContent, err := filetool.ApplyEdits(ctx, oldContent, edits, maxBytes)
-	if err != nil || previewContent == oldContent {
+	previewContent, err := filetool.ApplyEdits(ctx, rawContent, edits, maxBytes)
+	if err != nil || previewContent == rawContent {
 		return ""
 	}
-	// Execution restores the original encoding, so account for it in the limit.
+	// The planner retains line endings; execution also restores the BOM.
 	finalSize := len(previewContent)
-	_, raw := filetool.SplitBOM(existingBytes)
-	if filetool.DetectLineEnding(raw) == "\r\n" {
-		finalSize += strings.Count(previewContent, "\n")
-	}
 	if hasBOM, _ := filetool.SplitBOM(existingBytes); hasBOM {
 		finalSize += 3
 	}
 	if finalSize > maxBytes {
 		return ""
 	}
-	diff, _ := filetool.GenerateDisplayDiffContext(ctx, oldContent, previewContent, 3)
+	diff, _ := filetool.GenerateDisplayDiffContext(ctx, oldContent, strings.ReplaceAll(previewContent, "\r\n", "\n"), 3)
 	return diff
 }

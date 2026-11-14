@@ -12,7 +12,7 @@ func TestNativeRequest_GeminiAdjacentTurnMerging(t *testing.T) {
 		Config: &config.Config{
 			Model:              "gemini-2.5-pro",
 			ActiveProvider:     "default",
-			ReasoningEffort:     "low",
+			ReasoningEffort:    "low",
 			ContextWindowLimit: 128000,
 			Providers: map[string]config.ProviderConfig{
 				"default": {

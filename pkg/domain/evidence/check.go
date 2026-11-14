@@ -50,6 +50,14 @@ func CommandCheck(command string, code *int, outcome string) *Check {
 			case "build":
 				kind = "build"
 			case "test":
+				// Compiling a test binary does not execute its tests. Keep
+				// commands carrying this flag as ordinary command evidence.
+				for _, arg := range args[2:] {
+					flag, _, _ := strings.Cut(arg, "=")
+					if flag == "-c" || flag == "--c" {
+						return nil
+					}
+				}
 				kind = "test"
 			case "vet":
 				kind = "lint"
