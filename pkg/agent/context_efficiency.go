@@ -3,13 +3,17 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/task"
 )
+
+var editDiffRow = regexp.MustCompile(`(?m)^\x1b\[(?:31|32)m[0-9]+ +[+-] `)
 
 func inferenceMessages(ctx context.Context, messages []db.Message) []db.Message {
 	messages = compactRuntimeMessages(messages)
@@ -47,6 +51,23 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 		}
 		if !msg.IsError {
 			switch name {
+			case "edit":
+				observed := msg.Evidence
+				if observed != nil && observed.Kind == "file" && observed.Outcome == evidence.Succeeded && observed.Changed != nil && *observed.Changed && !historicalToolFailed(msg) {
+					// An after-tool hook may replace the diff with its own
+					// feedback. Preserve that output for the model.
+					if !editDiffRow.MatchString(msg.Content) && !strings.HasPrefix(msg.Content, "Diff exceeds display limits.") && !strings.HasPrefix(msg.Content, "Diff display truncated.") && msg.Content != "(no output)" {
+						break
+					}
+					// The diff stays in saved/UI history. The model already has
+					// the replacement arguments; retain only confirmation and
+					// any notices appended after the numbered diff rows.
+					_, notice, hasNotice := strings.Cut(msg.Content, "\n\n[")
+					msg.Content = "Edit successful."
+					if hasNotice {
+						msg.Content += "\n\n[" + notice
+					}
+				}
 			case "task_state":
 				var args struct {
 					Action string `json:"action"`

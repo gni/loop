@@ -74,7 +74,9 @@ func (t *editTool) ExecuteResult(ctx domaintool.AgentContext, arguments string) 
 func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observed *evidence.Record) (string, error) {
 	targetPath, edits, err := ParseEditArguments(arguments)
 	if err != nil {
-		return "", err
+		unchanged := false
+		observed.Changed = &unchanged
+		return "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: "edit", Cause: err}
 	}
 	safePath, err := ctx.SafePath(targetPath)
 	if err != nil {
@@ -98,7 +100,7 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 			return "", err
 		}
 		if path != safePath {
-			return "", fmt.Errorf("edit[%d]: all replacements must target the same file", i)
+			return "", &diagnostic.Error{Code: diagnostic.InvalidArguments, Target: targetPath, Cause: fmt.Errorf("edit[%d]: all replacements must target the same file", i)}
 		}
 	}
 
@@ -137,7 +139,7 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		observed.Changed = &changed
 		warning, validationErr := inspectCandidate(ctx, safePath, data, observed)
 		discardIfUncommitted()
-		return "No changes made: replacement already matches file contents." + warning, validationErr
+		return "No changes made: requested edits leave the file unchanged." + warning, validationErr
 	}
 	diff, err := GenerateDisplayDiffContext(ctx.Context(), strings.ReplaceAll(initialContent, "\r\n", "\n"), strings.ReplaceAll(content, "\r\n", "\n"), 3)
 	if err != nil {

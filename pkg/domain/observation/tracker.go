@@ -170,7 +170,7 @@ func (fot *FileObservationTracker) CheckMutationAllowed(absPath string, isEdit b
 	if err != nil {
 		if os.IsNotExist(err) {
 			if isEdit {
-				return &diagnostic.Error{Code: diagnostic.MissingPath, Target: cleanPath, Cause: fmt.Errorf("cannot edit '%s': file does not exist on disk. Call 'write' to create new files", base)}
+				return &diagnostic.Error{Code: diagnostic.MissingPath, Target: cleanPath, Cause: fmt.Errorf("cannot edit '%s': file does not exist on disk. Locate the intended existing file before retrying", base)}
 			}
 			return nil
 		}

@@ -193,12 +193,12 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			}
 		}
 		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render(fmt.Sprintf("⎿  %s %s", finalDot, message)))
-		fmt.Fprintln(w, "   "+FailureAdvice(output))
+		fmt.Fprintln(w, "   "+failureAdvice(output, toolName))
 		return
 	}
 
 	if isError {
-		renderActionableFailure(w, output, collapse, theme)
+		renderFailure(w, output, toolName, collapse, theme)
 		return
 	}
 	body := output
