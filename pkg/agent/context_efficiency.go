@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -121,6 +122,7 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 		out = append(out, msg)
 		outCalls = append(outCalls, call)
 	}
+	coalesceEditConfirmations(out, outCalls)
 	// Older sessions may contain repeated full polling snapshots. Keep the
 	// newest identical body and the earlier status/command headers.
 	seenOutput := make(map[string]struct{ body, call string })
@@ -150,4 +152,39 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 		}
 	}
 	return out
+}
+
+// Keep a response for every call, as native tool protocols require, but carry
+// the confirmation only in the last response of a consecutive successful run.
+func coalesceEditConfirmations(messages []db.Message, calls []db.ToolCall) {
+	last, count, pending := -1, 0, 0
+	for i, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			if pending != 0 {
+				last, count = -1, 0
+			}
+			pending = len(msg.ToolCalls)
+			continue
+		}
+		if msg.Role != "tool" {
+			last, count, pending = -1, 0, 0
+			continue
+		}
+		call := calls[i]
+		if call.ID != "" {
+			pending--
+		}
+		if call.ID == "" || tool.NormalizeName(call.Function.Name) != "edit" ||
+			(msg.Name != "" && tool.NormalizeName(msg.Name) != "edit") ||
+			msg.Content != "Edit successful." || historicalToolFailed(msg) || len(msg.ContentBlocks) > 0 {
+			last, count = -1, 0
+			continue
+		}
+		count++
+		if last >= 0 {
+			messages[last].Content = ""
+			messages[i].Content = fmt.Sprintf("%d edits successful.", count)
+		}
+		last = i
+	}
 }
