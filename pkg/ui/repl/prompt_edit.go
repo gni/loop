@@ -19,6 +19,12 @@ func handlePromptEditKey(line string, pos int, key rune, a *agent.Agent, history
 		text := reader.TakePromptPaste()
 		reader.ResetHistoryIndex()
 		return line[:pos] + text + line[pos:], pos + len(text), true
+	case interceptor.PromptReplaceLineKey:
+		if text, ok := reader.TakePendingLineReplace(); ok {
+			reader.ResetHistoryIndex()
+			return text, len(text), true
+		}
+		return line, pos, true
 	case interceptor.PromptNewlineKey:
 		reader.ResetHistoryIndex()
 		return line[:pos] + "\n" + line[pos:], pos + 1, true
@@ -120,6 +126,11 @@ func handlePromptEditKey(line string, pos int, key rune, a *agent.Agent, history
 			direction = 1
 		}
 		if key == interceptor.PromptUpKey || key == interceptor.PromptDownKey {
+			if chatHistory := ui.GetUI().GetChatHistory(); chatHistory != nil && chatHistory.SlashMenuActive() {
+				if chatHistory.StepSlashMenu(direction) {
+					return line, pos, true
+				}
+			}
 			width, _ := ui.GetTerminalSize()
 			prefix := ui.GetPromptSymbol(nil)
 			if reader.MAM != nil {

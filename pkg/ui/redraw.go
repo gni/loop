@@ -94,6 +94,9 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	}
 	if history != nil && history.RedrawLocked() {
 		history.notice = notice
+		uiImpl.StateMu.Lock()
+		uiImpl.LastStatusBarText = ""
+		uiImpl.StateMu.Unlock()
 		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, rl, true)
 		TerminalMu.Unlock()
 		if notice != "" {

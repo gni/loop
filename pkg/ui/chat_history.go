@@ -28,6 +28,18 @@ type ChatHistory struct {
 	searchDraft                                     string
 	searchEditing                                   bool
 	searchEditingAtomic                             atomic.Bool
+	slashMenuOpen                                   bool
+	slashMenuOpenAtomic                             atomic.Bool
+	slashForced                                     bool
+	slashQuery, slashTitle, slashDismissedQuery     string
+	slashItems                                      []render.SlashCommandItem
+	slashSelected, slashScroll                      int
+	slashMenuHeaderRow                              int
+	slashMenuStartRow, slashMenuEndRow              int
+	slashVisibleStart                               int
+	slashExtraCache                                 []render.SlashCommandItem
+	slashExtraFetched                               time.Time
+	slashExtraLoaded                                bool
 	initialLoading, initialOutput                   bool
 	initialFilling                                  bool
 	initialRows                                     int
@@ -154,6 +166,14 @@ func (h *ChatHistory) BeginTurn() {
 	h.searchPending = false
 	h.searchScan = nil
 	h.searchRow = -1
+	h.slashForced = false
+	h.slashDismissedQuery = ""
+	h.slashItems = nil
+	h.slashQuery = ""
+	h.slashTitle = ""
+	h.slashSelected = 0
+	h.slashScroll = 0
+	h.setSlashMenuOpenLocked(false)
 	defer TerminalMu.Unlock()
 	if h.browsing {
 		h.top = h.buffer.Base()
@@ -276,6 +296,9 @@ func (h *ChatHistory) paintLocked() {
 	}
 	if h.searchEditing {
 		hint = style.TruncateCells("Search: "+h.searchDraft+" | Enter: find | Esc: cancel", max(1, width-1))
+	}
+	if hint == "" && h.shouldRenderSlashMenuLocked() {
+		hint = h.slashMenuHintLocked(width, theme)
 	}
 	if err := errors.Join(h.historyErr, h.buffer.Err()); err != nil {
 		hint = style.TruncateCells("history: "+err.Error(), max(1, width-1))

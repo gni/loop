@@ -249,14 +249,17 @@ func formatStatusBarRightWithBudget(state StatusBarState, theme style.UITheme, w
 	return badgePart + modelStyle.Render(truncatedModel) + " "
 }
 
-func formatWorkspaceSessionPrefix(state StatusBarState, theme style.UITheme, width int) string {
+func formatWorkspaceSessionPrefix(state StatusBarState, theme style.UITheme, width int, hasTrailingMetrics bool) string {
 	wsRaw := strings.TrimSpace(SanitizeTerminalText(state.Workspace))
 	sessRaw := strings.TrimSpace(SanitizeTerminalText(state.SessionLabel))
 	if wsRaw == "" && sessRaw == "" {
 		return ""
 	}
 
-	div := style.NewStyle().Foreground(theme.Border).Render(" │")
+	div := ""
+	if hasTrailingMetrics {
+		div = style.NewStyle().Foreground(theme.Border).Render(" │")
+	}
 	wsStyle := style.NewStyle().Foreground(theme.TextMuted)
 	sessStyle := style.NewStyle().Foreground(theme.TextMuted)
 	iconStyle := style.NewStyle().Foreground(theme.Secondary)
@@ -290,8 +293,8 @@ func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) s
 		return ""
 	}
 	available := width - 1
-	prefixPart := formatWorkspaceSessionPrefix(state, theme, width)
 	metricsPart := FormatStatusBarLeft(state, theme, width)
+	prefixPart := formatWorkspaceSessionPrefix(state, theme, width, metricsPart != "")
 	leftPart := prefixPart + metricsPart
 
 	leftLen := style.CellWidth(leftPart)
@@ -313,26 +316,53 @@ func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) s
 
 // FormatStatusBarSeparator formats the horizontal separator line and collapse indicator above the status bar.
 func FormatStatusBarSeparator(width int, indicator string, theme style.UITheme) string {
+	line, _ := FormatStatusBarSeparatorLayout(width, 0, indicator, false, false, theme)
+	return line
+}
+
+// FormatStatusBarSeparatorLayout formats the status separator with optional hover expansion
+// and returns the 1-based hitbox for the collapse toggle indicator.
+func FormatStatusBarSeparatorLayout(width, row int, indicator string, collapsed, hovered bool, theme style.UITheme) (string, *Hitbox) {
 	available := width - 1
 	if available <= 0 {
-		return ""
+		return "", nil
 	}
 	borderStyle := style.NewStyle().Foreground(theme.Border)
 	collapseStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 
 	if indicator == "" {
-		return borderStyle.Render(strings.Repeat("─", available))
+		return borderStyle.Render(strings.Repeat("─", available)), nil
 	}
 	if indicator == "›" {
 		indicator = "▸"
 	}
-	indicatorLen := style.CellWidth(indicator)
+	display := indicator
+	padHit := 2
+	if hovered {
+		if collapsed || indicator == "▸" {
+			display = "▸ output: folded"
+		} else {
+			display = "▾ output: open"
+		}
+		padHit = 0
+	}
+	indicatorLen := style.CellWidth(display)
 	if indicatorLen >= available {
-		return collapseStyle.Render(style.TruncateCells(indicator, available))
+		return collapseStyle.Render(style.TruncateCells(display, available)), nil
 	}
 	dashesCount := available - indicatorLen - 1
-	if dashesCount <= 0 {
-		return collapseStyle.Render(indicator)
+	var hb *Hitbox
+	if row > 0 {
+		startCol := max(1, available-indicatorLen+1-padHit)
+		hb = &Hitbox{
+			Target:   HoverCollapseBadge,
+			Row:      row,
+			StartCol: startCol,
+			EndCol:   available,
+		}
 	}
-	return borderStyle.Render(strings.Repeat("─", dashesCount)) + " " + collapseStyle.Render(indicator)
+	if dashesCount <= 0 {
+		return collapseStyle.Render(display), hb
+	}
+	return borderStyle.Render(strings.Repeat("─", dashesCount)) + " " + collapseStyle.Render(display), hb
 }

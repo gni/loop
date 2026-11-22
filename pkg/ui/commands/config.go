@@ -91,6 +91,7 @@ func handleConfigCommand(
 		notice += "\n" + applyErr.Error()
 	}
 	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, notice, modal) {
+		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, false)
 		return
 	}
 	if modal {
@@ -132,10 +133,13 @@ func configAppearanceChanged(before, after config.Config) bool {
 		before.ShowThinking != after.ShowThinking ||
 		before.ReasoningEffort != after.ReasoningEffort ||
 		before.ShowTokens != after.ShowTokens ||
+		before.AutoApprove != after.AutoApprove ||
 		before.ShowReasoningBadge != after.ShowReasoningBadge ||
 		before.ShowCollapseBadge != after.ShowCollapseBadge ||
 		before.ShowGitBranch != after.ShowGitBranch ||
 		before.ShowStickyQuestion != after.ShowStickyQuestion ||
+		before.ShowAutoBadge != after.ShowAutoBadge ||
+		before.HoverTooltips != after.HoverTooltips ||
 		before.ShowMicroseconds != after.ShowMicroseconds
 }
 

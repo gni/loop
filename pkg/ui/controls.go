@@ -15,7 +15,7 @@ import (
 )
 
 func GetPromptSymbol(_ *config.Config) string {
-	return "> "
+	return "▹ "
 }
 
 func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, _ *term.Terminal, drawPrompt bool) {
@@ -52,6 +52,12 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 
 	live := a.LiveSettings()
 	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	state.StateMu.Lock()
+	state.State.ShowTokens = live.ShowTokens
+	if live.Model != "" {
+		state.State.Model = live.Model
+	}
+	state.StateMu.Unlock()
 
 	maxInputRows := 8
 	if a != nil {

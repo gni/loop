@@ -119,9 +119,18 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	pasteLinesOffset := ui.PasteLinesOffset
 	showReasoning := true
 	showBranch := true
+	showAutoBadge := true
+	autoApprove := false
+	slashMenuOpen := ui.SlashMenuOpen
+	hovered := render.HoverNone
 	if ui.Config != nil {
 		showReasoning = ui.Config.ShowReasoningBadge
 		showBranch = ui.Config.ShowGitBranch
+		showAutoBadge = ui.Config.ShowAutoBadge
+		autoApprove = ui.Config.AutoApprove
+		if ui.Config.HoverTooltips {
+			hovered = ui.HoverTarget
+		}
 	}
 	ui.StateMu.Unlock()
 	if blocked {
@@ -142,5 +151,8 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	if !showReasoning {
 		reasoningEffort = "hidden"
 	}
-	render.DrawStaticPromptSeparator(agent.UnwrapWriter(w), showThinking, reasoningEffort, theme, width, height, pasteLinesOffset, branch)
+	hitboxes := render.DrawStaticPromptSeparatorWithHover(agent.UnwrapWriter(w), showThinking, reasoningEffort, showAutoBadge, autoApprove, slashMenuOpen, hovered, theme, width, height, pasteLinesOffset, branch)
+	ui.StateMu.Lock()
+	ui.PromptHitboxes = hitboxes
+	ui.StateMu.Unlock()
 }

@@ -99,6 +99,9 @@ func (s *JSONLStore) openHistory(ctx context.Context, id string, lazy bool) (*Hi
 	}
 	defer release()
 	f, err := storage.OpenRegularFile(s.sessionPath(id))
+	if os.IsNotExist(err) {
+		return &HistoryReader{store: s, indexed: true}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,7 @@ const (
 	PromptDeleteWordKey
 	PromptKillToEndKey
 	PromptKillToStartKey
+	PromptReplaceLineKey
 	PromptSentinelKey
 )
 

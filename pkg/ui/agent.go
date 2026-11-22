@@ -41,6 +41,10 @@ type AgentUIImpl struct {
 	ActivityStatsText    string
 	LastStatusBarText    string
 	PromptHint           string
+	HoverTarget          render.HoverTarget
+	SlashMenuOpen        bool
+	PromptHitboxes       []render.Hitbox
+	StatusHitbox         *render.Hitbox
 	LastCtrlD            time.Time
 	CtrlDTimer           *time.Timer
 
@@ -136,8 +140,57 @@ func (ui *AgentUIImpl) SetCollapseStatus(collapsed bool) {
 func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	ui.StateMu.Lock()
 	ui.Config = cfg
-	ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+	hoverEnabled := true
+	if cfg != nil {
+		ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+		ui.State.ShowTokens = cfg.ShowTokens
+		ui.State.Model = cfg.Model
+		ui.CollapseResults = cfg.CollapseResults
+		hoverEnabled = cfg.HoverTooltips
+		if !hoverEnabled {
+			ui.HoverTarget = render.HoverNone
+		}
+	}
+	ui.LastStatusBarText = ""
 	ui.StateMu.Unlock()
+	terminal.Default().SetMouseMotion(hoverEnabled)
+}
+
+// HitTestChrome checks 1-based terminal coordinates against active UI chrome hitboxes.
+func (ui *AgentUIImpl) HitTestChrome(x, y int) render.HoverTarget {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	if hit := render.HitTest(ui.PromptHitboxes, x, y); hit != render.HoverNone {
+		return hit
+	}
+	if ui.StatusHitbox != nil && ui.StatusHitbox.Row == y && x >= ui.StatusHitbox.StartCol && x <= ui.StatusHitbox.EndCol {
+		return ui.StatusHitbox.Target
+	}
+	return render.HoverNone
+}
+
+// SetHoverTarget updates the active hover target and reports whether it changed.
+func (ui *AgentUIImpl) SetHoverTarget(next render.HoverTarget) (changed bool, prev render.HoverTarget) {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	prev = ui.HoverTarget
+	if prev == next {
+		return false, prev
+	}
+	ui.HoverTarget = next
+	if prev == render.HoverCollapseBadge || next == render.HoverCollapseBadge {
+		ui.LastStatusBarText = ""
+	}
+	return true, prev
+}
+
+// SetSlashMenuOpen records whether the inline slash-command dropdown is currently visible.
+func (ui *AgentUIImpl) SetSlashMenuOpen(open bool) bool {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	changed := ui.SlashMenuOpen != open
+	ui.SlashMenuOpen = open
+	return changed
 }
 
 func (ui *AgentUIImpl) SetScrollRegionOffset(offset int) {

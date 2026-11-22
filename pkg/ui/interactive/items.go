@@ -113,6 +113,8 @@ func buildConfigSettingItems(cloned *config.Config) []*settingItem {
 		boolConfigItem("show_collapse_badge", "show collapse badge", "Show the tool output fold indicator on the status separator line", cloned),
 		boolConfigItem("show_git_branch", "show git branch", "Show the active Git branch on the prompt separator line", cloned),
 		boolConfigItem("show_sticky_question", "show sticky question", "Pin the active user question at the top of the viewport while scrolling history", cloned),
+		boolConfigItem("show_auto_badge", "show auto badge", "Show the bold amber loop indicator (♾︎) on the prompt line when auto approve is active", cloned),
+		boolConfigItem("hover_tooltips", "hover tooltips", "Expand status indicators on mouse hover and allow click-to-toggle badges", cloned),
 		boolConfigItem("show_microseconds", "show microseconds", "Show six fractional digits on elapsed timers", cloned),
 		selectConfigItem("theme", "theme", "Active UI color palette (default, minimal, matrix, amber, monokai)", style.GetThemeNames, &cloned.Theme, "theme"),
 		selectConfigItem("syntax_theme", "syntax theme", "Chroma syntax highlighting style for code preview blocks", style.GetSyntaxThemeNames, &cloned.SyntaxTheme, "syntax theme"),

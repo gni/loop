@@ -30,6 +30,8 @@ const (
 
 	// EnableMouseTracking enables X10 and SGR extended mouse reporting.
 	EnableMouseTracking = "\x1b[?1000h\x1b[?1006h"
+	// EnableMouseMotionTracking additionally enables DEC any-event motion reporting (?1003h) for hover tooltips.
+	EnableMouseMotionTracking = "\x1b[?1000h\x1b[?1003h\x1b[?1006h"
 	// DisableMouseTracking disables all standard and extended mouse reporting modes.
 	DisableMouseTracking = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
@@ -78,6 +80,7 @@ type Terminal struct {
 	mouseDepth      int
 	mouseSuspended  int
 	mouseGeneration uint64
+	mouseMotion     bool
 
 	keysWriter     io.Writer
 	keysDepth      int
@@ -172,6 +175,30 @@ func (t *Terminal) BeginBracketedPaste(w io.Writer) func() {
 	}
 }
 
+func (t *Terminal) enableMouseSequenceLocked() string {
+	if t.mouseMotion {
+		return EnableMouseMotionTracking
+	}
+	return EnableMouseTracking
+}
+
+// SetMouseMotion toggles DEC any-event mouse motion reporting (?1003h) for hover tooltips.
+func (t *Terminal) SetMouseMotion(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.mouseMotion == enabled {
+		return
+	}
+	t.mouseMotion = enabled
+	if t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
+		if enabled {
+			_, _ = io.WriteString(t.mouseWriter, EnableMouseMotionTracking)
+		} else {
+			_, _ = io.WriteString(t.mouseWriter, "\x1b[?1003l"+EnableMouseTracking)
+		}
+	}
+}
+
 // BeginMouseTracking enables mouse tracking until the returned cleanup is invoked.
 func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 	t.mu.Lock()
@@ -179,7 +206,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 		dest := t.resolveWriter(w)
 		t.mouseWriter = dest
 		if t.mouseSuspended == 0 {
-			_, _ = io.WriteString(dest, EnableMouseTracking)
+			_, _ = io.WriteString(dest, t.enableMouseSequenceLocked())
 		}
 	}
 	t.mouseDepth++
@@ -225,7 +252,7 @@ func (t *Terminal) SuspendMouseTracking() func() {
 			}
 			t.mouseSuspended--
 			if generation == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
-				_, _ = io.WriteString(t.mouseWriter, EnableMouseTracking)
+				_, _ = io.WriteString(t.mouseWriter, t.enableMouseSequenceLocked())
 			}
 		})
 	}
@@ -277,7 +304,7 @@ func (t *Terminal) EnterAltScreen(w io.Writer) {
 		if t.mouseSuspended > 0 {
 			t.mouseSuspended--
 			if mouseGen == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
-				_, _ = io.WriteString(t.mouseWriter, EnableMouseTracking)
+				_, _ = io.WriteString(t.mouseWriter, t.enableMouseSequenceLocked())
 			}
 		}
 	}

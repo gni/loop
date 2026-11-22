@@ -95,8 +95,10 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	stateSnapshot := ui.State
 	collapse := ui.CollapseResults
 	showCollapse := true
+	hoverCollapse := false
 	if ui.Config != nil {
 		showCollapse = ui.Config.ShowCollapseBadge
+		hoverCollapse = ui.Config.HoverTooltips && ui.HoverTarget == render.HoverCollapseBadge
 	}
 	lastText := ui.LastStatusBarText
 	ui.StateMu.Unlock()
@@ -109,7 +111,11 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 			indicator = "▸"
 		}
 	}
-	deltaKey := newStatusBarText + indicator
+	hoverTag := ""
+	if hoverCollapse {
+		hoverTag = ":H"
+	}
+	deltaKey := newStatusBarText + indicator + hoverTag
 
 	if deltaKey == lastText {
 		return
@@ -125,5 +131,8 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 
 	// Pinned controls bypass transcript writers, which acquire TerminalMu and
 	// would otherwise capture screen-control bytes as conversation output.
-	render.DrawStatusBar(agent.UnwrapWriter(w), theme, width, height, scrollBottom, indicator, newStatusBarText)
+	hb := render.DrawStatusBarWithHover(agent.UnwrapWriter(w), theme, width, height, scrollBottom, indicator, collapse, hoverCollapse, newStatusBarText)
+	ui.StateMu.Lock()
+	ui.StatusHitbox = hb
+	ui.StateMu.Unlock()
 }

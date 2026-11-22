@@ -38,7 +38,12 @@ func (r *scrollRow) classifyMeta() {
 	plain := strings.TrimRight(style.StripAnsi(r.text), " \t\r\n")
 	trimmed := strings.TrimSpace(plain)
 	r.isPromptRule = !r.soft && strings.HasPrefix(trimmed, "───") && strings.Count(trimmed, "─") >= 3
-	if strings.HasPrefix(plain, "> ") {
+	if strings.HasPrefix(plain, "▹ ") {
+		q := strings.TrimSpace(strings.TrimPrefix(plain, "▹ "))
+		if q != "" {
+			r.question = q
+		}
+	} else if strings.HasPrefix(plain, "> ") {
 		q := strings.TrimSpace(strings.TrimPrefix(plain, "> "))
 		if q != "" {
 			r.question = q

@@ -68,6 +68,9 @@ func (h *ChatHistory) openHistory(id string, initial []db.Message) (displayHisto
 		}
 		r, err = store.OpenHistoryLazyContext(ctx, id)
 	}
+	if os.IsNotExist(err) {
+		err = nil
+	}
 	if err != nil || r == nil {
 		return fallback, err
 	}

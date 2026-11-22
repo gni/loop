@@ -20,44 +20,46 @@ import (
 )
 
 type KeyInterceptorReader struct {
-	InputContext       context.Context
-	R                  io.Reader
-	Agent              *agent.Agent
-	Theme              style.UITheme
-	W                  io.Writer
-	RL                 *term.Terminal
-	DraftMu            sync.Mutex
-	CurrentInputLine   string
-	CurrentInputPos    int
-	Messages           *[]db.Message
-	PasteRemaining     []byte
-	InputRemaining     []byte // Unprocessed input after a completed paste frame.
-	PasteStartPending  []byte
-	PastedText         string
-	CtrlCInterrupted   bool
-	MAM                *swarm.MultiAgentManager
-	AllowedTools       []string
-	InputChan          chan byte
-	ApprovalChan       chan byte
-	ApprovalReader     *ApprovalByteReader
-	approvalCancel     func()
-	InjectChan         chan byte
-	TypeAheadBuffer    []byte
-	TypeAheadPastes    []string
-	HistoryIndex       int
-	SavedTypeAhead     []byte
-	Hist               term.History
-	InBracketedPaste   bool
-	BracketedBuffer    []byte
-	bracketedTruncated bool
-	bracketedTail      []byte
-	IsAtMainPrompt     atomic.Bool
-	PastedCodeBlocks   map[string]string
-	PendingPastes      []string // Bulk edits consumed by the foreground prompt editor.
-	PastedLiterals     []string // Clipboard text or previews in the current prompt.
-	PromptQueue        []PromptInput
-	PromptQueueMu      sync.Mutex
-	PasteCounter       int
+	InputContext          context.Context
+	R                     io.Reader
+	Agent                 *agent.Agent
+	Theme                 style.UITheme
+	W                     io.Writer
+	RL                    *term.Terminal
+	DraftMu               sync.Mutex
+	CurrentInputLine      string
+	CurrentInputPos       int
+	PendingLineReplace    string
+	HasPendingLineReplace bool
+	Messages              *[]db.Message
+	PasteRemaining        []byte
+	InputRemaining        []byte // Unprocessed input after a completed paste frame.
+	PasteStartPending     []byte
+	PastedText            string
+	CtrlCInterrupted      bool
+	MAM                   *swarm.MultiAgentManager
+	AllowedTools          []string
+	InputChan             chan byte
+	ApprovalChan          chan byte
+	ApprovalReader        *ApprovalByteReader
+	approvalCancel        func()
+	InjectChan            chan byte
+	TypeAheadBuffer       []byte
+	TypeAheadPastes       []string
+	HistoryIndex          int
+	SavedTypeAhead        []byte
+	Hist                  term.History
+	InBracketedPaste      bool
+	BracketedBuffer       []byte
+	bracketedTruncated    bool
+	bracketedTail         []byte
+	IsAtMainPrompt        atomic.Bool
+	PastedCodeBlocks      map[string]string
+	PendingPastes         []string // Bulk edits consumed by the foreground prompt editor.
+	PastedLiterals        []string // Clipboard text or previews in the current prompt.
+	PromptQueue           []PromptInput
+	PromptQueueMu         sync.Mutex
+	PasteCounter          int
 
 	OnClearPromptHint       func()
 	OnRedrawScreen          func()
@@ -99,6 +101,31 @@ func (ki *KeyInterceptorReader) HasPromptDraft() bool {
 	ki.DraftMu.Lock()
 	defer ki.DraftMu.Unlock()
 	return ki.CurrentInputLine != ""
+}
+
+func (ki *KeyInterceptorReader) SetPendingLineReplace(text string) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.PendingLineReplace = text
+	ki.HasPendingLineReplace = true
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) TakePendingLineReplace() (string, bool) {
+	if ki == nil {
+		return "", false
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	if !ki.HasPendingLineReplace {
+		return "", false
+	}
+	text := ki.PendingLineReplace
+	ki.PendingLineReplace = ""
+	ki.HasPendingLineReplace = false
+	return text, true
 }
 
 func (ki *KeyInterceptorReader) GetRL() *term.Terminal {
@@ -288,6 +315,10 @@ func drainByteChannel(ch <-chan byte) {
 func (ki *KeyInterceptorReader) Drain() {
 	drainByteChannel(ki.InputChan)
 	drainByteChannel(ki.InjectChan)
+	ki.DraftMu.Lock()
+	ki.PendingLineReplace = ""
+	ki.HasPendingLineReplace = false
+	ki.DraftMu.Unlock()
 	ki.PendingPastes = nil
 	ki.PastedLiterals = nil
 	ki.PasteRemaining = nil
@@ -312,7 +343,7 @@ func (ki *KeyInterceptorReader) resolveTargetWriter(fallback io.Writer) io.Write
 func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 	live := ki.Agent.LiveSettings()
 	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
-	promptPrefix := "> "
+	promptPrefix := "▹ "
 	if ki.MAM != nil {
 		if name := ki.MAM.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)

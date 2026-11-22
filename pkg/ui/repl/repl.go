@@ -156,15 +156,28 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		t.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
 			pos = min(max(0, pos), len(line))
 			kiReader.SetPromptDraft(line, utf8.RuneCountInString(line[:pos]))
+			if key == '\t' && chatHistory.SlashMenuActive() {
+				if fill, ok := chatHistory.SlashMenuTabComplete(); ok && fill != line {
+					kiReader.SetPromptDraft(fill, utf8.RuneCountInString(fill))
+					chatHistory.SyncSlashMenu(fill)
+					return fill, len(fill), true
+				}
+			}
 			if newLine, newPos, handled := handlePromptEditKey(line, pos, key, a, hist, kiReader); handled {
 				newPos = min(max(0, newPos), len(newLine))
 				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
+				if newLine != line {
+					chatHistory.SyncSlashMenu(newLine)
+				}
 				return newLine, newPos, true
 			}
 			newLine, newPos, completed := autoCompleteCallback(line, pos, key, a)
 			if completed {
 				newPos = min(max(0, newPos), len(newLine))
 				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
+				if newLine != line {
+					chatHistory.SyncSlashMenu(newLine)
+				}
 			}
 			return newLine, newPos, completed
 		}
@@ -253,6 +266,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			line, err = rl.ReadLine()
 			kiReader.IsAtMainPrompt.Store(false)
 			kiReader.SetPromptDraft("", 0)
+			chatHistory.CloseSlashMenu()
 			term.Restore(fd, oldState)
 			if ctx.Err() != nil {
 				break

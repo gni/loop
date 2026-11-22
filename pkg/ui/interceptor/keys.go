@@ -213,6 +213,6 @@ func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback() {
 		if !live.ShowReasoningBadge {
 			effort = "hidden"
 		}
-		fmt.Fprint(ki.W, render.FormatPromptSeparator(live.ShowThinking, effort, theme, width))
+		fmt.Fprint(ki.W, render.FormatPromptSeparatorWithAuto(live.ShowThinking, effort, live.ShowAutoBadge, live.AutoApprove, theme, width))
 	}
 }

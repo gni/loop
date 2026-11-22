@@ -66,6 +66,9 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 	writer.inner = &historyOutput{destination: writer.inner, history: h}
 	getUI().SetChatHistory(h)
 	if reader != nil && reader.W != nil {
+		if a != nil {
+			terminal.Default().SetMouseMotion(a.LiveSettings().HoverTooltips)
+		}
 		h.stopMouse = terminal.Default().BeginMouseTracking(reader.W)
 	}
 	TerminalMu.Unlock()
@@ -123,6 +126,14 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	h.searchPending = false
 	h.searchScan = nil
 	h.searchRow = -1
+	h.slashForced = false
+	h.slashDismissedQuery = ""
+	h.slashItems = nil
+	h.slashQuery = ""
+	h.slashTitle = ""
+	h.slashSelected = 0
+	h.slashScroll = 0
+	h.setSlashMenuOpenLocked(false)
 	h.drawn, h.drawnHint = nil, ""
 	h.logoFrame = 0
 	h.buffer = buffer

@@ -73,6 +73,8 @@ type LiveSettingsSnapshot struct {
 	ShowCollapseBadge  bool
 	ShowGitBranch      bool
 	ShowStickyQuestion bool
+	ShowAutoBadge      bool
+	HoverTooltips      bool
 	MarkdownRender     bool
 	ShowMicroseconds   bool
 	StreamWrites       bool
@@ -88,12 +90,12 @@ type LiveSettingsSnapshot struct {
 // concurrent readers and nil agents or configurations.
 func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 	if a == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true}
 	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true}
 	}
 	cfg := a.Config
 	return LiveSettingsSnapshot{
@@ -107,6 +109,8 @@ func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 		ShowCollapseBadge:  cfg.ShowCollapseBadge,
 		ShowGitBranch:      cfg.ShowGitBranch,
 		ShowStickyQuestion: cfg.ShowStickyQuestion,
+		ShowAutoBadge:      cfg.ShowAutoBadge,
+		HoverTooltips:      cfg.HoverTooltips,
 		MarkdownRender:     cfg.MarkdownRender,
 		ShowMicroseconds:   cfg.ShowMicroseconds,
 		StreamWrites:       cfg.StreamWrites,

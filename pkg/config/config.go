@@ -83,6 +83,8 @@ type Config struct {
 	ShowCollapseBadge        bool                       `json:"show_collapse_badge"`
 	ShowGitBranch            bool                       `json:"show_git_branch"`
 	ShowStickyQuestion       bool                       `json:"show_sticky_question"`
+	ShowAutoBadge            bool                       `json:"show_auto_badge"`
+	HoverTooltips            bool                       `json:"hover_tooltips"`
 	Theme                    string                     `json:"theme"`
 	DirectCommands           bool                       `json:"direct_commands"`
 	CertFile                 string                     `json:"cert_file,omitempty"`

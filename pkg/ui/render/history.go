@@ -120,7 +120,7 @@ func PrintSessionHistory(
 					fmt.Fprintln(w)
 				}
 				printPromptDivider(w, borderStyle)
-				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), cmdStr)
+				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), cmdStr)
 				if output != "" {
 					fmt.Fprint(w, output)
 				}
@@ -132,7 +132,7 @@ func PrintSessionHistory(
 				if lastRole != "" {
 					fmt.Fprintln(w)
 				}
-				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> !"), cmdStr)
+				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), cmdStr)
 				if output != "" {
 					fmt.Fprint(w, output)
 				}
@@ -153,7 +153,7 @@ func PrintSessionHistory(
 				spacing.EnsureActivityGap()
 			}
 			printPromptDivider(w, borderStyle)
-			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("> "), msg.Content)
+			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), msg.Content)
 
 		case "assistant":
 			reasoningVisible := cfg != nil && cfg.ShowThinking && strings.TrimSpace(msg.ReasoningContent) != ""

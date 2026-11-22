@@ -59,6 +59,8 @@ func DefaultConfig() *Config {
 		ShowCollapseBadge:        true,
 		ShowGitBranch:            true,
 		ShowStickyQuestion:       true,
+		ShowAutoBadge:            true,
+		HoverTooltips:            true,
 		ToolProtocol:             "json",
 		SystemInstruction:        DefaultSystemInstruction,
 		ShowThinking:             false,

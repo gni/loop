@@ -1,13 +1,165 @@
 package ui
 
 import (
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"loop/pkg/agent"
 	"loop/pkg/terminal"
+	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
+
+func parseSGRMouse(key []byte) (button, x, y int, release, ok bool) {
+	if len(key) < 9 || key[0] != 0x1b || key[1] != '[' || key[2] != '<' {
+		return 0, 0, 0, false, false
+	}
+	last := key[len(key)-1]
+	if last != 'M' && last != 'm' {
+		return 0, 0, 0, false, false
+	}
+	release = last == 'm'
+	vals := [3]int{}
+	idx := 0
+	hasDigit := false
+	for i := 3; i < len(key)-1; i++ {
+		c := key[i]
+		if c >= '0' && c <= '9' {
+			vals[idx] = vals[idx]*10 + int(c-'0')
+			hasDigit = true
+		} else if c == ';' && hasDigit && idx < 2 {
+			idx++
+			hasDigit = false
+		} else {
+			return 0, 0, 0, false, false
+		}
+	}
+	if idx != 2 || !hasDigit {
+		return 0, 0, 0, false, false
+	}
+	return vals[0], vals[1], vals[2], release, true
+}
+
+func isPromptHoverTarget(t render.HoverTarget) bool {
+	return t == render.HoverCommandsButton || t == render.HoverAutoBadge || t == render.HoverReasoningBadge || t == render.HoverGitBranch
+}
+
+func (h *ChatHistory) handleHoverMotion(x, y int) {
+	if h.handleSlashMenuHover(x, y) {
+		state := getUI()
+		if changed, prev := state.SetHoverTarget(render.HoverNone); changed && h.a != nil && h.reader != nil && h.reader.W != nil {
+			live := h.a.LiveSettings()
+			theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+			TerminalMu.Lock()
+			if isPromptHoverTarget(prev) {
+				DrawStaticPromptSeparatorLocked(h.reader.W, live.ShowThinking, live.ReasoningEffort, theme)
+			}
+			if prev == render.HoverCollapseBadge {
+				DrawStatusBarLocked(h.reader.W, theme)
+			}
+			TerminalMu.Unlock()
+		}
+		return
+	}
+	if h.a != nil && !h.a.LiveSettings().HoverTooltips {
+		return
+	}
+	state := getUI()
+	next := state.HitTestChrome(x, y)
+	changed, prev := state.SetHoverTarget(next)
+	if !changed {
+		return
+	}
+	if h.a == nil || h.reader == nil || h.reader.W == nil {
+		return
+	}
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	if isPromptHoverTarget(prev) || isPromptHoverTarget(next) {
+		DrawStaticPromptSeparatorLocked(h.reader.W, live.ShowThinking, live.ReasoningEffort, theme)
+	}
+	if prev == render.HoverCollapseBadge || next == render.HoverCollapseBadge {
+		DrawStatusBarLocked(h.reader.W, theme)
+	}
+}
+
+func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte) {
+	if h.a == nil || h.reader == nil {
+		return false, nil
+	}
+	switch target {
+	case render.HoverCommandsButton:
+		return true, h.toggleCommandsButton()
+	case render.HoverAutoBadge:
+		cfg, err := h.a.Configuration()
+		if err != nil || cfg == nil {
+			return false, nil
+		}
+		cfg.AutoApprove = !cfg.AutoApprove
+		if err := h.a.UpdateConfig(cfg); !agent.ConfigApplied(err) {
+			return false, nil
+		}
+		_ = h.a.SaveConfig()
+		live := h.a.LiveSettings()
+		theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+		TerminalMu.Lock()
+		DrawStaticPromptSeparatorLocked(h.reader.W, live.ShowThinking, live.ReasoningEffort, theme)
+		TerminalMu.Unlock()
+		return true, nil
+	case render.HoverReasoningBadge:
+		order := []string{"off", "low", "medium", "high", "max"}
+		if err := h.a.UpdateLiveSettings(func(next *agent.LiveSettings) {
+			cur := strings.ToLower(strings.TrimSpace(next.ReasoningEffort))
+			if cur == "" || cur == "none" {
+				cur = "off"
+			}
+			nextIdx := 1
+			for i, v := range order {
+				if v == cur {
+					nextIdx = (i + 1) % len(order)
+					break
+				}
+			}
+			next.ReasoningEffort = order[nextIdx]
+		}); err != nil {
+			return false, nil
+		}
+		_ = h.a.SaveConfig()
+		live := h.a.LiveSettings()
+		theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+		TerminalMu.Lock()
+		DrawStaticPromptSeparatorLocked(h.reader.W, live.ShowThinking, live.ReasoningEffort, theme)
+		TerminalMu.Unlock()
+		return true, nil
+	case render.HoverCollapseBadge:
+		if err := h.a.UpdateLiveSettings(func(next *agent.LiveSettings) {
+			next.CollapseResults = !next.CollapseResults
+		}); err != nil {
+			return false, nil
+		}
+		_ = h.a.SaveConfig()
+		live := h.a.LiveSettings()
+		SetCollapseStatus(live.CollapseResults)
+		theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+		TerminalMu.Lock()
+		getUI().StateMu.Lock()
+		getUI().LastStatusBarText = ""
+		getUI().StateMu.Unlock()
+		DrawStatusBarLocked(h.reader.W, theme)
+		if h.reader.ActiveTurn.Load() {
+			h.reader.PendingCollapseToggles.Add(1)
+		} else if !h.closed.Load() {
+			h.drawn = nil
+			h.paintLocked()
+		}
+		TerminalMu.Unlock()
+		return true, nil
+	default:
+		return false, nil
+	}
+}
 
 func (h *ChatHistory) FilterInput(key []byte) []byte {
 	if len(key) == 0 || h.closed.Load() {
@@ -30,6 +182,60 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		}
 		return key
 	}
+	// Fast-path SGR/X10 mouse motion, chrome clicks, and slash menu interactions without acquiring TerminalMu on ordinary moves.
+	if mouse && !approval {
+		if btn, mx, my, release, ok := parseSGRMouse(key); ok {
+			if release {
+				return nil
+			}
+			if btn&32 != 0 {
+				h.handleHoverMotion(mx, my)
+				return nil
+			}
+			switch btn & 0xc3 {
+			case 0:
+				if hit := getUI().HitTestChrome(mx, my); hit != render.HoverNone {
+					if handled, emit := h.handleChromeClick(hit); handled {
+						return emit
+					}
+				}
+				if handled, emit := h.handleSlashMenuClick(mx, my); handled {
+					return emit
+				}
+			case 64:
+				if h.handleSlashMenuWheel(-1, mx, my) {
+					return nil
+				}
+			case 65:
+				if h.handleSlashMenuWheel(1, mx, my) {
+					return nil
+				}
+			}
+		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {
+			btn := (key[3] - 32) & 0xc3
+			mx := int(key[4]) - 32
+			my := int(key[5]) - 32
+			switch btn {
+			case 0:
+				if hit := getUI().HitTestChrome(mx, my); hit != render.HoverNone {
+					if handled, emit := h.handleChromeClick(hit); handled {
+						return emit
+					}
+				}
+				if handled, emit := h.handleSlashMenuClick(mx, my); handled {
+					return emit
+				}
+			case 64:
+				if h.handleSlashMenuWheel(-1, mx, my) {
+					return nil
+				}
+			case 65:
+				if h.handleSlashMenuWheel(1, mx, my) {
+					return nil
+				}
+			}
+		}
+	}
 	// Approval arrows and shortcuts belong to the choice menu. Bring it back
 	// into view before forwarding input; scroll keys must never select a choice.
 	if approval && !mouse && !approvalHistoryNavigation(action) {
@@ -43,6 +249,18 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	}
 	if !approval && h.filterSearchInput(key) {
 		return nil
+	}
+	if !approval && !mouse && h.slashMenuOpenAtomic.Load() {
+		switch action {
+		case "\r":
+			if handled, emit := h.handleSlashMenuEnter(); handled {
+				return emit
+			}
+		case "\x1b":
+			if handled, emit := h.handleSlashMenuEscape(); handled {
+				return emit
+			}
+		}
 	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -80,31 +298,24 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		}
 	default:
 		navigation = mouse
-		if strings.HasPrefix(action, "\x1b[<") && strings.HasSuffix(action, "M") {
-			fields := strings.Split(action[3:len(action)-1], ";")
-			if len(fields) == 3 {
-				button, err := strconv.Atoi(fields[0])
-				if err == nil {
-					if button&0xc3 == 0 && h.browsing {
-						x, _ := strconv.Atoi(fields[1])
-						if y, e := strconv.Atoi(fields[2]); e == nil {
-							if y == h.buffer.Height+style.ActivityGapLines+1 {
-								action = "latest"
-							} else if y == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
-								if x >= max(1, h.buffer.Width-4) {
-									action = "next_question"
-								} else {
-									action = "prev_question"
-								}
-							}
+		if button, x, y, release, ok := parseSGRMouse(key); ok {
+			if !release && button&32 == 0 {
+				if button&0xc3 == 0 && h.browsing {
+					if y == h.buffer.Height+style.ActivityGapLines+1 {
+						action = "latest"
+					} else if y == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+						if x >= max(1, h.buffer.Width-4) {
+							action = "next_question"
+						} else {
+							action = "prev_question"
 						}
 					}
-					switch button & 0xc3 {
-					case 64:
-						delta = -3
-					case 65:
-						delta = 3
-					}
+				}
+				switch button & 0xc3 {
+				case 64:
+					delta = -3
+				case 65:
+					delta = 3
 				}
 			}
 		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {

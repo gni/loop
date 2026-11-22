@@ -35,7 +35,7 @@ func renderTurnPromptHeader(
 	if !live.ShowReasoningBadge {
 		effort = "hidden"
 	}
-	fmt.Fprint(w, render.FormatPromptSeparator(live.ShowThinking, effort, theme, width, branch))
+	fmt.Fprint(w, render.FormatPromptSeparatorWithAuto(live.ShowThinking, effort, live.ShowAutoBadge, live.AutoApprove, theme, width, branch))
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	if fromQueue {
