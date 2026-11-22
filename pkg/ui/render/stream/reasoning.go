@@ -10,6 +10,26 @@ import (
 	"loop/pkg/ui/style"
 )
 
+type discardSizedWriter struct {
+	width int
+}
+
+func (d discardSizedWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (d discardSizedWriter) MarkdownWidth() int          { return d.width }
+
+func (sr *StreamRenderer) rehydrateLiveThinkingLocked() {
+	rebuilt := markdown.NewLiveThinkingMarkdownRenderer(discardSizedWriter{width: markdown.RenderWidth(sr.w)}, sr.theme)
+	if len(sr.liveReplayEvents) > 0 {
+		last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
+		if last.kind == "reasoning" {
+			rebuilt.Write(last.text)
+		}
+	}
+	rebuilt.SetWriter(sr.w)
+	sr.liveThinking = rebuilt
+	sr.reasoningEndedWithNewline = sr.liveThinking.EndedWithNewline()
+}
+
 func (sr *StreamRenderer) WriteReasoning(chunk string) {
 	if !sr.showThinking || chunk == "" {
 		return
@@ -27,8 +47,14 @@ func (sr *StreamRenderer) WriteReasoning(chunk string) {
 		}
 	}
 
-	if !sr.reasoningHasText && strings.TrimSpace(chunk) == "" {
-		return
+	if !sr.reasoningHasText {
+		if strings.TrimSpace(chunk) == "" {
+			return
+		}
+		chunk = strings.TrimLeft(chunk, "\r\n")
+		if chunk == "" {
+			return
+		}
 	}
 
 	sr.writeReasoningChunk(chunk)
@@ -58,6 +84,7 @@ func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 		sr.reasoningNewlines = 0
 		sr.reasoningLineCount = 0
 		sr.reasoningSummaryLines = 0
+		sr.liveThinking.ResetAtLineStart()
 	}
 
 	hadReasoningText := sr.reasoningHasText
@@ -86,6 +113,11 @@ func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 		sr.reasoningEndedWithNewline = true
 		return
 	}
+	if sr.markdownEnabled {
+		sr.liveThinking.Write(chunk)
+		sr.reasoningEndedWithNewline = sr.liveThinking.EndedWithNewline()
+		return
+	}
 	sr.reasoningEndedWithNewline = strings.HasSuffix(chunk, "\n")
 	fmt.Fprint(sr.w, startSeq+chunk+resetSeq)
 }
@@ -101,7 +133,12 @@ func (sr *StreamRenderer) endThinking() {
 		rem := sr.echoFilter.Flush()
 		sr.echoFilter = nil
 		if rem != "" && strings.TrimSpace(rem) != "" {
-			sr.writeReasoningChunk(rem)
+			if !sr.reasoningHasText {
+				rem = strings.TrimLeft(rem, "\r\n")
+			}
+			if rem != "" {
+				sr.writeReasoningChunk(rem)
+			}
 		}
 	}
 
@@ -110,16 +147,30 @@ func (sr *StreamRenderer) endThinking() {
 	}
 	sr.inThinking = false
 
-	if sr.reasoningResetSequence != "" {
-		fmt.Fprint(sr.w, sr.reasoningResetSequence)
-		sr.reasoningResetSequence = ""
-	}
 	if !sr.reasoningHasText {
+		sr.reasoningResetSequence = ""
+		sr.liveThinking.ResetAtLineStart()
 		return
 	}
-	if !sr.reasoningEndedWithNewline {
-		fmt.Fprint(sr.w, "\n")
+
+	if !sr.reasoningCollapsed {
+		if sr.markdownEnabled {
+			sr.liveThinking.EnsureTrailingNewline()
+			sr.reasoningEndedWithNewline = true
+			sr.reasoningResetSequence = ""
+		} else {
+			if sr.reasoningResetSequence != "" {
+				fmt.Fprint(sr.w, sr.reasoningResetSequence)
+				sr.reasoningResetSequence = ""
+			}
+			if !sr.reasoningEndedWithNewline {
+				fmt.Fprint(sr.w, "\n")
+			}
+		}
+	} else {
+		sr.reasoningResetSequence = ""
 	}
+	sr.liveThinking.ResetAtLineStart()
 
 	elapsed := time.Since(sr.reasoningStart).Seconds()
 	sr.reasoningDuration = elapsed

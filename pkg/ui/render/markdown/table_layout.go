@@ -22,7 +22,7 @@ func (t *markdownTable) measureRowsWithHeuristic(rows [][]string, streamingSampl
 	count := len(t.header)
 	t.preferred, t.minimum, t.numeric = make([]int, count), make([]int, count), make([]bool, count)
 	for i, label := range t.header {
-		headerWidth := style.CellWidth(RenderInlineMarkdown(label, false, t.theme))
+		headerWidth := style.CellWidth(RenderInlineMarkdown(label, t.thinking, t.theme))
 		allNumeric := true
 		hasValue := false
 		maxValWidth := 0
@@ -30,7 +30,7 @@ func (t *markdownTable) measureRowsWithHeuristic(rows [][]string, streamingSampl
 			if i >= len(row) {
 				continue
 			}
-			value := style.StripAnsi(RenderInlineMarkdown(style.SanitizeTerminalText(row[i]), false, t.theme))
+			value := style.StripAnsi(RenderInlineMarkdown(style.SanitizeTerminalText(row[i]), t.thinking, t.theme))
 			if value == "" {
 				continue
 			}

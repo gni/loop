@@ -165,13 +165,14 @@ type markdownTable struct {
 	started   bool
 	rows      int
 	theme     style.UITheme
+	thinking  bool
 }
 
-func newMarkdownTable(w io.Writer, header []string, align []tableAlignment, theme style.UITheme) *markdownTable {
+func newMarkdownTable(w io.Writer, header []string, align []tableAlignment, theme style.UITheme, thinking bool) *markdownTable {
 	for i := range header {
 		header[i] = style.SanitizeTerminalText(header[i])
 	}
-	return &markdownTable{header: header, align: align, width: markdownWidth(w), theme: theme}
+	return &markdownTable{header: header, align: align, width: markdownWidth(w), theme: theme, thinking: thinking}
 }
 
 func (t *markdownTable) border(left, middle, right string) string {
@@ -195,7 +196,7 @@ func (t *markdownTable) start(w io.Writer, first []string) {
 	t.layout(markdownWidth(w))
 	t.started = true
 	if t.stacked {
-		heading := renderInlineMarkdownBlock(strings.Join(t.header, " · "), false, t.theme, MarkdownHeading, 2)
+		heading := renderInlineMarkdownBlock(strings.Join(t.header, " · "), t.thinking, t.theme, MarkdownHeading, 2)
 		fmt.Fprint(w, strings.Join(wrapMarkdownCell(heading, t.width), "\n"))
 		return
 	}
@@ -215,10 +216,10 @@ func (t *markdownTable) writeRow(w io.Writer, cells []string) {
 			if i < len(cells) {
 				value = cells[i]
 			}
-			label = renderInlineMarkdownBlock(label+":", false, t.theme, MarkdownHeading, 2)
+			label = renderInlineMarkdownBlock(label+":", t.thinking, t.theme, MarkdownHeading, 2)
 			fmt.Fprint(w, "\n", strings.Join(wrapMarkdownCell(label, t.width), "\n"))
 			indent := min(2, max(0, t.width-2))
-			for _, line := range wrapMarkdownCell(RenderInlineMarkdown(style.SanitizeTerminalText(value), false, t.theme), max(1, t.width-indent)) {
+			for _, line := range wrapMarkdownCell(RenderInlineMarkdown(style.SanitizeTerminalText(value), t.thinking, t.theme), max(1, t.width-indent)) {
 				fmt.Fprint(w, "\n", strings.Repeat(" ", indent), line)
 			}
 		}
@@ -240,9 +241,9 @@ func (t *markdownTable) writeCells(w io.Writer, cells []string, heading bool) {
 		if i < len(cells) {
 			value = style.SanitizeTerminalText(cells[i])
 		}
-		formatted := RenderInlineMarkdown(value, false, t.theme)
+		formatted := RenderInlineMarkdown(value, t.thinking, t.theme)
 		if heading {
-			formatted = renderInlineMarkdownBlock(value, false, t.theme, MarkdownHeading, 2)
+			formatted = renderInlineMarkdownBlock(value, t.thinking, t.theme, MarkdownHeading, 2)
 		}
 		columns[i] = wrapMarkdownCell(formatted, t.widths[i])
 		height = max(height, len(columns[i]))

@@ -74,10 +74,18 @@ func PrintSessionHistory(
 	hooks HistoryRenderHooks,
 ) {
 	if hooks.RenderMarkdown == nil {
-		hooks.RenderMarkdown = markdown.RenderMarkdownContent
+		if cfg != nil && !cfg.MarkdownRender {
+			hooks.RenderMarkdown = markdown.RenderRawMarkdownContent
+		} else {
+			hooks.RenderMarkdown = markdown.RenderMarkdownContent
+		}
 	}
 	if hooks.RenderReasoning == nil {
-		hooks.RenderReasoning = markdown.RenderReasoningMarkdownContent
+		if cfg != nil && !cfg.MarkdownRender {
+			hooks.RenderReasoning = markdown.RenderRawReasoningContent
+		} else {
+			hooks.RenderReasoning = markdown.RenderReasoningMarkdownContent
+		}
 	}
 	if hooks.RenderError == nil {
 		hooks.RenderError = func(w io.Writer, message string, theme style.UITheme) {
@@ -187,7 +195,7 @@ func PrintSessionHistory(
 						if collapse {
 							fmt.Fprintln(w, FormatThinkingSummary(theme, msg.ReasoningDuration, false, ThinkingLineCount(cleanReasoning), cfg.ShowMicroseconds))
 						} else {
-							hooks.RenderReasoning(w, strings.TrimRight(cleanReasoning, "\r\n"), theme)
+							hooks.RenderReasoning(w, strings.Trim(cleanReasoning, "\r\n"), theme)
 							fmt.Fprintln(w)
 							labelStyle := borderStyle.Italic(true)
 							if msg.ReasoningDuration > 0 {

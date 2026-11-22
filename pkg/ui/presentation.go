@@ -28,6 +28,7 @@ func PrintSessionHistory(w io.Writer, messages []db.Message, theme UITheme, cfg 
 	}
 	if cfg != nil && !cfg.MarkdownRender {
 		hooks.RenderMarkdown = render.RenderRawMarkdownContent
+		hooks.RenderReasoning = render.RenderRawReasoningContent
 	}
 	render.PrintSessionHistory(w, messages, theme, cfg, isGen, collapse, hooks)
 }

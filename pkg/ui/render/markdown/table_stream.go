@@ -54,7 +54,7 @@ func (r *LiveMarkdownRenderer) writeTableRune(ch rune, plain *strings.Builder) b
 }
 
 func (r *LiveMarkdownRenderer) beginTable(header []string, align []tableAlignment, newline bool) {
-	r.table = liveMarkdownTable{active: newMarkdownTable(r.w, header, align, r.theme), newline: newline}
+	r.table = liveMarkdownTable{active: newMarkdownTable(r.w, header, align, r.theme, r.thinking), newline: newline}
 	r.endedWithNewline = false
 }
 

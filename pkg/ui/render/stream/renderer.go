@@ -48,6 +48,7 @@ type StreamRenderer struct {
 	hasWrittenThoughts   bool
 	parser               *JSONStreamParser
 	live                 *markdown.LiveMarkdownRenderer
+	liveThinking         *markdown.LiveMarkdownRenderer
 	writeResultLines     map[int]int
 	sequentialResults    bool
 	toolStates           map[string]agent.ToolLifecycleEvent
@@ -76,6 +77,7 @@ func NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, stre
 		beforeWrite:          options.BeforeWrite,
 		lastEndedWithNewline: true,
 		live:                 markdown.NewLiveMarkdownRenderer(w, theme),
+		liveThinking:         markdown.NewLiveThinkingMarkdownRenderer(w, theme),
 		writeResultLines:     make(map[int]int),
 		toolStates:           make(map[string]agent.ToolLifecycleEvent),
 		toolIDs:              make(map[int]string),
@@ -111,6 +113,9 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 				sr.reasoningSummaryLine = position - 1
 			}
 			sr.reasoningEndedWithNewline = true
+			sr.liveThinking.ResetAtLineStart()
+		} else if sr.markdownEnabled {
+			sr.rehydrateLiveThinkingLocked()
 		} else if len(sr.liveReplayEvents) > 0 {
 			last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
 			sr.reasoningEndedWithNewline = strings.HasSuffix(last.text, "\n")

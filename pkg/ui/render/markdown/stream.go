@@ -40,8 +40,9 @@ type livePrefixDecision struct {
 
 // LiveMarkdownRenderer incrementally styles streamed markdown text.
 type LiveMarkdownRenderer struct {
-	w     io.Writer
-	theme style.UITheme
+	w        io.Writer
+	theme    style.UITheme
+	thinking bool
 
 	atLineStart bool
 	prefix      strings.Builder
@@ -64,13 +65,30 @@ type LiveMarkdownRenderer struct {
 
 // NewLiveMarkdownRenderer creates a new streaming markdown renderer.
 func NewLiveMarkdownRenderer(w io.Writer, theme style.UITheme) *LiveMarkdownRenderer {
+	return newLiveMarkdownRenderer(w, theme, false)
+}
+
+// NewLiveThinkingMarkdownRenderer creates a streaming markdown renderer styled
+// for agent thinking/reasoning output.
+func NewLiveThinkingMarkdownRenderer(w io.Writer, theme style.UITheme) *LiveMarkdownRenderer {
+	return newLiveMarkdownRenderer(w, theme, true)
+}
+
+func newLiveMarkdownRenderer(w io.Writer, theme style.UITheme, thinking bool) *LiveMarkdownRenderer {
 	return &LiveMarkdownRenderer{
 		w:                w,
 		theme:            theme,
+		thinking:         thinking,
 		atLineStart:      true,
 		endedWithNewline: true,
-		inline:           NewInlineMarkdownWriter(w, theme, MarkdownBody, 0, false),
+		inline:           NewInlineMarkdownWriter(w, theme, MarkdownBody, 0, thinking),
 	}
+}
+
+// SetWriter replaces the destination writer while keeping incremental parser state.
+func (r *LiveMarkdownRenderer) SetWriter(w io.Writer) {
+	r.w = w
+	r.inline.SetWriter(w)
 }
 
 func (r *LiveMarkdownRenderer) Write(chunk string) {
@@ -148,7 +166,11 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 		case livePrefixQuote:
 			r.prefix.Reset()
 			r.atLineStart = false
-			r.emitStyledMarker("┃ ", r.theme.Border, plain)
+			markerColor := r.theme.Border
+			if r.thinking {
+				markerColor = thinkingBaseColor(r.theme)
+			}
+			r.emitStyledMarker("┃ ", markerColor, plain)
 			r.inline.SetBlock(MarkdownQuote, 0)
 			for _, rem := range decision.remainder {
 				r.writeInlineRune(rem, plain)
@@ -158,14 +180,22 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 			r.prefix.Reset()
 			r.atLineStart = false
 			r.flushPlain(plain)
-			fmt.Fprintf(r.w, "  %s ", style.NewStyle().Foreground(r.theme.Primary).Render("•"))
+			markerColor := r.theme.Primary
+			if r.thinking {
+				markerColor = thinkingAccentColor(r.theme)
+			}
+			fmt.Fprintf(r.w, "  %s ", style.NewStyle().Foreground(markerColor).Render("•"))
 			r.endedWithNewline = false
 			return
 		case livePrefixNumbered:
 			r.prefix.Reset()
 			r.atLineStart = false
 			r.flushPlain(plain)
-			number := style.NewStyle().Foreground(r.theme.Primary).Render(decision.marker)
+			markerColor := r.theme.Primary
+			if r.thinking {
+				markerColor = thinkingAccentColor(r.theme)
+			}
+			number := style.NewStyle().Foreground(markerColor).Render(decision.marker)
 			fmt.Fprintf(r.w, "  %s ", number)
 			r.endedWithNewline = false
 			return
@@ -268,7 +298,11 @@ func (r *LiveMarkdownRenderer) writeCodeRune(current rune, plain *strings.Builde
 	}
 
 	r.flushPlain(plain)
-	r.emitVisible(r.codeLine.String())
+	if r.thinking {
+		r.emitVisible(style.NewStyle().Foreground(thinkingAccentColor(r.theme)).Render("  " + r.codeLine.String()))
+	} else {
+		r.emitVisible(r.codeLine.String())
+	}
 	r.codeLine.Reset()
 	r.codeOverflow = true
 }
@@ -298,6 +332,14 @@ func (r *LiveMarkdownRenderer) emitStyledMarker(marker string, markerColor color
 }
 
 func (r *LiveMarkdownRenderer) writeHighlightedCodeLine(line string, newline bool) {
+	if r.thinking {
+		fmt.Fprint(r.w, style.NewStyle().Foreground(thinkingAccentColor(r.theme)).Render("  "+line))
+		if newline {
+			fmt.Fprint(r.w, "\n")
+		}
+		r.endedWithNewline = newline
+		return
+	}
 	language := r.codeLanguage
 	if language == "" {
 		language = "plaintext"
@@ -315,8 +357,14 @@ func (r *LiveMarkdownRenderer) flushPlain(plain *strings.Builder) {
 	if plain.Len() == 0 {
 		return
 	}
-	r.emitVisible(plain.String())
+	text := plain.String()
 	plain.Reset()
+	if r.thinking {
+		RenderRawReasoningContent(r.w, text, r.theme)
+		r.endedWithNewline = strings.HasSuffix(text, "\n")
+		return
+	}
+	r.emitVisible(text)
 }
 
 func (r *LiveMarkdownRenderer) emitVisible(content string) {
@@ -358,7 +406,11 @@ func (r *LiveMarkdownRenderer) Flush() {
 			r.inline.EndLine()
 			r.emitVisible(" ")
 		} else if trimmed == ">" {
-			r.emitStyledMarker("┃ ", r.theme.Border, &plain)
+			markerColor := r.theme.Border
+			if r.thinking {
+				markerColor = thinkingBaseColor(r.theme)
+			}
+			r.emitStyledMarker("┃ ", markerColor, &plain)
 			r.inline.SetBlock(MarkdownQuote, 0)
 		} else {
 			for _, prefixRune := range prefix {

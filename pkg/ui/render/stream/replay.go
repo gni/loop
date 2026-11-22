@@ -82,7 +82,23 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				}
 				continue
 			}
-			fmt.Fprint(w, thinkingStyle.Render(ev.text))
+			if markdownEnabled {
+				live := markdown.NewLiveThinkingMarkdownRenderer(w, theme)
+				live.Write(ev.text)
+				if !last || !inThinking {
+					live.EnsureTrailingNewline()
+					label := "thought"
+					if ev.duration > 0 {
+						label = "thought (" + style.FormatElapsedDuration(time.Duration(ev.duration*float64(time.Second)), showMicroseconds) + ")"
+					}
+					fmt.Fprintln(w, thinkingStyle.Render(label))
+					if !last {
+						fmt.Fprintln(w)
+					}
+				}
+				continue
+			}
+			markdown.RenderRawReasoningContent(w, ev.text, theme)
 			if !last || !inThinking {
 				if !strings.HasSuffix(ev.text, "\n") {
 					fmt.Fprintln(w)

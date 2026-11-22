@@ -30,6 +30,10 @@ func NewInlineMarkdownWriter(w io.Writer, theme style.UITheme, block MarkdownBlo
 	return &InlineMarkdownWriter{w: w, theme: theme, block: block, headingLevel: headingLevel, thinking: thinking}
 }
 
+func (r *InlineMarkdownWriter) SetWriter(w io.Writer) {
+	r.w = w
+}
+
 func (r *InlineMarkdownWriter) SetBlock(block MarkdownBlock, level int) {
 	r.EndLine()
 	r.block = block
@@ -130,18 +134,11 @@ func (r *InlineMarkdownWriter) Flush() {
 	if r.plain.Len() == 0 {
 		return
 	}
-	current := MarkdownStyle(r.theme, r.block, r.headingLevel, r.bold, r.italic, r.strike, r.codeTicks > 0)
+	var current style.Style
 	if r.thinking {
-		current = style.NewStyle().Foreground(r.theme.Border).Italic(true)
-		if r.bold {
-			current = current.Bold(true)
-		}
-		if r.codeTicks > 0 {
-			current = current.Underline(true)
-		}
-		if r.strike {
-			current = current.Strikethrough(true)
-		}
+		current = ThinkingMarkdownStyle(r.theme, r.block, r.headingLevel, r.bold, r.italic, r.strike, r.codeTicks > 0)
+	} else {
+		current = MarkdownStyle(r.theme, r.block, r.headingLevel, r.bold, r.italic, r.strike, r.codeTicks > 0)
 	}
 	_, _ = io.WriteString(r.w, current.Render(r.plain.String()))
 	r.plain.Reset()

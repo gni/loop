@@ -64,6 +64,7 @@ var (
 var (
 	RenderMarkdownContent          = markdown.RenderMarkdownContent
 	RenderRawMarkdownContent       = markdown.RenderRawMarkdownContent
+	RenderRawReasoningContent      = markdown.RenderRawReasoningContent
 	RenderReasoningMarkdownContent = markdown.RenderReasoningMarkdownContent
 )
 
