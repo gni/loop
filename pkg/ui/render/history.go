@@ -3,7 +3,6 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/domain/task"
 	"strings"
 	"time"
 
@@ -11,6 +10,8 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/domain/task"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -42,7 +43,7 @@ func extractBacktickCommandAndOutput(content, prefix string) (string, string, bo
 }
 
 func printPromptDivider(w io.Writer, borderStyle style.Style) {
-	termW := renderWidth(w)
+	termW := markdown.RenderWidth(w)
 	prefix := "─── prompt "
 	available := max(1, termW-1)
 	if available <= style.CellWidth(prefix) {
@@ -59,7 +60,7 @@ func renderToolTitleLine(w io.Writer, toolName, argsJSON string, status ToolRend
 	if toolName == "bash" || IsCommandLikeTool(toolName) {
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, path, theme))
 	} else {
-		fmt.Fprintln(w, formatToolTitleForWidth(symbol, toolName, path, theme, renderWidth(w)))
+		fmt.Fprintln(w, FormatToolTitleForWidth(symbol, toolName, path, theme, markdown.RenderWidth(w)))
 	}
 }
 
@@ -73,10 +74,10 @@ func PrintSessionHistory(
 	hooks HistoryRenderHooks,
 ) {
 	if hooks.RenderMarkdown == nil {
-		hooks.RenderMarkdown = RenderMarkdownContent
+		hooks.RenderMarkdown = markdown.RenderMarkdownContent
 	}
 	if hooks.RenderReasoning == nil {
-		hooks.RenderReasoning = RenderReasoningMarkdownContent
+		hooks.RenderReasoning = markdown.RenderReasoningMarkdownContent
 	}
 	if hooks.RenderError == nil {
 		hooks.RenderError = func(w io.Writer, message string, theme style.UITheme) {

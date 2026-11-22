@@ -9,6 +9,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -121,7 +122,7 @@ func RenderStats(w io.Writer, msgs []db.Message, defaultModel string, tr *agent.
 }
 
 func usageBoxInnerWidth(w io.Writer) int {
-	return max(1, min(renderWidth(w)-3, 99))
+	return max(1, min(markdown.RenderWidth(w)-3, 99))
 }
 
 func printUsageHeader(w io.Writer, theme style.UITheme) {

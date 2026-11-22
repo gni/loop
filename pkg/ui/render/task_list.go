@@ -3,10 +3,13 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/agent"
-	"loop/pkg/ui/style"
 	"strings"
 	"time"
+
+	"loop/pkg/agent"
+	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/render/scrollback"
+	"loop/pkg/ui/style"
 )
 
 func RenderBackgroundTasks(w io.Writer, tasks []agent.TaskInfo, theme style.UITheme) {
@@ -15,7 +18,7 @@ func RenderBackgroundTasks(w io.Writer, tasks []agent.TaskInfo, theme style.UITh
 		return
 	}
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("Background tasks"))
-	width := renderWidth(w)
+	width := markdown.RenderWidth(w)
 	for _, item := range tasks {
 		label, mark, tint := taskStateAppearance(item.Status, theme)
 		if item.Status == "killed" {
@@ -35,7 +38,7 @@ func RenderBackgroundTask(w io.Writer, id, command, status, output string, colla
 		label, mark, tint = "Stopped", "-", theme.TextMuted
 	}
 	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  "+mark+" "+label)+" · "+SanitizeTerminalText(id))
-	width := renderWidth(w)
+	width := markdown.RenderWidth(w)
 	if command != "" {
 		fmt.Fprintln(w, "   "+style.NewStyle().Foreground(theme.TextMuted).Render(style.TruncateCells(strings.Join(strings.Fields(SanitizeTerminalText(command)), " "), max(1, width-4))))
 	}
@@ -48,7 +51,7 @@ func RenderBackgroundTask(w io.Writer, id, command, status, output string, colla
 		fmt.Fprintln(w, "   "+message)
 		return
 	}
-	lines := ChatHistoryRows(output, max(1, width-4))
+	lines := scrollback.ChatHistoryRows(output, max(1, width-4))
 	limit := len(lines)
 	if collapse {
 		limit = min(5, limit)
@@ -57,7 +60,7 @@ func RenderBackgroundTask(w io.Writer, id, command, status, output string, colla
 		fmt.Fprintln(w, "   "+line)
 	}
 	if limit < len(lines) {
-		renderCollapsedNotice(w, len(lines)-limit, theme)
+		RenderCollapsedNotice(w, len(lines)-limit, theme)
 	}
 }
 

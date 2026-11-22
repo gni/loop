@@ -15,6 +15,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
+	isession "loop/pkg/ui/interactive/session"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
 )
@@ -275,7 +276,7 @@ func handleSessionCommand(
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
-		selected, startNew, err := interactive.RunSessionExplorerContext(commandContext(a, kiReader), *theme, input, output)
+		selected, startNew, err := isession.RunSessionExplorerContext(commandContext(a, kiReader), *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		sessionChanged := false
 		if err == nil {

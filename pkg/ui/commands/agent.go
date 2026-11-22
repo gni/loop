@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
+	iagent "loop/pkg/ui/interactive/agent"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
 )
@@ -43,7 +44,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
-		menuErr := interactive.RunInteractiveAgentManager(mam, *theme, input, output)
+		menuErr := iagent.RunInteractiveAgentManager(mam, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		if menuErr != nil {
 			fmt.Fprintf(w, "agent menu: %v\n", menuErr)

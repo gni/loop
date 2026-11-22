@@ -88,9 +88,11 @@ func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, 
 		height = h
 	}
 
-	if history != nil && !history.closed.Load() && history.drawnHint != "" {
-		textToDraw = history.drawnHint
-		spinnerFrame = ""
+	if history != nil {
+		if drawnHint := history.DrawnHintLocked(); drawnHint != "" {
+			textToDraw = drawnHint
+			spinnerFrame = ""
+		}
 	}
 	render.DrawStaticStatsLine(agent.UnwrapWriter(w), theme, spinnerFrame, textToDraw, height, pasteLinesOffset)
 }

@@ -3,13 +3,15 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/ui/style"
 	"sort"
 	"strings"
+
+	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/style"
 )
 
 func renderStructuredSummary(w io.Writer, value any, theme style.UITheme) {
-	width := renderWidth(w)
+	width := markdown.RenderWidth(w)
 	describe := func(value any) string {
 		switch v := value.(type) {
 		case string:

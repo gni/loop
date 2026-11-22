@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"loop/pkg/domain/task"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +13,10 @@ import (
 	"github.com/alecthomas/chroma/v3/quick"
 
 	filetool "loop/pkg/agent/tool/file"
+	"loop/pkg/domain/task"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/render/syntax"
 	"loop/pkg/ui/style"
 )
 
@@ -41,7 +43,7 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
 		return
 	}
-	fmt.Fprintln(w, formatToolTitleForWidth(symbol, toolName, pathVal, theme, renderWidth(w)))
+	fmt.Fprintln(w, FormatToolTitleForWidth(symbol, toolName, pathVal, theme, markdown.RenderWidth(w)))
 }
 
 func isCodeContentTool(toolName string) bool {
@@ -63,7 +65,7 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 	if isJSON {
 		lang = "json"
 	} else if toolName == "bash" {
-		lang = ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body)
+		lang = syntax.ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body)
 	} else {
 		if filePath := ExtractToolTarget(toolName, argsJSON); filePath != "" {
 			lang = filePath
@@ -79,7 +81,7 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 		}
 	}
 
-	lang = ResolveSyntaxLanguage(lang, body)
+	lang = syntax.ResolveSyntaxLanguage(lang, body)
 	chromaStyle := theme.ChromaStyle
 	if chromaStyle == "" {
 		chromaStyle = "friendly"
@@ -127,7 +129,7 @@ func trimRenderedToolBody(body string) string {
 	return body + sgrSuffix
 }
 
-func renderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
+func RenderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 	collapseMarker := style.NewStyle().Foreground(theme.Border).Render("⋮  ")
 	unit := "lines"
 	if lineCount == 1 {
@@ -222,8 +224,8 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			}
 		}
 		if toolName == "grep" && !strings.Contains(body, "\x1b[") {
-			body = highlightGrepBody(body, theme)
-		} else if (isCodeContentTool(toolName) || isJSON || (toolName == "bash" && ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body) != "plaintext")) && !strings.Contains(body, "\x1b[") {
+			body = syntax.HighlightGrepBody(body, theme)
+		} else if (isCodeContentTool(toolName) || isJSON || (toolName == "bash" && syntax.ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body) != "plaintext")) && !strings.Contains(body, "\x1b[") {
 			body = highlightToolBody(body, toolName, argsJSON, isJSON, bodyWasStreamed, theme)
 		}
 	}
@@ -232,7 +234,7 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	lines := strings.Split(body, "\n")
 
 	if collapse && !isError && len(lines) > 0 {
-		renderCollapsedNotice(w, len(lines), theme)
+		RenderCollapsedNotice(w, len(lines), theme)
 	} else {
 		bodyStyle := style.NewStyle().Foreground(theme.Text)
 		for _, line := range lines {

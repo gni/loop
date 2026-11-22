@@ -14,16 +14,12 @@ import (
 )
 
 func padRightCells(text string, width int) string {
-	pad := width - style.CellWidth(text)
-	if pad <= 0 {
-		return text
-	}
-	return text + strings.Repeat(" ", pad)
+	return style.PadRightCells(text, width)
 }
 
-// tailCells returns s unchanged when its display width fits within maxCells;
+// TailCells returns s unchanged when its display width fits within maxCells;
 // otherwise it keeps the trailing grapheme clusters fitting alongside "…".
-func tailCells(s string, maxCells int) string {
+func TailCells(s string, maxCells int) string {
 	if maxCells <= 0 {
 		return ""
 	}
@@ -247,7 +243,7 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 	return style.NewStyle().Foreground(c).Bold(true)
 }
 
-func formatToolTitleForWidth(symbol string, toolName string, path string, theme style.UITheme, width int) string {
+func FormatToolTitleForWidth(symbol string, toolName string, path string, theme style.UITheme, width int) string {
 	toolName = domaintool.NormalizeName(toolName)
 	if toolName == "task_state" {
 		return symbol + " " + GetActionStyle(toolName, theme).Render("Task progress")
@@ -300,7 +296,7 @@ func formatToolTitleForWidth(symbol string, toolName string, path string, theme 
 
 func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
 	width, _ := terminal.GetDimensions()
-	return formatToolTitleForWidth(symbol, toolName, path, theme, width)
+	return FormatToolTitleForWidth(symbol, toolName, path, theme, width)
 }
 
 func WrapText(text string, limit int) []string {

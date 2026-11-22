@@ -146,9 +146,9 @@ func (p *PromptPreservingWriter) SetPromptPositionLocked(row, col int) {
 
 // ResizeLocked synchronizes cursor bookkeeping before drawing a resized input.
 func (p *PromptPreservingWriter) ResizeLocked(height int) {
-	if h := getUI().GetChatHistory(); h != nil && h.writer == p && height > 0 {
+	if h := getUI().GetChatHistory(); h != nil && h.Writer() == p && height > 0 {
 		width, _ := GetTerminalSize()
-		h.resizeLocked(width, height)
+		h.ResizeLocked(width, height)
 		p.height = height
 		return
 	}
@@ -520,6 +520,49 @@ func (p *PromptPreservingWriter) advancePrintLine() {
 
 func (p *PromptPreservingWriter) Height() int {
 	return p.height
+}
+
+// PrintLineLocked returns the current scroll-region print row (caller holds TerminalMu).
+func (p *PromptPreservingWriter) PrintLineLocked() int {
+	return p.printLine
+}
+
+// PrintColLocked returns the current 1-based print column (caller holds TerminalMu).
+func (p *PromptPreservingWriter) PrintColLocked() int {
+	return p.printCol
+}
+
+// PendingLineFeedLocked reports whether a deferred line feed is pending (caller holds TerminalMu).
+func (p *PromptPreservingWriter) PendingLineFeedLocked() bool {
+	return p.pendingLineFeed
+}
+
+// AutoWrapPendingLocked reports whether VT100 pending wrap is active (caller holds TerminalMu).
+func (p *PromptPreservingWriter) AutoWrapPendingLocked() bool {
+	return p.autoWrapPending
+}
+
+// SetCursorStateLocked updates scroll-region print coordinates after a resize (caller holds TerminalMu).
+func (p *PromptPreservingWriter) SetCursorStateLocked(printLine, printCol int, autoWrapPending bool) {
+	p.printLine = printLine
+	p.printCol = printCol
+	p.autoWrapPending = autoWrapPending
+	p.autoWrapDetached = autoWrapPending
+}
+
+// InnerLocked returns the inner output sink (caller holds TerminalMu).
+func (p *PromptPreservingWriter) InnerLocked() io.Writer {
+	return p.inner
+}
+
+// SetInnerLocked replaces the inner output sink (caller holds TerminalMu).
+func (p *PromptPreservingWriter) SetInnerLocked(w io.Writer) {
+	p.inner = w
+}
+
+// WriteLocked writes to the scroll region while TerminalMu is already held.
+func (p *PromptPreservingWriter) WriteLocked(data []byte) (int, error) {
+	return p.writeLocked(data)
 }
 
 func (p *PromptPreservingWriter) Unwrap() io.Writer {

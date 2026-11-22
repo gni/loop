@@ -93,7 +93,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		return
 	}
 	if history != nil && history.RedrawLocked() {
-		history.notice = notice
+		history.SetNoticeLocked(notice)
 		uiImpl.StateMu.Lock()
 		uiImpl.LastStatusBarText = ""
 		uiImpl.StateMu.Unlock()
@@ -102,8 +102,10 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		if notice != "" {
 			live := a.LiveSettings()
 			noticeStyle := style.NewStyle().Foreground(style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme).Success).Italic(true)
-			history.writer.EnsureNewline()
-			fmt.Fprintln(history.writer, noticeStyle.Render(notice))
+			if hw := history.Writer(); hw != nil {
+				hw.EnsureNewline()
+				fmt.Fprintln(hw, noticeStyle.Render(notice))
+			}
 		}
 		return
 	}

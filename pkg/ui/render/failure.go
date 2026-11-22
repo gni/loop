@@ -3,9 +3,12 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/ui/style"
 	"regexp"
 	"strings"
+
+	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/render/scrollback"
+	"loop/pkg/ui/style"
 )
 
 var failureHTTPStatus = regexp.MustCompile(`\b(?:http(?: status(?: code)?)?|status(?: code)?)[\s:=]+(401|403|429)\b`)
@@ -83,12 +86,12 @@ func renderFailure(w io.Writer, message, toolName string, collapse bool, theme s
 	if message == "" {
 		message = "The operation failed without a diagnostic."
 	}
-	width := max(1, renderWidth(w)-4)
+	width := max(1, markdown.RenderWidth(w)-4)
 	first, _, _ := strings.Cut(message, "\n")
 	first = style.TruncateCells(first, width)
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render("✗ "+first))
 	advice := failureAdvice(message, toolName)
-	for _, row := range ChatHistoryRows("Next: "+advice, width) {
+	for _, row := range scrollback.ChatHistoryRows("Next: "+advice, width) {
 		fmt.Fprintln(w, "  "+style.NewStyle().Foreground(theme.TextMuted).Render(row))
 	}
 	if collapse {
@@ -96,7 +99,7 @@ func renderFailure(w io.Writer, message, toolName string, collapse bool, theme s
 		return
 	}
 	if message != first {
-		for _, row := range ChatHistoryRows(message, width) {
+		for _, row := range scrollback.ChatHistoryRows(message, width) {
 			fmt.Fprintln(w, "  "+row)
 		}
 	}

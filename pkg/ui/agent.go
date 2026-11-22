@@ -14,8 +14,27 @@ import (
 	"loop/pkg/lifecycle"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
+	"loop/pkg/ui/render/stream"
 	"loop/pkg/ui/style"
 )
+
+// ChatHistoryController is the control-plane interface between AgentUIImpl and
+// the chat history viewport subsystem (pkg/ui/chat/history).
+type ChatHistoryController interface {
+	Close()
+	Find(query string, direction int) error
+	Latest()
+	SetNotice(notice string)
+	SetNoticeLocked(notice string)
+	SetPageSize(size int)
+	RedrawLocked() bool
+	ResizeLocked(width, height int)
+	PaintIfNeededLocked()
+	DrawnHintLocked() string
+	Writer() *PromptPreservingWriter
+	SlashMenuActive() bool
+	StepSlashMenu(delta int) bool
+}
 
 // AgentUIImpl implements agent.AgentUI and encapsulates the state of the TUI.
 type AgentUIImpl struct {
@@ -23,7 +42,7 @@ type AgentUIImpl struct {
 	Theme       style.UITheme
 	SessionID   string
 	PPWriter    *PromptPreservingWriter
-	ChatHistory *ChatHistory
+	ChatHistory ChatHistoryController
 
 	ActiveCancelFunc     context.CancelFunc
 	PasteLinesOffset     int
@@ -88,19 +107,19 @@ func (ui *AgentUIImpl) SetPasteLinesOffset(offset int) {
 	ui.StateMu.Unlock()
 }
 
-func (ui *AgentUIImpl) GetChatHistory() *ChatHistory {
+func (ui *AgentUIImpl) GetChatHistory() ChatHistoryController {
 	ui.StateMu.Lock()
 	defer ui.StateMu.Unlock()
 	return ui.ChatHistory
 }
 
-func (ui *AgentUIImpl) SetChatHistory(h *ChatHistory) {
+func (ui *AgentUIImpl) SetChatHistory(h ChatHistoryController) {
 	ui.StateMu.Lock()
 	ui.ChatHistory = h
 	ui.StateMu.Unlock()
 }
 
-func (ui *AgentUIImpl) ClearChatHistoryIf(h *ChatHistory) {
+func (ui *AgentUIImpl) ClearChatHistoryIf(h ChatHistoryController) {
 	ui.StateMu.Lock()
 	if ui.ChatHistory == h {
 		ui.ChatHistory = nil
@@ -280,7 +299,7 @@ func (ui *AgentUIImpl) DrawPromptSeparator(w io.Writer, showThinking bool, reaso
 
 func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) agent.StreamRenderer {
 	ui.StateMu.Lock()
-	options := render.StreamOptions{Markdown: true}
+	options := stream.StreamOptions{Markdown: true}
 	if ui.Config != nil {
 		options.Markdown = ui.Config.MarkdownRender
 		options.ShowMicroseconds = ui.Config.ShowMicroseconds
@@ -308,8 +327,8 @@ func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showT
 		ui.StateMu.Unlock()
 
 		width, height := GetTerminalSize()
-		if history != nil && !history.closed.Load() {
-			history.resizeLocked(width, height)
+		if history != nil {
+			history.ResizeLocked(width, height)
 		} else if pp != nil {
 			pp.ResizeLocked(height)
 		}
@@ -322,7 +341,7 @@ func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showT
 			_, _ = os.Stderr.Write(buf.Bytes())
 		}
 	}
-	sr := render.NewStreamRenderer(w, theme, showThinking, streamWrites, options)
+	sr := stream.NewStreamRenderer(w, theme, showThinking, streamWrites, options)
 	return sr
 }
 

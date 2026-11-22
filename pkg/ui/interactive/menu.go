@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
 
+	"loop/pkg/config"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/screen"
 	"loop/pkg/ui/style"
@@ -26,7 +28,7 @@ func writeMenuFrame(w io.Writer, frame string) error {
 	return err
 }
 
-func resolveTerminalFD(rlInput io.Reader, rlOutput io.Writer) int {
+func ResolveTerminalFD(rlInput io.Reader, rlOutput io.Writer) int {
 	if f, ok := rlInput.(*os.File); ok && f != nil {
 		return int(f.Fd())
 	}
@@ -36,7 +38,7 @@ func resolveTerminalFD(rlInput io.Reader, rlOutput io.Writer) int {
 	return int(os.Stdin.Fd())
 }
 
-func flushMenuScreen(comp *screen.Compositor, w io.Writer, width, height int, rows []string, opts screen.FlushOptions) error {
+func FlushMenuScreen(comp *screen.Compositor, w io.Writer, width, height int, rows []string, opts screen.FlushOptions) error {
 	width = max(1, width)
 	height = max(1, height)
 	if comp.Width() != width || comp.Height() != height {
@@ -50,21 +52,39 @@ func flushMenuScreen(comp *screen.Compositor, w io.Writer, width, height int, ro
 	return comp.Flush(w, opts)
 }
 
-type settingItem struct {
-	searchOnly  bool
-	id          string
-	name        string
-	value       func() string
-	description string
-	options     []string
-	isBool      bool
-	onToggle    func()
-	onAction    func() error
-	onEdit      func(newVal string) error
+type SettingItem struct {
+	SearchOnly  bool
+	ID          string
+	Name        string
+	Value       func() string
+	Description string
+	Options     []string
+	IsBool      bool
+	OnToggle    func()
+	OnAction    func() error
+	OnEdit      func(newVal string) error
 }
 
-func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() error) (bool, error) {
-	fd := resolveTerminalFD(rlInput, rlOutput)
+// Boolean settings go through OnEdit so file, command and menu rules agree.
+func (item *SettingItem) toggle() error {
+	if item.OnAction != nil {
+		return item.OnAction()
+	}
+	if item.IsBool && item.OnEdit != nil {
+		value, err := config.ParseBoolValue(item.Value())
+		if err != nil {
+			return err
+		}
+		return item.OnEdit(strconv.FormatBool(!value))
+	}
+	if item.OnToggle != nil {
+		item.OnToggle()
+	}
+	return nil
+}
+
+func WithAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() error) (bool, error) {
+	fd := ResolveTerminalFD(rlInput, rlOutput)
 	if !term.IsTerminal(fd) {
 		return false, nil
 	}
@@ -90,7 +110,7 @@ func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	var input io.Reader = kiReader
 	var inputCloser io.Closer
-	if isNilReader(input) {
+	if IsNilReader(input) {
 		input = os.Stdin
 		if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 			input = tty
@@ -117,9 +137,9 @@ func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	return input, output, cleanup
 }
 
-func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.UITheme) string {
-	nameStr := item.name
-	valStr := item.value()
+func FormatMenuCell(item *SettingItem, selected bool, colWidth int, theme style.UITheme) string {
+	nameStr := item.Name
+	valStr := item.Value()
 	cleanVal := style.StripAnsi(valStr)
 	hasAnsiVal := cleanVal != valStr
 
@@ -170,7 +190,7 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 	return fmt.Sprintf("  %s %s %s", nameStyled, leaderStyled, valStyled)
 }
 
-func padAnsiCell(cell string, width int) string {
+func PadAnsiCell(cell string, width int) string {
 	vis := style.CellWidth(cell)
 	if vis >= width {
 		return cell
@@ -178,7 +198,7 @@ func padAnsiCell(cell string, width int) string {
 	return cell + strings.Repeat(" ", width-vis)
 }
 
-func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITheme, title string, itemsProvider func() []*settingItem, extraRender func(buf *strings.Builder)) error {
+func RunSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITheme, title string, itemsProvider func() []*SettingItem, extraRender func(buf *strings.Builder)) error {
 	searchQuery := ""
 	selectedIdx := 0
 
@@ -194,17 +214,17 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 	for {
 		items := itemsProvider()
 		query := strings.ToLower(searchQuery)
-		var filtered []*settingItem
+		var filtered []*SettingItem
 		for _, item := range items {
-			if searchQuery == "" && item.searchOnly {
+			if searchQuery == "" && item.SearchOnly {
 				continue
 			}
-			valStr := item.value()
+			valStr := item.Value()
 			match := query == "" ||
-				strings.Contains(strings.ToLower(item.id), query) ||
-				strings.Contains(strings.ToLower(item.name), query) ||
+				strings.Contains(strings.ToLower(item.ID), query) ||
+				strings.Contains(strings.ToLower(item.Name), query) ||
 				strings.Contains(strings.ToLower(valStr), query) ||
-				strings.Contains(strings.ToLower(item.description), query)
+				strings.Contains(strings.ToLower(item.Description), query)
 			if match {
 				filtered = append(filtered, item)
 			}
@@ -226,7 +246,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		}
 
 		menuRows, layout := renderSettingsMenuRows(title, searchQuery, filtered, selectedIdx, termW, termH, theme, extraRender)
-		if err := flushMenuScreen(comp, rlOutput, termW, termH, menuRows, screen.FlushOptions{}); err != nil {
+		if err := FlushMenuScreen(comp, rlOutput, termW, termH, menuRows, screen.FlushOptions{}); err != nil {
 			return err
 		}
 		useTwoCols, rows := layout.twoColumns, layout.rows
@@ -239,7 +259,7 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			terminal.RefreshDimensions()
 			continue
 		}
-		if appendPastedQuery(keyData, &searchQuery, maxMenuInputBytes) {
+		if AppendPastedQuery(keyData, &searchQuery, maxMenuInputBytes) {
 			selectedIdx = 0
 			continue
 		}
@@ -291,11 +311,11 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		case " ":
 			if searchQuery == "" && len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 				item := filtered[selectedIdx]
-				if item.isBool {
+				if item.IsBool {
 					if err := item.toggle(); err != nil {
 						return err
 					}
-					if item.onAction != nil || item.onToggle != nil {
+					if item.OnAction != nil || item.OnToggle != nil {
 						comp.Invalidate()
 					}
 					continue
@@ -304,15 +324,15 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		case "\r", "\n":
 			if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
 				item := filtered[selectedIdx]
-				if item.isBool || item.onToggle != nil || item.onAction != nil {
+				if item.IsBool || item.OnToggle != nil || item.OnAction != nil {
 					if err := item.toggle(); err != nil {
 						return err
 					}
-					if item.onAction != nil || item.onToggle != nil {
+					if item.OnAction != nil || item.OnToggle != nil {
 						comp.Invalidate()
 					}
-				} else if item.onEdit != nil {
-					_, err := readMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.name, item.description, "Value", item.value(), item.onEdit)
+				} else if item.OnEdit != nil {
+					_, err := ReadMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.Name, item.Description, "Value", item.Value(), item.OnEdit)
 					comp.Invalidate()
 					if err != nil && !errors.Is(err, ErrSelectionCancelled) {
 						return err
@@ -375,7 +395,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		}
 		if width < 12 || height < 7 {
 			rows := []string{style.TruncateCells("Resize terminal; Esc exits", max(1, width))}
-			if err := flushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
+			if err := FlushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 				return -1, err
 			}
 			key, resized, err := sr.ReadKeyOrResize(signals)
@@ -398,7 +418,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		rows := make([]string, 0, end-start+5)
 		rows = append(rows,
 			style.NewStyle().Foreground(theme.Primary).Bold(true).Render(style.TruncateCells(title, max(1, width-1))),
-			style.TruncateCells("  Search: "+menuDisplayText(query), max(1, width-1)),
+			style.TruncateCells("  Search: "+MenuDisplayText(query), max(1, width-1)),
 			"",
 		)
 		if len(indexes) == 0 {
@@ -415,7 +435,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			rows = append(rows, prefix+style.NewStyle().Foreground(tint).Render(text))
 		}
 		rows = append(rows, "", style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)))
-		if err := flushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
+		if err := FlushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 			return -1, err
 		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
@@ -426,7 +446,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			terminal.RefreshDimensions()
 			continue
 		}
-		if appendPastedQuery(key, &query, maxMenuInputBytes) {
+		if AppendPastedQuery(key, &query, maxMenuInputBytes) {
 			selected = 0
 			continue
 		}

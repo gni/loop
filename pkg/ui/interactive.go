@@ -5,6 +5,8 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/ui/interactive"
+	imcp "loop/pkg/ui/interactive/mcp"
+	isettings "loop/pkg/ui/interactive/settings"
 )
 
 func init() {
@@ -55,6 +57,6 @@ func AskForSubagentCancellation(w io.Writer, theme UITheme, agentName string) ag
 	return interactive.AskForSubagentCancellation(w, theme, agentName)
 }
 
-var RunInteractiveConfig = interactive.RunInteractiveConfig
+var RunInteractiveConfig = isettings.RunInteractiveConfig
 var RunInteractiveProviderConfig = interactive.RunInteractiveProviderConfig
-var RunInteractiveMCPConfig = interactive.RunInteractiveMCPConfig
+var RunInteractiveMCPConfig = imcp.RunInteractiveMCPConfig

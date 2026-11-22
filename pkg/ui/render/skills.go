@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -20,7 +21,7 @@ func RenderSkills(w io.Writer, skills []tool.Skill, theme style.UITheme) {
 	descStyle := style.NewStyle().Foreground(theme.Text)
 	pathStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
 
-	width := max(1, renderWidth(w)-6)
+	width := max(1, markdown.RenderWidth(w)-6)
 	border := headerStyle.Render("│")
 	hline := strings.Repeat("─", width+4)
 	pad := func(n int) string { return strings.Repeat(" ", max(0, n)) }

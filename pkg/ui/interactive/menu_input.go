@@ -13,12 +13,12 @@ import (
 )
 
 // Input failures leave the menu; operation failures remain visible in it.
-type menuInputError struct{ cause error }
+type MenuInputError struct{ Cause error }
 
-func (e *menuInputError) Error() string { return e.cause.Error() }
-func (e *menuInputError) Unwrap() error { return e.cause }
+func (e *MenuInputError) Error() string { return e.Cause.Error() }
+func (e *MenuInputError) Unwrap() error { return e.Cause }
 
-func menuAction(action func() error) func() error {
+func MenuAction(action func() error) func() error {
 	return func() error {
 		err := action()
 		if errors.Is(err, ErrSelectionCancelled) {
@@ -29,11 +29,11 @@ func menuAction(action func() error) func() error {
 }
 
 // Redraw the form on resize and keep cancellation distinct from input failures.
-func readMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
+func ReadMenuField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
 	return readMenuInput(sr, signals, w, theme, title, description, label, initial, false, validate)
 }
 
-func readMenuSecretField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
+func ReadMenuSecretField(sr *SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme, title, description, label, initial string, validate func(string) error) (string, error) {
 	return readMenuInput(sr, signals, w, theme, title, description, label, initial, true, validate)
 }
 
@@ -53,7 +53,7 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 		width := max(1, termW-2)
 		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		muted := style.NewStyle().Foreground(theme.TextMuted)
-		value := menuDisplayText(input.String())
+		value := MenuDisplayText(input.String())
 		if secret {
 			value = strings.Repeat("•", min(width*2, utf8.RuneCountInString(input.String())))
 		}
@@ -106,12 +106,12 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			CursorCol:  cursorCol,
 			ShowCursor: showCursor,
 		}
-		if err := flushMenuScreen(comp, w, termW, termH, rows, opts); err != nil {
-			return "", &menuInputError{cause: err}
+		if err := FlushMenuScreen(comp, w, termW, termH, rows, opts); err != nil {
+			return "", &MenuInputError{Cause: err}
 		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
 		if err != nil {
-			return "", &menuInputError{cause: err}
+			return "", &MenuInputError{Cause: err}
 		}
 		if resized {
 			terminal.RefreshDimensions()
@@ -119,7 +119,7 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 		}
 		if pasted, err := appendPastedInput(key, &input, io.Discard); pasted {
 			if err != nil {
-				return "", &menuInputError{cause: err}
+				return "", &MenuInputError{Cause: err}
 			}
 			warning = ""
 			continue

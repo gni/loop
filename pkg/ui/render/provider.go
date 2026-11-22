@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"loop/pkg/config"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
 // RenderProviders formats and outputs the active and configured AI endpoints.
 func RenderProviders(w io.Writer, cfg *config.Config, theme style.UITheme) {
-	termW := renderWidth(w)
+	termW := markdown.RenderWidth(w)
 	borderStyle := style.NewStyle().
 		Border(style.RoundedBorder()).
 		BorderForeground(theme.Border).

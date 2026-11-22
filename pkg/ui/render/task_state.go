@@ -9,6 +9,8 @@ import (
 	"unicode"
 
 	"loop/pkg/domain/task"
+	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/render/scrollback"
 	"loop/pkg/ui/style"
 )
 
@@ -38,7 +40,7 @@ func renderTaskState(w io.Writer, output, arguments string, collapse bool, theme
 	}
 	label, symbol, tint := taskStateAppearance(state.Status, theme)
 	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  Request: "+symbol+" "+label))
-	width := renderWidth(w)
+	width := markdown.RenderWidth(w)
 	text := func(content, prefix string, tint color.Color) {
 		content = strings.Map(func(r rune) rune {
 			if unicode.IsControl(r) && r != '\n' {
@@ -47,7 +49,7 @@ func renderTaskState(w io.Writer, output, arguments string, collapse bool, theme
 			return r
 		}, style.StripAnsi(content))
 		prefixCells := style.CellWidth(prefix)
-		for i, row := range ChatHistoryRows(strings.TrimSpace(content), max(1, width-4-prefixCells)) {
+		for i, row := range scrollback.ChatHistoryRows(strings.TrimSpace(content), max(1, width-4-prefixCells)) {
 			lead := "   "
 			if i == 0 {
 				lead += prefix

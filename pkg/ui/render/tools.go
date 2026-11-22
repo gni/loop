@@ -9,6 +9,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/agent/tool"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -28,7 +29,7 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	hintStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
 	cmdStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 
-	termW := renderWidth(w)
+	termW := markdown.RenderWidth(w)
 	inner := max(1, min(termW-3, 82))
 	hline := strings.Repeat("─", inner)
 	titleText := style.TruncateCells("TOOLS CATALOG & PERMISSIONS", max(1, inner-4))

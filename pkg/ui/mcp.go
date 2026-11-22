@@ -14,7 +14,7 @@ import (
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
 	"loop/pkg/db"
-	"loop/pkg/ui/interactive"
+	imcp "loop/pkg/ui/interactive/mcp"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -74,7 +74,7 @@ func HandleMCPCommand(
 		defer cleanup()
 
 		ShutdownStatusBar(os.Stderr)
-		newConfig, errInteractive := RunInteractiveMCPConfig(snapshot, theme, input, output, interactive.MCPConfigActions{Reconnect: func(next *config.Config) error {
+		newConfig, errInteractive := RunInteractiveMCPConfig(snapshot, theme, input, output, imcp.MCPConfigActions{Reconnect: func(next *config.Config) error {
 			applyErr := a.UpdateConfigAndReconnect(next)
 			if !agent.ConfigApplied(applyErr) {
 				return applyErr

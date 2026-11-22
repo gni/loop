@@ -208,7 +208,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	renderOption := func(index int) string {
 		width, _ := style.GetTerminalSize()
-		label := menuDisplayText(options[index].Label)
+		label := MenuDisplayText(options[index].Label)
 		if width > 5 {
 			label = style.TruncateCells(label, width-5)
 		}
@@ -220,7 +220,7 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	renderMenu := func() {
 		if firstRender {
-			prompt = menuDisplayText(prompt)
+			prompt = MenuDisplayText(prompt)
 			width, _ := style.GetTerminalSize()
 			if width > 2 {
 				prompt = style.TruncateCells(prompt, width-2)
@@ -402,7 +402,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	if activeReaderProvider != nil {
 		activeReader = activeReaderProvider()
 	}
-	hasActiveReader := !isNilReader(activeReader)
+	hasActiveReader := !IsNilReader(activeReader)
 	if hasActiveReader {
 		input = activeReader
 		if w != nil {
@@ -478,7 +478,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	if len(options) == 1 && options[0].FreeText {
 		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-		fmt.Fprintln(output, promptStyle.Render(menuDisplayText(prompt)))
+		fmt.Fprintln(output, promptStyle.Render(MenuDisplayText(prompt)))
 		answer, dismissed := readFreeTextAnswer(sr, output, promptStyle, activeStyle)
 		return 0, dismissed, answer
 	}
@@ -492,13 +492,13 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 			if option.Keys != "" {
 				key = string([]rune(option.Keys)[0])
 			}
-			label := menuDisplayText(option.Label)
+			label := MenuDisplayText(option.Label)
 			if key != "" {
 				label = key + "=" + label
 			}
 			shortcutLabels = append(shortcutLabels, label)
 		}
-		fmt.Fprint(output, promptStyle.Render(fmt.Sprintf("%s [%s]: ", menuDisplayText(prompt), strings.Join(shortcutLabels, "/"))))
+		fmt.Fprint(output, promptStyle.Render(fmt.Sprintf("%s [%s]: ", MenuDisplayText(prompt), strings.Join(shortcutLabels, "/"))))
 		return readChoiceSelection(sr, output, promptStyle, style.NewStyle().Foreground(theme.Highlight).Bold(true), options, selected, nil, false)
 	}
 
@@ -606,7 +606,7 @@ func AskForSubagentCancellationWithReader(w io.Writer, input io.Reader, theme st
 	}
 	var selected int
 	var dismissed bool
-	if isNilReader(input) {
+	if IsNilReader(input) {
 		selected, dismissed = runModalChoice(w, theme, " cancel active subagent?", options, 1)
 	} else {
 		selected, dismissed = runSubagentChoiceWithReader(w, input, theme, " cancel active subagent?", options, 1)

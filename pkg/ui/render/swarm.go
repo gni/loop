@@ -8,6 +8,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -30,7 +31,7 @@ func RenderSwarmStats(w io.Writer, baseMessages []db.Message, agents []message.A
 
 	totalSwarmP := baseP
 	totalSwarmC := baseC
-	roleBudget := max(12, min(60, renderWidth(w)-26))
+	roleBudget := max(12, min(60, markdown.RenderWidth(w)-26))
 
 	if len(agents) > 0 {
 		for _, snapshot := range agents {

@@ -57,7 +57,7 @@ type inputContextProvider interface{ GetInputContext() context.Context }
 type inputChannelProvider interface{ GetInputChan() chan byte }
 type inputReceiveChannelProvider interface{ GetInputChan() <-chan byte }
 
-func isNilReader(r io.Reader) bool {
+func IsNilReader(r io.Reader) bool {
 	if r == nil {
 		return true
 	}
@@ -89,7 +89,7 @@ func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 		doneChan: make(chan struct{}),
 	}
 
-	if isNilReader(rlInput) {
+	if IsNilReader(rlInput) {
 		sr.pendingErr = io.EOF
 		return sr
 	}
@@ -168,6 +168,14 @@ func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 		}
 	}()
 	return sr
+}
+
+// SetContext binds a cancellation context to the reader before reading begins.
+func (sr *SessionReader) SetContext(ctx context.Context) {
+	if sr == nil || ctx == nil {
+		return
+	}
+	sr.context, sr.cancelled = ctx, ctx.Done()
 }
 
 func (sr *SessionReader) Close() {

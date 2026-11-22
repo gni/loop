@@ -41,7 +41,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		impl.PPWriter.ResizeLocked(height)
 	}
 	id := a.ActiveSessionID()
-	label, known := sessionDisplayLabel(a, id)
+	label, known := SessionDisplayLabel(a, id)
 	state.StateMu.Lock()
 	if state.SessionID != id || known {
 		state.SessionID = id
@@ -115,7 +115,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		},
 		OnScroll: func(delta int) {
 			if history := state.GetChatHistory(); history != nil {
-				history.resizeLocked(termW, height)
+				history.ResizeLocked(termW, height)
 				return
 			}
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
@@ -130,7 +130,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			DrawStaticStatsLineLocked(dest, activeTheme, "", savedStats)
 		},
 	})
-	if history := state.GetChatHistory(); history != nil && history.needsPaint && !history.captureOnly {
-		history.paintLocked()
+	if history := state.GetChatHistory(); history != nil {
+		history.PaintIfNeededLocked()
 	}
 }

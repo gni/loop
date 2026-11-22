@@ -45,12 +45,12 @@ func RunInteractiveProviderConfig(
 		cloned.Providers = make(map[string]config.ProviderConfig)
 	}
 
-	isTTY, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
+	isTTY, err := WithAltScreenTerminal(rlInput, rlOutput, func() error {
 		sr := NewSessionReader(rlInput)
 		defer sr.Close()
 
-		itemsProvider := func() []*settingItem {
-			var items []*settingItem
+		itemsProvider := func() []*SettingItem {
+			var items []*SettingItem
 			var pNames []string
 			for p := range cloned.Providers {
 				pNames = append(pNames, p)
@@ -60,43 +60,43 @@ func RunInteractiveProviderConfig(
 			for _, pn := range pNames {
 				pName := pn
 				items = append(items,
-					&settingItem{
-						id:   "prov_act_" + pName,
-						name: "provider: " + pName,
-						value: func() string {
+					&SettingItem{
+						ID:   "prov_act_" + pName,
+						Name: "provider: " + pName,
+						Value: func() string {
 							if cloned.ActiveProvider == pName {
 								return "➔ ACTIVE"
 							}
 							return "select"
 						},
-						description: fmt.Sprintf("Press Enter to set '%s' as the active provider", pName),
-						onToggle: func() {
+						Description: fmt.Sprintf("Press Enter to set '%s' as the active provider", pName),
+						OnToggle: func() {
 							cloned.ActiveProvider = pName
 						},
 					},
-					&settingItem{
-						id:   "prov_model_" + pName,
-						name: "  model",
-						value: func() string {
+					&SettingItem{
+						ID:   "prov_model_" + pName,
+						Name: "  model",
+						Value: func() string {
 							if curr := cloned.Providers[pName]; curr.Model != "" {
 								return curr.Model
 							}
 							return "(not set)"
 						},
-						description: fmt.Sprintf("Model identifier to request for '%s'", pName),
-						onEdit: func(newVal string) error {
+						Description: fmt.Sprintf("Model identifier to request for '%s'", pName),
+						OnEdit: func(newVal string) error {
 							curr := cloned.Providers[pName]
 							curr.Model = strings.TrimSpace(newVal)
 							cloned.Providers[pName] = curr
 							return nil
 						},
 					},
-					&settingItem{
-						id:          "prov_endpoint_" + pName,
-						name:        "  endpoint",
-						value:       func() string { return cloned.Providers[pName].Endpoint },
-						description: fmt.Sprintf("Base API endpoint URL for '%s'", pName),
-						onEdit: func(newVal string) error {
+					&SettingItem{
+						ID:          "prov_endpoint_" + pName,
+						Name:        "  endpoint",
+						Value:       func() string { return cloned.Providers[pName].Endpoint },
+						Description: fmt.Sprintf("Base API endpoint URL for '%s'", pName),
+						OnEdit: func(newVal string) error {
 							newVal = strings.TrimSpace(newVal)
 							if newVal == "" {
 								return fmt.Errorf("endpoint URL cannot be empty")
@@ -107,10 +107,10 @@ func RunInteractiveProviderConfig(
 							return nil
 						},
 					},
-					&settingItem{
-						id:   "prov_key_" + pName,
-						name: "  api key",
-						value: func() string {
+					&SettingItem{
+						ID:   "prov_key_" + pName,
+						Name: "  api key",
+						Value: func() string {
 							key := cloned.Providers[pName].APIKey
 							if key == "" {
 								return "(not set)"
@@ -123,25 +123,25 @@ func RunInteractiveProviderConfig(
 							}
 							return key[:4] + "..." + key[len(key)-4:] + " (masked)"
 						},
-						description: fmt.Sprintf("API key or env reference ($VAR) for '%s'", pName),
-						onEdit: func(newVal string) error {
+						Description: fmt.Sprintf("API key or env reference ($VAR) for '%s'", pName),
+						OnEdit: func(newVal string) error {
 							curr := cloned.Providers[pName]
 							curr.APIKey = strings.TrimSpace(newVal)
 							cloned.Providers[pName] = curr
 							return nil
 						},
 					},
-					&settingItem{
-						id:   "prov_timeout_" + pName,
-						name: "  timeout (s)",
-						value: func() string {
+					&SettingItem{
+						ID:   "prov_timeout_" + pName,
+						Name: "  timeout (s)",
+						Value: func() string {
 							if cloned.Providers[pName].Timeout > 0 {
 								return fmt.Sprintf("%ds", cloned.Providers[pName].Timeout)
 							}
 							return "default"
 						},
-						description: fmt.Sprintf("Timeout in seconds for '%s' (0 to use default)", pName),
-						onEdit: func(newVal string) error {
+						Description: fmt.Sprintf("Timeout in seconds for '%s' (0 to use default)", pName),
+						OnEdit: func(newVal string) error {
 							newVal = strings.TrimSpace(newVal)
 							if newVal == "" {
 								return nil
@@ -156,12 +156,12 @@ func RunInteractiveProviderConfig(
 							return nil
 						},
 					},
-					&settingItem{
-						id:          "prov_del_" + pName,
-						name:        "  [ delete " + pName + " ]",
-						value:       func() string { return "" },
-						description: fmt.Sprintf("Remove the provider '%s'", pName),
-						onToggle: func() {
+					&SettingItem{
+						ID:          "prov_del_" + pName,
+						Name:        "  [ delete " + pName + " ]",
+						Value:       func() string { return "" },
+						Description: fmt.Sprintf("Remove the provider '%s'", pName),
+						OnToggle: func() {
 							delete(cloned.Providers, pName)
 							if cloned.ActiveProvider == pName {
 								cloned.ActiveProvider = ""
@@ -174,12 +174,12 @@ func RunInteractiveProviderConfig(
 				)
 			}
 
-			items = append(items, &settingItem{
-				id:          "action_add",
-				name:        "[ add new provider ]",
-				value:       func() string { return "" },
-				description: "Configure a new endpoint provider profile",
-				onToggle: func() {
+			items = append(items, &SettingItem{
+				ID:          "action_add",
+				Name:        "[ add new provider ]",
+				Value:       func() string { return "" },
+				Description: "Configure a new endpoint provider profile",
+				OnToggle: func() {
 					fmt.Fprint(rlOutput, "\r\n\r\n  === Add New Endpoint Provider ===\r\n")
 					fmt.Fprint(rlOutput, "  Provider name (e.g. brain, ollama, groq): ")
 					pName, err := ReadInputRaw(sr, rlOutput)
@@ -274,7 +274,7 @@ func RunInteractiveProviderConfig(
 			}
 		}
 
-		return runSettingsMenuLoop(sr, rlOutput, theme, "endpoint providers config", itemsProvider, extraRender)
+		return RunSettingsMenuLoop(sr, rlOutput, theme, "endpoint providers config", itemsProvider, extraRender)
 	})
 	if !isTTY {
 		return cfg, nil

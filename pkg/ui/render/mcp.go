@@ -8,6 +8,7 @@ import (
 
 	"loop/pkg/config"
 	transporthttp "loop/pkg/transport/http"
+	"loop/pkg/ui/render/markdown"
 	"loop/pkg/ui/style"
 )
 
@@ -26,7 +27,7 @@ func RenderMCPStartupErrors(w io.Writer, startErrors map[string]error, theme sty
 		return
 	}
 	sort.Strings(names)
-	width := max(1, renderWidth(w)-2)
+	width := max(1, markdown.RenderWidth(w)-2)
 	title := style.NewStyle().Foreground(theme.Error).Bold(true)
 	text := style.NewStyle().Foreground(theme.Text)
 	muted := style.NewStyle().Foreground(theme.TextMuted)
@@ -46,7 +47,7 @@ func RenderMCPStartupErrors(w io.Writer, startErrors map[string]error, theme sty
 }
 
 func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
-	termW := renderWidth(w)
+	termW := markdown.RenderWidth(w)
 	borderStyle := style.NewStyle().
 		Border(style.RoundedBorder()).
 		BorderForeground(theme.Border).

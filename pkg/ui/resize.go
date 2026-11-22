@@ -37,8 +37,8 @@ func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 
 	cw := crnlWriter{W: w}
 	DrawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
-	if history != nil && !history.captureOnly && history.needsPaint {
-		history.paintLocked()
+	if history != nil {
+		history.PaintIfNeededLocked()
 	}
 
 	if !activeOp && a != nil && a.CurrentWriter() != nil {

@@ -8,7 +8,7 @@ import (
 )
 
 // Keep untrusted names and instructions on the rows reserved for the panel.
-func menuDisplayText(text string) string {
+func MenuDisplayText(text string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
@@ -18,12 +18,12 @@ func menuDisplayText(text string) string {
 }
 
 // Pasting into a searchable list filters it without running menu shortcuts.
-func appendPastedQuery(key []byte, query *string, limit int) bool {
+func AppendPastedQuery(key []byte, query *string, limit int) bool {
 	text, pasted := pastedKeyText(key)
 	if !pasted {
 		return false
 	}
-	text = strings.TrimSpace(menuDisplayText(text))
+	text = strings.TrimSpace(MenuDisplayText(text))
 	if len(text) <= limit-len(*query) {
 		*query += text
 	}

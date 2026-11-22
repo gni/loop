@@ -13,6 +13,7 @@ import (
 	"loop/pkg/domain/limits"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
+	isettings "loop/pkg/ui/interactive/settings"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -43,7 +44,7 @@ func handleConfigCommand(
 		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 		ui.ShutdownStatusBar(os.Stderr)
-		next, err = interactive.RunInteractiveConfig(a.Config, *theme, input, output)
+		next, err = isettings.RunInteractiveConfig(a.Config, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		if err != nil {
 			ui.RestoreAfterModal(w, a, kiReader, rl)

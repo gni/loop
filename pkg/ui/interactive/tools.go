@@ -17,7 +17,7 @@ import (
 
 func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) error {
 	var saveErr error
-	_, err := withAltScreenTerminal(rlInput, rlOutput, func() error {
+	_, err := WithAltScreenTerminal(rlInput, rlOutput, func() error {
 		sigChan := make(chan os.Signal, 1)
 		terminal.NotifyResize(sigChan)
 		defer signal.Stop(sigChan)
@@ -25,7 +25,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 		sr := NewSessionReader(rlInput)
 		defer sr.Close()
 
-		itemsProvider := func() []*settingItem {
+		itemsProvider := func() []*SettingItem {
 			if a == nil || a.Registry == nil {
 				return nil
 			}
@@ -36,7 +36,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 			}
 			sort.Strings(names)
 
-			items := make([]*settingItem, 0, len(names))
+			items := make([]*SettingItem, 0, len(names))
 			for _, name := range names {
 				toolName := name
 				exec := executors[toolName]
@@ -50,18 +50,18 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 				if a.Config != nil && !a.Config.MCP && (toolName == "load_mcp" || toolName == "search_tools" || toolName == "list_mcp_resources" || toolName == "list_mcp_resource_templates" || toolName == "read_mcp_resource") {
 					desc += " (MCP is off. Enabling this tool also enables MCP.)"
 				}
-				items = append(items, &settingItem{
-					id:   toolName,
-					name: toolName,
-					value: func() string {
+				items = append(items, &SettingItem{
+					ID:   toolName,
+					Name: toolName,
+					Value: func() string {
 						if a.IsToolDisabled(toolName) {
 							return "disabled"
 						}
 						return "enabled"
 					},
-					description: desc,
-					isBool:      true,
-					onToggle: func() {
+					Description: desc,
+					IsBool:      true,
+					OnToggle: func() {
 						if a.IsToolDisabled(toolName) {
 							a.EnableTools(toolName)
 						} else {
@@ -85,7 +85,7 @@ func RunInteractiveToolsConfig(a *agent.Agent, theme style.UITheme, rlInput io.R
 			buf.WriteString(borderLine + hintLine + borderLine)
 		}
 
-		return runSettingsMenuLoop(sr, rlOutput, theme, "tool permissions & availability", itemsProvider, extraRender)
+		return RunSettingsMenuLoop(sr, rlOutput, theme, "tool permissions & availability", itemsProvider, extraRender)
 	})
 	if saveErr != nil {
 		return errors.Join(err, fmt.Errorf("tool permissions applied in memory, but could not save: %w", saveErr))

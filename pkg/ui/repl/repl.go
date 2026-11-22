@@ -19,6 +19,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/terminal"
 	"loop/pkg/ui"
+	chathistory "loop/pkg/ui/chat/history"
 	"loop/pkg/ui/commands"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
@@ -131,7 +132,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		HistoryIndex: -1,
 	}
 	configureREPLCallbacks(kiReader, &theme)
-	chatHistory, historyErr := ui.NewChatHistory(a, kiReader, ppWriter, currentSessionID, messages)
+	chatHistory, historyErr := chathistory.New(a, kiReader, ppWriter, currentSessionID, messages)
 	if historyErr != nil {
 		fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", historyErr)
 	}
