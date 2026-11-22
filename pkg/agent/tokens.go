@@ -10,7 +10,10 @@ import (
 	"loop/pkg/db"
 )
 
-const charsPerToken = 2.5
+const (
+	charsPerToken        = 2.5 // conservative ratio for overflow budgeting
+	displayCharsPerToken = 3.8 // realistic BPE average for status bar estimates
+)
 
 func TokensFromChars(chars int) int {
 	if chars <= 0 {
@@ -21,6 +24,44 @@ func TokensFromChars(chars int) int {
 		return 1
 	}
 	return tokens
+}
+
+func displayTokensFromChars(chars int) int {
+	if chars <= 0 {
+		return 0
+	}
+	tokens := int(math.Ceil(float64(chars) / displayCharsPerToken))
+	if tokens == 0 {
+		return 1
+	}
+	return tokens
+}
+
+func estimateDisplayToolSchemaTokens(tools []tool.Tool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	data, err := json.Marshal(tools)
+	if err != nil {
+		return 0
+	}
+	return displayTokensFromChars(len(data)) + 4*len(tools)
+}
+
+func estimateDisplayMessageTokens(m db.Message) int {
+	// Reasoning content is never resubmitted to the provider on subsequent turns.
+	chars := len(m.Content) + len(m.Role) + len(m.Name) + len(m.ToolCallID)
+	for _, tc := range m.ToolCalls {
+		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	for _, block := range m.ContentBlocks {
+		if block.Type == "image" {
+			chars += 4096
+		} else {
+			chars += len(block.Text)
+		}
+	}
+	return displayTokensFromChars(chars) + 4
 }
 
 func EstimateToolSchemaTokens(tools []tool.Tool) int {
@@ -179,8 +220,9 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 }
 
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
-	// Estimate the retained next-request input, not past billing totals.
-	// Reasoning tokens and evicted history are not resubmitted to the provider.
+	// Prefer exact provider-measured prompt tokens from the latest completed
+	// assistant turn (when no post-turn compaction summary invalidated it),
+	// adding a calibrated estimate only for unsent messages appended afterward.
 	var cfg *config.Config
 	if a != nil {
 		a.LLMProviderMu.RLock()
@@ -196,7 +238,32 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	messages, _ = sanitizeRequestMessages(messages)
 	messages = EnforceToolPairingInvariance(messages)
 
-	messageTokens := requestTokens(messages)
+	hasCompactionAnchor := false
+	lastMeasured := -1
+	for i, msg := range messages {
+		if (msg.Role == "system" || msg.Role == "user") && msg.Usage != nil {
+			hasCompactionAnchor = true
+		}
+		if msg.Role == "assistant" && msg.PromptTokens > 0 {
+			lastMeasured = i
+		}
+	}
+	if lastMeasured >= 0 && !hasCompactionAnchor {
+		base := messages[lastMeasured].PromptTokens
+		if lastMeasured == len(messages)-1 {
+			return base, 0, false
+		}
+		delta := estimateDisplayMessageTokens(messages[lastMeasured])
+		for _, msg := range messages[lastMeasured+1:] {
+			delta += estimateDisplayMessageTokens(msg)
+		}
+		return base + delta, 0, true
+	}
+
+	messageTokens := 0
+	for _, msg := range messages {
+		messageTokens += estimateDisplayMessageTokens(msg)
+	}
 
 	toolTokens := 0
 	if a != nil && a.Registry != nil {
@@ -207,7 +274,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 				tools = nil
 			}
 		}
-		toolTokens = EstimateToolSchemaTokens(tools)
+		toolTokens = estimateDisplayToolSchemaTokens(tools)
 	}
 
 	if estimate := messageTokens + toolTokens; estimate > 0 {

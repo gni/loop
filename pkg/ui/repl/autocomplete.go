@@ -136,7 +136,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 			}
 
 		case strings.HasPrefix(prefixToPos, "/skills "):
-			matches = matchPrefixWithSpace([]string{"load", "reload"}, strings.TrimPrefix(prefixToPos, "/skills "), map[string]bool{"load": true})
+			matches = matchPrefixWithSpace([]string{"list", "load", "reload"}, strings.TrimPrefix(prefixToPos, "/skills "), map[string]bool{"load": true})
 
 		default:
 			if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/provider ", "/providers ", "/p "); ok {

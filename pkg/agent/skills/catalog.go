@@ -28,7 +28,7 @@ func Relevant(skills []tool.Skill, query string, budget int) []tool.Skill {
 				score++
 			}
 		}
-		skill.Description = filetool.UTF8SafePrefix(skill.Description, 160)
+		skill.Description = filetool.UTF8SafePrefix(skill.Description, 96)
 		matches = append(matches, match{skill, score})
 	}
 	sort.SliceStable(matches, func(i, j int) bool {

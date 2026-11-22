@@ -194,8 +194,7 @@ func executeREPLTurn(
 	if wasCancelled {
 		kiReader.ResetTypeAhead()
 		kiReader.ClearQueue()
-		cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
-		ui.DrawStaticStatsLine(os.Stderr, theme, "", cancelStyle.Render("[operation cancelled]"))
+		ui.DrawStaticStatsLine(os.Stderr, theme, "", "")
 	}
 	kiReader.Drain()
 }

@@ -168,7 +168,11 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				newPos = min(max(0, newPos), len(newLine))
 				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
 				if newLine != line {
-					chatHistory.SyncSlashMenu(newLine)
+					if key == interceptor.PromptUpKey || key == interceptor.PromptDownKey || key == interceptor.PromptHistoryUpKey {
+						chatHistory.CloseSlashMenu()
+					} else {
+						chatHistory.SyncSlashMenu(newLine)
+					}
 				}
 				return newLine, newPos, true
 			}

@@ -284,7 +284,7 @@ func HandleSlashCommand(
 		ui.HandleProviderCommand(a, parts, messages, *theme, w, kiReader)
 		return true, false
 	case "/skills", "/skill":
-		handleSkillsCommand(a, parts, messages, currentSessionID, theme, w)
+		handleSkillsCommand(a, parts, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
 		return true, false
 	case "/rewind", "/clear", "/clean", "/reset":
 		handleClearCommand(a, messages, currentSessionID, rlHistory, kiReader, w)

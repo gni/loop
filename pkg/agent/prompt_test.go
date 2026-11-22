@@ -29,14 +29,14 @@ func TestBuildSystemPrompt_ElevatedCoreRules(t *testing.T) {
 	}
 
 	prompt := BuildSystemPrompt(cfg)
-	if !strings.Contains(prompt, "run the narrowest relevant build, linter, or test checks permitted") {
+	if !strings.Contains(prompt, "Run the narrowest relevant build/lint/test checks.") {
 		t.Errorf("expected test verification in prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Deliver complete, runnable code with no placeholders, stubs, or TODOs.") {
 		t.Errorf("expected complete code in core rules, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Use todo only for multi-step work that benefits from tracking") {
-		t.Errorf("expected todo rule in core rules, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Batch independent read-only calls.") {
+		t.Errorf("expected batching rule in core rules, got:\n%s", prompt)
 	}
 }
 
@@ -51,8 +51,8 @@ func TestBuildSystemPrompt_OperatingLoop(t *testing.T) {
 			for _, fragment := range []string{
 				"<role>\nCustom engineering role\n</role>",
 				"<operating_loop>", "1. DISCOVER:", "2. PLAN:", "3. EDIT:", "4. VERIFY:", "5. REPORT:", "</operating_loop>",
-				"Never claim a check passed without tool output; explicitly note anything unverified.",
-				"Ask for explicit approval before destructive actions, irreversible git operations, or changes outside the workspace.",
+				"Never claim a check passed without tool output.",
+				"Ask for approval before destructive actions, irreversible git operations, or outside-workspace edits.",
 				"Terminal command execution is unavailable",
 			} {
 				if !strings.Contains(prompt, fragment) {

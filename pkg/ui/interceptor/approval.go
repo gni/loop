@@ -163,7 +163,6 @@ func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte,
 		if ki.OnClearCancelFunc != nil {
 			ki.OnClearCancelFunc()
 		}
-		fmt.Fprintln(output, "\n\n[operation cancelled by user]")
 	}
 
 	ki.ResetTypeAhead()

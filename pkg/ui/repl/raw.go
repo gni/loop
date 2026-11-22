@@ -300,7 +300,6 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		ui.GetUI().ActiveCancelFunc = nil
 		ui.GetUI().StateMu.Unlock()
 		kiReader.ResetTypeAhead()
-		kiReader.PrintCancelMessage()
 
 		if clearQueue {
 			cleared := kiReader.ClearQueue()

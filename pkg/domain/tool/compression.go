@@ -1,63 +1,44 @@
 package tool
 
 // Descriptions explain behavior; field names, types, enums and required lists
-// already describe the arguments. Keep only parameter hints that add meaning.
+// already describe the arguments. Validation, pagination notices, and error
+// recovery hints are enforced in Go tool executors instead of repeated prose.
 var compactToolDescriptions = map[string]string{
-	"bash":                        "Run shell commands. Working directory persists; background starts a task.",
+	"bash":                        "Run shell command (cwd persists; background=true tracks task).",
 	"list_directory":              "List directory entries.",
-	"find_files":                  "Find paths by glob.",
-	"read":                        "Read a file; offset/limit paginate. Use list_directory for directories.",
-	"grep":                        "Search file content by regex (literal=true for fixed text). glob filters files.",
-	"search_symbols":              "Find Go, JS/TS and Python declarations. include_context adds bounded source; Go also adds imports/candidate callers. Read before editing.",
-	"write":                       "Create or fully replace a file; never bypass an edit mismatch.",
-	"edit":                        "Replace unique oldText with newText. On mismatch re-read and retry a smaller block; never bypass with write.",
-	"todo":                        "Manage the todo plan, separate from background tasks; at most one in_progress. Prefer markdown for full plans; actions update individuals.",
-	"ask_user":                    "Ask for needed clarification or approval with clear choices. The UI adds Other.",
-	"load_skill":                  "Load instructions by exact name, or query names/descriptions without loading. Returned paths locate supporting files.",
-	"load_mcp":                    "Connect a deferred MCP server; omit name to list deferred servers.",
-	"search_tools":                "Expose matching tools; their schemas become available on the next step.",
-	"task_state":                  "Optionally assess request progress after work starts. Update only for changed outcomes or blockers; resolve pending work before completed.",
-	"list_mcp_resources":          "List resources from a selected server, or all resource-capable servers.",
-	"list_mcp_resource_templates": "List resource templates from a selected server, or all resource-capable servers.",
-	"read_mcp_resource":           "Read an MCP resource by server and URI; non-image binary data is saved as an artifact.",
-	"get_task_status":             "Inspect background task status and output.",
-	"stop_task":                   "Stop a background task.",
-	"create_subagent":             "Create an autonomous agent for a bounded task.",
-	"remove_subagent":             "Stop and remove an agent.",
-	"list_subagents":              "List active agents.",
-	"inspect_subagent":            "Inspect an agent's execution history.",
+	"find_files":                  "Find files by glob.",
+	"read":                        "Read file (text or image).",
+	"grep":                        "Search file contents (regex; literal=true for fixed text).",
+	"search_symbols":              "Find Go/JS/TS/Python declarations and call sites.",
+	"write":                       "Create or overwrite file.",
+	"edit":                        "Replace unique oldText with newText in file.",
+	"todo":                        "Manage task plan. Use markdown ('- [ ] id: task', [>] active, [x] done) or action.",
+	"ask_user":                    "Ask user for blocking clarification or approval.",
+	"load_skill":                  "Load skill by name, or search metadata by query.",
+	"load_mcp":                    "Connect deferred MCP server (omit name to list).",
+	"search_tools":                "Discover and enable specialized tools for next step.",
+	"task_state":                  "Update multi-step progress or blockers.",
+	"list_mcp_resources":          "List MCP resources.",
+	"list_mcp_resource_templates": "List MCP resource templates.",
+	"read_mcp_resource":           "Read MCP resource by server and URI.",
+	"get_task_status":             "Check background task status and output.",
+	"stop_task":                   "Stop background task.",
+	"create_subagent":             "Spawn subagent for a bounded task.",
+	"remove_subagent":             "Stop and remove subagent.",
+	"list_subagents":              "List active subagents.",
+	"inspect_subagent":            "Inspect subagent execution history.",
 }
 
 var compactParameterHints = map[string]map[string]string{
-	"bash":           {"dir": "Override working directory."},
-	"read":           {"offset": "1-based line.", "limit": "Lines to read."},
-	"list_directory": {"offset": "1-based entry.", "depth": "Recursion depth."},
-	"find_files":     {"offset": "1-based result."},
-	"grep":           {"offset": "1-based match."},
-	"search_symbols": {
-		"query":           "All space-separated terms must match.",
-		"limit":           "1-100 results (default 30).",
-		"include_context": "Candidate callers match syntax names, not resolved types.",
-	},
-	"search_tools": {"limit": "Up to 20 results."},
-	"load_skill":   {"query": "Metadata search only; use name to load instructions."},
-	"task_state": {
-		"summary":           "Result or blocker; required for terminal status.",
-		"remaining":         "Replace remaining work; [] clears it. The todo plan is separate.",
-		"verification_note": "Explain skipped checks; cannot assert verification success.",
-	},
-	"list_mcp_resources":          {"cursor": "Continue on the server that returned this cursor."},
-	"list_mcp_resource_templates": {"cursor": "Continue on the server that returned this cursor."},
 	"todo": {
-		"markdown": "Full plan: - [ ] task-1: Work; [>] active, [x] done. One row per task; stable IDs. Do not combine with tasks or action.",
-		"tasks":    "Full plan replacement.",
-		"action":   "update/remove need task_id; add needs task.",
+		"markdown": "Checklist lines: '- [ ] id: task' ([>] active, [x] done).",
 	},
-	"ask_user":        {"recommended": "Option label."},
-	"create_subagent": {"system_prompt": "Task scope and operating instructions.", "inline_skills": "Private reference instructions."},
+	"task_state": {
+		"remaining": "Replace remaining items ([] clears).",
+	},
 }
 
-// CompactToolGuidelines omits only builtin rules already in native schemas.
+// CompactToolGuidelines omits builtin rules already enforced in Go or native schemas.
 // Explicit catalog and executor guidelines remain verbatim.
 func CompactToolGuidelines(name string, guidelines []string) []string {
 	name = NormalizeName(name)
@@ -65,7 +46,7 @@ func CompactToolGuidelines(name string, guidelines []string) []string {
 		return guidelines
 	}
 	switch name {
-	case "read", "write", "edit", "ask_user", "bash", "list_directory", "find_files", "grep", "todo", "get_task_status", "stop_task", "task_state", "search_symbols":
+	case "read", "write", "edit", "ask_user", "bash", "list_directory", "find_files", "grep", "todo", "get_task_status", "stop_task", "task_state", "search_symbols", "create_subagent", "load_skill", "search_tools":
 		return nil
 	}
 	return guidelines
@@ -96,11 +77,24 @@ func CompressToolDefinition(t Tool) Tool {
 	if hasToolPromptOverride(t.Function.Name) {
 		return t
 	}
+	canonical := NormalizeName(t.Function.Name)
 	compressed := t
-	if description, known := compactToolDescriptions[NormalizeName(t.Function.Name)]; known {
+	if description, known := compactToolDescriptions[canonical]; known {
 		compressed.Function.Description = description
 		props := compactSchemaProperties(t.Function.Parameters.Properties)
-		for key, hint := range compactParameterHints[NormalizeName(t.Function.Name)] {
+		if canonical == "todo" {
+			// Keep markdown + action in the wire schema; Go still accepts tasks arrays if sent.
+			delete(props, "tasks")
+		}
+		if canonical == "create_subagent" {
+			if prop, ok := props["skill_names"]; ok && prop.Items != nil {
+				item := *prop.Items
+				item.Enum = nil
+				prop.Items = &item
+				props["skill_names"] = prop
+			}
+		}
+		for key, hint := range compactParameterHints[canonical] {
 			if prop, ok := props[key]; ok {
 				prop.Description = hint
 				props[key] = prop

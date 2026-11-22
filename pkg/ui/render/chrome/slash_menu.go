@@ -47,7 +47,7 @@ func (item SlashCommandItem) TabText() string {
 
 var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/config", Description: "everyday settings and preferences", HasSubs: true},
-	{Name: "/skills", Description: "list or load reference skills", HasSubs: true},
+	{Name: "/skills", Description: "filter and pick a skill, list, or reload", HasSubs: true},
 	{Name: "/provider", Description: "manage AI endpoints, keys, and models", HasSubs: true},
 	{Name: "/model", Args: "[name]", Description: "view or set active AI model"},
 	{Name: "/session", Description: "manage persistent conversation sessions", HasSubs: true},
@@ -105,8 +105,9 @@ func builtinSubcommands(cmd string) []SlashCommandItem {
 		}
 	case "/skills", "/skill":
 		return []SlashCommandItem{
-			{Name: "/skills", Description: "list available skills"},
-			{Name: "/skills load", Args: "<name>", Description: "load a skill into conversation context", TakesArgs: true, HasSubs: true},
+			{Name: "/skills", Description: "open interactive skill picker"},
+			{Name: "/skills list", Description: "print available skills"},
+			{Name: "/skills load", Args: "[name]", Description: "pick or load a skill into context", HasSubs: true},
 			{Name: "/skills reload", Description: "reload skills from disk"},
 		}
 	case "/provider", "/providers", "/p":

@@ -123,8 +123,8 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	var toolLines strings.Builder
 	// Native tool schemas already carry names, descriptions, and arguments.
-	// Keep the detailed listing for XML protocol and non-compact prompts only.
-	if !cfg.CompactPrompt || !cfg.NativeToolSchemas {
+	// Keep the text listing for XML protocol only.
+	if !cfg.NativeToolSchemas {
 		for _, entry := range tools {
 			toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
 		}
@@ -137,7 +137,7 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			continue
 		}
 		hasActiveAgents = true
-		if cfg.CompactPrompt && cfg.NativeToolSchemas && toolNames[toolName] {
+		if cfg.NativeToolSchemas && toolNames[toolName] {
 			continue
 		}
 		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(agentTpl.SubagentPrompt, name)))
@@ -164,27 +164,25 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 
 	if cfg.GuidedMode {
 		if hasAskUser {
-			addRule("Guided Workflow Protocol: Inspect relevant files, clarify ambiguous requirements with 'ask_user', and register an execution plan using 'todo' before mutations.")
+			addRule("Guided Mode: Inspect files, clarify ambiguity with ask_user, and register a todo plan before mutations.")
 		} else {
-			addRule("Guided Workflow Protocol: Inspect relevant files and register an execution plan using 'todo' before mutations.")
+			addRule("Guided Mode: Inspect files and register a todo plan before mutations.")
 		}
-		addRule("Step-by-Step Progress: Execute one planned step at a time and update the 'todo' status as each step completes.")
+		addRule("Execute one planned step at a time and update todo status as each completes.")
 	}
 
 	if cfg.SequentialTools && len(tools) > 0 {
-		addRule("Batch independent calls; execution is ordered. Await confirmed tool results before taking dependent actions.")
+		addRule("Tool calls execute sequentially; await results before dependent actions.")
 	}
 	if canSpawnSubagents {
-		addRule("Delegate independent multi-step work only when useful; perform a single read or command directly. Keep child scope, time and token budgets bounded.")
+		addRule("Delegate only bounded multi-step work; handle single reads or commands directly.")
 	}
 	if toolNames["search_tools"] {
-		addRule("Discover specialized tools with search_tools before calling them; their schemas appear on the next step.")
+		addRule("Use search_tools to discover and enable specialized tools on demand.")
 	}
 
-	if cfg.SkipObservation {
-		addRule("Observation guard is off: prior reads and revision matches are optional. Use edit for targeted changes, write for replacements; stay inside the workspace.")
-	} else {
-		addRule("Read existing files before edit/overwrite; new files need no read. Use edit for targeted changes, write for replacements. Paths and revisions are validated.")
+	if !cfg.SkipObservation {
+		addRule("Read existing files before edit/overwrite; use edit for targeted changes, write for new or full files.")
 	}
 
 	for _, rule := range FormatCoreRules(workspaceRoot) {
@@ -277,16 +275,18 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 			sort.Strings(validNames)
 			if len(validNames) > 0 {
 				maLines.WriteString(fmt.Sprintf(t.MultiAgentSkillList, strings.Join(validNames, ", ")))
-			} else {
+			} else if t.MultiAgentNoSkills != "" {
 				maLines.WriteString(t.MultiAgentNoSkills)
 			}
-		} else {
+		} else if t.MultiAgentNoSkills != "" {
 			maLines.WriteString(t.MultiAgentNoSkills)
 		}
 		if canSpawnSubagents {
 			maLines.WriteString(t.MultiAgentSpawnRules)
 		}
-		sb.WriteString(fmt.Sprintf(t.MultiAgentSection, maLines.String()))
+		if trimmed := strings.TrimSpace(maLines.String()); trimmed != "" {
+			sb.WriteString(fmt.Sprintf(t.MultiAgentSection, trimmed))
+		}
 	}
 
 	if cfg.MemoryContext != "" {

@@ -51,7 +51,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/config [show|set <k> <v>]", "everyday settings, with an advanced-settings toggle"},
 		{"/session [list|new|load|tree|branch|rename|clear]", "manage persistent conversation sessions"},
 		{"/provider", "manage ai endpoints, keys, and model profiles"},
-		{"/skills [load <name>]", "list or load reference skills"},
+		{"/skills [list|load [name]|reload]", "filter and pick a skill, list skills, or load by name"},
 		{"/mcp [enable|disable]", "manage and toggle mcp servers"},
 		{"/tools [list|enable|disable|reset]", "manage and toggle tool availability"},
 		{"/plugins", "list registered custom tool plugins"},

@@ -84,7 +84,6 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 						Description: skillNamesDescription,
 						Items: &tool.SchemaProp{
 							Type: "string",
-							Enum: availableSkillNames,
 						},
 					},
 					"inline_skills": {
@@ -205,7 +204,15 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 			continue
 		}
 
-		return "", fmt.Errorf("reference skill %q not found; use a registered skill name or define instructions in inline_skills", requestedName)
+		validList := make([]string, 0, len(availableSkills))
+		for _, name := range availableSkills {
+			validList = append(validList, name)
+		}
+		sort.Strings(validList)
+		if len(validList) > 0 {
+			return "", fmt.Errorf("reference skill %q not found (available: %s); or define instructions in inline_skills", requestedName, strings.Join(validList, ", "))
+		}
+		return "", fmt.Errorf("reference skill %q not found (no registered skills); define instructions in inline_skills", requestedName)
 	}
 
 	err = s.mam.spawnAgentWithSkillsFor(
