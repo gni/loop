@@ -4,18 +4,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"unicode/utf8"
 
 	"loop/pkg/config"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
 func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
-	termW, _ := terminal.GetDimensions()
-	if termW <= 0 {
-		termW = 80
-	}
+	termW := renderWidth(w)
 
 	borderStyle := style.NewStyle().
 		Border(style.RoundedBorder()).
@@ -50,17 +45,17 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 		if key == "api_key" && value != "" {
 			value = "<set>"
 		}
-		value = strings.Join(strings.Fields(value), " ")
+		value = strings.Join(strings.Fields(SanitizeTerminalText(value)), " ")
 		valueWidth := max(1, termW-38)
 		if termW >= 140 {
 			valueWidth = max(1, (termW-10)/2-30)
 		}
-		value = style.TruncateRunes(value, valueWidth)
+		value = style.TruncateCells(value, valueWidth)
 		pairs = append(pairs, kvPair{key + ":", valStyle.Render(value)})
 	}
 
 	formatCell := func(p kvPair) string {
-		kPad := max(29-utf8.RuneCountInString(p.key), 1)
+		kPad := max(29-style.CellWidth(p.key), 1)
 		return fmt.Sprintf("%s%s%s", keyStyle.Render(p.key), strings.Repeat(" ", kPad), p.val)
 	}
 
@@ -74,7 +69,7 @@ func RenderConfig(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			left := formatCell(pairs[r])
 			if r+rows < len(pairs) {
 				right := formatCell(pairs[r+rows])
-				leftVis := utf8.RuneCountInString(style.StripAnsi(left))
+				leftVis := style.CellWidth(left)
 				pad := ""
 				if leftVis < colWidth {
 					pad = strings.Repeat(" ", colWidth-leftVis)

@@ -38,10 +38,57 @@ func LockContext(ctx context.Context, path string, exclusive bool) (func(), erro
 	return func() { once.Do(func() { _ = funlock(file); _ = file.Close() }) }, nil
 }
 
+// LockMutexContext acquires mu while honoring context cancellation without
+// leaving a goroutine blocked on mu.Lock after cancellation.
+func LockMutexContext(ctx context.Context, mu *sync.Mutex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if ctx.Done() == nil {
+		mu.Lock()
+		return nil
+	}
+	if mu.TryLock() {
+		if err := ctx.Err(); err != nil {
+			mu.Unlock()
+			return err
+		}
+		return nil
+	}
+	delay := time.Millisecond
+	const maxDelay = 20 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if mu.TryLock() {
+			if err := ctx.Err(); err != nil {
+				mu.Unlock()
+				return err
+			}
+			return nil
+		}
+		delay = min(delay*2, maxDelay)
+		timer.Reset(delay)
+	}
+}
+
 func waitFileLock(ctx context.Context, file *os.File, exclusive bool) error {
 	if ctx.Done() == nil {
 		return flock(file, exclusive)
 	}
+	delay := time.Millisecond
+	const maxDelay = 20 * time.Millisecond
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -53,12 +100,16 @@ func waitFileLock(ctx context.Context, file *os.File, exclusive bool) error {
 		if locked {
 			return nil
 		}
-		timer := time.NewTimer(20 * time.Millisecond)
+		if timer == nil {
+			timer = time.NewTimer(delay)
+		} else {
+			timer.Reset(delay)
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 		}
+		delay = min(delay*2, maxDelay)
 	}
 }

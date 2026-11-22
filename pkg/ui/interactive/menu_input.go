@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"loop/pkg/terminal"
+	"loop/pkg/ui/screen"
 	"loop/pkg/ui/style"
 )
 
@@ -40,9 +41,16 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 	var input strings.Builder
 	input.WriteString(initial)
 	warning := ""
+	comp := screen.NewCompositor(80, 24)
 	for {
-		width, height := terminal.GetDimensions()
-		width = max(1, width-2)
+		termW, termH := terminal.GetDimensions()
+		if termW <= 0 {
+			termW = 80
+		}
+		if termH <= 0 {
+			termH = 24
+		}
+		width := max(1, termW-2)
 		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		muted := style.NewStyle().Foreground(theme.TextMuted)
 		value := menuDisplayText(input.String())
@@ -61,23 +69,44 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			start--
 		}
 		visible = visible[start:]
-		rows := []string{titleStyle.Render(title), muted.Render(description), "", titleStyle.Render(label), "> " + string(visible), "", style.NewStyle().Foreground(theme.Error).Render(warning), "", muted.Render("Enter continue · Esc cancel")}
-		if height < 10 {
-			rows = []string{titleStyle.Render(title), "> " + string(visible), style.NewStyle().Foreground(theme.Error).Render(warning), muted.Render("Enter apply · Esc back")}
+		inputLine := "> " + string(visible)
+		rows := []string{
+			titleStyle.Render(title),
+			muted.Render(description),
+			"",
+			titleStyle.Render(label),
+			inputLine,
+			"",
+			style.NewStyle().Foreground(theme.Error).Render(warning),
+			"",
+			muted.Render("Enter continue · Esc cancel"),
 		}
-		if width < 16 || height < 6 {
-			rows = []string{muted.Render("Resize; Esc back")}
-		}
-		var frame strings.Builder
-		frame.WriteString("\x1b[?25l\x1b[H")
-		for i, row := range rows {
-			if i > 0 {
-				frame.WriteString("\r\n")
+		cursorRow := 5
+		showCursor := true
+		if termH < 10 {
+			rows = []string{
+				titleStyle.Render(title),
+				inputLine,
+				style.NewStyle().Foreground(theme.Error).Render(warning),
+				muted.Render("Enter apply · Esc back"),
 			}
-			frame.WriteString(style.TruncateCells(row, width) + "\x1b[K")
+			cursorRow = 2
 		}
-		frame.WriteString("\x1b[J")
-		if err := writeMenuFrame(w, frame.String()); err != nil {
+		if width < 16 || termH < 6 {
+			rows = []string{muted.Render("Resize; Esc back")}
+			cursorRow = 0
+			showCursor = false
+		}
+		cursorCol := 0
+		if showCursor {
+			cursorCol = min(termW, style.CellWidth(inputLine)+1)
+		}
+		opts := screen.FlushOptions{
+			CursorRow:  cursorRow,
+			CursorCol:  cursorCol,
+			ShowCursor: showCursor,
+		}
+		if err := flushMenuScreen(comp, w, termW, termH, rows, opts); err != nil {
 			return "", &menuInputError{cause: err}
 		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
@@ -85,6 +114,7 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			return "", &menuInputError{cause: err}
 		}
 		if resized {
+			terminal.RefreshDimensions()
 			continue
 		}
 		if pasted, err := appendPastedInput(key, &input, io.Discard); pasted {
@@ -102,7 +132,7 @@ func readMenuInput(sr *SessionReader, signals chan os.Signal, w io.Writer, theme
 			warning = ""
 			continue
 		}
-		if width < 16 || height < 6 {
+		if width < 16 || termH < 6 {
 			continue
 		}
 		if len(key) > 0 && key[0] == 27 {

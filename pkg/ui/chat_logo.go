@@ -71,21 +71,108 @@ func (h *ChatHistory) canShowLogoLocked(rows []string) bool {
 
 func (h *ChatHistory) decorateChatLocked(rows []string) []string {
 	h.logoVisible = h.canShowLogoLocked(rows)
-	if !h.logoVisible {
+	if h.logoVisible {
+		cols, height := min(47, max(1, h.buffer.Width)), min(15, len(rows))
+		cfg := h.logoConfig()
+		frame := h.logoFrame
+		if cfg.ReducedMotion {
+			frame = 60
+		}
+		logo := renderLoopLogo(cols, height, frame, logoAppearance{brightness: cfg.LogoBrightness, light: cfg.Theme == "light"})
+		top, left := (len(rows)-height)/2, max(0, (h.buffer.Width-cols)/2)
+		for row, line := range logo {
+			rows[top+row] = strings.Repeat(" ", left) + line
+		}
 		return rows
 	}
-	cols, height := min(47, max(1, h.buffer.Width)), min(15, len(rows))
-	cfg := h.logoConfig()
-	frame := h.logoFrame
-	if cfg.ReducedMotion {
-		frame = 60
-	}
-	logo := renderLoopLogo(cols, height, frame, logoAppearance{brightness: cfg.LogoBrightness, light: cfg.Theme == "light"})
-	top, left := (len(rows)-height)/2, max(0, (h.buffer.Width-cols)/2)
-	for row, line := range logo {
-		rows[top+row] = strings.Repeat(" ", left) + line
+	if h.browsing && len(rows) > 0 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+		rows = h.decorateStickyQuestionLocked(rows)
 	}
 	return rows
+}
+
+func (h *ChatHistory) activeQuestionIndexLocked(anchors []render.QuestionAnchor) int {
+	if len(anchors) == 0 {
+		return -1
+	}
+	// When the first question is visible at the top of the chat viewport,
+	// do not show the sticky bar so the first question is never duplicated.
+	if h.top <= anchors[0].PromptRow {
+		return -1
+	}
+	idx := -1
+	for i, a := range anchors {
+		if a.PromptRow < h.top {
+			idx = i
+		} else {
+			break
+		}
+	}
+	return idx
+}
+
+func (h *ChatHistory) decorateStickyQuestionLocked(rows []string) []string {
+	if h.buffer == nil || len(rows) == 0 {
+		return rows
+	}
+	anchors := h.buffer.QuestionAnchors()
+	if len(anchors) == 0 {
+		return rows
+	}
+	idx := h.activeQuestionIndexLocked(anchors)
+	if idx < 0 || idx >= len(anchors) {
+		return rows
+	}
+
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	available := max(1, h.buffer.Width-1)
+
+	totalSuffix := ""
+	if h.hasOlderLocked() {
+		totalSuffix = "+"
+	}
+	badgeRaw := fmt.Sprintf(" [↑ %d/%d%s ↓]", idx+1, len(anchors), totalSuffix)
+	badgeWidth := style.CellWidth(badgeRaw)
+
+	borderStyle := style.NewStyle().Foreground(theme.Border)
+	promptStyle := style.NewStyle().Foreground(theme.TextMuted)
+	textStyle := style.NewStyle().Foreground(theme.TextMuted)
+	badgeStyle := style.NewStyle().Foreground(theme.TextMuted)
+
+	cleanQ := strings.Join(strings.Fields(render.SanitizeTerminalText(anchors[idx].Text)), " ")
+	if cleanQ == "" {
+		cleanQ = "..."
+	}
+
+	prefixRaw := "─── > "
+	prefixWidth := style.CellWidth(prefixRaw)
+
+	if available <= badgeWidth+prefixWidth+4 {
+		out := append([]string(nil), rows...)
+		out[0] = textStyle.Render(style.TruncateCells(prefixRaw+cleanQ, available))
+		return out
+	}
+
+	maxQWidth := available - prefixWidth - badgeWidth - 3
+	if style.CellWidth(cleanQ) > maxQWidth {
+		if maxQWidth > 1 {
+			cleanQ = style.TruncateCells(cleanQ, maxQWidth-1) + "…"
+		} else {
+			cleanQ = style.TruncateCells(cleanQ, maxQWidth)
+		}
+	}
+	qWidth := style.CellWidth(cleanQ)
+	dashCount := max(1, available-prefixWidth-qWidth-badgeWidth-1)
+
+	stickyLine := borderStyle.Render("─── ") + promptStyle.Render("> ") +
+		textStyle.Render(cleanQ) +
+		" " + borderStyle.Render(strings.Repeat("─", dashCount)) +
+		badgeStyle.Render(badgeRaw)
+
+	out := append([]string(nil), rows...)
+	out[0] = stickyLine
+	return out
 }
 
 // The entrance plays once; subsequent frames animate the complete word.
@@ -95,14 +182,23 @@ type logoAppearance struct {
 	light      bool
 }
 
-func (h *ChatHistory) logoConfig() *config.Config {
+func (h *ChatHistory) logoConfig() config.Config {
+	if h.a != nil {
+		h.a.LLMProviderMu.RLock()
+		if h.a.Config != nil {
+			cfg := *h.a.Config
+			h.a.LLMProviderMu.RUnlock()
+			return cfg
+		}
+		h.a.LLMProviderMu.RUnlock()
+	}
 	state := getUI()
 	state.StateMu.Lock()
-	cfg := state.Config
-	state.StateMu.Unlock()
-	if cfg == nil {
-		return h.a.Config
+	var cfg config.Config
+	if state.Config != nil {
+		cfg = *state.Config
 	}
+	state.StateMu.Unlock()
 	return cfg
 }
 

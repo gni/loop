@@ -57,6 +57,14 @@ func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorRead
 		return
 	}
 
+	width, height := terminal.RefreshDimensions()
+	if rl == nil && kiReader != nil {
+		rl = kiReader.GetRL()
+	}
+	if rl != nil && width > 0 && height > 0 {
+		_ = rl.SetSize(width, height)
+	}
+
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 
@@ -75,30 +83,40 @@ func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorRead
 
 func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, notice string) {
 	TerminalMu.Lock()
-	getUI().StateMu.Lock()
-	inModal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
-	getUI().StateMu.Unlock()
+	uiImpl := getUI()
+	uiImpl.StateMu.Lock()
+	inModal := uiImpl.InApprovalPrompt || uiImpl.InInteractiveMenu || terminal.Default().InAltScreen()
+	history := uiImpl.ChatHistory
+	uiImpl.StateMu.Unlock()
 	if inModal {
 		TerminalMu.Unlock()
 		return
 	}
-	if history := getUI().ChatHistory; history != nil && history.RedrawLocked() {
+	if history != nil && history.RedrawLocked() {
 		history.notice = notice
 		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, rl, true)
 		TerminalMu.Unlock()
 		if notice != "" {
-			noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(a.Config).Success).Italic(true)
+			live := a.LiveSettings()
+			noticeStyle := style.NewStyle().Foreground(style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme).Success).Italic(true)
 			history.writer.EnsureNewline()
 			fmt.Fprintln(history.writer, noticeStyle.Render(notice))
 		}
 		return
 	}
-	defer TerminalMu.Unlock()
+	TerminalMu.Unlock()
 
-	SetCollapseStatus(a.Config.CollapseResults)
-	activeTheme := GetConfiguredTheme(a.Config)
+	// Snapshot settings, messages, and any live stream replay into an in-memory
+	// buffer BEFORE acquiring TerminalMu so replay (which takes sr.mu) can never
+	// invert lock ordering with a foreground writer holding sr.mu -> TerminalMu.
+	live := a.LiveSettings()
+	SetCollapseStatus(live.CollapseResults)
+	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 
-	getUI().LastH = 0
+	cfgSnapshot, cfgErr := a.Configuration()
+	if cfgErr != nil {
+		cfgSnapshot = a.Config
+	}
 
 	var buf bytes.Buffer
 	cwBuf := crnlWriter{W: &buf}
@@ -118,8 +136,8 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		activeMessages = historySnapshot()
 	}
 	if kiReader != nil && kiReader.MAM != nil {
-		if history, active := kiReader.MAM.ActiveHistorySnapshot(); active {
-			activeMessages = history
+		if activeHistory, active := kiReader.MAM.ActiveHistorySnapshot(); active {
+			activeMessages = activeHistory
 		}
 	}
 
@@ -129,7 +147,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		fmt.Fprintln(cwBuf)
 	}
 	if len(activeMessages) > 0 {
-		PrintSessionHistory(cwBuf, activeMessages, activeTheme, a.Config)
+		PrintSessionHistory(cwBuf, activeMessages, activeTheme, cfgSnapshot)
 	}
 
 	a.CurrentStreamMu.Lock()
@@ -142,19 +160,13 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		if len(activeMessages) > 0 && activeMessages[len(activeMessages)-1].Role == "user" {
 			fmt.Fprintln(cwBuf, style.ActivityDivider(activeTheme))
 		}
-		replay(cwBuf, a.Config.CollapseResults, activeTheme)
+		replay(cwBuf, live.CollapseResults, activeTheme)
 	} else {
 		// The pinned controls already reserve the activity gap. Keep a
 		// completed transcript on its last occupied row instead of adding
 		// empty rows for history's line ending and a second redraw newline.
 		buf.Truncate(len(bytes.TrimRight(buf.Bytes(), "\r\n")))
 	}
-	_, height := GetTerminalSize()
-	scrollBottom := style.ConsoleScrollBottom(height, getUI().PasteLinesOffset)
-	var finalBuf bytes.Buffer
-	cwFinal := crnlWriter{W: &finalBuf}
-	fmt.Fprintf(cwFinal, "\x1b[?2026h\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", scrollBottom)
-	finalBuf.Write(buf.Bytes())
 
 	var mam *swarm.MultiAgentManager
 	if kiReader != nil {
@@ -165,13 +177,31 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(activeMessages)
 	effLimit := a.GetEffectiveContextLimit(pTok)
 
-	getUI().StateMu.Lock()
-	generating := getUI().State.IsGenerating
-	getUI().StateMu.Unlock()
-	UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), a.Config.ShowTokens, estimated)
-	DrawConsoleStaticControlsLocked(cwFinal, a, kiReader, rl, true)
-	if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
-		uiImpl.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+
+	uiImpl.StateMu.Lock()
+	inModal = uiImpl.InApprovalPrompt || uiImpl.InInteractiveMenu || terminal.Default().InAltScreen()
+	if inModal {
+		uiImpl.StateMu.Unlock()
+		return
+	}
+	uiImpl.LastH = 0
+	pasteOffset := uiImpl.PasteLinesOffset
+	generating := uiImpl.State.IsGenerating
+	uiImpl.StateMu.Unlock()
+
+	_, height := GetTerminalSize()
+	scrollBottom := style.ConsoleScrollBottom(height, pasteOffset)
+	var finalBuf bytes.Buffer
+	cwFinal := crnlWriter{W: &finalBuf}
+	fmt.Fprintf(cwFinal, "%s\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", terminal.BeginSyncOutput, scrollBottom)
+	finalBuf.Write(buf.Bytes())
+
+	UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens, estimated)
+	DrawConsoleStaticControlsLocked(render.WrapSyncFrame(cwFinal), a, kiReader, rl, true)
+	if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
+		agentUI.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
 	}
 
 	if counter, ok := a.CurrentWriter().(interface{ ResetAfterReplay([]byte) }); ok {
@@ -182,6 +212,6 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	if _, isPP := w.(*PromptPreservingWriter); isPP {
 		dest = os.Stderr
 	}
-	finalBuf.WriteString("\x1b[?2026l")
+	finalBuf.WriteString(terminal.EndSyncOutput)
 	_, _ = dest.Write(finalBuf.Bytes())
 }

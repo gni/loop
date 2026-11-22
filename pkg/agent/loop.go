@@ -17,14 +17,14 @@ import (
 
 func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
 	now := time.Now()
-	timeStr := fmt.Sprintf("%s (%s)", now.Format("2006-01-02 15:04:05"), style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds))
+	timeStr := fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
 	return style.NewStyle().Foreground(theme.Border).Render(timeStr)
 }
 
 func formatCompletionTokensBadge(tokens int, theme style.UITheme) string {
-	currentCStr := fmt.Sprintf("%d out", tokens)
+	currentCStr := fmt.Sprintf("↓ %d out", tokens)
 	if tokens >= 1000 {
-		currentCStr = fmt.Sprintf("%.1fk out", float64(tokens)/1000.0)
+		currentCStr = fmt.Sprintf("↓ %.1fk out", float64(tokens)/1000.0)
 	}
 	cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
 	dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
@@ -71,6 +71,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	ctx, runConfig, snapshotErr := a.SnapshotRun(ctx)
 	if snapshotErr != nil {
 		return RunResult{Status: RunFailed, Error: snapshotErr.Error()}, snapshotErr
+	}
+	if runConfig == nil {
+		err := fmt.Errorf("configuration is unavailable")
+		return RunResult{Status: RunFailed, Error: err.Error()}, err
 	}
 	a.MessagesMu.RLock()
 	inherited := delegationUserInstructions(*messages)
@@ -174,13 +178,14 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 	timePrinted := false
 	defer func() {
 		if !timePrinted {
+			showMicros := a.LiveSettings().ShowMicroseconds
 			fmt.Fprintln(writerToUse)
 			if isNonInteractive {
-				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme, a.Config.ShowMicroseconds))
+				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme, showMicros))
 			} else {
 				// Keep the elapsed-time text on the last occupied scroll row.
 				// The reserved row beneath it is already the status-bar gap.
-				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme, a.Config.ShowMicroseconds))
+				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme, showMicros))
 			}
 		}
 	}()
@@ -322,7 +327,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 			updateStreamStatus := func(generating bool) {
 				if a.UI != nil && !isNonInteractive {
-					a.UI.UpdateStatus(a.Config.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), a.Config.ShowTokens)
+					live := a.LiveSettings()
+					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens)
 					a.UI.DrawStatusBar(rawW, theme)
 				}
 			}
@@ -356,10 +362,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				toolStream.SetLiveContentCallback(func(index int, name, path, delta string) {
 					// Ctrl+O may change this setting while the provider is streaming.
 					// Apply it before every chunk, including the first of a new file.
+					live := a.LiveSettings()
 					if view, ok := sr.(LiveCollapsePresenter); ok {
-						view.SetLiveCollapse(a.Config.CollapseResults)
+						view.SetLiveCollapse(live.CollapseResults)
 					}
-					if (name == "write" || name == "edit") && !a.Config.StreamWrites {
+					if (name == "write" || name == "edit") && !live.StreamWrites {
 						delta = ""
 					}
 					presenter.ShowLiveToolContent(index, name, path, delta)
@@ -436,7 +443,8 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 			syncPostTurnStatus = func() {
 				if a.UI != nil && !isNonInteractive {
-					a.UI.UpdateStatus(a.Config.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), a.Config.ShowTokens)
+					live := a.LiveSettings()
+					a.UI.UpdateStatus(live.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), live.ShowTokens)
 					a.UI.DrawStatusBar(rawW, theme)
 				}
 			}
@@ -483,7 +491,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				}
 				return run.ErrBlocked
 			}
-			lastToolTrailingNewlines = ncw.trailingNewlines
+			lastToolTrailingNewlines = ncw.TrailingNewlines()
 			return a.persistenceError()
 		},
 		Compact: func(ctx context.Context) error {

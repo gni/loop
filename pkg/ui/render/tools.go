@@ -28,9 +28,15 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	hintStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
 	cmdStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 
-	fmt.Fprintln(w, headerStyle.Render("╭──────────────────────────────────────────────────────────────────────────────────╮"))
-	fmt.Fprintln(w, headerStyle.Render("│  TOOLS CATALOG & PERMISSIONS                                                     │"))
-	fmt.Fprintln(w, headerStyle.Render("├──────────────────────────────────────────────────────────────────────────────────┤"))
+	termW := renderWidth(w)
+	inner := max(1, min(termW-3, 82))
+	hline := strings.Repeat("─", inner)
+	titleText := style.TruncateCells("TOOLS CATALOG & PERMISSIONS", max(1, inner-4))
+	titleLine := "│  " + titleText + strings.Repeat(" ", max(0, inner-2-style.CellWidth(titleText))) + "│"
+
+	fmt.Fprintln(w, headerStyle.Render("╭"+hline+"╮"))
+	fmt.Fprintln(w, headerStyle.Render(titleLine))
+	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
 
 	executors := a.Registry.GetAllExecutors()
 	var names []string
@@ -41,6 +47,7 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 
 	enabledCount := 0
 	disabledCount := 0
+	descBudget := max(12, min(65, termW-46))
 
 	for _, name := range names {
 		exec := executors[name]
@@ -57,24 +64,22 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 
 		desc := ""
 		if exec != nil {
-			desc = exec.Definition().Function.Description
-			if len(desc) > 65 {
-				desc = desc[:62] + "..."
-			}
+			desc = strings.Join(strings.Fields(SanitizeTerminalText(exec.Definition().Function.Description)), " ")
+			desc = style.TruncateCells(desc, descBudget)
 		}
 
 		toolType := classifyTool(name)
 
-		fmt.Fprintf(w, "  %s %-16s [%s] %-10s %s\n",
+		fmt.Fprintf(w, "  %s %s [%s] %s %s\n",
 			icon,
-			titleStyle.Render(name),
+			padRightCells(titleStyle.Render(SanitizeTerminalText(name)), 16),
 			statusBadge,
-			typeStyle.Render(toolType),
+			padRightCells(typeStyle.Render(toolType), 10),
 			descStyle.Render(desc),
 		)
 	}
 
-	fmt.Fprintln(w, headerStyle.Render("├──────────────────────────────────────────────────────────────────────────────────┤"))
+	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
 	fmt.Fprintf(w, "  summary: %s enabled, %s disabled (total %d)\n\n",
 		style.NewStyle().Foreground(theme.Success).Bold(true).Render(fmt.Sprintf("%d", enabledCount)),
 		style.NewStyle().Foreground(theme.Error).Bold(true).Render(fmt.Sprintf("%d", disabledCount)),
@@ -82,12 +87,12 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	)
 
 	fmt.Fprintln(w, headerStyle.Render("slash commands:"))
-	fmt.Fprintf(w, "  %-32s %s\n", cmdStyle.Render("/tools disable <name...>"), hintStyle.Render("disable tool(s)"))
-	fmt.Fprintf(w, "  %-32s %s\n", cmdStyle.Render("/tools enable <name...>"), hintStyle.Render("enable tool(s)"))
-	fmt.Fprintf(w, "  %-32s %s\n", cmdStyle.Render("/tools toggle <name>"), hintStyle.Render("toggle tool enabled/disabled"))
-	fmt.Fprintf(w, "  %-32s %s\n", cmdStyle.Render("/tools reset"), hintStyle.Render("enable all tools"))
-	fmt.Fprintf(w, "  %-32s %s\n", cmdStyle.Render("/tools menu"), hintStyle.Render("interactive toggle menu"))
-	fmt.Fprintln(w, headerStyle.Render("╰──────────────────────────────────────────────────────────────────────────────────╯"))
+	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools disable <name...>"), 32), hintStyle.Render("disable tool(s)"))
+	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools enable <name...>"), 32), hintStyle.Render("enable tool(s)"))
+	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools toggle <name>"), 32), hintStyle.Render("toggle tool enabled/disabled"))
+	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools reset"), 32), hintStyle.Render("enable all tools"))
+	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools menu"), 32), hintStyle.Render("interactive toggle menu"))
+	fmt.Fprintln(w, headerStyle.Render("╰"+hline+"╯"))
 }
 
 func classifyTool(name string) string {

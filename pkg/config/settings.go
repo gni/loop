@@ -116,6 +116,7 @@ func CanonicalSetting(key, value string) (string, string, error) {
 	aliases := map[string]string{
 		"yes": "auto_approve", "yolo": "auto_approve", "guided": "guided_mode", "always_answer": "auto_approve",
 		"thinking": "show_thinking", "markdown": "markdown_render", "collapse": "collapse_results", "tokens": "show_tokens", "microseconds": "show_microseconds",
+		"reasoning_badge": "show_reasoning_badge", "show_reasoning": "show_reasoning_badge", "collapse_badge": "show_collapse_badge", "show_collapse": "show_collapse_badge", "git_branch": "show_git_branch", "show_branch": "show_git_branch", "sticky_question": "show_sticky_question", "sticky_prompt": "show_sticky_question",
 		"auto_adapt": "auto_adapt_context", "direct": "direct_commands", "stream": "stream_writes", "stream_write": "stream_writes", "persistent_shell": "persistent_bash", "atomic_write": "atomic_writes", "file_guard_off": "disable_file_observation_guard", "skip": "skip_verify",
 		"url": "endpoint", "key": "api_key", "temp": "temperature", "reasoning": "reasoning_effort", "before_hook": "before_tool_hook", "after_hook": "after_tool_hook",
 		"page_size": "history_page_size", "history_chunk": "history_page_size", "history_lines": "history_page_size", "syntax": "syntax_theme",

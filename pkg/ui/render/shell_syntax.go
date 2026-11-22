@@ -161,7 +161,7 @@ func highlightSyntaxFragment(prefix, source, language, chromaStyle string) strin
 			}
 		}
 	}
-	if chromaStyle == "" || chromaStyle == "bw" {
+	if chromaStyle == "" {
 		chromaStyle = "friendly"
 	}
 	var colored bytes.Buffer
@@ -205,6 +205,17 @@ func (w *shellSyntaxWriter) Write(p []byte) (int, error) {
 	written := 0
 	for written < len(p) {
 		end := min(written+4096, len(p))
+		if end < len(p) {
+			// Back off to a valid UTF-8 rune boundary so multi-byte characters
+			// are never split across internal fragments.
+			cut := end
+			for cut > written && end-cut < utf8.UTFMax && !utf8.RuneStart(p[cut]) {
+				cut--
+			}
+			if cut < end && cut > written && utf8.RuneStart(p[cut]) && !utf8.FullRune(p[cut:end]) {
+				end = cut
+			}
+		}
 		n, err := w.writeFragment(p[written:end])
 		written += n
 		if err != nil {

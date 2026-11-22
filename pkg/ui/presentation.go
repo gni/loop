@@ -7,6 +7,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/db"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -60,29 +61,34 @@ func DrawStaticStatsLine(w io.Writer, theme UITheme, spinnerFrame string, statsT
 }
 
 func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, statsText string) {
+	ui := getUI()
+	inAlt := terminal.Default().InAltScreen()
+	ui.StateMu.Lock()
+	if spinnerFrame == "" && statsText != "" {
+		clean := style.StripAnsi(statsText)
+		if !strings.HasPrefix(clean, "(") || strings.Contains(clean, "out •") {
+			ui.LastStatsText = statsText
+		}
+	}
+	blocked := !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || inAlt
+	textToDraw := statsText
+	if ui.ActivityStatsText != "" {
+		textToDraw = ui.ActivityStatsText
+	}
+	pasteLinesOffset := ui.PasteLinesOffset
+	history := ui.ChatHistory
+	ui.StateMu.Unlock()
+	if blocked {
+		return
+	}
+
 	height := getWriterHeight(w)
 	if height <= 0 {
 		_, h := GetTerminalSize()
 		height = h
 	}
 
-	getUI().StateMu.Lock()
-	if spinnerFrame == "" {
-		if statsText != "" {
-			clean := style.StripAnsi(statsText)
-			if !strings.HasPrefix(clean, "(") || strings.Contains(clean, "out •") {
-				getUI().LastStatsText = statsText
-			}
-		}
-	}
-	textToDraw := statsText
-	if getUI().ActivityStatsText != "" {
-		textToDraw = getUI().ActivityStatsText
-	}
-	pasteLinesOffset := getUI().PasteLinesOffset
-	getUI().StateMu.Unlock()
-
-	if history := getUI().ChatHistory; history != nil && !history.closed.Load() && history.drawnHint != "" {
+	if history != nil && !history.closed.Load() && history.drawnHint != "" {
 		textToDraw = history.drawnHint
 		spinnerFrame = ""
 	}
@@ -106,6 +112,22 @@ func DrawStaticPromptSeparatorWithSpinner(w io.Writer, showThinking bool, reason
 }
 
 func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, reasoningEffort string, theme UITheme, spinnerFrame string) {
+	ui := getUI()
+	inAlt := terminal.Default().InAltScreen()
+	ui.StateMu.Lock()
+	blocked := !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || inAlt
+	pasteLinesOffset := ui.PasteLinesOffset
+	showReasoning := true
+	showBranch := true
+	if ui.Config != nil {
+		showReasoning = ui.Config.ShowReasoningBadge
+		showBranch = ui.Config.ShowGitBranch
+	}
+	ui.StateMu.Unlock()
+	if blocked {
+		return
+	}
+
 	height := getWriterHeight(w)
 	if height <= 0 {
 		_, h := GetTerminalSize()
@@ -113,9 +135,12 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	}
 
 	width, _ := GetTerminalSize()
-	getUI().StateMu.Lock()
-	pasteLinesOffset := getUI().PasteLinesOffset
-	getUI().StateMu.Unlock()
-	branch := CachedGitBranch()
+	branch := ""
+	if showBranch {
+		branch = CachedGitBranch()
+	}
+	if !showReasoning {
+		reasoningEffort = "hidden"
+	}
 	render.DrawStaticPromptSeparator(agent.UnwrapWriter(w), showThinking, reasoningEffort, theme, width, height, pasteLinesOffset, branch)
 }

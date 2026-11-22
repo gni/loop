@@ -83,8 +83,8 @@ func (s *Session) adoptInteractiveContext(ctx context.Context, messages []db.Mes
 			return err
 		}
 	}
+	clonedTools := slices.Clone(tools)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if id != "" {
 		s.ID = id
 	}
@@ -95,7 +95,10 @@ func (s *Session) adoptInteractiveContext(ctx context.Context, messages []db.Mes
 	s.Agent.MessagesMu.Lock()
 	s.messages = message.CloneAll(messages)
 	s.Agent.MessagesMu.Unlock()
-	s.options.Tools = slices.Clone(tools)
-	s.Agent.ToolSelection = s.options.Tools
+	s.options.Tools = clonedTools
+	s.mu.Unlock()
+	s.Agent.LLMProviderMu.Lock()
+	s.Agent.ToolSelection = clonedTools
+	s.Agent.LLMProviderMu.Unlock()
 	return nil
 }

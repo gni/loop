@@ -109,10 +109,16 @@ func (shell *manualShell) execute(
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().ActiveCancelFunc = cancel
 	ui.GetUI().StateMu.Unlock()
+	if kiReader != nil {
+		kiReader.ActiveTurn.Store(true)
+	}
 	ui.TerminalMu.Lock()
 	ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, nil, true)
 	ui.TerminalMu.Unlock()
 	defer func() {
+		if kiReader != nil {
+			kiReader.ActiveTurn.Store(false)
+		}
 		cancel()
 		ui.GetUI().StateMu.Lock()
 		ui.GetUI().ActiveCancelFunc = nil
@@ -121,12 +127,14 @@ func (shell *manualShell) execute(
 
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
-		oldState, err := term.MakeRaw(fd)
+		restore, err := ui.SetNonCanonical(fd)
 		if err != nil {
 			fmt.Fprintf(ppWriter, "terminal: %v\n", err)
 			return
 		}
-		defer term.Restore(fd, oldState)
+		if restore != nil {
+			defer restore()
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
@@ -143,7 +151,7 @@ func (shell *manualShell) execute(
 	console := render.NewShellOutputWriter(cw, cmdStr, theme)
 	outWriter := io.MultiWriter(stdout, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
 	errWriter := io.MultiWriter(stderr, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
-	stopIndicator := startManualCommandIndicator(theme, a.Config != nil && a.Config.ShowMicroseconds)
+	stopIndicator := startManualCommandIndicator(theme, a.LiveSettings().ShowMicroseconds)
 	wait, err := process.StartCapture(cmd, outWriter, errWriter)
 	if err == nil {
 		err = wait()
@@ -192,7 +200,7 @@ func startManualCommandIndicator(theme style.UITheme, showMicroseconds bool) fun
 	}
 	go func() {
 		defer close(stopped)
-		ticker := time.NewTicker(240 * time.Millisecond)
+		ticker := time.NewTicker(150 * time.Millisecond)
 		defer ticker.Stop()
 		frame := 0
 		for {
@@ -208,6 +216,7 @@ func startManualCommandIndicator(theme style.UITheme, showMicroseconds bool) fun
 	return func() {
 		close(stop)
 		<-stopped
-		ui.DrawStaticStatsLine(os.Stderr, theme, "", elapsedText())
+		doneClock := style.NewStyle().Foreground(theme.Border).Render("🕛\uFE0E ")
+		ui.DrawStaticStatsLine(os.Stderr, theme, "", doneClock+elapsedText())
 	}
 }

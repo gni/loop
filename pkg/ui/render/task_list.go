@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"loop/pkg/agent"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 	"strings"
 	"time"
@@ -16,7 +15,7 @@ func RenderBackgroundTasks(w io.Writer, tasks []agent.TaskInfo, theme style.UITh
 		return
 	}
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Primary).Bold(true).Render("Background tasks"))
-	width, _ := terminal.GetDimensions()
+	width := renderWidth(w)
 	for _, item := range tasks {
 		label, mark, tint := taskStateAppearance(item.Status, theme)
 		if item.Status == "killed" {
@@ -36,7 +35,7 @@ func RenderBackgroundTask(w io.Writer, id, command, status, output string, colla
 		label, mark, tint = "Stopped", "-", theme.TextMuted
 	}
 	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  "+mark+" "+label)+" · "+SanitizeTerminalText(id))
-	width, _ := terminal.GetDimensions()
+	width := renderWidth(w)
 	if command != "" {
 		fmt.Fprintln(w, "   "+style.NewStyle().Foreground(theme.TextMuted).Render(style.TruncateCells(strings.Join(strings.Fields(SanitizeTerminalText(command)), " "), max(1, width-4))))
 	}

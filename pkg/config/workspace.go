@@ -273,7 +273,7 @@ func resolveProjectPaths(values map[string]any, base string) {
 	if servers, ok := values["mcp_servers"].(map[string]any); ok {
 		for _, value := range servers {
 			if server, ok := value.(map[string]any); ok {
-				if command, ok := server["command"].(string); ok && strings.Contains(command, "/") {
+				if command, ok := server["command"].(string); ok && strings.Contains(command, string(filepath.Separator)) {
 					server["command"] = absoluteSetting(base, command)
 				}
 			}

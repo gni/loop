@@ -92,13 +92,13 @@ func mcpControlRows(width int) []string {
 	return []string{"↑↓ Move Enter Edit / Find", "Space Toggle A Add D Del", "M MCP R Retry all", "Esc Save Ctrl+C Cancel"}
 }
 
-func renderMCPManager(m *mcpManager, names []string, statuses map[string]agent.MCPServerStatus, width, height int, theme style.UITheme) (string, int) {
-	width, capacity := max(1, width-2), max(1, height-1)
+func renderMCPManagerRows(m *mcpManager, names []string, statuses map[string]agent.MCPServerStatus, width, height int, theme style.UITheme) ([]string, int) {
+	width, capacity := max(1, width-1), max(1, height)
 	title := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	muted := style.NewStyle().Foreground(theme.TextMuted)
 	border := style.NewStyle().Foreground(theme.Border)
 	if width < mcpMinWidth-2 || capacity < mcpMinHeight-1 {
-		return mcpFrame([]string{title.Render("MCP"), muted.Render("Resize · Esc saves")}, width, capacity), 1
+		return []string{title.Render("MCP"), muted.Render("Resize · Esc saves")}, 1
 	}
 	master, tint := " OFF ", theme.TextMuted
 	if m.draft.MCP {
@@ -236,7 +236,7 @@ func renderMCPManager(m *mcpManager, names []string, statuses map[string]agent.M
 		}
 		rows = append(rows, strings.Join(parts, "   "))
 	}
-	return mcpFrame(rows, width, capacity), listHeight
+	return rows[:min(len(rows), capacity)], listHeight
 }
 
 func mcpServerDetails(m *mcpManager, name string, statuses map[string]agent.MCPServerStatus, width int, theme style.UITheme) []string {
@@ -310,17 +310,4 @@ func mcpServerDetails(m *mcpManager, name string, statuses map[string]agent.MCPS
 		rows = append(rows, lineStyle.Render(line))
 	}
 	return rows
-}
-
-func mcpFrame(rows []string, width, height int) string {
-	var frame strings.Builder
-	frame.WriteString("\x1b[H")
-	for index, row := range rows[:min(len(rows), height)] {
-		if index > 0 {
-			frame.WriteString("\r\n")
-		}
-		frame.WriteString(style.TruncateCells(row, width) + "\x1b[K")
-	}
-	frame.WriteString("\x1b[J")
-	return frame.String()
 }

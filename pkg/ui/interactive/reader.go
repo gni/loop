@@ -1,11 +1,13 @@
 package interactive
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -13,11 +15,18 @@ import (
 	"unicode/utf8"
 
 	"loop/pkg/domain/limits"
+	"loop/pkg/terminal"
+	"loop/pkg/ui/input"
+	"loop/pkg/ui/style"
 )
 
 type ReadResult struct {
 	Data []byte
 	Err  error
+}
+
+type readDeadliner interface {
+	SetReadDeadline(time.Time) error
 }
 
 type SessionReader struct {
@@ -28,19 +37,38 @@ type SessionReader struct {
 	readRequest chan struct{}
 	readPending bool
 	doneChan    chan struct{}
+	readerDone  chan struct{}
+	deadliner   readDeadliner
+	closeMu     sync.Mutex
+	closed      bool
+	reading     bool
 	closeOnce   sync.Once
 	pending     []byte
 	pendingErr  error
 }
 
-const maxMenuInputBytes = 1 << 20
-const maxTerminalEscapeBytes = 256
-const pasteStart = "\x1b[200~"
-const pasteEnd = "\x1b[201~"
+const (
+	maxMenuInputBytes      = input.MaxPasteBytes
+	maxTerminalEscapeBytes = 256
+	maxTerminalStringBytes = 4096
+)
 
 type inputContextProvider interface{ GetInputContext() context.Context }
 type inputChannelProvider interface{ GetInputChan() chan byte }
 type inputReceiveChannelProvider interface{ GetInputChan() <-chan byte }
+
+func isNilReader(r io.Reader) bool {
+	if r == nil {
+		return true
+	}
+	v := reflect.ValueOf(r)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
 
 func NewSessionReader(rlInput io.Reader) *SessionReader {
 	return newSessionReader(rlInput, 1024)
@@ -48,17 +76,22 @@ func NewSessionReader(rlInput io.Reader) *SessionReader {
 
 // Modal input must stop at the confirmation key instead of reading the next
 // prompt's bytes. Channel-backed readers already preserve that boundary.
-func modalSessionReader(input io.Reader) (*SessionReader, func()) {
-	if sr, ok := input.(*SessionReader); ok {
+func modalSessionReader(in io.Reader) (*SessionReader, func()) {
+	if sr, ok := in.(*SessionReader); ok && sr != nil {
 		return sr, func() {}
 	}
-	sr := newSessionReader(input, 1)
+	sr := newSessionReader(in, 1)
 	return sr, sr.Close
 }
 
 func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 	sr := &SessionReader{
 		doneChan: make(chan struct{}),
+	}
+
+	if isNilReader(rlInput) {
+		sr.pendingErr = io.EOF
+		return sr
 	}
 
 	if provider, ok := rlInput.(inputContextProvider); ok {
@@ -76,15 +109,17 @@ func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 	if sr.chanInput != nil {
 		return sr
 	}
-	if rlInput == nil {
-		sr.pendingErr = io.EOF
-		return sr
+
+	if d, ok := rlInput.(readDeadliner); ok {
+		sr.deadliner = d
 	}
 
 	sr.inputChan = make(chan ReadResult, 1)
 	sr.readRequest = make(chan struct{})
+	sr.readerDone = make(chan struct{})
 	done, cancelled := sr.doneChan, sr.cancelled
 	go func() {
+		defer close(sr.readerDone)
 		defer close(sr.inputChan)
 		readBuf := make([]byte, readSize)
 		emptyReads := 0
@@ -96,7 +131,21 @@ func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 				return
 			case <-sr.readRequest:
 			}
+
+			sr.closeMu.Lock()
+			if sr.closed {
+				sr.closeMu.Unlock()
+				return
+			}
+			sr.reading = true
+			sr.closeMu.Unlock()
+
 			n, err := rlInput.Read(readBuf)
+
+			sr.closeMu.Lock()
+			sr.reading = false
+			sr.closeMu.Unlock()
+
 			if n == 0 && err == nil {
 				emptyReads++
 				if emptyReads >= 100 {
@@ -123,8 +172,22 @@ func newSessionReader(rlInput io.Reader, readSize int) *SessionReader {
 
 func (sr *SessionReader) Close() {
 	sr.closeOnce.Do(func() {
+		sr.closeMu.Lock()
+		sr.closed = true
+		needInterrupt := sr.reading
+		sr.closeMu.Unlock()
+
 		if sr.doneChan != nil {
 			close(sr.doneChan)
+		}
+		if needInterrupt && sr.deadliner != nil {
+			if err := sr.deadliner.SetReadDeadline(time.Now()); err == nil {
+				select {
+				case <-sr.readerDone:
+				case <-time.After(100 * time.Millisecond):
+				}
+				_ = sr.deadliner.SetReadDeadline(time.Time{})
+			}
 		}
 	})
 }
@@ -245,72 +308,203 @@ func (sr *SessionReader) readByte(sigChan chan os.Signal) (byte, bool, error) {
 	}
 }
 
-// ReadKeyOrResize frames one key, even when a terminal batches several keys
-// in one read or splits an escape sequence across reads.
-func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, error) {
-	b, resized, err := sr.readByte(sigChan)
-	if err != nil || resized {
-		return nil, resized, err
+func (sr *SessionReader) readByteWithTimeout(d time.Duration) (byte, bool, error) {
+	if len(sr.pending) > 0 {
+		return sr.readByte(nil)
 	}
-	key := []byte{b}
-	if b == 27 {
-		timeout := make(chan os.Signal, 1)
-		timer := time.AfterFunc(limits.EscapeDisambiguation(), func() { timeout <- os.Interrupt })
-		defer timer.Stop()
-		next, expired, err := sr.readByte(timeout)
+	timeout := make(chan os.Signal, 1)
+	timer := time.AfterFunc(d, func() {
+		select {
+		case timeout <- os.Interrupt:
+		default:
+		}
+	})
+	defer timer.Stop()
+	return sr.readByte(timeout)
+}
+
+func (sr *SessionReader) consumeTerminalString(timeout time.Duration) error {
+	prevEsc := false
+	for range maxTerminalStringBytes {
+		b, expired, err := sr.readByteWithTimeout(timeout)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if expired {
+			return nil
+		}
+		if b == 0x07 {
+			return nil
+		}
+		if prevEsc {
+			if b == '\\' {
+				return nil
+			}
+			prevEsc = (b == 0x1b)
+			continue
+		}
+		if b == 0x1b {
+			prevEsc = true
+		}
+	}
+	return nil
+}
+
+func (sr *SessionReader) readCSI(key []byte, timeout time.Duration) ([]byte, bool, error) {
+	for {
+		if len(key) >= maxTerminalEscapeBytes {
+			return nil, false, fmt.Errorf("terminal escape sequence exceeds %d bytes", maxTerminalEscapeBytes)
+		}
+		next, expired, err := sr.readByteWithTimeout(timeout)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, false, err
 		}
 		if err != nil || expired {
 			return key, false, nil
 		}
-		if next != '[' && next != 'O' {
+		if next < 0x20 || next >= 0x7f {
 			sr.pending = append([]byte{next}, sr.pending...)
 			return key, false, nil
 		}
 		key = append(key, next)
-		for {
-			if len(key) >= maxTerminalEscapeBytes {
-				return nil, false, fmt.Errorf("terminal escape sequence exceeds %d bytes", maxTerminalEscapeBytes)
+		if next >= 0x40 && next <= 0x7e {
+			if len(key) == 3 && next == 'M' {
+				// X10 mouse event: ESC [ M cb cx cy
+				for range 3 {
+					mb, mExpired, mErr := sr.readByteWithTimeout(timeout)
+					if mErr != nil && !errors.Is(mErr, io.EOF) {
+						return nil, false, mErr
+					}
+					if mErr != nil || mExpired {
+						return key, false, nil
+					}
+					key = append(key, mb)
+				}
+				return key, false, nil
 			}
-			next, expired, err = sr.readByte(timeout)
+			if string(key) == input.BracketedPasteStart {
+				return sr.readPaste(key)
+			}
+			if norm, ok := input.NormalizeCSI(key); ok {
+				return norm, false, nil
+			}
+			return key, false, nil
+		}
+	}
+}
+
+func (sr *SessionReader) readSS3(key []byte, timeout time.Duration) ([]byte, bool, error) {
+	for {
+		if len(key) >= maxTerminalEscapeBytes {
+			return nil, false, fmt.Errorf("terminal escape sequence exceeds %d bytes", maxTerminalEscapeBytes)
+		}
+		next, expired, err := sr.readByteWithTimeout(timeout)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, false, err
+		}
+		if err != nil || expired {
+			return key, false, nil
+		}
+		if next < 0x20 || next >= 0x7f {
+			sr.pending = append([]byte{next}, sr.pending...)
+			return key, false, nil
+		}
+		key = append(key, next)
+		if next >= 0x40 && next <= 0x7e {
+			return key, false, nil
+		}
+	}
+}
+
+func (sr *SessionReader) readUTF8Continuation(key []byte, runeStart int, timeout time.Duration) ([]byte, error) {
+	for !utf8.FullRune(key[runeStart:]) && len(key)-runeStart < utf8.UTFMax {
+		var (
+			next    byte
+			expired bool
+			err     error
+		)
+		if timeout > 0 {
+			next, expired, err = sr.readByteWithTimeout(timeout)
+		} else {
+			next, _, err = sr.readByte(nil)
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			break
+		}
+		if expired {
+			break
+		}
+		if next&0xc0 != 0x80 {
+			sr.pending = append([]byte{next}, sr.pending...)
+			break
+		}
+		key = append(key, next)
+	}
+	return key, nil
+}
+
+// ReadKeyOrResize frames one key, even when a terminal batches several keys
+// in one read or splits an escape sequence across reads.
+func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, error) {
+	for {
+		b, resized, err := sr.readByte(sigChan)
+		if err != nil || resized {
+			return nil, resized, err
+		}
+		key := []byte{b}
+		if b == 27 {
+			escTimeout := limits.EscapeDisambiguation()
+			next, expired, err := sr.readByteWithTimeout(escTimeout)
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, false, err
 			}
 			if err != nil || expired {
 				return key, false, nil
 			}
-			key = append(key, next)
-			if next >= 0x40 && next <= 0x7e {
-				if string(key) == pasteStart {
-					return sr.readPaste(key)
+			switch next {
+			case ']', 'P', 'X', '^', '_':
+				if err := sr.consumeTerminalString(escTimeout); err != nil {
+					return nil, false, err
+				}
+				continue
+			case '[':
+				key = append(key, next)
+				return sr.readCSI(key, escTimeout)
+			case 'O':
+				key = append(key, next)
+				return sr.readSS3(key, escTimeout)
+			default:
+				key = append(key, next)
+				if next >= utf8.RuneSelf {
+					key, err = sr.readUTF8Continuation(key, 1, escTimeout)
+					if err != nil {
+						return nil, false, err
+					}
 				}
 				return key, false, nil
 			}
 		}
-	}
-	if b >= utf8.RuneSelf {
-		for !utf8.FullRune(key) && len(key) < utf8.UTFMax {
-			next, _, err := sr.readByte(nil)
+		if b >= utf8.RuneSelf {
+			key, err = sr.readUTF8Continuation(key, 0, 0)
 			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					return nil, false, err
-				}
-				break
+				return nil, false, err
 			}
-			if next&0xc0 != 0x80 {
-				sr.pending = append([]byte{next}, sr.pending...)
-				break
-			}
-			key = append(key, next)
 		}
+		return key, false, nil
 	}
-	return key, false, nil
 }
 
 func (sr *SessionReader) readPaste(key []byte) ([]byte, bool, error) {
 	overflow := false
-	tail := ""
+	maxLen := input.MaxPasteBytes + len(input.BracketedPasteStart) + len(input.BracketedPasteEnd)
+	var tail [len(input.BracketedPasteEnd)]byte
+	tailLen := 0
 	for {
 		b, _, err := sr.readByte(nil)
 		if err != nil {
@@ -319,16 +513,19 @@ func (sr *SessionReader) readPaste(key []byte) ([]byte, bool, error) {
 			}
 			return nil, false, err
 		}
-		if len(key) < maxMenuInputBytes+len(pasteStart)+len(pasteEnd) {
+		if len(key) < maxLen {
 			key = append(key, b)
 		} else {
 			overflow = true
 		}
-		tail += string([]byte{b})
-		if len(tail) > len(pasteEnd) {
-			tail = tail[len(tail)-len(pasteEnd):]
+		if tailLen < len(tail) {
+			tail[tailLen] = b
+			tailLen++
+		} else {
+			copy(tail[:], tail[1:])
+			tail[len(tail)-1] = b
 		}
-		if tail == pasteEnd {
+		if tailLen == len(tail) && string(tail[:]) == input.BracketedPasteEnd {
 			if overflow {
 				return nil, false, fmt.Errorf("pasted input exceeds 1 MiB")
 			}
@@ -338,23 +535,15 @@ func (sr *SessionReader) readPaste(key []byte) ([]byte, bool, error) {
 }
 
 // Pasted controls are text, never navigation or confirmation. Keep newlines in
-// the value, while removing controls that could alter terminal state on echo.
+// the value, while removing controls and ANSI sequences that could alter terminal state.
 func pastedKeyText(key []byte) (string, bool) {
-	text := string(key)
-	if !strings.HasPrefix(text, pasteStart) || !strings.HasSuffix(text, pasteEnd) {
+	startBytes := []byte(input.BracketedPasteStart)
+	endBytes := []byte(input.BracketedPasteEnd)
+	if len(key) < len(startBytes)+len(endBytes) || !bytes.HasPrefix(key, startBytes) || !bytes.HasSuffix(key, endBytes) {
 		return "", false
 	}
-	text = strings.TrimSuffix(strings.TrimPrefix(text, pasteStart), pasteEnd)
-	text = strings.ToValidUTF8(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"), "")
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
-			return r
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, text), true
+	payload := key[len(startBytes) : len(key)-len(endBytes)]
+	return input.NormalizePastedText(payload), true
 }
 
 func appendPastedInput(key []byte, line *strings.Builder, output io.Writer) (bool, error) {
@@ -371,21 +560,27 @@ func appendPastedInput(key []byte, line *strings.Builder, output io.Writer) (boo
 }
 
 func consumeLineBytes(chunk []byte, line *strings.Builder, out io.Writer) (bool, error) {
-	for _, b := range chunk {
+	for len(chunk) > 0 {
+		r, size := utf8.DecodeRune(chunk)
+		raw := chunk[:size]
+		chunk = chunk[size:]
+		if r == utf8.RuneError && size == 1 {
+			continue
+		}
 		switch {
-		case b == '\r' || b == '\n':
+		case r == '\r' || r == '\n':
 			fmt.Fprint(out, "\r\n")
 			return true, nil
-		case b == 127 || b == 8:
+		case r == 127 || r == 8:
 			PopRuneFromBuilder(line, out)
-		case b == 3 || b == 4:
+		case r == 3 || r == 4:
 			return false, fmt.Errorf("cancelled")
-		case b >= 32:
-			if line.Len() >= maxMenuInputBytes {
+		case !unicode.IsControl(r):
+			if size > maxMenuInputBytes-line.Len() {
 				return false, fmt.Errorf("input exceeds 1 MiB")
 			}
-			line.WriteByte(b)
-			_, _ = out.Write([]byte{b})
+			line.Write(raw)
+			_, _ = out.Write(raw)
 		}
 	}
 	return false, nil
@@ -430,10 +625,10 @@ func (sr *SessionReader) ReadLine(rlOutput io.Writer) (string, error) {
 }
 
 func ReadInputRaw(rlInput io.Reader, rlOutput io.Writer) (string, error) {
-	if err := writeMenuFrame(rlOutput, "\x1b[?25h"); err != nil {
+	if err := writeMenuFrame(rlOutput, terminal.ShowCursor); err != nil {
 		return "", err
 	}
-	defer fmt.Fprint(rlOutput, "\x1b[?25l")
+	defer fmt.Fprint(rlOutput, terminal.HideCursor)
 	sr, closeReader := modalSessionReader(rlInput)
 	defer closeReader()
 	return sr.ReadLine(rlOutput)
@@ -444,8 +639,9 @@ func PopRuneFromBuilder(line *strings.Builder, out io.Writer) {
 		return
 	}
 	s := line.String()
-	_, size := utf8.DecodeLastRuneInString(s)
+	r, size := utf8.DecodeLastRuneInString(s)
 	line.Reset()
 	line.WriteString(s[:len(s)-size])
-	fmt.Fprint(out, "\b\x1b[K")
+	w := max(1, style.RuneWidth(r))
+	fmt.Fprint(out, strings.Repeat("\b", w)+"\x1b[K")
 }

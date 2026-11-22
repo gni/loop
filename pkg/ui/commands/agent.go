@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/ui"
@@ -41,7 +39,7 @@ func printSubagentRemoval(w io.Writer, mam *swarm.MultiAgentManager, action stri
 
 func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.MultiAgentManager, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
 	if len(parts) < 2 {
-		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
+		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)
@@ -51,11 +49,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintf(w, "agent menu: %v\n", menuErr)
 		}
 
-		var rl *term.Terminal
-		if kiReader != nil {
-			rl = kiReader.RL
-		}
-		ui.RestoreAfterModal(w, a, kiReader, rl)
+		ui.RestoreAfterModal(w, a, kiReader, terminalFromReader(kiReader))
 		return
 	}
 

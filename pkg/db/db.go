@@ -15,6 +15,7 @@ import (
 
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
+	"loop/pkg/storage"
 )
 
 const maxJSONLLineBytes = 64 * 1024 * 1024
@@ -340,10 +341,17 @@ func (s *JSONLStore) commitSessionRecordsLocked(ctx context.Context, sessionID s
 		delete(s.core.cache, sessionID)
 		return err
 	}
+	// Once synced, the appended records are durable and must never be truncated
+	// or deleted if directory sync or pointer updates fail afterward.
+	committed = true
+	if created {
+		if err := storage.SyncDirectory(s.core.dir); err != nil {
+			return err
+		}
+	}
 	if err := s.setLatestSessionIDUnlocked(sessionID); err != nil {
 		return err
 	}
-	committed = true
 	info, err := f.Stat()
 	if err != nil {
 		return err

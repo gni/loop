@@ -1,9 +1,11 @@
 package render
 
 import (
-	"loop/pkg/ui/style"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"loop/pkg/ui/style"
 )
 
 // PromptRow retains source rune positions so navigation and drawing agree.
@@ -23,86 +25,109 @@ type promptCursor struct {
 	row, column int
 }
 
-func promptCellWidth(r rune, column, columns int) int {
-	if r == '\t' {
-		return min(4-column%4, columns)
+func promptClusterWidth(cluster string, graphemeWidth, column, columns int) int {
+	if cluster == "\t" {
+		return min(style.TabAdvance(column, style.DefaultTabWidth), columns)
 	}
-	return promptRuneWidth(r)
+	first, _ := utf8.DecodeRuneInString(cluster)
+	if unicode.IsControl(first) {
+		return 0
+	}
+	return graphemeWidth
 }
 
-func (c *promptCursor) prepare(r rune, columns int) (cells int, wrapped bool) {
-	cells = promptCellWidth(r, c.column, columns)
-	wrapped = r != '\n' && c.column > 0 && c.column+cells > columns
+func (c *promptCursor) prepareCluster(cluster string, graphemeWidth, columns int) (cells int, wrapped bool) {
+	if cluster == "\n" {
+		return 0, false
+	}
+	cells = promptClusterWidth(cluster, graphemeWidth, c.column, columns)
+	wrapped = c.column > 0 && c.column+cells > columns
 	if wrapped {
 		c.row++
 		c.column = 0
+		if cluster == "\t" {
+			cells = min(style.TabAdvance(0, style.DefaultTabWidth), columns)
+		}
 	}
 	return cells, wrapped
 }
 
-func (c *promptCursor) advance(r rune, cells int) {
-	if r == '\n' {
+func (c *promptCursor) advanceCluster(cluster string, cells int) {
+	if cluster == "\n" {
 		c.row++
 		c.column = 0
-	} else if r == '\t' || !unicode.IsControl(r) {
+		return
+	}
+	first, _ := utf8.DecodeRuneInString(cluster)
+	if cluster == "\t" || !unicode.IsControl(first) {
 		c.column += cells
 	}
 }
 
 func (c *promptCursor) advanceText(text string, columns int) {
-	for _, r := range text {
-		cells, _ := c.prepare(r, columns)
-		c.advance(r, cells)
+	for i := 0; i < len(text); {
+		cluster, gw, sz := style.NextGrapheme(text[i:])
+		cells, _ := c.prepareCluster(cluster, gw, columns)
+		c.advanceCluster(cluster, cells)
+		i += sz
 	}
 }
 
 func LayoutPrompt(text string, position, columns int) PromptLayout {
 	columns = max(1, columns)
-	runes := []rune(text)
-	position = min(max(0, position), len(runes))
+	totalRunes := utf8.RuneCountInString(text)
+	position = min(max(0, position), totalRunes)
 	layout := PromptLayout{}
 	var content strings.Builder
 	start := 0
+	runeIdx := 0
 	cursor := promptCursor{}
 	finish := func(end int) {
 		layout.Rows = append(layout.Rows, PromptRow{Text: content.String(), Start: start, End: end})
 		content.Reset()
 	}
-	for i, r := range runes {
-		cells, wrapped := cursor.prepare(r, columns)
+	for i := 0; i < len(text); {
+		cluster, gw, sz := style.NextGrapheme(text[i:])
+		i += sz
+		clusterRunes := utf8.RuneCountInString(cluster)
+		cells, wrapped := cursor.prepareCluster(cluster, gw, columns)
 		if wrapped {
-			finish(i)
-			start = i
+			finish(runeIdx)
+			start = runeIdx
 		}
-		if i == position {
+		if runeIdx <= position && position < runeIdx+clusterRunes {
 			layout.CursorRow = cursor.row
 			layout.CursorColumn = cursor.column
 		}
-		if r == '\n' {
-			finish(i)
-			start = i + 1
-			cursor.advance(r, cells)
+		if cluster == "\n" {
+			finish(runeIdx)
+			runeIdx += clusterRunes
+			start = runeIdx
+			cursor.advanceCluster(cluster, cells)
 			continue
 		}
+		first, _ := utf8.DecodeRuneInString(cluster)
 		switch {
-		case r == '\t':
+		case cluster == "\t":
 			content.WriteString(strings.Repeat(" ", cells))
-		case unicode.IsControl(r):
+		case unicode.IsControl(first):
 		default:
-			content.WriteRune(r)
+			content.WriteString(cluster)
 		}
-		cursor.advance(r, cells)
+		cursor.advanceCluster(cluster, cells)
+		runeIdx += clusterRunes
 	}
-	if position == len(runes) {
+	if position == totalRunes {
 		layout.CursorRow = cursor.row
 		layout.CursorColumn = cursor.column
 	}
-	finish(len(runes))
+	finish(totalRunes)
 	return layout
 }
 
 // MovePromptVertical moves within the same visual rows used for wrapping.
 func MovePromptVertical(text string, position, columns, direction int) (int, bool) {
+	columns = max(1, columns)
 	layout := LayoutPrompt(text, position, columns)
 	target := layout.CursorRow + direction
 	if target < 0 || target >= len(layout.Rows) {
@@ -110,14 +135,17 @@ func MovePromptVertical(text string, position, columns, direction int) (int, boo
 	}
 	row := layout.Rows[target]
 	runes := []rune(text)
+	rowText := string(runes[row.Start:row.End])
 	col, pos := 0, row.Start
-	for pos < row.End {
-		cells := promptCellWidth(runes[pos], col, max(1, columns))
+	for i := 0; i < len(rowText); {
+		cluster, gw, sz := style.NextGrapheme(rowText[i:])
+		cells := promptClusterWidth(cluster, gw, col, columns)
 		if col+cells > layout.CursorColumn {
 			break
 		}
 		col += cells
-		pos++
+		pos += utf8.RuneCountInString(cluster)
+		i += sz
 	}
 	return pos, true
 }

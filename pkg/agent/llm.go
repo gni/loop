@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"net/http"
 	"sync"
@@ -48,6 +49,7 @@ type StreamOptions struct {
 
 type ChatTemplateKwargs struct {
 	EnableThinking    bool   `json:"enable_thinking"`
+	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
 	ReasoningStrength string `json:"reasoning_strength,omitempty"`
 }
 
@@ -66,7 +68,7 @@ type chatCompletionRequest[M any] struct {
 	StreamOptions        *StreamOptions      `json:"stream_options,omitempty"`
 	ReasoningEffort      string              `json:"reasoning_effort,omitempty"`
 	ReasoningFormat      string              `json:"reasoning_format,omitempty"`
-	ThinkingBudgetTokens int                 `json:"thinking_budget_tokens,omitempty"`
+	ThinkingBudgetTokens *int                `json:"thinking_budget_tokens,omitempty"`
 	ReasoningControl     bool                `json:"reasoning_control,omitempty"`
 	ChatTemplateKwargs   *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 	MaxCompletionTokens  int                 `json:"max_completion_tokens,omitempty"`
@@ -115,11 +117,11 @@ func copyProviderCapabilities(destination, source *OpenAICompatibleProvider) {
 	destination.tokenCounter = counter
 	destination.tokenCounterMu.Unlock()
 	source.thinkingMu.Lock()
-	supported, checked := source.ThinkingSupported, source.ThinkingSupportChecked
+	supported, checked, probedCaps := source.ThinkingSupported, source.ThinkingSupportChecked, source.ProbedCapabilities
 	source.thinkingMu.Unlock()
 	if checked {
 		destination.thinkingMu.Lock()
-		destination.ThinkingSupported, destination.ThinkingSupportChecked = supported, checked
+		destination.ThinkingSupported, destination.ThinkingSupportChecked, destination.ProbedCapabilities = supported, checked, probedCaps
 		destination.thinkingMu.Unlock()
 	}
 	source.ContextLimitMu.RLock()
@@ -159,12 +161,14 @@ func (a *Agent) currentLLMProvider() LLMProvider {
 func (a *Agent) CheckThinkingSupport() bool {
 	provider := a.currentLLMProvider()
 	timeout := 5 * time.Second
+	a.LLMProviderMu.RLock()
 	if a.Config != nil && a.Config.Timeout > 0 {
 		t := time.Duration(a.Config.Timeout) * time.Second
 		if t < timeout {
 			timeout = t
 		}
 	}
+	a.LLMProviderMu.RUnlock()
 	ctx, cancel := context.WithTimeout(a.Context(), timeout)
 	defer cancel()
 	release, err := a.acquireInference(ctx)
@@ -180,6 +184,9 @@ func (a *Agent) CheckThinkingSupport() bool {
 func (a *Agent) SnapshotRun(ctx context.Context) (context.Context, *config.Config, error) {
 	a.LLMProviderMu.Lock()
 	defer a.LLMProviderMu.Unlock()
+	if a.Config == nil {
+		return ctx, nil, fmt.Errorf("configuration is unavailable")
+	}
 	cfg, err := config.Clone(a.Config)
 	if err != nil {
 		return ctx, nil, err
@@ -205,7 +212,10 @@ func (a *Agent) configForRun(ctx context.Context) *config.Config {
 	if snapshot, ok := ctx.Value(runProviderKey{}).(runSnapshot); ok {
 		return snapshot.config
 	}
-	return a.Config
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	return cfg
 }
 
 func (a *Agent) inferenceProvider(ctx context.Context) LLMProvider {

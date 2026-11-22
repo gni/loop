@@ -83,21 +83,21 @@ func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidato
 }
 
 func CanonicalizeArguments(arguments string) string {
+	return CanonicalizeToolArguments("", arguments)
+}
+
+func CanonicalizeToolArguments(toolName, arguments string) string {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
 		return "{}"
 	}
-	return tool.CanonicalArguments("", trimmed)
+	return tool.CanonicalArguments(toolName, trimmed)
 }
 
 func buildCallKey(toolName, arguments string) string {
-	arguments = strings.TrimSpace(arguments)
-	if arguments == "" {
-		arguments = "{}"
-	}
 	// Use the same aliases and wrappers as Prepare so checks and recorded
 	// results identify the same call before and after argument normalization.
-	canonical := tool.CanonicalArguments(toolName, arguments)
+	canonical := CanonicalizeToolArguments(toolName, arguments)
 	return fmt.Sprintf("%s:%x", toolName, sha256.Sum256([]byte(canonical)))
 }
 

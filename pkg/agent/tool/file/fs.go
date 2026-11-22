@@ -87,15 +87,21 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
+	return commitFileMutation(ctx, safePath, data, perm, false)
+}
+
+func commitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode, syntaxInspected bool) error {
 	if ctx == nil || ctx.Context() == nil {
 		return fmt.Errorf("file mutation requires an active context")
 	}
 	if err := ctx.Context().Err(); err != nil {
 		return fmt.Errorf("file mutation canceled: %w", err)
 	}
-	if settings, ok := ctx.(domaintool.SyntaxValidationSettings); ok && settings.IsStrictSyntaxEnabled() {
-		if _, err := inspectCandidate(ctx, safePath, data, &evidence.Record{}); err != nil {
-			return err
+	if !syntaxInspected {
+		if settings, ok := ctx.(domaintool.SyntaxValidationSettings); ok && settings.IsStrictSyntaxEnabled() {
+			if _, err := inspectCandidate(ctx, safePath, data, &evidence.Record{}); err != nil {
+				return err
+			}
 		}
 	}
 	// Recheck containment immediately before committing. The final path must
@@ -151,8 +157,40 @@ func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 	if index, ok := ctx.(domaintool.CodeIndexInvalidator); ok {
 		index.InvalidateCodeIndex(safePath)
 	}
-	ctx.ReloadSkills()
+	if shouldReloadSkillsForPath(ctx, safePath) {
+		ctx.ReloadSkills()
+	}
 	return err
+}
+
+func shouldReloadSkillsForPath(ctx domaintool.AgentContext, safePath string) bool {
+	if safePath == "" {
+		return false
+	}
+	cleanTarget := filepath.Clean(safePath)
+	base := strings.ToUpper(filepath.Base(cleanTarget))
+	switch base {
+	case "SKILL.MD", "AGENTS.MD", "CLAUDE.MD", "LOOP.MD", "MEMORY.MD":
+		return true
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(cleanTarget), "/") {
+		switch strings.ToLower(seg) {
+		case "skills", ".loop", ".agents", ".claude":
+			return true
+		}
+	}
+	if provider, ok := ctx.(interface{ ConfiguredSkillDirs() []string }); ok {
+		for _, dir := range provider.ConfiguredSkillDirs() {
+			if dir == "" {
+				continue
+			}
+			cleanDir := filepath.Clean(dir)
+			if cleanTarget == cleanDir || strings.HasPrefix(cleanTarget, cleanDir+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func IsBinary(data []byte) bool {

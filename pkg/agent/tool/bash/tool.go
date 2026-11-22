@@ -201,9 +201,17 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		return domaintool.RuntimeMessagef("task_spawned", "Task spawned in background with ID: %s (command: %s). Monitor output with /status (or 'get_task_status') or stop with /stop (or 'stop_task'). Toggle live stream via Ctrl+O.", id, bgCmd), nil
 	}
 
-	timeout := shellTimeout(ctx)
-	if args.Timeout > 0 {
-		timeout = time.Duration(args.Timeout * float64(time.Second))
+	maxTimeout := shellTimeout(ctx)
+	if maxTimeout <= 0 {
+		maxTimeout = 120 * time.Second
+	}
+	timeout := maxTimeout
+	if args.Timeout > 0 && args.Timeout < maxTimeout.Seconds() {
+		requested := time.Duration(args.Timeout * float64(time.Second))
+		if requested <= 0 {
+			requested = time.Millisecond
+		}
+		timeout = requested
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx.Context(), timeout)
 	defer cancel()

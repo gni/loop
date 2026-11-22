@@ -66,7 +66,11 @@ func HandleMCPCommand(
 			fmt.Fprintln(w, snapshotErr)
 			return
 		}
-		input, output, cleanup := getInteractiveIO(kiReader)
+		var inputReader io.Reader
+		if kiReader != nil {
+			inputReader = kiReader
+		}
+		input, output, cleanup := getInteractiveIO(inputReader)
 		defer cleanup()
 
 		ShutdownStatusBar(os.Stderr)
@@ -90,7 +94,7 @@ func HandleMCPCommand(
 
 		var rl *term.Terminal
 		if kiReader != nil {
-			rl = kiReader.RL
+			rl = kiReader.GetRL()
 		}
 		RestoreAfterModal(w, a, kiReader, rl)
 

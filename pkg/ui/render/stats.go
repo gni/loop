@@ -7,62 +7,98 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// FormatPromptSeparator formats the horizontal line with reasoning status and git branch above the prompt.
-func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme style.UITheme, width int, gitBranch ...string) string {
-	borderStyle := style.NewStyle().Foreground(theme.Border)
-	statusStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-	branchStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
-
-	thinkingText := "off"
-	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
-	if effort != "off" && effort != "none" && effort != "" {
-		thinkingText = effort
-	}
-
-	statusPart := fmt.Sprintf("  [reasoning:%s]", thinkingText)
-	statusLen := style.CellWidth(statusPart)
-	prefix := "─── prompt "
+func formatPromptSeparatorLine(showThinking bool, reasoningEffort string, theme style.UITheme, width int, gitBranch ...string) string {
 	available := width - 1
 	if available <= 0 {
-		return "\n"
-	}
-	if available <= style.CellWidth(prefix) {
-		return borderStyle.Render(style.TruncateCells(prefix, available)) + "\n"
+		return ""
 	}
 
-	if style.CellWidth(prefix)+statusLen >= available {
-		return borderStyle.Render(style.TruncateCells(prefix+statusPart, available)) + "\n"
+	borderStyle := style.NewStyle().Foreground(theme.Border)
+	branchStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
+
+	// Optional right-hand reasoning badge (" ∴ low", " ∴ med", " ∴ high", " ∴ max", " ∴ off").
+	// Omitted completely when reasoningEffort is "hidden" (show_reasoning_badge = false).
+	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
+	showBadge := effort != "hidden"
+	var statusStyled string
+	var statusLen int
+	if showBadge {
+		label := "off"
+		switch effort {
+		case "low":
+			label = "low"
+		case "medium", "med":
+			label = "med"
+		case "high":
+			label = "high"
+		case "max":
+			label = "max"
+		}
+
+		active := label != "off"
+		iconStyle := borderStyle
+		labelStyle := style.NewStyle().Foreground(theme.TextMuted)
+		if active {
+			if showThinking {
+				iconStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
+				labelStyle = style.NewStyle().Foreground(theme.Highlight).Bold(true)
+			} else {
+				iconStyle = style.NewStyle().Foreground(theme.Secondary)
+				labelStyle = style.NewStyle().Foreground(theme.Secondary)
+			}
+		}
+
+		statusRaw := " ∴ " + label
+		statusLen = style.CellWidth(statusRaw)
+		statusStyled = " " + iconStyle.Render("∴") + " " + labelStyle.Render(label)
+	}
+
+	if statusLen >= available {
+		return borderStyle.Render(strings.Repeat("─", available))
 	}
 
 	var branchStyled string
 	var branchLen int
 	if len(gitBranch) > 0 && strings.TrimSpace(gitBranch[0]) != "" {
-		b := strings.TrimSpace(gitBranch[0])
-		if width < 70 && len(b) > 14 {
+		b := strings.TrimSpace(SanitizeTerminalText(gitBranch[0]))
+		if width < 70 && style.CellWidth(b) > 14 {
 			b = style.TruncateCells(b, 14)
 		}
-		branchRaw := "── ⎇ " + b + " "
-		branchLen = style.CellWidth(branchRaw)
-		if available > style.CellWidth(prefix)+branchLen+statusLen+4 {
-			branchStyled = borderStyle.Render("── ") + branchStyle.Render("⎇ "+b) + " "
-		} else {
-			branchLen = 0
+		if b != "" {
+			branchRaw := "─── ⎇ " + b + " "
+			branchLen = style.CellWidth(branchRaw)
+			if available > branchLen+statusLen+4 {
+				branchStyled = borderStyle.Render("─── ") + branchStyle.Render("⎇ "+b) + " "
+			} else {
+				branchLen = 0
+			}
 		}
 	}
 
-	used := style.CellWidth(prefix) + branchLen + statusLen
+	used := branchLen + statusLen
 	if available <= used {
 		branchStyled = ""
 		branchLen = 0
-		used = style.CellWidth(prefix) + statusLen
+		used = statusLen
 	}
 
 	dashCount := max(1, available-used)
 	dashes := borderStyle.Render(strings.Repeat("─", dashCount))
-	return borderStyle.Render(prefix) + branchStyled + dashes + statusStyle.Render(statusPart) + "\n"
+	return branchStyled + dashes + statusStyled
+}
+
+// FormatPromptSeparator formats the horizontal line with optional reasoning status and git branch above the prompt.
+func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme style.UITheme, width int, gitBranch ...string) string {
+	line := formatPromptSeparatorLine(showThinking, reasoningEffort, theme, width, gitBranch...)
+	if line == "" {
+		return "\n"
+	}
+	return line + "\n"
 }
 
 // FormatStaticStatsContent combines spinner and stats text with styling.
+// The spinner frame is placed first so it stays anchored at column 1 and never
+// shifts horizontally when the elapsed timer grows from seconds to minutes.
 func FormatStaticStatsContent(spinnerFrame string, statsText string, theme style.UITheme) string {
 	if spinnerFrame == "" && statsText == "" {
 		return ""
@@ -73,7 +109,7 @@ func FormatStaticStatsContent(spinnerFrame string, statsText string, theme style
 			displayFrame = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(spinnerFrame)
 		}
 		if statsText != "" {
-			return fmt.Sprintf("%s %s", statsText, displayFrame)
+			return fmt.Sprintf("%s %s", displayFrame, statsText)
 		}
 		return displayFrame
 	}

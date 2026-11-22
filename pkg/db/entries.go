@@ -135,9 +135,14 @@ func (s *JSONLStore) LatestForWorkspaceContext(ctx context.Context, workspace st
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if s == nil || s.core == nil {
+	if s == nil || s.core == nil || s.core.dir == "" {
 		return "", nil
 	}
+	release, err := s.lockStore(ctx, false)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	dir := s.core.dir
 
 	entries, err := os.ReadDir(dir)
@@ -201,12 +206,7 @@ func (s *JSONLStore) LatestForWorkspaceContext(ctx context.Context, workspace st
 		}
 
 		if sessionWorkspace != "" && matchesWorkspace(sessionWorkspace, workspace) {
-			release, err := s.lockStore(ctx, false)
-			if err != nil {
-				return "", err
-			}
 			state, err := s.appendStateContext(ctx, candidate.id)
-			release()
 			if err != nil {
 				continue
 			}
@@ -337,6 +337,9 @@ func (s *JSONLStore) ImportContext(ctx context.Context, reader io.Reader) (strin
 	}
 	if err := os.Rename(f.Name(), s.sessionPath(id)); err != nil {
 		return "", err
+	}
+	if err := storage.SyncDirectory(s.core.dir); err != nil {
+		return "", errors.Join(err, os.Remove(s.sessionPath(id)))
 	}
 	if err := s.setLatestSessionIDUnlocked(id); err != nil {
 		// A failed import must not leave an unreported session behind.

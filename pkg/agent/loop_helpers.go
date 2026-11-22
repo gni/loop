@@ -134,7 +134,7 @@ func (a *Agent) consumeTurnChunks(ctx context.Context, chunks <-chan StreamChunk
 // boundary before their terminal-byte snapshot is used.
 func (a *Agent) refreshStreamPresentation(sr StreamRenderer) {
 	if view, ok := sr.(LiveCollapsePresenter); ok {
-		view.SetLiveCollapse(a.Config.CollapseResults)
+		view.SetLiveCollapse(a.LiveSettings().CollapseResults)
 	}
 	if view, ok := sr.(ReplaySafety); ok && !view.SafeToReplay() {
 		return
@@ -171,10 +171,11 @@ func (a *Agent) renderFinalAgentTurn(assistantMsg *db.Message, sr StreamRenderer
 	if loader != nil {
 		loader.Stop()
 	}
-	timeStyled := formatTurnElapsed(startTime, theme, a.Config.ShowMicroseconds)
+	live := a.LiveSettings()
+	timeStyled := formatTurnElapsed(startTime, theme, live.ShowMicroseconds)
 
 	statsText := timeStyled
-	if a.Config.ShowTokens && assistantMsg.CompletionTokens > 0 {
+	if live.ShowTokens && assistantMsg.CompletionTokens > 0 {
 		statsText = formatCompletionTokensBadge(assistantMsg.CompletionTokens, theme) + timeStyled
 	}
 

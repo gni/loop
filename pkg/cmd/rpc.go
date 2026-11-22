@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"loop/pkg/config"
@@ -91,7 +92,11 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 				data = s.Usage()
 			}
 		case "get_models":
-			data = s.Agent.Config.Models()
+			s.Agent.LLMProviderMu.RLock()
+			if s.Agent.Config != nil {
+				data = s.Agent.Config.Models()
+			}
+			s.Agent.LLMProviderMu.RUnlock()
 		case "discover_models":
 			data, commandErr = s.Agent.DiscoverModels(ctx)
 		case "get_commands":
@@ -99,7 +104,10 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 		case "execute_command":
 			data, commandErr = s.ExecuteCommand(ctx, command.Name, command.Arguments)
 		case "get_tools":
-			data = s.Agent.Registry.GetAvailableTools(s.Agent.ToolSelection)
+			s.Agent.LLMProviderMu.RLock()
+			selection := slices.Clone(s.Agent.ToolSelection)
+			s.Agent.LLMProviderMu.RUnlock()
+			data = s.Agent.Registry.GetAvailableTools(selection)
 		case "get_entries", "get_tree":
 			if s.Store == nil {
 				commandErr = fmt.Errorf("session is ephemeral")

@@ -68,8 +68,9 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/exit", "exit the loop application"},
 	}
 
+	colWidth := min(35, max(16, renderWidth(w)/2))
 	for _, cmd := range commands {
-		fmt.Fprintf(w, "  %-35s %s\n", cmdStyle.Render(cmd[0]), descStyle.Render(cmd[1]))
+		fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render(cmd[0]), colWidth), descStyle.Render(cmd[1]))
 	}
 	fmt.Fprintln(w)
 
@@ -111,8 +112,9 @@ func RenderHotkeys(w io.Writer, theme style.UITheme) {
 		{"Ctrl+P", "recall older prompts; Down at the last row recalls newer prompts"},
 	}
 
+	colWidth := min(35, max(16, renderWidth(w)/2))
 	for _, sc := range shortcuts {
-		fmt.Fprintf(w, "  %-35s %s\n", cmdStyle.Render(sc[0]), descStyle.Render(sc[1]))
+		fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render(sc[0]), colWidth), descStyle.Render(sc[1]))
 	}
 	fmt.Fprintln(w)
 }

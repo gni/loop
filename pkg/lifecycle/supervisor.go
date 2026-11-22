@@ -170,11 +170,11 @@ func (s *Supervisor) Start() {
 	go s.eventLoop()
 }
 
-// Stop releases signal subscriptions and prevents a later Start from reviving them.
+// Stop releases signal subscriptions, cancels the supervisor context, and prevents a later Start from reviving them.
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.stopped {
+		s.mu.Unlock()
 		return
 	}
 	s.running = false
@@ -182,6 +182,11 @@ func (s *Supervisor) Stop() {
 	s.pendingInterrupt = nil
 	signal.Stop(s.sigChan)
 	close(s.doneChan)
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *Supervisor) eventLoop() {

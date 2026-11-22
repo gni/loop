@@ -355,12 +355,21 @@ func (gc *GuidedController) prepareMutationLocked(path string, data []byte, mode
 	if current != snap.Expected && current != snap.Previous {
 		// The observation guard has already authorized this new edit. Rebase
 		// undo on the newly observed file so later rollback preserves manual work.
-		snap.Existed, snap.Data, snap.Mode = current != "missing", nil, mode
+		snap.Existed, snap.Data, snap.Mode = current != "missing", nil, 0644
 		if snap.Existed {
+			info, statErr := os.Lstat(path)
+			if statErr != nil {
+				return statErr
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("cannot snapshot non-regular file %s", path)
+			}
+			snap.Mode = info.Mode().Perm()
 			snap.Data, err = storage.ReadFile(path, maxSnapshotBytes)
 			if err != nil {
 				return err
 			}
+			current = snapshotHash(snap.Data, snap.Mode)
 		}
 		total := len(snap.Data)
 		for key, other := range gc.snapshots {

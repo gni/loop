@@ -12,6 +12,7 @@ import (
 	"loop/pkg/agent"
 	"loop/pkg/config"
 	"loop/pkg/lifecycle"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
@@ -26,7 +27,6 @@ type AgentUIImpl struct {
 
 	ActiveCancelFunc     context.CancelFunc
 	PasteLinesOffset     int
-	PasteCounter         int
 	ActiveInputReader    io.Reader
 	InApprovalPrompt     bool
 	InInteractiveMenu    bool
@@ -40,14 +40,11 @@ type AgentUIImpl struct {
 	LastStatsText        string
 	ActivityStatsText    string
 	LastStatusBarText    string
-	IsInteractive        bool
 	PromptHint           string
 	LastCtrlD            time.Time
 	CtrlDTimer           *time.Timer
-	TriggerRedraw        func()
 
-	StateMu    sync.Mutex
-	TerminalMu sync.Mutex
+	StateMu sync.Mutex
 }
 
 // NewAgentUI initializes a new TUI instance and registers it as the active UI.
@@ -60,19 +57,63 @@ func NewAgentUI(cfg *config.Config, theme style.UITheme) *AgentUIImpl {
 	ActiveUI = uiImpl
 
 	lifecycle.Default().OnCancel(func() bool {
-		if IsInteractive {
+		if IsInteractiveMode() {
 			return uiImpl.CancelActiveOperation()
 		}
 		return false
 	})
 	lifecycle.Default().OnShutdown(func() {
-		if uiImpl.ChatHistory != nil {
-			uiImpl.ChatHistory.Close()
+		if h := uiImpl.GetChatHistory(); h != nil {
+			h.Close()
 		}
 		uiImpl.ShutdownStatusBar(os.Stderr)
 	})
 
 	return uiImpl
+}
+
+func (ui *AgentUIImpl) GetPasteLinesOffset() int {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.PasteLinesOffset
+}
+
+func (ui *AgentUIImpl) SetPasteLinesOffset(offset int) {
+	ui.StateMu.Lock()
+	ui.PasteLinesOffset = offset
+	ui.StateMu.Unlock()
+}
+
+func (ui *AgentUIImpl) GetChatHistory() *ChatHistory {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.ChatHistory
+}
+
+func (ui *AgentUIImpl) SetChatHistory(h *ChatHistory) {
+	ui.StateMu.Lock()
+	ui.ChatHistory = h
+	ui.StateMu.Unlock()
+}
+
+func (ui *AgentUIImpl) ClearChatHistoryIf(h *ChatHistory) {
+	ui.StateMu.Lock()
+	if ui.ChatHistory == h {
+		ui.ChatHistory = nil
+	}
+	ui.StateMu.Unlock()
+}
+
+func (ui *AgentUIImpl) GetActiveInputReader() io.Reader {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.ActiveInputReader
+}
+
+func (ui *AgentUIImpl) SetActiveInputReader(r io.Reader) {
+	ui.StateMu.Lock()
+	ui.ActiveInputReader = r
+	ui.StateMu.Unlock()
 }
 
 func (ui *AgentUIImpl) CancelActiveOperation() bool {
@@ -112,6 +153,9 @@ func (ui *AgentUIImpl) ClearScrollRegionOffset() {
 }
 
 func (ui *AgentUIImpl) InitStatusBar(w io.Writer) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+
 	_, height := GetTerminalSize()
 	ui.StateMu.Lock()
 	ui.Enabled = true
@@ -119,42 +163,56 @@ func (ui *AgentUIImpl) InitStatusBar(w io.Writer) {
 	// painted when returning from a full-screen menu.
 	ui.LastStatusBarText = ""
 	ui.LastH = height
-	scrollOffset := ui.ScrollRegionOffset
 	ui.StateMu.Unlock()
 
-	if height > 3 {
+	if height > 3 && w != nil {
+		scrollBottom := style.ConsoleScrollBottom(height, 0)
+		var buf bytes.Buffer
+		buf.WriteString(terminal.BeginSyncOutput)
 		// Print newline and cursor up to ensure we scroll if we are near the bottom
-		fmt.Fprint(w, "\n\n\x1b[2A")
+		buf.WriteString("\n\n\x1b[2A")
 		// Save cursor, set scroll region, restore cursor to prevent jumping to top
-		fmt.Fprintf(w, "\x1b7\x1b[1;%dr\x1b8", height-2-scrollOffset)
+		fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+		buf.WriteString(terminal.EndSyncOutput)
+		_, _ = w.Write(buf.Bytes())
 	}
 }
 
 func (ui *AgentUIImpl) ShutdownStatusBar(w io.Writer) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+
 	ui.StateMu.Lock()
 	if !ui.Enabled {
 		ui.StateMu.Unlock()
 		return
 	}
 	ui.Enabled = false
+	pasteOffset := max(0, ui.PasteLinesOffset)
 	ui.StateMu.Unlock()
 
+	if w == nil {
+		return
+	}
 	_, height := GetTerminalSize()
 	var buf bytes.Buffer
+	buf.WriteString(terminal.BeginSyncOutput)
+	startRow := max(1, height-4-pasteOffset)
 	if height > 0 {
-		for row := max(1, height-4); row <= height; row++ {
+		for row := startRow; row <= height; row++ {
 			fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", row)
 		}
 	}
 	// Reset scrolling region (moves cursor to 1,1) and show cursor
-	fmt.Fprint(&buf, "\x1b[r\x1b[?25h")
+	buf.WriteString("\x1b[r\x1b[?25h")
 	if height > 4 {
-		// Reposition cursor to height-4 AFTER \x1b[r where the cleared UI controls began
-		// so goodbye message and shell prompt appear cleanly right below conversation history
-		fmt.Fprintf(&buf, "\x1b[%d;1H", height-4)
+		// Reposition cursor where the cleared UI controls began so goodbye
+		// message and shell prompt appear cleanly right below history.
+		fmt.Fprintf(&buf, "\x1b[%d;1H", startRow)
 	} else if height > 0 {
 		fmt.Fprintf(&buf, "\x1b[%d;1H", height)
 	}
+	buf.WriteString(terminal.EndSyncOutput)
 	_, _ = w.Write(buf.Bytes())
 }
 
@@ -178,10 +236,37 @@ func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showT
 	options.BeforeWrite = func() {
 		ui.StateMu.Lock()
 		restore := ui.PasteLinesOffset > 0
-		ui.PasteLinesOffset = 0
 		ui.StateMu.Unlock()
-		if restore {
-			ui.InitStatusBar(os.Stderr)
+		if !restore {
+			return
+		}
+		TerminalMu.Lock()
+		defer TerminalMu.Unlock()
+		ui.StateMu.Lock()
+		if ui.PasteLinesOffset == 0 {
+			ui.StateMu.Unlock()
+			return
+		}
+		ui.PasteLinesOffset = 0
+		ui.LastStatusBarText = ""
+		history := ui.ChatHistory
+		pp := ui.PPWriter
+		inMenu := ui.InInteractiveMenu
+		ui.StateMu.Unlock()
+
+		width, height := GetTerminalSize()
+		if history != nil && !history.closed.Load() {
+			history.resizeLocked(width, height)
+		} else if pp != nil {
+			pp.ResizeLocked(height)
+		}
+		if height > 3 && !inMenu && !terminal.Default().InAltScreen() {
+			scrollBottom := style.ConsoleScrollBottom(height, 0)
+			var buf bytes.Buffer
+			buf.WriteString(terminal.BeginSyncOutput)
+			fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+			buf.WriteString(terminal.EndSyncOutput)
+			_, _ = os.Stderr.Write(buf.Bytes())
 		}
 	}
 	sr := render.NewStreamRenderer(w, theme, showThinking, streamWrites, options)
@@ -314,6 +399,7 @@ func (ui *AgentUIImpl) CheckCtrlDConfirmation(timeout time.Duration) bool {
 func syncAgentStatus(a *agent.Agent, theme style.UITheme, calcHistoryTokens func() (int, int, bool)) {
 	pTok, cTok, estimated := calcHistoryTokens()
 	effLimit := a.GetEffectiveContextLimit(pTok)
-	UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, GetActiveTasks(a), a.Config.ShowTokens, estimated)
+	live := a.LiveSettings()
+	UpdateStatus(live.Model, pTok, cTok, 0, effLimit, false, 0, GetActiveTasks(a), live.ShowTokens, estimated)
 	DrawStatusBar(os.Stderr, theme)
 }

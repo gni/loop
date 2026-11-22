@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"loop/pkg/config"
 	"loop/pkg/domain/message"
 	"loop/pkg/ui/render"
 )
@@ -92,7 +91,7 @@ func (h *ChatHistory) scheduleLayoutsLocked() {
 	if target == nil {
 		return
 	}
-	cfg, err := config.Clone(h.a.Config)
+	cfg, err := h.a.Configuration()
 	if err != nil {
 		h.historyErr = err
 		return

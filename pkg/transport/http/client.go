@@ -2,10 +2,13 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +57,26 @@ func NewResilientClient(cfg RetryConfig) *ResilientClient {
 func IsNonRetryableError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && (dnsErr.IsNotFound || (!dnsErr.IsTimeout && !dnsErr.IsTemporary)) {
+		return true
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var certInvalid x509.CertificateInvalidError
+	var hostnameErr x509.HostnameError
+	var systemRootsErr x509.SystemRootsError
+	var recordHeaderErr tls.RecordHeaderError
+	var certVerifyErr *tls.CertificateVerificationError
+	var alertErr tls.AlertError
+	if errors.As(err, &unknownAuthority) ||
+		errors.As(err, &certInvalid) ||
+		errors.As(err, &hostnameErr) ||
+		errors.As(err, &systemRootsErr) ||
+		errors.As(err, &recordHeaderErr) ||
+		errors.As(err, &certVerifyErr) ||
+		errors.As(err, &alertErr) {
+		return true
 	}
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "no such host") ||
@@ -139,7 +162,7 @@ func (c *ResilientClient) DoWithRetry(ctx context.Context, createReq func() (*ht
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			// Cap the read so a hostile or runaway error body cannot grow unbounded, and
 			// surface a read failure instead of embedding a possibly empty body.
 			const maxErrorBodyBytes = 4096

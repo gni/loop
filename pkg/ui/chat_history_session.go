@@ -2,26 +2,39 @@ package ui
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
+	"loop/pkg/terminal"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
 )
 
+func configuredHistoryPageSize(a *agent.Agent) int {
+	if a == nil {
+		return 0
+	}
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
+	if a.Config == nil {
+		return 0
+	}
+	return a.Config.HistoryPageSize
+}
+
 func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *PromptPreservingWriter, id string, initial []db.Message) (*ChatHistory, error) {
 	width, height := GetTerminalSize()
+	pasteOffset := getUI().GetPasteLinesOffset()
 	h := &ChatHistory{a: a, reader: reader, writer: writer, captureOnly: true,
-		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))}
+		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, pasteOffset))}
 	paged, pageErr := render.NewPagedScrollback(width, h.buffer.Height)
 	if pageErr == nil {
-		if a != nil && a.Config != nil && a.Config.HistoryPageSize > 0 {
-			paged.SetPageSize(a.Config.HistoryPageSize)
+		if pageSize := configuredHistoryPageSize(a); pageSize > 0 {
+			paged.SetPageSize(pageSize)
 		}
 		h.buffer = paged
 	}
@@ -49,9 +62,13 @@ func NewChatHistory(a *agent.Agent, reader *interceptor.KeyInterceptorReader, wr
 		return nil
 	}
 	h.appearance = h.appearanceKey()
+	TerminalMu.Lock()
 	writer.inner = &historyOutput{destination: writer.inner, history: h}
-	getUI().ChatHistory = h
-	fmt.Fprint(reader.W, "\x1b[?1002l\x1b[?1003l\x1b[?1000h\x1b[?1006h")
+	getUI().SetChatHistory(h)
+	if reader != nil && reader.W != nil {
+		h.stopMouse = terminal.Default().BeginMouseTracking(reader.W)
+	}
+	TerminalMu.Unlock()
 	h.setSessionContext(id)
 	h.startChatLogo()
 	return h, err
@@ -70,15 +87,15 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 		return err
 	}
 	width, height := GetTerminalSize()
-	buffer, pageErr := render.NewPagedScrollback(width, style.ConsoleScrollBottom(height, getUI().PasteLinesOffset))
+	buffer, pageErr := render.NewPagedScrollback(width, style.ConsoleScrollBottom(height, getUI().GetPasteLinesOffset()))
 	if pageErr != nil {
 		if source != nil {
 			_ = source.Close()
 		}
 		return errors.Join(err, pageErr)
 	}
-	if h.a != nil && h.a.Config != nil && h.a.Config.HistoryPageSize > 0 {
-		buffer.SetPageSize(h.a.Config.HistoryPageSize)
+	if pageSize := configuredHistoryPageSize(h.a); pageSize > 0 {
+		buffer.SetPageSize(pageSize)
 	}
 	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
 	if turnErr != nil {
@@ -101,7 +118,7 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	}
 	h.closePagesLocked()
 	h.searchQuery, h.searchNotice = "", ""
-	h.searchEditing = false
+	h.setSearchEditingLocked(false)
 	h.searchDraft = ""
 	h.searchPending = false
 	h.searchScan = nil
@@ -124,7 +141,8 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	notice := h.notice
 	h.notice = ""
 	if notice != "" {
-		noticeStyle := style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Success).Italic(true)
+		live := h.a.LiveSettings()
+		noticeStyle := style.NewStyle().Foreground(style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme).Success).Italic(true)
 		_, _ = h.writer.writeLocked([]byte(noticeStyle.Render(notice) + "\n"))
 	}
 	h.setSessionContext(id)
@@ -155,13 +173,18 @@ func (h *ChatHistory) Close() {
 	}
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	fmt.Fprint(h.reader.W, "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")
+	if h.stopMouse != nil {
+		h.stopMouse()
+		h.stopMouse = nil
+	}
 	h.closePagesLocked()
-	h.a.EventSink = h.previousSink
-	if output, ok := h.writer.inner.(*historyOutput); ok && output.history == h {
-		h.writer.inner = output.destination
+	if h.a != nil {
+		h.a.EventSink = h.previousSink
 	}
-	if getUI().ChatHistory == h {
-		getUI().ChatHistory = nil
+	if h.writer != nil {
+		if output, ok := h.writer.inner.(*historyOutput); ok && output.history == h {
+			h.writer.inner = output.destination
+		}
 	}
+	getUI().ClearChatHistoryIf(h)
 }

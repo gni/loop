@@ -59,11 +59,10 @@ type ToolRegistry struct {
 	schemas  map[string]compiledSchema
 	disabled map[string]bool
 
-	// UnknownToolHook resolves a tool that is not registered yet. It exists for MCP
-	// servers deferred until first use: their executors cannot be registered before the
-	// server is connected, so a call to one of their tools has to trigger the connect.
-	// The hook is invoked with no registry lock held, so it may register freely; it must
-	// not call back into the registry while doing so.
+	// UnknownToolHook resolves a tool name not found by direct lookup.
+	// It is invoked with no registry lock held. Deferred MCP servers must not
+	// be connected from this hook: callers must invoke load_mcp and pass its
+	// approval gate first.
 	UnknownToolHook func(name string) (ToolExecutor, bool)
 }
 
@@ -289,6 +288,7 @@ func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExe
 			delete(r.tools, name)
 			delete(r.schemas, name)
 			delete(r.hidden, name)
+			delete(r.exposed, name)
 		}
 	}
 	for name, executor := range executors {

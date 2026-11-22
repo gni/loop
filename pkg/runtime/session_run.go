@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"loop/pkg/agent"
@@ -95,7 +96,10 @@ func (s *Session) Run(ctx context.Context, prompt string) (agent.RunResult, erro
 
 func (s *Session) run(ctx context.Context, prompt string) (agent.RunResult, error) {
 	var output io.Writer = io.Discard
-	if s.Agent.Config.Nostop.Enabled() && s.options.Output != nil {
+	s.Agent.LLMProviderMu.RLock()
+	nostop := s.Agent.Config != nil && s.Agent.Config.Nostop.Enabled()
+	s.Agent.LLMProviderMu.RUnlock()
+	if nostop && s.options.Output != nil {
 		output = s.options.Output
 	}
 	return s.runWith(ctx, prompt, output, style.GetTheme("plain"), true)
@@ -155,15 +159,22 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		}
 		expanded := transformed
 		if !preExpanded && (!literal || strings.HasPrefix(strings.TrimSpace(attachmentSource), "/")) {
-			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, s.Agent.Config.ProjectResources, s.Agent.Config.PromptDirectories))
+			s.Agent.LLMProviderMu.RLock()
+			projectResources := s.Agent.Config.ProjectResources
+			promptDirs := slices.Clone(s.Agent.Config.PromptDirectories)
+			s.Agent.LLMProviderMu.RUnlock()
+			expanded, err = resources.ExpandPrompt(transformed, resources.PromptDirectories(resources.AgentDirectory(s.Agent.ConfigPath), s.Workspace, projectResources, promptDirs))
 			if err != nil {
 				return result, err
 			}
 		}
 		expanded += attachmentSuffix
 		s.Agent.InputBlocks = blocks
-		s.Agent.ToolSelection = s.options.Tools
-		result, err = s.Agent.RunAgentLoop(ctx, w, &s.messages, expanded, s.options.Tools, theme, noninteractive, s.storageID())
+		tools := slices.Clone(s.options.Tools)
+		s.Agent.LLMProviderMu.Lock()
+		s.Agent.ToolSelection = tools
+		s.Agent.LLMProviderMu.Unlock()
+		result, err = s.Agent.RunAgentLoop(ctx, w, &s.messages, expanded, tools, theme, noninteractive, s.storageID())
 		if err != nil {
 			return result, err
 		}

@@ -48,7 +48,7 @@ func (a *Agent) MCPServerStatuses() map[string]MCPServerStatus {
 			continue
 		}
 		status := statuses[name]
-		if client.initialized && client.healthy() {
+		if client.isInitialized() && client.healthy() {
 			status.State, status.Error = "connected", ""
 		} else if status.State != "failed" && status.State != "connecting" {
 			status.State = "disconnected"

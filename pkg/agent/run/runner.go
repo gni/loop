@@ -205,11 +205,8 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 		}
 		reminder := ""
 		if len(msg.ToolCalls) == 0 {
-			reminder = AssessCompletion(ctx, msg)
-			if reminder != "" && (driver.CompletionReminder == nil || (!policy.Continuous && step == policy.MaxSteps)) {
-				AssessCompletion(ctx, msg)
-				reminder = ""
-			}
+			allowReminder := driver.CompletionReminder != nil && (policy.Continuous || step < stepBudget)
+			reminder = assessCompletion(ctx, msg, allowReminder)
 		}
 		if err := driver.Record(ctx, step, msg); err != nil {
 			return result, err

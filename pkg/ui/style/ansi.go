@@ -1,13 +1,13 @@
 package style
 
 import (
-	"golang.org/x/text/width"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
-// SkipAnsiEscape returns the end index of the ANSI escape sequence starting at start in s.
+// SkipAnsiEscape returns the end byte index of the ANSI escape sequence starting
+// at start in s. It handles CSI, OSC, DCS, SOS, PM, APC, 3-byte charset/intermediate
+// sequences (such as "\x1b(B"), and standard 2-byte escapes.
 func SkipAnsiEscape(s string, start int) int {
 	if start >= len(s) || s[start] != '\x1b' {
 		return start
@@ -39,6 +39,16 @@ func SkipAnsiEscape(s string, start int) int {
 			i++
 		}
 	default:
+		// Consume intermediate bytes (0x20-0x2F, e.g. "\x1b(B", "\x1b#8") plus final byte.
+		if s[i] >= 0x20 && s[i] <= 0x2f {
+			for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+				i++
+			}
+			if i < len(s) {
+				return i + 1
+			}
+			return i
+		}
 		_, size := utf8.DecodeRuneInString(s[i:])
 		return i + size
 	}
@@ -47,7 +57,11 @@ func SkipAnsiEscape(s string, start int) int {
 
 // StripAnsi removes ANSI escape codes from str.
 func StripAnsi(str string) string {
+	if !strings.ContainsRune(str, '\x1b') {
+		return str
+	}
 	var sb strings.Builder
+	sb.Grow(len(str))
 	for i := 0; i < len(str); {
 		if str[i] == '\x1b' {
 			i = SkipAnsiEscape(str, i)
@@ -75,6 +89,74 @@ func TruncateRunes(s string, maxRunes int) string {
 	return string(runes[:maxRunes-3]) + "..."
 }
 
+// CellWidth computes the terminal column width of text without heap-allocating a stripped copy.
+// ANSI escape sequences are skipped, and grapheme clusters (combining marks, emoji ZWJ, VS16)
+// are measured accurately.
+func CellWidth(text string) int {
+	n := 0
+	for i := 0; i < len(text); {
+		if text[i] == '\x1b' {
+			i = SkipAnsiEscape(text, i)
+			continue
+		}
+		b := text[i]
+		if b < utf8.RuneSelf {
+			if b >= 0x20 && b != 0x7f {
+				n++
+			}
+			i++
+			continue
+		}
+		_, w, sz := NextGrapheme(text[i:])
+		n += w
+		i += sz
+	}
+	return n
+}
+
+// TruncateCells truncates text to at most limit terminal columns while preserving
+// ANSI SGR escapes and never splitting grapheme clusters.
+func TruncateCells(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if CellWidth(text) <= limit {
+		return text
+	}
+	var out strings.Builder
+	out.Grow(len(text))
+	n := 0
+	hasEscape := false
+	for i := 0; i < len(text); {
+		if text[i] == '\x1b' {
+			end := SkipAnsiEscape(text, i)
+			out.WriteString(text[i:end])
+			hasEscape = true
+			i = end
+			continue
+		}
+		cluster, cells, sz := NextGrapheme(text[i:])
+		if n+cells > limit-1 {
+			break
+		}
+		out.WriteString(cluster)
+		n += cells
+		i += sz
+	}
+	out.WriteRune('…')
+	if hasEscape {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
+}
+
+// WrapAnsiLine wraps a single ANSI-styled line to at most limit display columns,
+// preserving trailing escapes, carrying active SGR state across line breaks,
+// and never splitting grapheme clusters.
+func WrapAnsiLine(line string, limit int) []string {
+	return wrapSingleAnsiLine(line, limit)
+}
+
 func wrapSingleAnsiLine(line string, limit int) []string {
 	if limit <= 0 {
 		return []string{line}
@@ -89,143 +171,140 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 
 	var curWord strings.Builder
 	curWordVisible := 0
+	var wordStartSGR SGRState
+	var activeSGR SGRState
+	hasWordSGR := false
 
 	var spaces strings.Builder
+	spacesVisible := 0
+
+	emitLine := func() {
+		if !activeSGR.IsZero() {
+			curLine.WriteString("\x1b[0m")
+		}
+		lines = append(lines, curLine.String())
+		curLine.Reset()
+		curLineVisible = 0
+	}
+
+	startNextLine := func(sgr SGRState) {
+		if !sgr.IsZero() {
+			curLine.WriteString(sgr.Sequence())
+		}
+	}
 
 	flushWord := func() {
 		wordLen := curWordVisible
-		spacesLen := spaces.Len()
+		spacesLen := spacesVisible
 
 		if wordLen == 0 {
 			if spacesLen > 0 {
-				if curLineVisible+spacesLen <= limit {
-					curLine.WriteString(spaces.String())
-					curLineVisible += spacesLen
-				} else {
-					if curLineVisible == 0 {
-						curLine.WriteString(spaces.String())
-						curLineVisible += spacesLen
-					} else {
-						lines = append(lines, curLine.String())
-						curLine.Reset()
-						curLine.WriteString(spaces.String())
-						curLineVisible = spacesLen
-					}
+				if curLineVisible > 0 && curLineVisible+spacesLen > limit {
+					emitLine()
+					startNextLine(activeSGR)
 				}
+				curLine.WriteString(spaces.String())
+				curLineVisible += spacesLen
 				spaces.Reset()
+				spacesVisible = 0
+			}
+			if curWord.Len() > 0 {
+				curLine.WriteString(curWord.String())
+				curWord.Reset()
+				hasWordSGR = false
 			}
 			return
 		}
 
 		if curLineVisible == 0 {
+			if spacesLen > 0 && spacesLen+wordLen <= limit {
+				curLine.WriteString(spaces.String())
+				curLineVisible += spacesLen
+			}
+			spaces.Reset()
+			spacesVisible = 0
+			curLine.WriteString(curWord.String())
+			curLineVisible += wordLen
+		} else if curLineVisible+spacesLen+wordLen <= limit {
 			if spacesLen > 0 {
 				curLine.WriteString(spaces.String())
 				curLineVisible += spacesLen
 				spaces.Reset()
+				spacesVisible = 0
 			}
 			curLine.WriteString(curWord.String())
 			curLineVisible += wordLen
 		} else {
-			needed := spacesLen + wordLen
-			if curLineVisible+needed <= limit {
-				curLine.WriteString(spaces.String())
-				curLine.WriteString(curWord.String())
-				curLineVisible += needed
-				spaces.Reset()
+			emitLine()
+			spaces.Reset()
+			spacesVisible = 0
+			if hasWordSGR {
+				startNextLine(wordStartSGR)
 			} else {
-				lines = append(lines, curLine.String())
-				curLine.Reset()
-				curLine.WriteString(curWord.String())
-				curLineVisible = wordLen
-				spaces.Reset()
+				startNextLine(activeSGR)
 			}
+			curLine.WriteString(curWord.String())
+			curLineVisible = wordLen
 		}
+
 		curWord.Reset()
 		curWordVisible = 0
+		hasWordSGR = false
 	}
 
-	i := 0
-	for i < len(line) {
-		r, size := utf8.DecodeRuneInString(line[i:])
-		if r == '\x1b' {
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
 			escEnd := SkipAnsiEscape(line, i)
-			curWord.WriteString(line[i:escEnd])
+			seq := line[i:escEnd]
+			if curWordVisible == 0 && spacesVisible > 0 {
+				// Keep ANSI escapes in exact stream order relative to buffered spaces.
+				spaces.WriteString(seq)
+			} else {
+				if !hasWordSGR && curWordVisible == 0 {
+					wordStartSGR = activeSGR
+					hasWordSGR = true
+				}
+				curWord.WriteString(seq)
+			}
+			if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+				activeSGR.Apply(seq)
+			}
 			i = escEnd
 			continue
 		}
 
-		if r == ' ' {
-			if curWordVisible > 0 {
+		if line[i] == ' ' {
+			if curWordVisible > 0 || curWord.Len() > 0 {
 				flushWord()
 			}
-			spaces.WriteRune(' ')
-			i += size
+			spaces.WriteByte(' ')
+			spacesVisible++
+			i++
 			continue
 		}
 
-		if curWordVisible+RuneWidth(r) > limit && curWordVisible > 0 {
-			flushWord()
+		cluster, cw, sz := NextGrapheme(line[i:])
+		if !hasWordSGR {
+			wordStartSGR = activeSGR
+			hasWordSGR = true
 		}
 
-		curWord.WriteRune(r)
-		curWordVisible += RuneWidth(r)
-		i += size
+		// Break oversized single tokens cleanly on grapheme boundaries.
+		if curWordVisible > 0 && curWordVisible+cw > limit {
+			flushWord()
+			wordStartSGR = activeSGR
+			hasWordSGR = true
+		}
+
+		curWord.WriteString(cluster)
+		curWordVisible += cw
+		i += sz
 	}
 
 	flushWord()
-	if curLineVisible > 0 || len(lines) == 0 {
+	if curLine.Len() > 0 || len(lines) == 0 {
 		lines = append(lines, curLine.String())
 	}
 
 	return lines
-}
-
-// RuneWidth and CellWidth count terminal columns rather than Unicode code points.
-func RuneWidth(r rune) int {
-	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == '\u200d' || unicode.IsControl(r) {
-		return 0
-	}
-	switch width.LookupRune(r).Kind() {
-	case width.EastAsianWide, width.EastAsianFullwidth:
-		return 2
-	}
-	return 1
-}
-func CellWidth(text string) int {
-	n := 0
-	for _, r := range StripAnsi(text) {
-		n += RuneWidth(r)
-	}
-	return n
-}
-func TruncateCells(text string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if CellWidth(text) <= limit {
-		return text
-	}
-	var out strings.Builder
-	n := 0
-	for i := 0; i < len(text); {
-		if text[i] == 27 {
-			end := SkipAnsiEscape(text, i)
-			out.WriteString(text[i:end])
-			i = end
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(text[i:])
-		cells := RuneWidth(r)
-		if n+cells > limit-1 {
-			break
-		}
-		out.WriteRune(r)
-		n += cells
-		i += size
-	}
-	out.WriteRune('…')
-	if strings.Contains(text, "\x1b") {
-		out.WriteString("\x1b[0m")
-	}
-	return out.String()
 }

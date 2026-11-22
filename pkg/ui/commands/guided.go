@@ -74,10 +74,11 @@ func handleGuidedCommand(
 		stateStr = "enabled"
 	}
 	fmt.Fprintf(w, "guided mode %s.\n", stateStr)
-	ui.DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, *theme)
+	live := a.LiveSettings()
+	ui.DrawStaticPromptSeparator(os.Stderr, live.ShowThinking, live.ReasoningEffort, *theme)
 	ui.DrawStatusBar(os.Stderr, *theme)
-	if kiReader != nil && kiReader.RL != nil {
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, kiReader.RL)
+	if rl := terminalFromReader(kiReader); rl != nil {
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
 	}
 }
 
@@ -163,7 +164,7 @@ func handleUndoCommand(
 		}
 	}
 
-	if history := ui.GetUI().ChatHistory; history != nil {
+	if history := ui.GetUI().GetChatHistory(); history != nil {
 		ui.MarkSessionReloaded()
 	} else if kiReader != nil {
 		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))

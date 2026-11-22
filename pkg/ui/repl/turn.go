@@ -9,7 +9,6 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/resources"
 	"loop/pkg/ui"
@@ -20,15 +19,23 @@ import (
 
 func renderTurnPromptHeader(
 	w io.Writer,
-	cfg *config.Config,
+	a *agent.Agent,
 	theme style.UITheme,
 	promptPrefix, line string,
 	fromQueue bool,
 	kiReader *interceptor.KeyInterceptorReader,
 ) {
 	width, _ := ui.GetTerminalSize()
-	branch := ui.CachedGitBranch()
-	fmt.Fprint(w, render.FormatPromptSeparator(cfg.ShowThinking, cfg.ReasoningEffort, theme, width, branch))
+	live := a.LiveSettings()
+	branch := ""
+	if live.ShowGitBranch {
+		branch = ui.CachedGitBranch()
+	}
+	effort := live.ReasoningEffort
+	if !live.ShowReasoningBadge {
+		effort = "hidden"
+	}
+	fmt.Fprint(w, render.FormatPromptSeparator(live.ShowThinking, effort, theme, width, branch))
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	if fromQueue {
@@ -77,6 +84,11 @@ func executeREPLTurn(
 		ui.GetUI().ActiveCancelFunc = active.CancelActiveTurn
 		ui.GetUI().StateMu.Unlock()
 
+		restore, restoreErr := ui.SetNonCanonical(fd)
+		if restoreErr == nil && restore != nil {
+			defer restore()
+		}
+
 		if err := mam.SendMessage(active.Name, line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending message: %v\n", err)
 		} else {
@@ -106,15 +118,19 @@ func executeREPLTurn(
 	}
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().ActiveCancelFunc = cancel
-	if !fromQueue {
-		kiReader.ResetTypeAheadLocked()
-	}
 	ui.GetUI().StateMu.Unlock()
+	if !fromQueue {
+		kiReader.ResetTypeAhead()
+	}
 
 	// During nonstop execution, ordinary queued prompts steer the next model
 	// turn. Slash commands remain commands and are never sent to the model.
 	previousInput := a.NextInput
-	if a.Config.Nostop.Enabled() && kiReader != nil {
+	nostopEnabled := false
+	if cfgSnapshot, cfgErr := a.Configuration(); cfgErr == nil && cfgSnapshot != nil {
+		nostopEnabled = cfgSnapshot.Nostop.Enabled()
+	}
+	if nostopEnabled && kiReader != nil {
 		a.NextInput = func() []db.Message {
 			if previousInput != nil {
 				if input := previousInput(); len(input) > 0 {
@@ -136,7 +152,7 @@ func executeREPLTurn(
 			ui.GetUI().StateMu.Lock()
 			ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
 			ui.GetUI().StateMu.Unlock()
-			renderTurnPromptHeader(ppWriter, a.Config, theme, ui.GetPromptSymbol(a.Config), next.Text, true, kiReader)
+			renderTurnPromptHeader(ppWriter, a, theme, ui.GetPromptSymbol(nil), next.Text, true, kiReader)
 			return []db.Message{{Role: "user", Content: next.Text}}
 		}
 		defer func() { a.NextInput = previousInput }()
@@ -152,7 +168,7 @@ func executeREPLTurn(
 				recorded = last.Role == "error" && last.Content == runErr.Error()
 			}
 			if !recorded {
-				render.RenderFailure(ppWriter, runErr.Error(), a.Config.CollapseResults, theme)
+				render.RenderFailure(ppWriter, runErr.Error(), a.LiveSettings().CollapseResults, theme)
 			}
 			width, _ := ui.GetTerminalSize()
 			label := style.TruncateRunes("Could not send prompt: "+runErr.Error(), max(1, width-1))
@@ -172,11 +188,11 @@ func executeREPLTurn(
 	if wasCancelled {
 		// Ctrl+C can arrive as SIGINT in noncanonical mode rather than as
 		// an input byte. Apply the same cleanup as the keyboard dispatcher.
-		kiReader.ResetTypeAheadLocked()
 		ui.GetUI().State.QueuedPromptsCount = 0
 	}
 	ui.GetUI().StateMu.Unlock()
 	if wasCancelled {
+		kiReader.ResetTypeAhead()
 		kiReader.ClearQueue()
 		cancelStyle := style.NewStyle().Foreground(theme.Error).Italic(true)
 		ui.DrawStaticStatsLine(os.Stderr, theme, "", cancelStyle.Render("[operation cancelled]"))

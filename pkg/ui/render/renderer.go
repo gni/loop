@@ -51,12 +51,6 @@ type StreamRenderer struct {
 	sequentialResults    bool
 	toolStates           map[string]agent.ToolLifecycleEvent
 	toolIDs              map[int]string
-	chatDraftLine        int
-	chatDraftVisible     bool
-	firstToolName        string
-	livePreviewLine      int
-	livePreviewVisible   bool
-	livePreviewSnapshot  string
 	liveCallViews        map[int]*liveCallView
 	liveActiveCall       int
 	liveVisibleCall      int
@@ -84,14 +78,20 @@ func NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, stre
 		writeResultLines:     make(map[int]int),
 		toolStates:           make(map[string]agent.ToolLifecycleEvent),
 		toolIDs:              make(map[int]string),
-		chatDraftLine:        -1,
-		livePreviewLine:      -1,
 		liveCallViews:        make(map[int]*liveCallView),
 		liveActiveCall:       -1,
 		reasoningSummaryLine: -1,
 	}
 	sr.parser = NewJSONStreamParser(streamWrites)
 	return sr
+}
+
+// runBeforeWrite invokes the immutable preparation hook outside sr.mu so UI
+// callbacks cannot invert lock ordering with TerminalMu.
+func (sr *StreamRenderer) runBeforeWrite() {
+	if sr.beforeWrite != nil {
+		sr.beforeWrite()
+	}
 }
 
 // InvalidateTrackedRows is called after an external full-screen replay.
@@ -101,10 +101,6 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.trackedRowsInvalidated = true
-	sr.chatDraftVisible = false
-	sr.chatDraftLine = -1
-	sr.livePreviewVisible = false
-	sr.livePreviewLine = -1
 	sr.reasoningSummaryLine = -1
 	if sr.inThinking {
 		sr.reasoningCollapsed = sr.liveCollapse
@@ -203,6 +199,9 @@ func (sr *StreamRenderer) SetPrompt(prompt string) {
 }
 
 func (sr *StreamRenderer) Write(chunk string) {
+	if strings.TrimLeft(chunk, "\r\n") != "" {
+		sr.runBeforeWrite()
+	}
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.endThinking()
@@ -228,7 +227,6 @@ func (sr *StreamRenderer) Write(chunk string) {
 		fmt.Fprint(sr.w, "\n")
 		sr.pendingThoughtTextGap = false
 	}
-	sr.checkFirstWrite()
 	sr.hasWrittenText = true
 	sr.appendLiveReplayTextLocked("text", chunk)
 	sr.liveReplayTextFlushed = false
@@ -291,6 +289,7 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 		return
 	}
 	if sr.parser != nil && sr.parser.ActiveToolName != "" {
+		sr.parser.FlushPending(sr.w, sr.theme)
 		if !sr.parser.TitlePrinted && sr.parser.CanPrintTitle() {
 			sr.parser.PrintStreamTitle(sr.w, sr.theme)
 		}
@@ -313,14 +312,9 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 				}
 			}
 		}
+		sr.parser.resetEscapeState()
 		sr.parser.IsRawStream = false
 		sr.parser.ActiveToolName = ""
 		sr.parser.ActiveToolIndex = -1
-	}
-}
-
-func (sr *StreamRenderer) checkFirstWrite() {
-	if sr.beforeWrite != nil {
-		sr.beforeWrite()
 	}
 }

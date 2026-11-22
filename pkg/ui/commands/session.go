@@ -31,11 +31,9 @@ func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorRe
 	state.LastStatsText = ""
 	state.State.QueuedPromptsCount = 0
 	state.State.CompletionTokens = 0
-	if reader != nil {
-		reader.ResetTypeAheadLocked()
-	}
 	state.StateMu.Unlock()
 	if reader != nil {
+		reader.ResetTypeAhead()
 		reader.ClearQueue()
 	}
 	a.ClearTasks()
@@ -80,7 +78,7 @@ func handleClearCommand(
 	}
 
 	const clearNotice = "conversation cleared and started a new one."
-	if history := ui.GetUI().ChatHistory; history != nil {
+	if history := ui.GetUI().GetChatHistory(); history != nil {
 		history.SetNotice(clearNotice)
 		ui.MarkSessionReloaded()
 		return
@@ -109,7 +107,7 @@ func handleSessionCommand(
 			*currentSessionID = ""
 			a.SetActiveSessionID("")
 			a.SyncSessionSystemPrompt(messages, "")
-			if ui.GetUI().ChatHistory != nil {
+			if ui.GetUI().GetChatHistory() != nil {
 				ui.MarkSessionReloaded()
 			}
 		default:
@@ -142,7 +140,7 @@ func handleSessionCommand(
 	}
 
 	refreshSessionUI := func() {
-		if ui.GetUI().ChatHistory != nil {
+		if ui.GetUI().GetChatHistory() != nil {
 			ui.MarkSessionReloaded()
 			return
 		}
@@ -265,7 +263,7 @@ func handleSessionCommand(
 				fmt.Fprintf(w, "cannot load session %q: %v\n", selected, err)
 				return
 			}
-			if ui.GetUI().ChatHistory != nil {
+			if ui.GetUI().GetChatHistory() != nil {
 				ui.MarkSessionReloaded()
 			} else {
 				ui.RedrawScreen(w, a, kiReader, rl)
@@ -299,7 +297,7 @@ func handleSessionCommand(
 			fmt.Fprintf(w, "cannot open session picker: %v\n", err)
 		}
 		if sessionChanged {
-			if ui.GetUI().ChatHistory != nil {
+			if ui.GetUI().GetChatHistory() != nil {
 				ui.MarkSessionReloaded()
 			} else {
 				ui.RedrawScreen(w, a, kiReader, rl)
@@ -358,7 +356,8 @@ func handleCompressCommand(
 	}
 	pTok, cTok, estimated := calcHistoryTokens()
 	effLimit := a.GetEffectiveContextLimit(pTok)
-	ui.UpdateStatus(a.Config.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+	live := a.LiveSettings()
+	ui.UpdateStatus(live.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
 	ui.DrawStatusBar(os.Stderr, *theme)
 }
 

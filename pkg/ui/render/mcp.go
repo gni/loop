@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"loop/pkg/config"
-	"loop/pkg/terminal"
 	transporthttp "loop/pkg/transport/http"
 	"loop/pkg/ui/style"
 )
@@ -27,11 +26,7 @@ func RenderMCPStartupErrors(w io.Writer, startErrors map[string]error, theme sty
 		return
 	}
 	sort.Strings(names)
-	width, _ := terminal.GetDimensions()
-	if width <= 0 {
-		width = 80
-	}
-	width = max(1, width-2)
+	width := max(1, renderWidth(w)-2)
 	title := style.NewStyle().Foreground(theme.Error).Bold(true)
 	text := style.NewStyle().Foreground(theme.Text)
 	muted := style.NewStyle().Foreground(theme.TextMuted)
@@ -51,10 +46,7 @@ func RenderMCPStartupErrors(w io.Writer, startErrors map[string]error, theme sty
 }
 
 func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
-	termW, _ := terminal.GetDimensions()
-	if termW <= 0 {
-		termW = 80
-	}
+	termW := renderWidth(w)
 	borderStyle := style.NewStyle().
 		Border(style.RoundedBorder()).
 		BorderForeground(theme.Border).
@@ -84,16 +76,16 @@ func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
 			if len(srv.Headers) > 0 {
 				headersDisplay = fmt.Sprintf("%d configured (hidden)", len(srv.Headers))
 			}
-			displayName := style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(mcpDisplayText(name))
+			displayName := padRightCells(style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(mcpDisplayText(name)), 12)
 
 			if srv.Command != "" {
-				sb.WriteString(fmt.Sprintf("  %-12s : stdio: %s | Headers: %s\n",
+				sb.WriteString(fmt.Sprintf("  %s : stdio: %s | Headers: %s\n",
 					displayName,
 					fmt.Sprintf("%s (%d arguments, %d environment values)", mcpDisplayText(srv.Command), len(srv.Args), len(srv.Env)),
 					headersDisplay,
 				))
 			} else {
-				sb.WriteString(fmt.Sprintf("  %-12s : URL: %s | Headers: %s\n",
+				sb.WriteString(fmt.Sprintf("  %s : URL: %s | Headers: %s\n",
 					displayName,
 					mcpDisplayText(transporthttp.RedactURL(srv.URL)),
 					headersDisplay,

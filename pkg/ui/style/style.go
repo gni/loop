@@ -3,7 +3,10 @@ package style
 import (
 	"fmt"
 	"image/color"
+	"math"
+	"os"
 	"strings"
+	"sync"
 )
 
 const (
@@ -17,7 +20,121 @@ func RoundedBorder() int {
 
 const (
 	Center = iota
+	Top
+	Bottom
 )
+
+type colorProfile uint8
+
+const (
+	profileTrueColor colorProfile = iota
+	profile256
+	profileANSI16
+	profileNone
+)
+
+var (
+	colorProfileOnce   sync.Once
+	cachedColorProfile colorProfile
+)
+
+func detectColorProfile() colorProfile {
+	colorProfileOnce.Do(func() {
+		if _, ok := os.LookupEnv("NO_COLOR"); ok {
+			cachedColorProfile = profileNone
+			return
+		}
+		termEnv := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
+		if termEnv == "dumb" {
+			cachedColorProfile = profileNone
+			return
+		}
+		ct := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+		if ct == "truecolor" || ct == "24bit" {
+			cachedColorProfile = profileTrueColor
+			return
+		}
+		if strings.Contains(termEnv, "256color") || strings.Contains(termEnv, "kitty") || strings.Contains(termEnv, "ghostty") || strings.Contains(termEnv, "wezterm") || strings.Contains(termEnv, "alacritty") || strings.Contains(termEnv, "xterm") {
+			// Modern terminal emulators generally accept TrueColor even without COLORTERM.
+			if ct == "" && strings.HasSuffix(termEnv, "256color") && os.Getenv("WT_SESSION") == "" && os.Getenv("TERM_PROGRAM") == "" && os.Getenv("KITTY_WINDOW_ID") == "" {
+				cachedColorProfile = profile256
+				return
+			}
+			cachedColorProfile = profileTrueColor
+			return
+		}
+		if termEnv == "vt100" || termEnv == "ansi" || termEnv == "linux" {
+			cachedColorProfile = profileANSI16
+			return
+		}
+		cachedColorProfile = profileTrueColor
+	})
+	return cachedColorProfile
+}
+
+func rgbToANSI256(r, g, b uint8) int {
+	if r == g && g == b {
+		if r < 8 {
+			return 16
+		}
+		if r > 248 {
+			return 231
+		}
+		return int(((uint16(r)-8)*24)/247) + 232
+	}
+	ri := int(r) * 5 / 255
+	gi := int(g) * 5 / 255
+	bi := int(b) * 5 / 255
+	return 16 + 36*ri + 6*gi + bi
+}
+
+func rgbToANSI16(r, g, b uint8, isBG bool) int {
+	bright := r > 170 || g > 170 || b > 170
+	idx := 0
+	if r >= 128 {
+		idx |= 1
+	}
+	if g >= 128 {
+		idx |= 2
+	}
+	if b >= 128 {
+		idx |= 4
+	}
+	if isBG {
+		if bright {
+			return 100 + idx
+		}
+		return 40 + idx
+	}
+	if bright {
+		return 90 + idx
+	}
+	return 30 + idx
+}
+
+func formatColorEscape(c *colorVal, isBG bool) string {
+	if c == nil {
+		return ""
+	}
+	switch detectColorProfile() {
+	case profileNone:
+		return ""
+	case profileANSI16:
+		return fmt.Sprintf("\x1b[%dm", rgbToANSI16(c.R, c.G, c.B, isBG))
+	case profile256:
+		code := 38
+		if isBG {
+			code = 48
+		}
+		return fmt.Sprintf("\x1b[%d;5;%dm", code, rgbToANSI256(c.R, c.G, c.B))
+	default:
+		code := 38
+		if isBG {
+			code = 48
+		}
+		return fmt.Sprintf("\x1b[%d;2;%d;%d;%dm", code, c.R, c.G, c.B)
+	}
+}
 
 type Style struct {
 	fg            *colorVal
@@ -48,25 +165,44 @@ func ActivityDivider(theme UITheme) string {
 }
 
 func ActivitySpinnerFrame(theme UITheme, frameIndex int) string {
-	type prismStep struct {
-		glyph string
-		color color.Color
-		bold  bool
+	frames := [...]string{
+		"🕛\uFE0E",
+		"🕐\uFE0E",
+		"🕑\uFE0E",
+		"🕒\uFE0E",
+		"🕓\uFE0E",
+		"🕔\uFE0E",
+		"🕕\uFE0E",
+		"🕖\uFE0E",
+		"🕗\uFE0E",
+		"🕘\uFE0E",
+		"🕙\uFE0E",
+		"🕚\uFE0E",
 	}
-	steps := []prismStep{
-		{glyph: "◇", color: theme.Border, bold: false},
-		{glyph: "◈", color: theme.Secondary, bold: false},
-		{glyph: "◆", color: theme.Primary, bold: true},
-		{glyph: "⟡", color: theme.Highlight, bold: true},
-		{glyph: "◆", color: theme.Primary, bold: true},
-		{glyph: "◈", color: theme.Secondary, bold: false},
+	if frameIndex < 0 {
+		frameIndex = 0
 	}
-	step := steps[frameIndex%len(steps)]
-	s := NewStyle().Foreground(step.color)
-	if step.bold {
-		s = s.Bold(true)
+
+	// Calm human breathing / resting pulse gradient (28 ticks * 150ms = 4.2s full inhale/exhale cycle)
+	// smoothly interpolating RGB from muted grey (TextMuted) to soft white (Text) without bold snapping.
+	const breathSteps = 28
+	phase := (2.0 * math.Pi * float64(frameIndex%breathSteps)) / float64(breathSteps)
+	t := (1.0 - math.Cos(phase)) * 0.5
+
+	low := toColorVal(theme.TextMuted)
+	if low == nil {
+		low = &colorVal{R: 102, G: 102, B: 102}
 	}
-	return s.Render(step.glyph)
+	high := toColorVal(theme.Text)
+	if high == nil {
+		high = &colorVal{R: 224, G: 224, B: 224}
+	}
+	c := colorVal{
+		R: uint8(float64(low.R) + t*(float64(high.R)-float64(low.R)) + 0.5),
+		G: uint8(float64(low.G) + t*(float64(high.G)-float64(low.G)) + 0.5),
+		B: uint8(float64(low.B) + t*(float64(high.B)-float64(low.B)) + 0.5),
+	}
+	return NewStyle().Foreground(c).Render(frames[frameIndex%len(frames)])
 }
 
 func (s Style) MaxWidth(v int) Style {
@@ -100,6 +236,11 @@ func parseBoxSpacing(args []int) (top, right, bottom, left int) {
 
 func (s Style) Foreground(c color.Color) Style {
 	s.fg = toColorVal(c)
+	return s
+}
+
+func (s Style) Background(c color.Color) Style {
+	s.bg = toColorVal(c)
 	return s
 }
 
@@ -137,11 +278,11 @@ func (s Style) GetSequence() (string, string) {
 	if s.strike {
 		ansiStart.WriteString("\x1b[9m")
 	}
-	if s.fg != nil {
-		fmt.Fprintf(&ansiStart, "\x1b[38;2;%d;%d;%dm", s.fg.R, s.fg.G, s.fg.B)
+	if fg := formatColorEscape(s.fg, false); fg != "" {
+		ansiStart.WriteString(fg)
 	}
-	if s.bg != nil {
-		fmt.Fprintf(&ansiStart, "\x1b[48;2;%d;%d;%dm", s.bg.R, s.bg.G, s.bg.B)
+	if bg := formatColorEscape(s.bg, true); bg != "" {
+		ansiStart.WriteString(bg)
 	}
 	if ansiStart.Len() == 0 {
 		return "", ""
@@ -181,6 +322,18 @@ func (s Style) BorderForeground(c color.Color) Style {
 func (s Style) Render(args ...string) string {
 	str := strings.Join(args, " ")
 
+	// Fast path for plain inline styled text with no box geometry.
+	if s.maxWidth <= 0 && s.borderType == noBorder &&
+		s.paddingLeft == 0 && s.paddingRight == 0 && s.paddingTop == 0 && s.paddingBottom == 0 &&
+		s.marginLeft == 0 && s.marginRight == 0 && s.marginTop == 0 && s.marginBottom == 0 &&
+		!strings.ContainsRune(str, '\n') {
+		ansiStart, ansiEnd := s.GetSequence()
+		if ansiStart == "" {
+			return str
+		}
+		return ansiStart + str + ansiEnd
+	}
+
 	if s.maxWidth > 0 {
 		contentMaxWidth := s.maxWidth
 		if s.borderType != noBorder {
@@ -201,9 +354,12 @@ func (s Style) Render(args ...string) string {
 	lines := strings.Split(str, "\n")
 	ansiStart, ansiEnd := s.GetSequence()
 
+	lineWidths := make([]int, len(lines))
 	maxWidth := 0
-	for _, line := range lines {
-		if w := CellWidth(line); w > maxWidth {
+	for i, line := range lines {
+		w := CellWidth(line)
+		lineWidths[i] = w
+		if w > maxWidth {
 			maxWidth = w
 		}
 	}
@@ -212,19 +368,18 @@ func (s Style) Render(args ...string) string {
 	padL := strings.Repeat(" ", s.paddingLeft)
 	formattedLines := make([]string, len(lines))
 	for i, line := range lines {
-		runeCount := CellWidth(line)
 		padRCount := s.paddingRight
 		if s.bg != nil || s.borderType != noBorder {
-			padRCount += maxWidth - runeCount
+			padRCount += maxWidth - lineWidths[i]
 		}
 		formattedLines[i] = padL + line + strings.Repeat(" ", padRCount)
 	}
 
 	var borderedLines []string
 	if s.borderType != noBorder {
-		var borderStart, borderEnd string
-		if s.borderColor != nil {
-			borderStart = fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.borderColor.R, s.borderColor.G, s.borderColor.B)
+		borderStart := formatColorEscape(s.borderColor, false)
+		borderEnd := ""
+		if borderStart != "" {
 			borderEnd = "\x1b[0m"
 		}
 
@@ -243,7 +398,12 @@ func (s Style) Render(args ...string) string {
 			borderedLines = append(borderedLines, padLine)
 		}
 		for _, line := range formattedLines {
-			borderedLines = append(borderedLines, vBar+ansiStart+line+ansiEnd+vBar)
+			// Guard against inner ANSI escapes bleeding into the right border glyph.
+			lineEnd := ansiEnd
+			if lineEnd == "" && strings.ContainsRune(line, '\x1b') {
+				lineEnd = "\x1b[0m"
+			}
+			borderedLines = append(borderedLines, vBar+ansiStart+line+lineEnd+vBar)
 		}
 		for i := 0; i < s.paddingBottom; i++ {
 			borderedLines = append(borderedLines, padLine)
@@ -272,7 +432,7 @@ func (s Style) Render(args ...string) string {
 	return strings.Join(marginLines, "\n")
 }
 
-func JoinHorizontal(_ int, strs ...string) string {
+func JoinHorizontal(align int, strs ...string) string {
 	if len(strs) == 0 {
 		return ""
 	}
@@ -299,13 +459,27 @@ func JoinHorizontal(_ int, strs ...string) string {
 		widths[idx] = maxW
 	}
 
+	offsets := make([]int, len(strs))
+	for idx, lines := range splitStrs {
+		diff := maxLines - len(lines)
+		switch align {
+		case Bottom:
+			offsets[idx] = diff
+		case Center:
+			offsets[idx] = diff / 2
+		default:
+			offsets[idx] = 0
+		}
+	}
+
 	joinedLines := make([]string, maxLines)
 	for i := 0; i < maxLines; i++ {
 		var lineBuilder strings.Builder
 		for idx, lines := range splitStrs {
 			var lineVal string
-			if i < len(lines) {
-				lineVal = lines[i]
+			srcRow := i - offsets[idx]
+			if srcRow >= 0 && srcRow < len(lines) {
+				lineVal = lines[srcRow]
 			}
 			visibleW := CellWidth(lineVal)
 			lineBuilder.WriteString(lineVal)

@@ -3,14 +3,13 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 	"sort"
 	"strings"
 )
 
 func renderStructuredSummary(w io.Writer, value any, theme style.UITheme) {
-	width, _ := terminal.GetDimensions()
+	width := renderWidth(w)
 	describe := func(value any) string {
 		switch v := value.(type) {
 		case string:

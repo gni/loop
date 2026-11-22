@@ -41,7 +41,7 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
 		return
 	}
-	fmt.Fprintln(w, FormatToolTitle(symbol, toolName, pathVal, theme))
+	fmt.Fprintln(w, formatToolTitleForWidth(symbol, toolName, pathVal, theme, renderWidth(w)))
 }
 
 func isCodeContentTool(toolName string) bool {
@@ -81,7 +81,7 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 
 	lang = ResolveSyntaxLanguage(lang, body)
 	chromaStyle := theme.ChromaStyle
-	if chromaStyle == "" || chromaStyle == "bw" {
+	if chromaStyle == "" {
 		chromaStyle = "friendly"
 	}
 	var codeBuf bytes.Buffer

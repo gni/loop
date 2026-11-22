@@ -26,12 +26,15 @@ const (
 	livePrefixBullet
 	livePrefixNumbered
 	livePrefixTable
+	livePrefixRule
 )
 
 type livePrefixDecision struct {
 	kind         livePrefixKind
 	headingLevel int
+	fenceLen     int
 	marker       string
+	remainder    string
 }
 
 // LiveMarkdownRenderer incrementally styles streamed markdown text.
@@ -44,6 +47,7 @@ type LiveMarkdownRenderer struct {
 
 	inFenceHeader bool
 	fenceHeader   strings.Builder
+	fenceLen      int
 	inCodeBlock   bool
 	codeLanguage  string
 	codeLine      strings.Builder
@@ -113,8 +117,26 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 		case livePrefixFence:
 			r.flushPlain(plain)
 			r.inline.EndLine()
+			rawPrefix := r.prefix.String()
+			r.prefix.Reset()
+			r.prefix.WriteString(rawPrefix[:len(rawPrefix)-len(decision.remainder)])
+			r.fenceLen = decision.fenceLen
 			r.inFenceHeader = true
 			r.atLineStart = false
+			for _, rem := range decision.remainder {
+				if r.inFenceHeader {
+					r.writeFenceHeaderRune(rem, plain)
+				} else {
+					r.writeInlineRune(rem, plain)
+				}
+			}
+			return
+		case livePrefixRule:
+			r.prefix.Reset()
+			r.atLineStart = true
+			r.flushPlain(plain)
+			r.inline.EndLine()
+			r.emitVisible(" \n")
 			return
 		case livePrefixHeading:
 			r.prefix.Reset()
@@ -127,6 +149,9 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 			r.atLineStart = false
 			r.emitStyledMarker("┃ ", r.theme.Border, plain)
 			r.inline.SetBlock(MarkdownQuote, 0)
+			for _, rem := range decision.remainder {
+				r.writeInlineRune(rem, plain)
+			}
 			return
 		case livePrefixBullet:
 			r.prefix.Reset()
@@ -180,6 +205,20 @@ func (r *LiveMarkdownRenderer) writeFenceHeaderRune(current rune, plain *strings
 		return
 	}
 
+	if current == '`' {
+		// CommonMark: backtick fence info strings cannot contain backticks.
+		raw := r.prefix.String() + r.fenceHeader.String() + string(current)
+		r.prefix.Reset()
+		r.fenceHeader.Reset()
+		r.inFenceHeader = false
+		r.fenceLen = 0
+		r.atLineStart = false
+		for _, ch := range raw {
+			r.writeInlineRune(ch, plain)
+		}
+		return
+	}
+
 	r.fenceHeader.WriteRune(current)
 	if r.fenceHeader.Len() <= maxLiveFenceHeaderBytes {
 		return
@@ -191,6 +230,7 @@ func (r *LiveMarkdownRenderer) writeFenceHeaderRune(current rune, plain *strings
 	r.prefix.Reset()
 	r.fenceHeader.Reset()
 	r.inFenceHeader = false
+	r.fenceLen = 0
 	r.atLineStart = false
 }
 
@@ -207,8 +247,9 @@ func (r *LiveMarkdownRenderer) writeCodeRune(current rune, plain *strings.Builde
 	if current == '\n' {
 		line := r.codeLine.String()
 		r.codeLine.Reset()
-		if isLiveCodeFence(line) {
+		if isClosingCodeFence(line, r.fenceLen) {
 			r.inCodeBlock = false
+			r.fenceLen = 0
 			r.codeLanguage = ""
 			r.atLineStart = true
 			r.inline.Reset()
@@ -288,7 +329,7 @@ func (r *LiveMarkdownRenderer) emitVisible(content string) {
 // Flush ensures all buffered content has been written out.
 func (r *LiveMarkdownRenderer) Flush() {
 	var plain strings.Builder
-	for _, ch := range strings.ToValidUTF8(r.utf8Pending, "�") {
+	for _, ch := range strings.ToValidUTF8(r.utf8Pending, "") {
 		r.writeRune(ch, &plain)
 	}
 	r.utf8Pending = ""
@@ -301,20 +342,33 @@ func (r *LiveMarkdownRenderer) Flush() {
 		r.prefix.Reset()
 		r.fenceHeader.Reset()
 		r.inFenceHeader = false
+		r.fenceLen = 0
 	}
 
 	if r.prefix.Len() > 0 {
 		prefix := r.prefix.String()
 		r.prefix.Reset()
 		r.atLineStart = false
-		for _, prefixRune := range prefix {
-			r.writeInlineRune(prefixRune, &plain)
+		trimmed := strings.TrimSpace(prefix)
+		if _, _, isFence := parseOpeningCodeFence(prefix); isFence {
+			// A bare trailing code fence opens an empty code block, matching batch replay.
+		} else if trimmed == "----" {
+			r.flushPlain(&plain)
+			r.inline.EndLine()
+			r.emitVisible(" ")
+		} else if trimmed == ">" {
+			r.emitStyledMarker("┃ ", r.theme.Border, &plain)
+			r.inline.SetBlock(MarkdownQuote, 0)
+		} else {
+			for _, prefixRune := range prefix {
+				r.writeInlineRune(prefixRune, &plain)
+			}
 		}
 	}
 
 	if r.inCodeBlock && !r.codeOverflow && r.codeLine.Len() > 0 {
 		line := r.codeLine.String()
-		if !isLiveCodeFence(line) {
+		if !isClosingCodeFence(line, r.fenceLen) {
 			r.flushPlain(&plain)
 			r.writeHighlightedCodeLine(line, false)
 		}
@@ -323,6 +377,7 @@ func (r *LiveMarkdownRenderer) Flush() {
 	r.codeLine.Reset()
 	r.codeOverflow = false
 	r.inCodeBlock = false
+	r.fenceLen = 0
 	r.codeLanguage = ""
 	r.finishInlineLine(&plain)
 	r.flushPlain(&plain)
@@ -347,6 +402,7 @@ func (r *LiveMarkdownRenderer) ResetAtLineStart() {
 	r.fenceHeader.Reset()
 	r.codeLine.Reset()
 	r.inFenceHeader = false
+	r.fenceLen = 0
 	r.inCodeBlock = false
 	r.codeOverflow = false
 	r.codeLanguage = ""
@@ -358,10 +414,6 @@ func (r *LiveMarkdownRenderer) ResetAtLineStart() {
 // EndedWithNewline returns whether the last written character was a newline.
 func (r *LiveMarkdownRenderer) EndedWithNewline() bool {
 	return r.endedWithNewline
-}
-
-func isLiveCodeFence(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), "```")
 }
 
 func classifyLivePrefix(prefix string) livePrefixDecision {
@@ -377,6 +429,65 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 	if body == "" {
 		return livePrefixDecision{kind: livePrefixPending}
 	}
+
+	// Handle prefixes that can terminate on newline or trailing whitespace before the generic CR/LF reject.
+	switch body[0] {
+	case '`':
+		ticks := 0
+		for ticks < len(body) && body[ticks] == '`' {
+			ticks++
+		}
+		if ticks == len(body) {
+			if ticks < 64 {
+				return livePrefixDecision{kind: livePrefixPending}
+			}
+			return livePrefixDecision{kind: livePrefixPlain}
+		}
+		if ticks >= 3 {
+			return livePrefixDecision{
+				kind:      livePrefixFence,
+				fenceLen:  ticks,
+				remainder: body[ticks:],
+			}
+		}
+		return livePrefixDecision{kind: livePrefixPlain}
+
+	case '>':
+		if body == ">" {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if body == "> " {
+			return livePrefixDecision{kind: livePrefixQuote}
+		}
+		// Align with replay markdown: both ">foo" (without space) and ">\n" are blockquotes.
+		return livePrefixDecision{kind: livePrefixQuote, remainder: body[1:]}
+
+	case '-':
+		if len(body) == 1 {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if len(body) == 2 && body[1] == ' ' {
+			return livePrefixDecision{kind: livePrefixBullet}
+		}
+		// Match "----" horizontal rule consistently with replay markdown.
+		if body == "--" || body == "---" || body == "----" {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if strings.HasPrefix(body, "----") && len(body) < 64 {
+			tail := body[4:]
+			if strings.HasSuffix(tail, "\n") {
+				if strings.TrimSpace(tail) == "" {
+					return livePrefixDecision{kind: livePrefixRule}
+				}
+				return livePrefixDecision{kind: livePrefixPlain}
+			}
+			if strings.Trim(tail, " \t\r") == "" {
+				return livePrefixDecision{kind: livePrefixPending}
+			}
+		}
+		return livePrefixDecision{kind: livePrefixPlain}
+	}
+
 	if strings.ContainsAny(body, "\r\n") {
 		return livePrefixDecision{kind: livePrefixPlain}
 	}
@@ -391,19 +502,6 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 	switch body[0] {
 	case '|':
 		return livePrefixDecision{kind: livePrefixTable}
-	case '`':
-		ticks := 0
-		for ticks < len(body) && body[ticks] == '`' {
-			ticks++
-		}
-		if ticks == len(body) {
-			if ticks < 3 {
-				return livePrefixDecision{kind: livePrefixPending}
-			}
-			if ticks == 3 {
-				return livePrefixDecision{kind: livePrefixFence}
-			}
-		}
 	case '#':
 		hashes := 0
 		for hashes < len(body) && body[hashes] == '#' {
@@ -415,14 +513,7 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 		if hashes >= 1 && hashes <= 6 && len(body) == hashes+1 && body[hashes] == ' ' {
 			return livePrefixDecision{kind: livePrefixHeading, headingLevel: hashes}
 		}
-	case '>':
-		if body == ">" {
-			return livePrefixDecision{kind: livePrefixPending}
-		}
-		if body == "> " {
-			return livePrefixDecision{kind: livePrefixQuote}
-		}
-	case '-', '+', '*':
+	case '+', '*':
 		if len(body) == 1 {
 			return livePrefixDecision{kind: livePrefixPending}
 		}

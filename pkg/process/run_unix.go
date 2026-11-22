@@ -14,7 +14,13 @@ func SetupProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	cmd.SysProcAttr.Setpgid, cmd.SysProcAttr.Pgid = true, 0
+	// Detach child processes into a new session without a controlling terminal (/dev/tty)
+	// while making the child the leader of its own process group (pgid == pid).
+	// Interactive password/TTY readers (rpassword, getpass, sudo, ssh, gpg) fail fast
+	// with ENXIO instead of blocking on /dev/tty or freezing on SIGTTIN/SIGTTOU.
+	cmd.SysProcAttr.Setsid = true
+	cmd.SysProcAttr.Setpgid = false
+	cmd.SysProcAttr.Pgid = 0
 	if cmd.Cancel != nil {
 		cmd.Cancel = func() error {
 			if cmd.Process == nil {

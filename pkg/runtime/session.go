@@ -202,7 +202,12 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 	}
 	s := &Session{Store: store, ID: id, Workspace: workspace, options: options, startupTools: startupTools, idle: make(chan struct{}), hooks: loaded.Hooks, loaded: loaded}
 	close(s.idle)
+	// Defer plugin discovery until after lifetime wiring so plugins load once
+	// under ctx cancellation and propagate load errors cleanly.
+	localPlugins := cfg.LocalPlugins
+	cfg.LocalPlugins = false
 	s.Agent = agent.NewAgentAt(cfg, options.ConfigPath, client, workspace)
+	cfg.LocalPlugins = localPlugins
 	s.Agent.ConfigControl = s
 	stopConstruction := context.AfterFunc(ctx, s.Agent.CancelLifetime)
 	defer stopConstruction()

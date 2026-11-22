@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
@@ -105,7 +106,8 @@ func RenderStats(w io.Writer, msgs []db.Message, defaultModel string, tr *agent.
 
 	fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Cost Breakdown By Model"))
 	for _, e := range GetUsageCostBreakdown(msgs, defaultModel) {
-		fmt.Fprintf(w, "    %-24s cost $%.4f  tokens %d\n", e.Key, e.Cost, e.Tokens)
+		key := style.TruncateCells(SanitizeTerminalText(e.Key), 24)
+		fmt.Fprintf(w, "    %s cost $%.4f  tokens %d\n", padRightCells(key, 24), e.Cost, e.Tokens)
 	}
 
 	if tr != nil {
@@ -118,14 +120,29 @@ func RenderStats(w io.Writer, msgs []db.Message, defaultModel string, tr *agent.
 	printUsageFooter(w, theme)
 }
 
+func usageBoxInnerWidth(w io.Writer) int {
+	return max(1, min(renderWidth(w)-3, 99))
+}
+
 func printUsageHeader(w io.Writer, theme style.UITheme) {
 	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	fmt.Fprintln(w, headerStyle.Render("╭───────────────────────────────────────────────────────────────────────────────────────────────────╮"))
-	fmt.Fprintln(w, headerStyle.Render("│  SWARM TOKEN UTILIZATION & COST STATS                                                             │"))
-	fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
+	inner := usageBoxInnerWidth(w)
+	hline := strings.Repeat("─", inner)
+	title := style.TruncateCells("SWARM TOKEN UTILIZATION & COST STATS", max(1, inner-4))
+	titleLine := "│  " + title + strings.Repeat(" ", max(0, inner-2-style.CellWidth(title))) + "│"
+	fmt.Fprintln(w, headerStyle.Render("╭"+hline+"╮"))
+	fmt.Fprintln(w, headerStyle.Render(titleLine))
+	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
+}
+
+func printUsageDivider(w io.Writer, theme style.UITheme) {
+	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	inner := usageBoxInnerWidth(w)
+	fmt.Fprintln(w, headerStyle.Render("├"+strings.Repeat("─", inner)+"┤"))
 }
 
 func printUsageFooter(w io.Writer, theme style.UITheme) {
 	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	fmt.Fprintln(w, headerStyle.Render("╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"))
+	inner := usageBoxInnerWidth(w)
+	fmt.Fprintln(w, headerStyle.Render("╰"+strings.Repeat("─", inner)+"╯"))
 }

@@ -112,7 +112,9 @@ type TurnEngine struct {
 func NewTurnEngine(a *Agent, policy EnginePolicy) *TurnEngine {
 	cfg := policy.Config
 	if cfg == nil && a != nil {
+		a.LLMProviderMu.RLock()
 		cfg = a.Config
+		a.LLMProviderMu.RUnlock()
 	}
 	limit := a.GetLimits().ConsecutiveLimit
 	thresholds := []int{3, 5}

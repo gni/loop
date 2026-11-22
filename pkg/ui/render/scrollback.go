@@ -5,38 +5,138 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
 type scrollCell struct {
-	r          rune
-	extra, sgr string
-	span       int
+	r     rune
+	extra string
+	sgr   style.SGRState
+	span  int
 }
 
 type scrollRow struct {
-	cells       []scrollCell
-	text        string
-	dirty, soft bool
-	archive     *scrollArchive
-	offset      int64
-	size        int
+	cells        []scrollCell
+	text         string
+	question     string
+	isPromptRule bool
+	metaChecked  bool
+	dirty, soft  bool
+	archive      *scrollArchive
+	offset       int64
+	size         int
+}
+
+func (r *scrollRow) classifyMeta() {
+	if r.metaChecked && !r.dirty {
+		return
+	}
+	if r.dirty || r.text == "" {
+		return
+	}
+	plain := strings.TrimRight(style.StripAnsi(r.text), " \t\r\n")
+	trimmed := strings.TrimSpace(plain)
+	r.isPromptRule = !r.soft && strings.HasPrefix(trimmed, "───") && strings.Count(trimmed, "─") >= 3
+	if strings.HasPrefix(plain, "> ") {
+		q := strings.TrimSpace(strings.TrimPrefix(plain, "> "))
+		if q != "" {
+			r.question = q
+		}
+	} else {
+		r.question = ""
+	}
+	r.metaChecked = true
+}
+
+// QuestionAnchor identifies the scrollback rows and single-line text of a user question.
+type QuestionAnchor struct {
+	RuleRow   int // Row of the "─── prompt ───" separator (or PromptRow if none)
+	PromptRow int // Row of the "> <question>" line
+	Text      string
+}
+
+// FirstContentRow returns the index of the first non-blank row in the scrollback
+// without performing disk I/O on archived rows.
+func (b *Scrollback) FirstContentRow() int {
+	if b == nil {
+		return 0
+	}
+	limit := min(b.base, len(b.rows))
+	for i := 0; i < limit; i++ {
+		r := b.rows[i]
+		if r.size > 0 {
+			return i
+		}
+		if r.dirty {
+			_ = r.String()
+		}
+		if r.text != "" && strings.TrimSpace(style.StripAnsi(r.text)) != "" {
+			return i
+		}
+	}
+	return 0
+}
+
+// QuestionAnchors returns the row index and prompt text of all loaded user questions
+// in chronological order without performing disk I/O on archived rows.
+func (b *Scrollback) QuestionAnchors() []QuestionAnchor {
+	if b == nil {
+		return nil
+	}
+	var out []QuestionAnchor
+	for i, r := range b.rows {
+		if r.dirty {
+			_ = r.String()
+		} else if !r.metaChecked && r.text != "" {
+			r.classifyMeta()
+		}
+		if r.question == "" {
+			continue
+		}
+		if i > 0 && b.rows[i-1].soft {
+			continue
+		}
+		isQuestion := strings.HasPrefix(r.question, "!")
+		if !isQuestion && i > 0 {
+			prev := b.rows[i-1]
+			if prev.dirty {
+				_ = prev.String()
+			} else if !prev.metaChecked && prev.text != "" {
+				prev.classifyMeta()
+			}
+			isQuestion = prev.isPromptRule
+		}
+		if isQuestion {
+			ruleRow := i
+			if i > 0 && b.rows[i-1].isPromptRule {
+				ruleRow = i - 1
+			}
+			out = append(out, QuestionAnchor{RuleRow: ruleRow, PromptRow: i, Text: r.question})
+		}
+	}
+	return out
 }
 
 func (r *scrollRow) String() string {
 	if !r.dirty {
 		r.load()
+		r.classifyMeta()
 		return r.text
 	}
 	var out strings.Builder
-	active := ""
+	var active style.SGRState
 	for _, c := range r.cells {
 		if c.span < 0 {
 			continue
 		}
 		if c.sgr != active {
-			out.WriteString("\x1b[0m")
-			out.WriteString(c.sgr)
+			if !active.IsZero() {
+				out.WriteString(terminal.ResetAttributes)
+			}
+			if !c.sgr.IsZero() {
+				out.WriteString(c.sgr.Sequence())
+			}
 			active = c.sgr
 		}
 		if c.r == 0 {
@@ -46,9 +146,13 @@ func (r *scrollRow) String() string {
 		}
 		out.WriteString(c.extra)
 	}
-	out.WriteString("\x1b[0m")
+	if !active.IsZero() {
+		out.WriteString(terminal.ResetAttributes)
+	}
 	r.text, r.dirty = out.String(), false
 	r.size = 0
+	r.metaChecked = false
+	r.classifyMeta()
 	return r.text
 }
 
@@ -68,7 +172,7 @@ type Scrollback struct {
 	rows           []*scrollRow
 	base, x, y     int
 	savedX, savedY int
-	sgr, savedSGR  string
+	sgr, savedSGR  style.SGRState
 	wrap           bool
 	pending        []byte
 	archive        *scrollArchive
@@ -117,21 +221,29 @@ func (b *Scrollback) View(top int) []string {
 }
 
 func (b *Scrollback) up() {
+	if len(b.rows) == 0 {
+		b.rows = append(b.rows, &scrollRow{})
+		b.base = 0
+		return
+	}
 	if b.base == 0 && strings.TrimSpace(style.StripAnsi(b.rows[0].String())) == "" {
 		b.dropped++
 		copy(b.rows, b.rows[1:])
 		b.rows[len(b.rows)-1] = &scrollRow{}
 		return
 	}
-	b.rows[b.base].freeze()
+	if b.base < len(b.rows) {
+		b.rows[b.base].freeze()
+	}
 	b.base++
 	b.rows = append(b.rows, &scrollRow{})
 	b.evictRow(len(b.rows) - b.PageSize() - 1)
 }
 
 func (b *Scrollback) lf() {
-	if b.y == b.Height-1 {
+	if b.y >= b.Height-1 {
 		b.up()
+		b.y = b.Height - 1
 	} else {
 		b.y++
 	}
@@ -142,7 +254,11 @@ func (b *Scrollback) row() *scrollRow {
 	if b.y < 0 || b.y >= b.Height {
 		return nil
 	}
-	r := b.rows[b.base+b.y]
+	idx := b.base + b.y
+	if idx < 0 || idx >= len(b.rows) {
+		return nil
+	}
+	r := b.rows[idx]
 	if r.cells == nil {
 		r.load()
 	}
@@ -151,6 +267,8 @@ func (b *Scrollback) row() *scrollRow {
 		line := NewScrollback(b.Width, 1)
 		line.Write([]byte(r.text))
 		r.cells = line.rows[line.base].cells
+		r.size = 0
+		r.archive = nil
 	}
 	return r
 }
@@ -162,6 +280,9 @@ func (b *Scrollback) put(r rune) {
 	w := promptRuneWidth(r)
 	if w == 0 {
 		line := b.row()
+		if line == nil {
+			return
+		}
 		col := min(b.x-1, len(line.cells)-1)
 		if b.wrap {
 			col = min(b.x, len(line.cells)-1)
@@ -175,26 +296,39 @@ func (b *Scrollback) put(r rune) {
 		}
 		return
 	}
-	if b.wrap || b.x+w > b.Width {
-		b.row().soft = true
+	if b.wrap || (b.x > 0 && b.x+w > b.Width) {
+		if cur := b.row(); cur != nil {
+			cur.soft = true
+		}
 		b.lf()
 	}
 	line := b.row()
-	for len(line.cells) < b.x+w {
+	if line == nil {
+		return
+	}
+	cellSpan := min(w, b.Width)
+	for len(line.cells) < b.x+cellSpan {
 		line.cells = append(line.cells, scrollCell{})
 	}
+	// If writing over the continuation cell of an existing wide char, clear its leading half.
 	if line.cells[b.x].span < 0 && b.x > 0 {
 		line.cells[b.x-1] = scrollCell{}
 	}
+	// If overwriting the leading half of an existing wide char, clear its continuation cell.
 	if line.cells[b.x].span == 2 && b.x+1 < len(line.cells) {
 		line.cells[b.x+1] = scrollCell{}
 	}
-	line.cells[b.x] = scrollCell{r: r, sgr: b.sgr, span: w}
-	if w == 2 && b.x+1 < b.Width {
+	// If placing a 2-cell glyph at [x, x+1] and x+1 is the leading half of a wide char at [x+1, x+2],
+	// clear the orphaned continuation cell at x+2.
+	if cellSpan == 2 && b.x+1 < len(line.cells) && line.cells[b.x+1].span == 2 && b.x+2 < len(line.cells) {
+		line.cells[b.x+2] = scrollCell{}
+	}
+	line.cells[b.x] = scrollCell{r: r, sgr: b.sgr, span: cellSpan}
+	if cellSpan == 2 && b.x+1 < len(line.cells) {
 		line.cells[b.x+1] = scrollCell{span: -1}
 	}
 	line.dirty = true
-	b.x += w
+	b.x += cellSpan
 	if b.x >= b.Width {
 		b.x = b.Width - 1
 		b.wrap = true
@@ -227,11 +361,7 @@ func (b *Scrollback) csi(sequence string) {
 	final := sequence[len(sequence)-1]
 	body := sequence[2 : len(sequence)-1]
 	if final == 'm' {
-		if body == "" || body == "0" {
-			b.sgr = ""
-		} else {
-			b.sgr += sequence
-		}
+		b.sgr.Apply(sequence)
 		return
 	}
 	if strings.HasPrefix(body, "?") || strings.HasPrefix(body, ">") || strings.HasPrefix(body, "<") {
@@ -242,40 +372,48 @@ func (b *Scrollback) csi(sequence string) {
 		n, _ := strconv.Atoi(s)
 		values = append(values, n)
 	}
-	n := max(1, values[0])
+	first := 0
+	if len(values) > 0 {
+		first = values[0]
+	}
+	n := max(1, first)
 	switch final {
 	case 'H', 'f':
-		b.y = max(0, values[0]-1)
-		b.x = 0
+		row := max(0, first-1)
+		col := 0
 		if len(values) > 1 {
-			b.x = max(0, values[1]-1)
+			col = max(0, values[1]-1)
 		}
+		b.y = min(b.Height-1, row)
+		b.x = min(b.Width-1, col)
 	case 'A':
 		b.y = max(0, b.y-n)
 	case 'B', 'e':
-		b.y += n
+		b.y = min(b.Height-1, b.y+n)
 	case 'C', 'a':
 		b.x = min(b.Width-1, b.x+n)
 	case 'D':
 		b.x = max(0, b.x-n)
 	case 'E':
-		b.y += n
+		b.y = min(b.Height-1, b.y+n)
 		b.x = 0
 	case 'F':
 		b.y = max(0, b.y-n)
 		b.x = 0
 	case 'G', '`':
-		b.x = max(0, n-1)
+		b.x = min(b.Width-1, max(0, n-1))
 	case 'd':
-		b.y = max(0, n-1)
+		b.y = min(b.Height-1, max(0, n-1))
 	case 'r':
 		b.x, b.y = 0, 0
 	case 's':
 		b.savedX, b.savedY, b.savedSGR = b.x, b.y, b.sgr
 	case 'u':
-		b.x, b.y, b.sgr = b.savedX, b.savedY, b.savedSGR
+		b.x = min(b.Width-1, max(0, b.savedX))
+		b.y = min(b.Height-1, max(0, b.savedY))
+		b.sgr = b.savedSGR
 	case 'K':
-		switch values[0] {
+		switch first {
 		case 1:
 			b.clear(0, b.x+1)
 		case 2:
@@ -284,29 +422,41 @@ func (b *Scrollback) csi(sequence string) {
 			b.clear(b.x, b.Width)
 		}
 	case 'J':
-		y := b.y
-		for row := 0; row < b.Height; row++ {
-			if values[0] == 2 || (values[0] == 0 && row > y) || (values[0] == 1 && row < y) {
-				b.rows[b.base+row] = &scrollRow{}
+		switch first {
+		case 3:
+			// Erase saved scrollback lines while keeping the active screen intact.
+			if b.base > 0 && b.base <= len(b.rows) {
+				b.releasePage()
+				b.rows = append([]*scrollRow(nil), b.rows[b.base:]...)
+				b.base = 0
 			}
-		}
-		if values[0] == 0 {
-			b.clear(b.x, b.Width)
-		} else if values[0] == 1 {
-			b.clear(0, b.x+1)
+		default:
+			y := b.y
+			for row := 0; row < b.Height && b.base+row < len(b.rows); row++ {
+				if first == 2 || (first == 0 && row > y) || (first == 1 && row < y) {
+					b.rows[b.base+row] = &scrollRow{}
+				}
+			}
+			if first == 0 {
+				b.clear(b.x, b.Width)
+			} else if first == 1 {
+				b.clear(0, b.x+1)
+			}
 		}
 	case 'S':
 		for range min(n, b.Height) {
 			b.up()
 		}
 	case 'T':
-		for range min(n, b.Height) {
+		if b.base < len(b.rows) {
 			screen := b.rows[b.base:]
-			copy(screen[1:], screen[:len(screen)-1])
-			screen[0] = &scrollRow{}
+			for range min(n, len(screen)) {
+				copy(screen[1:], screen[:len(screen)-1])
+				screen[0] = &scrollRow{}
+			}
 		}
 	case 'L', 'M':
-		if b.y >= 0 && b.y < b.Height {
+		if b.y >= 0 && b.y < b.Height && b.base+b.y < len(b.rows) {
 			screen := b.rows[b.base+b.y:]
 			n = min(n, len(screen))
 			if final == 'L' {
@@ -375,14 +525,32 @@ func (b *Scrollback) Write(data []byte) (int, error) {
 			case '7':
 				b.savedX, b.savedY, b.savedSGR = b.x, b.y, b.sgr
 			case '8':
-				b.x, b.y, b.sgr = b.savedX, b.savedY, b.savedSGR
+				b.x = min(b.Width-1, max(0, b.savedX))
+				b.y = min(b.Height-1, max(0, b.savedY))
+				b.sgr = b.savedSGR
 				b.wrap = false
-			case 'D', 'E':
+			case 'D':
+				// VT100 IND: move down one line, scrolling up at the bottom, preserving column.
+				if b.y >= b.Height-1 {
+					b.up()
+					b.y = b.Height - 1
+				} else {
+					b.y++
+				}
+				b.wrap = false
+			case 'E':
+				// VT100 NEL: move to column 0 of the next line.
 				b.lf()
 			case 'M':
+				// VT100 RI: move up one line, scrolling down at the top, preserving column.
 				if b.y > 0 {
 					b.y--
+				} else if b.base < len(b.rows) {
+					screen := b.rows[b.base:]
+					copy(screen[1:], screen[:len(screen)-1])
+					screen[0] = &scrollRow{}
 				}
+				b.wrap = false
 			}
 			i = end
 			continue
@@ -403,7 +571,7 @@ func (b *Scrollback) Write(data []byte) (int, error) {
 			b.x = max(0, b.x-1)
 			b.wrap = false
 		case '\t':
-			end := min(b.Width, ((b.x/8)+1)*8)
+			end := min(b.Width, b.x+style.TabAdvance(b.x, style.DefaultTabWidth))
 			for b.x < end && !b.wrap {
 				b.put(' ')
 			}
@@ -437,8 +605,8 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 				plain := style.StripAnsi(text)
 				rowStart := position
 				if plain != "" {
-					first, _ := utf8.DecodeRuneInString(plain)
-					rowStart.prepare(first, width)
+					firstCluster, firstW, _ := style.NextGrapheme(plain)
+					rowStart.prepareCluster(firstCluster, firstW, width)
 				}
 				// Row anchors refer to their first character. At a wrap boundary
 				// that character starts the next row; the output cursor below
@@ -447,25 +615,29 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 				if i == oldAnchor {
 					cursor := position
 					cells := 0
-					for _, r := range plain {
-						w := promptRuneWidth(r)
+					for j := 0; j < len(plain); {
+						cluster, gw, sz := style.NextGrapheme(plain[j:])
+						w := promptClusterWidth(cluster, gw, cells, width)
 						if cells+w > col {
 							break
 						}
-						count, _ := cursor.prepare(r, width)
-						cursor.advance(r, count)
+						count, _ := cursor.prepareCluster(cluster, gw, width)
+						cursor.advanceCluster(cluster, count)
 						cells += w
+						j += sz
 					}
 					for remaining := col - cells; remaining > 0; remaining-- {
-						count, _ := cursor.prepare(' ', width)
-						cursor.advance(' ', count)
+						count, _ := cursor.prepareCluster(" ", 1, width)
+						cursor.advanceCluster(" ", count)
 					}
 					anchor, col = base+cursor.row, cursor.column
 				}
 				position.advanceText(plain, width)
 				group.WriteString(text)
-				if b.archive != nil {
-					b.archive.evict(line)
+				// Release resident text of already-archived old rows without writing
+				// discarded rows back to disk.
+				if line.size > 0 {
+					line.text = ""
 				}
 				i++
 				if !line.soft || i == len(oldRows) {
@@ -474,7 +646,9 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 			}
 			wrapped := ChatHistoryRows(group.String(), width)
 			for j, text := range wrapped {
-				rows = append(rows, &scrollRow{text: text, soft: j < len(wrapped)-1})
+				nr := &scrollRow{text: text, soft: j < len(wrapped)-1}
+				nr.classifyMeta()
+				rows = append(rows, nr)
 				if b.archive != nil && len(rows) > b.PageSize() {
 					b.archive.evict(rows[len(rows)-b.PageSize()-1])
 				}
@@ -485,7 +659,7 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 			top = mapping[top]
 		}
 		for _, a := range anchors {
-			if *a >= 0 && *a < len(mapping) {
+			if a != nil && *a >= 0 && *a < len(mapping) {
 				*a = mapping[*a]
 			}
 		}
@@ -494,22 +668,29 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 		b.base = max(0, len(rows)-b.Height)
 	}
 	if height < b.Height {
-		for range b.Height - height {
+		// Guard against simultaneous widen + shrink where len(b.rows) may be smaller
+		// than the old Height. Only advance base or trim blank rows while the active
+		// viewport still has more rows than the new height.
+		for len(b.rows) > 0 && len(b.rows)-b.base > height {
 			if b.base == 0 && strings.TrimSpace(style.StripAnsi(b.rows[0].String())) == "" {
 				b.rows = b.rows[1:]
 				anchor = max(0, anchor-1)
 				top = max(0, top-1)
 				for _, a := range anchors {
-					*a = max(0, *a-1)
+					if a != nil {
+						*a = max(0, *a-1)
+					}
 				}
-			} else {
+			} else if b.base < len(b.rows) {
 				b.rows[b.base].freeze()
 				b.base++
+			} else {
+				break
 			}
 		}
 	} else if height > b.Height {
 		delta := height - b.Height
-		at := b.base
+		at := min(b.base, len(b.rows))
 		padding := make([]*scrollRow, delta)
 		for i := range padding {
 			padding[i] = &scrollRow{}
@@ -524,12 +705,13 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 			top += delta
 		}
 		for _, a := range anchors {
-			if *a >= at {
+			if a != nil && *a >= at {
 				*a += delta
 			}
 		}
 	}
 	b.Height = height
+	b.base = min(max(0, b.base), len(b.rows))
 	for len(b.rows) < b.base+b.Height {
 		b.rows = append(b.rows, &scrollRow{})
 	}
@@ -537,7 +719,21 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 		b.rows[i].freeze()
 	}
 	b.trimMemory()
-	return min(height, max(1, anchor-b.base+1)), min(width+1, max(1, col+1)), max(0, top)
+	b.maybeCompactArchive()
+
+	newRow := min(height, max(1, anchor-b.base+1))
+	newCol := min(width+1, max(1, col+1))
+	b.y = newRow - 1
+	if newCol > width {
+		b.x = width - 1
+		b.wrap = true
+	} else {
+		b.x = newCol - 1
+		b.wrap = false
+	}
+	b.savedX = min(width-1, max(0, b.savedX))
+	b.savedY = min(height-1, max(0, b.savedY))
+	return newRow, newCol, max(0, top)
 }
 
 // ReplaceRange is used only by an explicit semantic repaint, such as Ctrl+O.
@@ -567,6 +763,7 @@ func (b *Scrollback) ReplaceRange(start, end int, text string) (delta, padding i
 		b.rows[i].freeze()
 	}
 	b.trimMemory()
+	b.maybeCompactArchive()
 	return delta, padding
 }
 

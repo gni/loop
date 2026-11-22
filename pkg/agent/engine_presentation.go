@@ -28,7 +28,7 @@ func (r *mainRenderer) ToolOutput(w io.Writer, theme style.UITheme, output strin
 		return
 	}
 	if r.a != nil && r.a.UI != nil {
-		collapse := r.a.Config != nil && r.a.Config.CollapseResults
+		collapse := r.a.LiveSettings().CollapseResults
 		var rendered bytes.Buffer
 		r.a.UI.RenderToolOutput(&rendered, output, isError, collapse, theme, toolName, args, bodyStreamed)
 		if rendered.Len() == 0 {

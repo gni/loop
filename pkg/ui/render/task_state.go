@@ -9,7 +9,6 @@ import (
 	"unicode"
 
 	"loop/pkg/domain/task"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -39,7 +38,7 @@ func renderTaskState(w io.Writer, output, arguments string, collapse bool, theme
 	}
 	label, symbol, tint := taskStateAppearance(state.Status, theme)
 	fmt.Fprintln(w, style.NewStyle().Foreground(tint).Bold(true).Render("⎿  Request: "+symbol+" "+label))
-	width, _ := terminal.GetDimensions()
+	width := renderWidth(w)
 	text := func(content, prefix string, tint color.Color) {
 		content = strings.Map(func(r rune) rune {
 			if unicode.IsControl(r) && r != '\n' {
@@ -47,12 +46,13 @@ func renderTaskState(w io.Writer, output, arguments string, collapse bool, theme
 			}
 			return r
 		}, style.StripAnsi(content))
-		for i, row := range ChatHistoryRows(strings.TrimSpace(content), max(1, width-7)) {
+		prefixCells := style.CellWidth(prefix)
+		for i, row := range ChatHistoryRows(strings.TrimSpace(content), max(1, width-4-prefixCells)) {
 			lead := "   "
 			if i == 0 {
 				lead += prefix
 			} else {
-				lead += strings.Repeat(" ", len([]rune(prefix)))
+				lead += strings.Repeat(" ", prefixCells)
 			}
 			fmt.Fprintln(w, lead+style.NewStyle().Foreground(tint).Render(row))
 		}

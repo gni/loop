@@ -91,7 +91,7 @@ func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Mess
 	return allocateContext(messages, limitTokens)
 }
 
-// chatCapabilities never guesses support from the name of the endpoint.
+// chatCapabilities merges explicit configuration capabilities with probed server support.
 func (p *OpenAICompatibleProvider) chatCapabilities() config.ChatCapabilities {
 	if p.Config == nil {
 		return config.ChatCapabilities{}
@@ -99,6 +99,11 @@ func (p *OpenAICompatibleProvider) chatCapabilities() config.ChatCapabilities {
 	caps := p.Config.ChatCapabilities
 	if provider, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
 		caps = caps.Merge(provider.ChatCapabilities)
+	}
+	caps = caps.Merge(p.ProbedChatCapabilities())
+	if p.ThinkingEnabled() {
+		caps.ThinkingControls = true
+		caps.ReasoningEffort = true
 	}
 	return caps
 }
@@ -224,15 +229,20 @@ func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, 
 			reqBody.ReasoningFormat = "auto"
 			reqBody.ChatTemplateKwargs = &ChatTemplateKwargs{
 				EnableThinking:    true,
+				ReasoningEffort:   strength,
 				ReasoningStrength: strength,
 			}
 			if budget >= 0 {
-				reqBody.ThinkingBudgetTokens = budget
+				b := budget
+				reqBody.ThinkingBudgetTokens = &b
 			}
 		} else {
+			zero := 0
 			reqBody.ReasoningFormat = "none"
+			reqBody.ThinkingBudgetTokens = &zero
 			reqBody.ChatTemplateKwargs = &ChatTemplateKwargs{
 				EnableThinking:    false,
+				ReasoningEffort:   "none",
 				ReasoningStrength: "none",
 			}
 		}

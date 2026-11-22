@@ -133,8 +133,9 @@ func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte,
 		output = ki.Agent.CurrentWriter()
 	}
 	var theme style.UITheme
-	if ki.Agent != nil && ki.Agent.Config != nil {
-		theme = style.ResolveConfiguredTheme(ki.Agent.Config.Theme, ki.Agent.Config.SyntaxTheme)
+	if ki.Agent != nil {
+		live := ki.Agent.LiveSettings()
+		theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	}
 	decision := interactive.AskForSubagentCancellationWithReader(
 		output,
@@ -165,5 +166,5 @@ func (ki *KeyInterceptorReader) HandleSubagentCancellation(rawInput <-chan byte,
 		fmt.Fprintln(output, "\n\n[operation cancelled by user]")
 	}
 
-	ki.ResetTypeAheadLocked()
+	ki.ResetTypeAhead()
 }

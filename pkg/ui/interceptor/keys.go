@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/agent"
 	"loop/pkg/terminal"
@@ -28,18 +29,30 @@ func NormalizePromptNavigationKeys(input []byte) []byte {
 	return []byte(promptNavigationKeyReplacer.Replace(string(input)))
 }
 
-func (ki *KeyInterceptorReader) ResetTypeAheadLocked() {
-	ki.TypeAheadBuffer = nil
-	ki.TypeAheadPastes = nil
-	ki.HistoryIndex = -1
-	ki.SavedTypeAhead = nil
+func (ki *KeyInterceptorReader) BackspaceTypeAhead() {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	if len(ki.TypeAheadBuffer) > 0 {
+		r, size := utf8.DecodeLastRune(ki.TypeAheadBuffer)
+		if r != utf8.RuneError || size > 0 {
+			ki.TypeAheadBuffer = ki.TypeAheadBuffer[:len(ki.TypeAheadBuffer)-size]
+		} else {
+			ki.TypeAheadBuffer = ki.TypeAheadBuffer[:len(ki.TypeAheadBuffer)-1]
+		}
+	}
+	ki.DraftMu.Unlock()
 }
 
 func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
+	ki.DraftMu.Lock()
 	if ki.Hist == nil && ki.RL != nil && ki.RL.History != nil {
 		ki.Hist = ki.RL.History
 	}
-	if ki.Hist == nil || ki.Hist.Len() == 0 {
+	hist := ki.Hist
+	if hist == nil || hist.Len() == 0 {
+		ki.DraftMu.Unlock()
 		return
 	}
 
@@ -47,15 +60,15 @@ func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 		if ki.HistoryIndex == -1 {
 			ki.SavedTypeAhead = append([]byte(nil), ki.TypeAheadBuffer...)
 			ki.HistoryIndex = 0
-			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
-		} else if ki.HistoryIndex+1 < ki.Hist.Len() {
+			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
+		} else if ki.HistoryIndex+1 < hist.Len() {
 			ki.HistoryIndex++
-			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
+			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
 		}
 	} else if direction < 0 {
 		if ki.HistoryIndex > 0 {
 			ki.HistoryIndex--
-			ki.TypeAheadBuffer = []byte(ki.Hist.At(ki.HistoryIndex))
+			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
 		} else if ki.HistoryIndex == 0 {
 			ki.HistoryIndex = -1
 			ki.TypeAheadBuffer = append([]byte(nil), ki.SavedTypeAhead...)
@@ -63,9 +76,10 @@ func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 		}
 	}
 
-	if history, ok := ki.Hist.(interface{ GetFull(string) string }); ok {
+	if history, ok := hist.(interface{ GetFull(string) string }); ok {
 		ki.TypeAheadBuffer = []byte(history.GetFull(string(ki.TypeAheadBuffer)))
 	}
+	ki.DraftMu.Unlock()
 	ki.RedrawTypeAhead()
 }
 
@@ -192,14 +206,13 @@ func (ki *KeyInterceptorReader) redrawPromptSeparatorOrFallback() {
 	} else if ki.OnRedrawScreen != nil {
 		ki.OnRedrawScreen()
 	} else if ki.W != nil {
-		ki.Agent.LLMProviderMu.Lock()
-		themeName := ki.Agent.Config.Theme
-		syntaxTheme := ki.Agent.Config.SyntaxTheme
-		showThinking := ki.Agent.Config.ShowThinking
-		effort := ki.Agent.Config.ReasoningEffort
-		ki.Agent.LLMProviderMu.Unlock()
-		theme := style.ResolveConfiguredTheme(themeName, syntaxTheme)
+		live := ki.Agent.LiveSettings()
+		theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 		width, _ := terminal.GetDimensions()
-		fmt.Fprint(ki.W, render.FormatPromptSeparator(showThinking, effort, theme, width))
+		effort := live.ReasoningEffort
+		if !live.ShowReasoningBadge {
+			effort = "hidden"
+		}
+		fmt.Fprint(ki.W, render.FormatPromptSeparator(live.ShowThinking, effort, theme, width))
 	}
 }

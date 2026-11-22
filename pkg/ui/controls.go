@@ -11,6 +11,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
+	"loop/pkg/ui/style"
 )
 
 func GetPromptSymbol(_ *config.Config) string {
@@ -18,6 +19,17 @@ func GetPromptSymbol(_ *config.Config) string {
 }
 
 func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, _ *term.Terminal, drawPrompt bool) {
+	state := getUI()
+	inAlt := terminal.Default().InAltScreen()
+	state.StateMu.Lock()
+	inApproval := state.InApprovalPrompt
+	inMenu := state.InInteractiveMenu || inAlt
+	activeOp := state.ActiveCancelFunc != nil
+	state.StateMu.Unlock()
+	if inMenu {
+		return
+	}
+
 	termW, height := GetTerminalSize()
 	if height <= 3 {
 		return
@@ -28,7 +40,6 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	if impl, ok := a.UI.(*AgentUIImpl); ok && impl.PPWriter != nil {
 		impl.PPWriter.ResizeLocked(height)
 	}
-	state := getUI()
 	id := a.ActiveSessionID()
 	label, known := sessionDisplayLabel(a, id)
 	state.StateMu.Lock()
@@ -38,9 +49,20 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	}
 	state.State.Workspace = filepath.Base(a.WorkspaceRoot)
 	state.StateMu.Unlock()
-	activeTheme := GetConfiguredTheme(a.Config)
 
-	promptPrefix := GetPromptSymbol(a.Config)
+	live := a.LiveSettings()
+	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+
+	maxInputRows := 8
+	if a != nil {
+		a.LLMProviderMu.RLock()
+		if a.Config != nil {
+			maxInputRows = a.Config.PromptRows()
+		}
+		a.LLMProviderMu.RUnlock()
+	}
+
+	promptPrefix := GetPromptSymbol(nil)
 	if kiReader != nil && kiReader.MAM != nil {
 		if name := kiReader.MAM.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
@@ -52,37 +74,29 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		qLen = kiReader.QueueLen()
 	}
 
-	getUI().StateMu.Lock()
-	inApproval := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
-	activeOp := getUI().ActiveCancelFunc != nil
-	getUI().StateMu.Unlock()
-
 	inputLine := ""
 	posOffset := 0
-	if drawPrompt {
-		if activeOp && kiReader != nil {
-			getUI().StateMu.Lock()
-			inputLine = string(kiReader.TypeAheadBuffer)
-			posOffset = len([]rune(inputLine))
-			getUI().StateMu.Unlock()
-		} else if kiReader != nil {
+	if drawPrompt && kiReader != nil {
+		if activeOp {
+			inputLine, posOffset = kiReader.GetTypeAheadDraft()
+		} else {
 			inputLine, posOffset = kiReader.GetPromptDraft()
 		}
-		if kiReader != nil && kiReader.PastedText != "" {
-			inputLine += kiReader.PastedText
+		if pasted := kiReader.GetPastedText(); pasted != "" {
+			inputLine += pasted
 			posOffset = len([]rune(inputLine))
 		}
 	}
 
-	getUI().StateMu.Lock()
-	oldOffset := getUI().PasteLinesOffset
-	savedStats := getUI().LastStatsText
-	hint := getUI().PromptHint
-	getUI().StateMu.Unlock()
+	state.StateMu.Lock()
+	oldOffset := state.PasteLinesOffset
+	savedStats := state.LastStatsText
+	hint := state.PromptHint
+	state.StateMu.Unlock()
 	render.DrawConsoleControls(w, render.ConsoleControls{
 		Width: termW, Height: height, Theme: activeTheme,
 		PromptPrefix: promptPrefix, QueueLength: qLen,
-		InputLine: inputLine, InputPosition: posOffset, MaxInputRows: a.Config.PromptRows(),
+		InputLine: inputLine, InputPosition: posOffset, MaxInputRows: maxInputRows,
 		SetCursor: func(row, col int) {
 			if impl, ok := a.UI.(*AgentUIImpl); ok && impl.PPWriter != nil {
 				impl.PPWriter.SetPromptPositionLocked(row, col)
@@ -91,28 +105,26 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 		DrawPrompt: drawPrompt, InApproval: inApproval,
 		OldPasteOffset: oldOffset, Hint: hint,
 		SetPasteOffset: func(offset int) {
-			getUI().StateMu.Lock()
-			getUI().PasteLinesOffset = offset
-			getUI().StateMu.Unlock()
+			state.SetPasteLinesOffset(offset)
 		},
 		OnScroll: func(delta int) {
-			if history := getUI().ChatHistory; history != nil {
+			if history := state.GetChatHistory(); history != nil {
 				history.resizeLocked(termW, height)
 				return
 			}
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
 				uiImpl.PPWriter.AdjustPrintLineLocked(delta)
-			} else if pw, ok := a.CurrentWriter().(*PromptPreservingWriter); ok {
+			} else if pw, ok := agent.GetScreenWriter(a.CurrentWriter()).(*PromptPreservingWriter); ok {
 				pw.AdjustPrintLineLocked(delta)
 			}
 		},
 		DrawFooter: func(dest io.Writer) {
 			DrawStatusBarLocked(dest, activeTheme)
-			DrawStaticPromptSeparatorLocked(dest, a.Config.ShowThinking, a.Config.ReasoningEffort, activeTheme)
+			DrawStaticPromptSeparatorLocked(dest, live.ShowThinking, live.ReasoningEffort, activeTheme)
 			DrawStaticStatsLineLocked(dest, activeTheme, "", savedStats)
 		},
 	})
-	if history := getUI().ChatHistory; history != nil && history.needsPaint && !history.captureOnly {
+	if history := state.GetChatHistory(); history != nil && history.needsPaint && !history.captureOnly {
 		history.paintLocked()
 	}
 }

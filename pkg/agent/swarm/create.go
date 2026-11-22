@@ -142,10 +142,7 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		return "", fmt.Errorf("create_subagent is not attached to an initialized multi-agent manager")
 	}
 
-	maxDepth := 0
-	if s.mam.BaseAgent.Config != nil {
-		maxDepth = s.mam.BaseAgent.Config.MaxSubagentDepth
-	}
+	maxDepth := s.mam.BaseAgent.LiveSettings().MaxSubagentDepth
 	if maxDepth <= 0 {
 		return "", fmt.Errorf("subagents are disabled; set max_subagent_depth to a positive number")
 	}

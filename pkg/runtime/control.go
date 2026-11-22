@@ -59,8 +59,11 @@ func (s *Session) SetTools(names []string) error {
 	if err := s.validateTools(names); err != nil {
 		return err
 	}
-	s.options.Tools = append([]string{}, names...)
-	s.Agent.ToolSelection = s.options.Tools
+	cloned := append([]string{}, names...)
+	s.options.Tools = cloned
+	s.Agent.LLMProviderMu.Lock()
+	s.Agent.ToolSelection = cloned
+	s.Agent.LLMProviderMu.Unlock()
 	return s.persistSettings()
 }
 

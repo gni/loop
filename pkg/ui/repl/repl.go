@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -43,8 +44,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		allowedTools = slices.Clone(a.ToolSelection)
 	}
 
-	ui.IsInteractive = true
-	defer func() { ui.IsInteractive = false }()
+	ui.SetInteractive(true)
+	defer ui.SetInteractive(false)
 
 	currentSessionID := initialSessionID
 	shell := &manualShell{directory: a.GetWorkspaceRoot()}
@@ -78,15 +79,20 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		ui.ShutdownStatusBar(os.Stderr)
 		ui.TerminalMu.Lock()
 		defer ui.TerminalMu.Unlock()
-		ui.ForceExitAlternateScreen(os.Stderr)
-		fmt.Fprint(os.Stderr, "\x1b[?2026l\x1b[<u\x1b[>4m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m\x1b[?7h\x1b[?25h\x1b[2J\x1b[H")
+		if terminal.Default().InAltScreen() {
+			ui.ForceExitAlternateScreen(os.Stderr)
+			fmt.Fprint(os.Stderr, "\x1b[?7h\x1b[2J\x1b[H")
+		} else {
+			fmt.Fprint(os.Stderr, terminal.FullCleanupSequence+"\x1b[?7h\x1b[2J\x1b[H")
+		}
 		if !a.Ephemeral {
 			fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\r\n", render.SanitizeTerminalText(currentSessionID))
 		}
 	}()
 	// Request modified Enter reporting where supported; legacy terminals ignore
 	// these sequences and retain Ctrl+N/Alt+Enter/Ctrl+J as newline shortcuts.
-	fmt.Fprint(os.Stderr, "\x1b[>4;2m\x1b[>1u")
+	restoreKeys := terminal.Default().BeginEnhancedKeys(os.Stderr)
+	defer restoreKeys()
 
 	_, height := ui.GetTerminalSize()
 	ppWriter := ui.NewPromptPreservingWriter(os.Stderr, height)
@@ -132,10 +138,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	defer chatHistory.Close()
 	kiReader.OnChatHistoryInput = chatHistory.FilterInput
 
-	ui.GetUI().ActiveInputReader = kiReader
-	defer func() {
-		ui.GetUI().ActiveInputReader = nil
-	}()
+	ui.GetUI().SetActiveInputReader(kiReader)
+	defer ui.GetUI().SetActiveInputReader(nil)
 	restorePaste := terminal.Default().BeginBracketedPaste(os.Stderr)
 	defer restorePaste()
 
@@ -144,7 +148,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 
 	createTerminal := func() *term.Terminal {
 		t := term.NewTerminal(kiReader, "")
-		kiReader.RL = t
+		kiReader.SetRL(t)
 		t.History = hist
 		if w, h, err := term.GetSize(fd); err == nil {
 			t.SetSize(w, h)
@@ -183,10 +187,11 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		}()
 	}
 
-	ui.SetCollapseStatus(a.Config.CollapseResults)
+	initialLive := a.LiveSettings()
+	ui.SetCollapseStatus(initialLive.CollapseResults)
 	initialEffLimit := a.GetEffectiveContextLimit(initialPromptTokens)
-	ui.UpdateStatus(a.Config.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, initialEffLimit, false, 0, activeTasks, a.Config.ShowTokens, initialTokensEstimated)
-	ui.DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, theme)
+	ui.UpdateStatus(initialLive.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, initialEffLimit, false, 0, activeTasks, initialLive.ShowTokens, initialTokensEstimated)
+	ui.DrawStaticPromptSeparator(os.Stderr, initialLive.ShowThinking, initialLive.ReasoningEffort, theme)
 	ui.GetUI().StateMu.Lock()
 	savedStats := ui.GetUI().LastStatsText
 	ui.GetUI().StateMu.Unlock()
@@ -199,7 +204,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		if ctx.Err() != nil {
 			break
 		}
-		promptPrefix := ui.GetPromptSymbol(a.Config)
+		promptPrefix := ui.GetPromptSymbol(nil)
 		if name := mam.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
 		}
@@ -220,11 +225,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		} else {
 			kiReader.Drain()
 
-			ui.GetUI().StateMu.Lock()
-			uncommitted := append([]byte(nil), kiReader.TypeAheadBuffer...)
-			pastes := append([]string(nil), kiReader.TypeAheadPastes...)
-			kiReader.ResetTypeAheadLocked()
-			ui.GetUI().StateMu.Unlock()
+			uncommitted, pastes := kiReader.TakeTypeAhead()
 			// A draft already belongs to the editor, not to paste detection.
 			// Feed it before live keys without blocking on the injection channel
 			// or turning a following Enter into part of a multiline paste.
@@ -234,13 +235,12 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				kiReader.PasteRemaining = append(kiReader.QueuePromptPaste(string(uncommitted)), kiReader.PasteRemaining...)
 			}
 
-			ppWriter.SetPromptCol(1 + utf8.RuneCountInString(promptPrefix))
+			ppWriter.SetPromptCol(1 + style.CellWidth(promptPrefix))
 			rl.SetPrompt("")
 			ui.TerminalMu.Lock()
 			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, true)
 			ui.TerminalMu.Unlock()
 
-			fmt.Fprint(os.Stderr, "\x1b[?25h")
 			ppWriter.SetCursorHidden(false)
 
 			oldState, errRaw := term.MakeRaw(fd)
@@ -259,42 +259,47 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 		}
 
-		prevOffset := ui.GetUI().PasteLinesOffset
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().PasteLinesOffset = 0
-		ui.GetUI().StateMu.Unlock()
+		ui.TerminalMu.Lock()
+		prevOffset := ui.GetUI().GetPasteLinesOffset()
+		ui.GetUI().SetPasteLinesOffset(0)
 
 		if _, curH := ui.GetTerminalSize(); curH > 0 {
 			height = curH
 		}
 
 		if height > 0 {
+			live := a.LiveSettings()
+			var frame bytes.Buffer
+			frame.WriteString(terminal.BeginSyncOutput)
+			wrappedFrame := render.WrapSyncFrame(&frame)
 			if prevOffset > 0 {
 				for r := height - 4 - prevOffset; r <= height-2; r++ {
 					if r >= 1 {
-						fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", r)
+						fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", r)
 					}
 				}
 				ui.GetUI().StateMu.Lock()
 				savedStats := ui.GetUI().LastStatsText
 				ui.GetUI().StateMu.Unlock()
-				ui.DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
-				ui.DrawStaticPromptSeparator(os.Stderr, a.Config.ShowThinking, a.Config.ReasoningEffort, theme)
+				ui.DrawStaticStatsLineLocked(wrappedFrame, theme, "", savedStats)
+				ui.DrawStaticPromptSeparatorLocked(wrappedFrame, live.ShowThinking, live.ReasoningEffort, theme)
 			} else {
-				fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K", height-2)
+				fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", height-2)
 			}
 
 			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-			fmt.Fprintf(os.Stderr, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
-			ppWriter.SetPromptCol(1 + utf8.RuneCountInString(promptPrefix))
-			ui.DrawStatusBar(os.Stderr, theme)
+			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
+			ppWriter.SetPromptPositionLocked(height-2, 1+style.CellWidth(promptPrefix))
+			ui.DrawStatusBarLocked(wrappedFrame, theme)
+			frame.WriteString(terminal.EndSyncOutput)
+			_, _ = os.Stderr.Write(frame.Bytes())
 		}
+		ui.TerminalMu.Unlock()
 
 		if !fromQueue {
-			if kiReader.PastedText != "" {
-				line += kiReader.PastedText
-				kiReader.PastedText = ""
-				ui.GetUI().PasteLinesOffset = 0
+			if pasted := kiReader.TakePastedText(); pasted != "" {
+				line += pasted
+				ui.GetUI().SetPasteLinesOffset(0)
 				ui.InitStatusBar(os.Stderr)
 			}
 
@@ -302,10 +307,10 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				ui.GetUI().ClearPromptHint()
 				kiReader.CtrlCInterrupted = false
 				kiReader.SetPromptDraft("", 0)
-				kiReader.PastedText = ""
+				kiReader.SetPastedText("")
 				kiReader.PastedCodeBlocks = nil
+				kiReader.ResetTypeAhead()
 				ui.GetUI().StateMu.Lock()
-				kiReader.ResetTypeAheadLocked()
 				ui.GetUI().PasteLinesOffset = 0
 				ui.GetUI().State.QueuedPromptsCount = 0
 				ui.GetUI().StateMu.Unlock()
@@ -323,7 +328,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 					}
 					rl = createTerminal()
 					ui.GetUI().SetPromptHint("(Press Ctrl+D again to exit)", 3*time.Second, func() {
-						ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, rl)
+						ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, kiReader.GetRL())
 					})
 					continue
 				}
@@ -359,8 +364,14 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			hist.Add(line)
 		}
 
-		if isCmd, _ := parseManualCommand(commandLine, a.Config.DirectCommands); isCmd {
-			_, cmdStr := parseManualCommand(line, a.Config.DirectCommands)
+		directCommands := false
+		a.LLMProviderMu.RLock()
+		if a.Config != nil {
+			directCommands = a.Config.DirectCommands
+		}
+		a.LLMProviderMu.RUnlock()
+		if isCmd, _ := parseManualCommand(commandLine, directCommands); isCmd {
+			_, cmdStr := parseManualCommand(line, directCommands)
 			ui.TerminalMu.Lock()
 			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, false)
 			ui.TerminalMu.Unlock()
@@ -385,10 +396,11 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 					if err := a.SyncSessionState(messages, a.ToolSelection, currentSessionID, false); err != nil {
 						fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
 					}
-					theme = ui.GetConfiguredTheme(a.Config)
-					kiReader.Theme = theme
+					live := a.LiveSettings()
+					theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+					kiReader.SetTheme(theme)
 					allowedTools = slices.Clone(a.ToolSelection)
-					kiReader.AllowedTools = allowedTools
+					kiReader.SetAllowedTools(allowedTools)
 				}
 				if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
 					fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
@@ -399,8 +411,9 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, true); err != nil {
 						fmt.Fprintf(ppWriter, "Could not save session state: %v\n", err)
 					}
-					theme = ui.GetConfiguredTheme(a.Config)
-					kiReader.Theme = theme
+					live := a.LiveSettings()
+					theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+					kiReader.SetTheme(theme)
 				}
 				chatHistory.SetSessionID(currentSessionID)
 			}
@@ -435,7 +448,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 		}
 		chatHistory.BeginTurn()
-		renderTurnPromptHeader(ppWriter, a.Config, theme, promptPrefix, line, fromQueue, kiReader)
+		renderTurnPromptHeader(ppWriter, a, theme, promptPrefix, line, fromQueue, kiReader)
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader, attachmentSource, preExpanded, fromQueue)
 		turnRedrawn = chatHistory.RepaintPendingTurn() || turnRedrawn
 		a.OnStreamProgress = nil

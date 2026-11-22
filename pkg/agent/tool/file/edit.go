@@ -159,7 +159,7 @@ func (t *editTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		discardIfUncommitted()
 		return "", err
 	}
-	if err := CommitFileMutation(ctx, safePath, finalBytes, 0644); err != nil {
+	if err := commitFileMutation(ctx, safePath, finalBytes, 0644, true); err != nil {
 		if !mutationCommitted(err, safePath) {
 			discardIfUncommitted()
 		}

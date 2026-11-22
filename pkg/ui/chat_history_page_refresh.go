@@ -16,7 +16,7 @@ func (h *ChatHistory) refreshStalePageLocked() {
 	if p == nil || h.pageJob != nil || p.err != nil || p.appearance == h.appearanceKey() {
 		return
 	}
-	cfg, err := config.Clone(h.a.Config)
+	cfg, err := h.a.Configuration()
 	if err != nil {
 		h.historyErr = err
 		return

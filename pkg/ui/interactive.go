@@ -11,9 +11,7 @@ func init() {
 	interactive.SetActiveReaderProvider(func() io.Reader {
 		ui := getUI()
 		if ui != nil {
-			ui.StateMu.Lock()
-			defer ui.StateMu.Unlock()
-			return ui.ActiveInputReader
+			return ui.GetActiveInputReader()
 		}
 		return nil
 	})

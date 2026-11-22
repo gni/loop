@@ -38,4 +38,5 @@ func (ma *MultiAgent) stop() {
 		ma.Cancel()
 	}
 	ma.KillTasks()
+	ma.loopWG.Wait()
 }

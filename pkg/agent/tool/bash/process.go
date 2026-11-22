@@ -21,7 +21,13 @@ func NewCommand(command string) *exec.Cmd {
 		args = []string{"-o0", "-e0", "bash", "-c", command}
 	}
 	cmd := exec.Command(executable, args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C.UTF-8", "PYTHONUNBUFFERED=1")
+	baseEnv := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=never",
+		"DEBIAN_FRONTEND=noninteractive",
+	}
+	baseEnv = append(baseEnv, os.Environ()...)
+	cmd.Env = append(baseEnv, "LC_ALL=C", "LANG=C.UTF-8", "PYTHONUNBUFFERED=1")
 	process.SetupProcessGroup(cmd)
 	return cmd
 }

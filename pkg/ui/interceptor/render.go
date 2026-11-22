@@ -43,7 +43,7 @@ func ActiveToolAllowlist(reader *KeyInterceptorReader) []string {
 	if reader == nil {
 		return nil
 	}
-	return reader.AllowedTools
+	return reader.GetAllowedTools()
 }
 
 func CalculateActiveTokenUsage(

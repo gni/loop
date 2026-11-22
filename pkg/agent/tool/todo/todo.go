@@ -1,6 +1,7 @@
 package todo
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -396,7 +397,7 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 			Todos    []domaintool.TodoItem `json:"todos"`
 			Items    []domaintool.TodoItem `json:"items"`
 			Plan     []domaintool.TodoItem `json:"plan"`
-			Content  []domaintool.TodoItem `json:"content"`
+			Content  json.RawMessage       `json:"content"`
 			Data     []domaintool.TodoItem `json:"data"`
 			List     []domaintool.TodoItem `json:"list"`
 			TodoList []domaintool.TodoItem `json:"todo_list"`
@@ -405,7 +406,22 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 		if err := json.Unmarshal([]byte(trimmed), &container); err != nil {
 			return nil, "", invalidArguments(err)
 		}
-		lists := [][]domaintool.TodoItem{container.Tasks, container.Todos, container.Items, container.Plan, container.Content, container.Data, container.List, container.TodoList, container.Actions}
+		var contentItems []domaintool.TodoItem
+		if rawContent := bytes.TrimSpace(container.Content); len(rawContent) > 0 && !bytes.Equal(rawContent, []byte("null")) {
+			switch rawContent[0] {
+			case '[':
+				if err := json.Unmarshal(rawContent, &contentItems); err != nil {
+					return nil, "", invalidArguments(err)
+				}
+			case '"':
+				// String "content" is a task description alias handled by applyActionObject.
+			default:
+				if err := json.Unmarshal(rawContent, &contentItems); err != nil {
+					return nil, "", invalidArguments(err)
+				}
+			}
+		}
+		lists := [][]domaintool.TodoItem{container.Tasks, container.Todos, container.Items, container.Plan, contentItems, container.Data, container.List, container.TodoList, container.Actions}
 		for _, list := range lists {
 			if list != nil {
 				if items != nil {

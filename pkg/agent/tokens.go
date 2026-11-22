@@ -181,9 +181,13 @@ func (a *Agent) GetGlobalTokens(messages []db.Message, allowedTools []string) (i
 func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string) (int, int, bool) {
 	// Estimate the retained next-request input, not past billing totals.
 	// Reasoning tokens and evicted history are not resubmitted to the provider.
+	var cfg *config.Config
 	if a != nil {
+		a.LLMProviderMu.RLock()
+		cfg = a.Config
+		a.LLMProviderMu.RUnlock()
 		messages = inferenceMessages(a.Context(), messages)
-		if historyCompressionEnabled(a.Config) {
+		if historyCompressionEnabled(cfg) {
 			messages = CompactHistoricalToolOutputs(messages)
 		}
 	} else {
@@ -197,9 +201,9 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	toolTokens := 0
 	if a != nil && a.Registry != nil {
 		tools := a.inferenceTools(a.Context(), allowedTools)
-		if a.Config != nil {
-			tools = prepareToolDefinitions(tools, a.Config.CompactPrompt)
-			if strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml") {
+		if cfg != nil {
+			tools = prepareToolDefinitions(tools, cfg.CompactPrompt)
+			if strings.EqualFold(strings.TrimSpace(cfg.ToolProtocol), "xml") {
 				tools = nil
 			}
 		}
@@ -243,7 +247,8 @@ func (a *Agent) GetEffectiveContextLimit(currentPromptTokens int) int {
 			}
 		}
 	}
+	limit := ResolveAdaptiveContextLimit(a.Config, serverLimit, currentPromptTokens)
 	a.LLMProviderMu.RUnlock()
 
-	return ResolveAdaptiveContextLimit(a.Config, serverLimit, currentPromptTokens)
+	return limit
 }

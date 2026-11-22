@@ -27,12 +27,14 @@ type ChatHistory struct {
 	searchQuery, searchNotice                       string
 	searchDraft                                     string
 	searchEditing                                   bool
+	searchEditingAtomic                             atomic.Bool
 	initialLoading, initialOutput                   bool
 	initialFilling                                  bool
 	initialRows                                     int
 	searchRow, searchDirection                      int
 	searchPending                                   bool
 	previousSink                                    func(agent.Event) error
+	stopMouse                                       func()
 	logoEnabled, logoVisible                        bool
 	logoFrame                                       int
 	logoStop, logoDone                              chan struct{}
@@ -67,6 +69,11 @@ type ChatHistory struct {
 	notice                                          string
 	resetSequence                                   atomic.Uint64
 	closed                                          atomic.Bool
+}
+
+func (h *ChatHistory) setSearchEditingLocked(editing bool) {
+	h.searchEditing = editing
+	h.searchEditingAtomic.Store(editing)
 }
 
 type displayTurn struct {
@@ -128,12 +135,12 @@ func (h *ChatHistory) AppearanceKey() string {
 }
 
 func (h *ChatHistory) appearanceKey() string {
-	c := h.a.Config
+	live := h.a.LiveSettings()
 	width := 0
-	if c.MarkdownRender {
+	if live.MarkdownRender && h.buffer != nil {
 		width = h.buffer.Width
 	}
-	return fmt.Sprintf("%s/%s/%t/%t/%t/%s/%t/%d", c.Theme, c.SyntaxTheme, c.MarkdownRender, c.ShowThinking, c.CollapseResults, c.ReasoningEffort, c.ShowMicroseconds, width)
+	return fmt.Sprintf("%s/%s/%t/%t/%t/%s/%t/%d", live.Theme, live.SyntaxTheme, live.MarkdownRender, live.ShowThinking, live.CollapseResults, live.ReasoningEffort, live.ShowMicroseconds, width)
 }
 
 // BeginTurn/FinishTurn retain semantic boundaries only for explicit appearance
@@ -142,7 +149,7 @@ func (h *ChatHistory) BeginTurn() {
 	TerminalMu.Lock()
 	h.replayPending = false
 	h.searchQuery, h.searchNotice = "", ""
-	h.searchEditing = false
+	h.setSearchEditingLocked(false)
 	h.searchDraft = ""
 	h.searchPending = false
 	h.searchScan = nil
@@ -182,10 +189,7 @@ func (h *ChatHistory) FinishTurn(messages []db.Message) {
 }
 
 func (h *ChatHistory) resizeLocked(width, height int) {
-	state := getUI()
-	state.StateMu.Lock()
-	pasteRows := state.PasteLinesOffset
-	state.StateMu.Unlock()
+	pasteRows := getUI().GetPasteLinesOffset()
 	bottom := style.ConsoleScrollBottom(height, pasteRows)
 	if width == h.buffer.Width && bottom == h.buffer.Height {
 		return
@@ -233,10 +237,15 @@ func (h *ChatHistory) paintLocked() {
 	rows := h.buffer.View(h.top)
 	rows = h.decorateChatLocked(rows)
 	rows = h.searchRowsLocked(rows)
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	hint := ""
 	if h.browsing {
-		total := h.buffer.Base() + h.buffer.Height
-		text := fmt.Sprintf("History · lines %d-%d of %d loaded", h.top+1, min(h.top+len(rows), total), total)
+		firstRow := h.buffer.FirstContentRow()
+		total := max(1, h.buffer.Base()+h.buffer.Height-firstRow)
+		startLine := max(1, h.top-firstRow+1)
+		endLine := min(total, startLine+len(rows)-1)
+		text := fmt.Sprintf("History · lines %d-%d of %d loaded", startLine, endLine, total)
 		if h.hasOlderLocked() {
 			text += " · more above"
 		}
@@ -248,7 +257,7 @@ func (h *ChatHistory) paintLocked() {
 		} else {
 			text += " · [Back to latest: End] · Shift+drag: select"
 		}
-		hint = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Border).Render(style.TruncateCells(text, max(1, width-1)))
+		hint = style.NewStyle().Foreground(theme.Border).Render(style.TruncateCells(text, max(1, width-1)))
 	}
 	if h.searchNotice != "" {
 		notice := h.searchNotice
@@ -271,16 +280,20 @@ func (h *ChatHistory) paintLocked() {
 	if err := errors.Join(h.historyErr, h.buffer.Err()); err != nil {
 		hint = style.TruncateCells("history: "+err.Error(), max(1, width-1))
 	}
-	render.DrawChatViewport(h.reader.W, rows, h.drawn, hint, h.drawnHint)
-	h.drawn = rows
-	h.drawnHint = hint
+	fallbackStats := ""
 	if hint == "" {
 		state := getUI()
 		state.StateMu.Lock()
 		stats := state.LastStatsText
+		if state.ActivityStatsText != "" {
+			stats = state.ActivityStatsText
+		}
 		state.StateMu.Unlock()
-		DrawStaticStatsLineLocked(h.reader.W, GetConfiguredTheme(h.a.Config), "", stats)
+		fallbackStats = render.FormatStaticStatsContent("", stats, theme)
 	}
+	render.DrawChatViewportAtomic(h.reader.W, rows, h.drawn, hint, h.drawnHint, fallbackStats)
+	h.drawn = rows
+	h.drawnHint = hint
 	h.needsPaint = false
 	h.scheduleLayoutsLocked()
 }
@@ -339,7 +352,12 @@ func (h *ChatHistory) repaintActiveTurnLocked() {
 
 func (h *ChatHistory) repaintTurnsLocked() {
 	h.resizeLocked(GetTerminalSize())
-	theme := GetConfiguredTheme(h.a.Config)
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	cfgSnapshot, cfgErr := h.a.Configuration()
+	if cfgErr != nil && h.a != nil {
+		cfgSnapshot = h.a.Config
+	}
 	var replay func(io.Writer, bool, style.UITheme)
 	if h.active != nil {
 		h.a.CurrentStreamMu.Lock()
@@ -391,12 +409,12 @@ func (h *ChatHistory) repaintTurnsLocked() {
 		}
 		rows := h.buffer.NewHistoryPage()
 		out := &turnReplayWriter{historyPageWriter: historyPageWriter{rows: rows}}
-		PrintSessionHistory(out, messages, theme, h.a.Config)
+		PrintSessionHistory(out, messages, theme, cfgSnapshot)
 		if turn == h.active && replay != nil {
 			if messages[len(messages)-1].Role == "user" {
 				fmt.Fprintln(out, style.ActivityDivider(theme))
 			}
-			replay(out, h.a.Config.CollapseResults, theme)
+			replay(out, live.CollapseResults, theme)
 		}
 		if err := errors.Join(rows.Err(), out.err); err != nil {
 			h.historyErr = fmt.Errorf("rebuild display turn: %w", err)

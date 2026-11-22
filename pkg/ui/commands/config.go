@@ -81,8 +81,8 @@ func handleConfigCommand(
 		return
 	}
 	limits.Set(a.Config.Limits)
-	ui.SetCollapseStatus(a.Config.CollapseResults)
-	if history := ui.GetUI().ChatHistory; history != nil {
+	ui.SetCollapseStatus(a.LiveSettings().CollapseResults)
+	if history := ui.GetUI().GetChatHistory(); history != nil {
 		history.SetPageSize(a.Config.HistoryPageSize)
 	}
 	saved := saveConfigUpdate(a, w)
@@ -108,17 +108,19 @@ func handleConfigCommand(
 // redrawConfigIfNeeded redraws history only for settings that affect its appearance.
 // The active renderer is never modified mid-turn; subsequent turns use the new config.
 func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader, notice string, force bool) bool {
-	*theme = style.ResolveConfiguredTheme(a.Config.Theme, a.Config.SyntaxTheme)
+	live := a.LiveSettings()
+	*theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	if kiReader != nil {
-		kiReader.Theme = *theme
+		kiReader.SetTheme(*theme)
 		if kiReader.MAM != nil {
 			kiReader.MAM.SetOutput(w, *theme)
 		}
 	}
-	if kiReader == nil || kiReader.RL == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
+	rl := terminalFromReader(kiReader)
+	if kiReader == nil || rl == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
 		return false
 	}
-	ui.RedrawScreenWithNotice(w, a, kiReader, kiReader.RL, notice)
+	ui.RedrawScreenWithNotice(w, a, kiReader, rl, notice)
 	return true
 }
 
@@ -130,6 +132,10 @@ func configAppearanceChanged(before, after config.Config) bool {
 		before.ShowThinking != after.ShowThinking ||
 		before.ReasoningEffort != after.ReasoningEffort ||
 		before.ShowTokens != after.ShowTokens ||
+		before.ShowReasoningBadge != after.ShowReasoningBadge ||
+		before.ShowCollapseBadge != after.ShowCollapseBadge ||
+		before.ShowGitBranch != after.ShowGitBranch ||
+		before.ShowStickyQuestion != after.ShowStickyQuestion ||
 		before.ShowMicroseconds != after.ShowMicroseconds
 }
 

@@ -19,10 +19,14 @@ func ApplyProviderHeaders(header http.Header, values map[string]string) {
 func ApplyProviderAuthHeaders(header http.Header, api, key string) {
 	switch api {
 	case "messages":
-		header.Set("x-api-key", key)
+		if key != "" {
+			header.Set("x-api-key", key)
+		}
 		header.Set("anthropic-version", "2023-06-01")
 	case "generate-content":
-		header.Set("x-goog-api-key", key)
+		if key != "" {
+			header.Set("x-goog-api-key", key)
+		}
 	default:
 		if key != "" {
 			header.Set("Authorization", "Bearer "+key)

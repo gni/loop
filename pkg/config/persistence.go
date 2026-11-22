@@ -225,7 +225,7 @@ func DefaultConfigPath() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return filepath.Join(home, ".loop", "config.json")
 	}
-	return "config/config.json"
+	return filepath.Join(os.TempDir(), "loop-config", "config.json")
 }
 
 func SaveConfig(path string, cfg *Config) error {

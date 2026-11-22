@@ -13,6 +13,11 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	if len(key) == 0 || h.closed.Load() {
 		return key
 	}
+	// Fast-path Ctrl+C outside search editing without acquiring TerminalMu so
+	// cancellation is never stalled behind heavy disk or Chroma rendering.
+	if len(key) == 1 && key[0] == 3 && !h.searchEditingAtomic.Load() {
+		return key
+	}
 	action := string(key)
 	mouse := strings.HasPrefix(action, "\x1b[<") || strings.HasPrefix(action, "\x1b[M")
 	getUI().StateMu.Lock()
@@ -81,8 +86,17 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 				button, err := strconv.Atoi(fields[0])
 				if err == nil {
 					if button&0xc3 == 0 && h.browsing {
-						if y, e := strconv.Atoi(fields[2]); e == nil && y == h.buffer.Height+style.ActivityGapLines+1 {
-							action = "latest"
+						x, _ := strconv.Atoi(fields[1])
+						if y, e := strconv.Atoi(fields[2]); e == nil {
+							if y == h.buffer.Height+style.ActivityGapLines+1 {
+								action = "latest"
+							} else if y == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+								if x >= max(1, h.buffer.Width-4) {
+									action = "next_question"
+								} else {
+									action = "prev_question"
+								}
+							}
 						}
 					}
 					switch button & 0xc3 {
@@ -94,7 +108,21 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 				}
 			}
 		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {
-			switch (key[3] - 32) & 0xc3 {
+			btn := (key[3] - 32) & 0xc3
+			if btn == 0 && h.browsing {
+				clickX := int(key[4]) - 32
+				clickY := int(key[5]) - 32
+				if clickY == h.buffer.Height+style.ActivityGapLines+1 {
+					action = "latest"
+				} else if clickY == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+					if clickX >= max(1, h.buffer.Width-4) {
+						action = "next_question"
+					} else {
+						action = "prev_question"
+					}
+				}
+			}
+			switch btn {
 			case 64:
 				delta = -3
 			case 65:
@@ -102,7 +130,7 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			}
 		}
 	}
-	if mouse && delta == 0 && action != "latest" {
+	if mouse && delta == 0 && action != "latest" && action != "prev_question" && action != "next_question" {
 		return nil
 	}
 	if !h.browsing {
@@ -134,16 +162,20 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			h.prefetchOlderLocked()
 		}
 	}
-	minimum := 0
+	minimum := h.buffer.FirstContentRow()
 	if h.hasOlderLocked() {
-		minimum = h.historyStart
+		minimum = max(minimum, h.historyStart)
 	}
 	switch {
 	case action == "latest":
 		h.searchQuery, h.searchNotice = "", ""
-		h.searchEditing = false
+		h.setSearchEditingLocked(false)
 		h.searchDraft = ""
 		h.top = h.buffer.Base()
+	case action == "prev_question":
+		h.stepQuestionLocked(-1, &oldTop)
+	case action == "next_question":
+		h.stepQuestionLocked(1, &oldTop)
 	case action == "top":
 		h.top = minimum
 		h.pendingUp = 0
@@ -156,13 +188,15 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	}
 	if delta != 0 {
 		h.top = h.limitLayoutScrollLocked(oldTop, h.top)
-	} else if action == "top" || action == "latest" || !navigation {
+	} else if action == "top" || action == "latest" || action == "prev_question" || action == "next_question" || !navigation {
 		h.layoutScroll = 0
 	}
 	if delta != 0 {
 		h.buffer.Prefetch(h.top, delta)
-	} else if action == "top" {
+	} else if action == "top" || action == "prev_question" {
 		h.buffer.Prefetch(h.top, -1)
+	} else if action == "next_question" {
+		h.buffer.Prefetch(h.top, 1)
 	}
 	h.browsing = h.top < h.buffer.Base()
 	// Start the refresh even when a stale turn holds the viewport in place.
@@ -173,7 +207,7 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		h.needsPaint = true
 		h.queuePaintLocked()
 	}
-	if h.top != oldTop || action == "latest" {
+	if h.top != oldTop || action == "latest" || action == "prev_question" || action == "next_question" {
 		if !h.browsing {
 			h.paintLocked()
 		} else {
@@ -184,6 +218,59 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		return nil
 	}
 	return key
+}
+
+func (h *ChatHistory) stepQuestionLocked(dir int, oldTop *int) {
+	if h.buffer == nil {
+		return
+	}
+	anchors := h.buffer.QuestionAnchors()
+	if dir < 0 {
+		idx := h.activeQuestionIndexLocked(anchors)
+		if (len(anchors) == 0 || idx <= 0) && h.hasOlderLocked() {
+			added := 0
+			if h.readyPage != nil {
+				added = h.applyOlderPageLocked()
+			} else {
+				added = h.loadOlderLocked()
+			}
+			if added > 0 {
+				h.top += added
+				if oldTop != nil {
+					*oldTop += added
+				}
+			}
+			if h.hasOlderLocked() {
+				h.prefetchOlderLocked()
+			}
+			anchors = h.buffer.QuestionAnchors()
+		}
+	}
+	if len(anchors) == 0 {
+		return
+	}
+	idx := h.activeQuestionIndexLocked(anchors)
+	if idx < 0 {
+		idx = 0
+	}
+	targetIdx := idx
+	if dir < 0 {
+		if idx > 0 {
+			targetIdx = idx - 1
+		} else {
+			targetIdx = len(anchors) - 1
+		}
+	} else {
+		targetIdx = (idx + 1) % len(anchors)
+	}
+	minimum := h.buffer.FirstContentRow()
+	if h.hasOlderLocked() {
+		minimum = max(minimum, h.historyStart)
+	}
+	maxBrowsingTop := max(minimum, h.buffer.Base()-1)
+	// Land one row past PromptRow so the sticky header pins the question on row 0
+	// while the assistant response begins immediately on row 1 without duplicating "> <question>".
+	h.top = min(maxBrowsingTop, max(minimum, anchors[targetIdx].PromptRow+1))
 }
 
 // Reserve only explicit history navigation while an approval is pending.
@@ -206,7 +293,7 @@ func (h *ChatHistory) filterSearchInput(key []byte) bool {
 	TerminalMu.Lock()
 	action := string(key)
 	if action == "\x06" {
-		h.searchEditing = true
+		h.setSearchEditingLocked(true)
 		h.searchDraft = h.searchQuery
 		h.searchPending = false
 		h.searchScan = nil
@@ -230,7 +317,7 @@ func (h *ChatHistory) filterSearchInput(key []byte) bool {
 	switch action {
 	case "\r", "\n":
 		query := h.searchDraft
-		h.searchEditing = false
+		h.setSearchEditingLocked(false)
 		h.paintLocked()
 		TerminalMu.Unlock()
 		if query != "" {
@@ -250,7 +337,7 @@ func (h *ChatHistory) filterSearchInput(key []byte) bool {
 		h.Latest()
 		return true
 	case "\x1b", "\x03":
-		h.searchEditing = false
+		h.setSearchEditingLocked(false)
 	case "\x7f", "\x08":
 		if h.searchDraft != "" {
 			_, size := utf8.DecodeLastRuneInString(h.searchDraft)

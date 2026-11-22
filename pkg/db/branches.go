@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"loop/pkg/domain/session"
+	"loop/pkg/storage"
 )
 
 func (s *JSONLStore) Branch(sessionID, entryID string) (err error) {
@@ -124,6 +125,9 @@ func (s *JSONLStore) ForkSessionContext(ctx context.Context, parentSessionID, en
 	}
 	if err := os.Rename(f.Name(), s.sessionPath(newID)); err != nil {
 		return "", fmt.Errorf("failed to finalize forked session file: %w", err)
+	}
+	if err := storage.SyncDirectory(s.core.dir); err != nil {
+		return "", fmt.Errorf("sync forked session directory: %w", err)
 	}
 	return newID, nil
 }

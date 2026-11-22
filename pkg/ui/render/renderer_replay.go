@@ -65,6 +65,9 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 	showMicroseconds := sr.showMicroseconds
 	sr.mu.Unlock()
 
+	thinkingStyle := GetThinkingStyle(theme)
+	viewportWidth := renderWidth(w)
+
 	for i, ev := range events {
 		last := i == len(events)-1
 		switch ev.kind {
@@ -76,7 +79,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				}
 				continue
 			}
-			fmt.Fprint(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(ev.text))
+			fmt.Fprint(w, thinkingStyle.Render(ev.text))
 			if !last || !inThinking {
 				if !strings.HasSuffix(ev.text, "\n") {
 					fmt.Fprintln(w)
@@ -85,7 +88,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				if ev.duration > 0 {
 					label = "thought (" + style.FormatElapsedDuration(time.Duration(ev.duration*float64(time.Second)), showMicroseconds) + ")"
 				}
-				fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(label))
+				fmt.Fprintln(w, thinkingStyle.Render(label))
 				if !last {
 					fmt.Fprintln(w)
 				}
@@ -144,7 +147,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 					fmt.Fprintln(w)
 				}
 			} else {
-				fmt.Fprintln(w, FormatToolTitle(RenderToolSymbol(call.name, status, theme), call.name, path, theme))
+				fmt.Fprintln(w, formatToolTitleForWidth(RenderToolSymbol(call.name, status, theme), call.name, path, theme, viewportWidth))
 			}
 			if call.resultRecorded {
 				RenderToolOutput(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false)
@@ -155,20 +158,15 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 			}
 			if collapsed && !call.failed && (call.name == "write" || call.name == "edit") {
 				// Match the compact live progress format; never emit source.
-				tail := []rune(safeLiveLabel(strings.Join(strings.Fields(call.content), " ")))
+				clean := safeLiveLabel(strings.Join(strings.Fields(call.content), " "))
 				maxExcerpt := 72
-				if width, _ := style.GetTerminalSize(); width > 0 && width < 100 {
-					maxExcerpt = width - 28
+				if viewportWidth > 0 && viewportWidth < 100 {
+					maxExcerpt = max(0, viewportWidth-28)
 				}
-				if maxExcerpt < 0 {
-					maxExcerpt = 0
-				}
-				if len(tail) > maxExcerpt {
-					tail = append([]rune("…"), tail[len(tail)-maxExcerpt:]...)
-				}
+				clean = tailCells(clean, maxExcerpt)
 				label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", call.name, call.index+1, call.bytes)
-				if call.name == "write" && len(tail) > 0 && maxExcerpt > 0 {
-					label = fmt.Sprintf("↳ receiving write #%d: %s", call.index+1, string(tail))
+				if call.name == "write" && clean != "" && maxExcerpt > 0 {
+					label = fmt.Sprintf("↳ receiving write #%d: %s", call.index+1, clean)
 				}
 				if !call.completed {
 					fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Render(label))

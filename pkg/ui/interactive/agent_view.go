@@ -14,14 +14,17 @@ func agentPanelRow(text string, width int) string {
 	return text + strings.Repeat(" ", max(0, width-style.CellWidth(text)))
 }
 
-func renderAgentManager(mam *swarm.MultiAgentManager, names []string, active string, selected, width, height int, theme style.UITheme, notice string) string {
-	width = max(1, width-2) // Leave the terminal's last column unused.
+func renderAgentManagerRows(mam *swarm.MultiAgentManager, names []string, active string, selected, width, height int, theme style.UITheme, notice string) []string {
+	width = max(1, width-1)
 	height = max(1, height)
 	title := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	muted := style.NewStyle().Foreground(theme.TextMuted)
 	text := style.NewStyle().Foreground(theme.Text)
 	border := style.NewStyle().Foreground(theme.Border)
 	activeStyle := style.NewStyle().Foreground(theme.Success).Bold(true)
+	if width < 16 || height < 8 {
+		return []string{muted.Render("Resize; Esc back")}
+	}
 	focused := names[selected]
 	isActive := focused == active || (focused == "base" && active == "")
 	if active == "" {
@@ -155,15 +158,5 @@ func renderAgentManager(mam *swarm.MultiAgentManager, names []string, active str
 	if len(rows) > height {
 		rows = rows[:height]
 	}
-	var frame strings.Builder
-	frame.WriteString("\x1b[H")
-	for i, row := range rows {
-		if i > 0 {
-			frame.WriteString("\r\n")
-		}
-		frame.WriteString(style.TruncateCells(row, width))
-		frame.WriteString("\x1b[K")
-	}
-	frame.WriteString("\x1b[J")
-	return frame.String()
+	return rows
 }

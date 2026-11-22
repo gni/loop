@@ -5,6 +5,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/db"
+	"loop/pkg/ui/style"
 )
 
 func sessionDisplayLabel(a *agent.Agent, id string) (string, bool) {
@@ -35,7 +36,8 @@ func (h *ChatHistory) setSessionContext(id string) {
 		return
 	}
 	store := h.a.Store
-	theme := GetConfiguredTheme(h.a.Config)
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	go func() {
 		var sessions []db.SessionInfo
 		if contextual, ok := store.(interface {

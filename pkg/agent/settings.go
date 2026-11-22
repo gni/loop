@@ -61,6 +61,64 @@ type LiveSettings struct {
 	ReasoningEffort string
 }
 
+// LiveSettingsSnapshot is a thread-safe value copy of live and presentation settings.
+type LiveSettingsSnapshot struct {
+	CollapseResults    bool
+	ShowThinking       bool
+	GuidedMode         bool
+	AutoApprove        bool
+	ParallelToolCalls  bool
+	ShowTokens         bool
+	ShowReasoningBadge bool
+	ShowCollapseBadge  bool
+	ShowGitBranch      bool
+	ShowStickyQuestion bool
+	MarkdownRender     bool
+	ShowMicroseconds   bool
+	StreamWrites       bool
+	ReasoningEffort    string
+	Model              string
+	Theme              string
+	SyntaxTheme        string
+	AskUserMode        string
+	MaxSubagentDepth   int
+}
+
+// LiveSettings returns a synchronized snapshot of live settings, safe for
+// concurrent readers and nil agents or configurations.
+func (a *Agent) LiveSettings() LiveSettingsSnapshot {
+	if a == nil {
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true}
+	}
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
+	if a.Config == nil {
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true}
+	}
+	cfg := a.Config
+	return LiveSettingsSnapshot{
+		CollapseResults:    cfg.CollapseResults,
+		ShowThinking:       cfg.ShowThinking,
+		GuidedMode:         cfg.GuidedMode,
+		AutoApprove:        cfg.AutoApprove,
+		ParallelToolCalls:  cfg.ParallelToolCalls,
+		ShowTokens:         cfg.ShowTokens,
+		ShowReasoningBadge: cfg.ShowReasoningBadge,
+		ShowCollapseBadge:  cfg.ShowCollapseBadge,
+		ShowGitBranch:      cfg.ShowGitBranch,
+		ShowStickyQuestion: cfg.ShowStickyQuestion,
+		MarkdownRender:     cfg.MarkdownRender,
+		ShowMicroseconds:   cfg.ShowMicroseconds,
+		StreamWrites:       cfg.StreamWrites,
+		ReasoningEffort:    cfg.ReasoningEffort,
+		Model:              cfg.Model,
+		Theme:              cfg.Theme,
+		SyntaxTheme:        cfg.SyntaxTheme,
+		AskUserMode:        cfg.AskUserMode,
+		MaxSubagentDepth:   cfg.MaxSubagentDepth,
+	}
+}
+
 // UpdateLiveSettings owns synchronization and policy side effects for shortcuts.
 // Callbacks only edit the supplied values and must not call back into the agent.
 func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {

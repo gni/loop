@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,10 @@ import (
 
 type scrollBlockReplacer interface {
 	ReplaceScrollBlockBack(count int, lines []string) bool
+}
+
+type cursorHider interface {
+	SetCursorHidden(bool)
 }
 
 func getScrollBlockReplacer(w io.Writer) scrollBlockReplacer {
@@ -40,6 +45,63 @@ func getScrollBlockReplacer(w io.Writer) scrollBlockReplacer {
 		}
 	}
 	return nil
+}
+
+func getCursorHider(w io.Writer) cursorHider {
+	type unwrapper interface {
+		Unwrap() io.Writer
+	}
+	curr := w
+	for curr != nil {
+		if ch, ok := curr.(cursorHider); ok {
+			return ch
+		}
+		if u, ok := curr.(unwrapper); ok {
+			next := u.Unwrap()
+			if next == nil || next == curr {
+				break
+			}
+			curr = next
+		} else {
+			break
+		}
+	}
+	return nil
+}
+
+func unwrapTerminalWriter(w io.Writer) io.Writer {
+	type unwrapper interface {
+		Unwrap() io.Writer
+	}
+	curr := w
+	for curr != nil {
+		if u, ok := curr.(unwrapper); ok {
+			next := u.Unwrap()
+			if next == nil || next == curr {
+				break
+			}
+			curr = next
+		} else {
+			break
+		}
+	}
+	return curr
+}
+
+func setModalCursorHidden(output io.Writer, hidden bool) {
+	if ch := getCursorHider(output); ch != nil {
+		ch.SetCursorHidden(hidden)
+		return
+	}
+	dest := unwrapTerminalWriter(output)
+	if dest == nil {
+		return
+	}
+	if hidden {
+		_, _ = io.WriteString(dest, terminal.HideCursor)
+	} else {
+		_, _ = io.WriteString(dest, terminal.ShowCursor)
+	}
 }
 
 type approvalInputController interface {
@@ -141,8 +203,8 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 	firstRender := true
-	fmt.Fprint(output, "\x1b[?25l")
-	defer fmt.Fprint(output, "\x1b[?25h")
+	setModalCursorHidden(output, true)
+	defer setModalCursorHidden(output, false)
 
 	renderOption := func(index int) string {
 		width, _ := style.GetTerminalSize()
@@ -182,10 +244,12 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 			}
 		}
 
-		fmt.Fprintf(output, "\x1b[%dA", len(options))
-		for i := range options {
-			fmt.Fprintf(output, "\r\x1b[2K%s\r\n", renderOption(i))
-		}
+		_ = terminal.WriteAtomic(output, func(buf *bytes.Buffer) {
+			fmt.Fprintf(buf, "\x1b[%dA", len(options))
+			for i := range options {
+				fmt.Fprintf(buf, "\r\x1b[2K%s\r\n", renderOption(i))
+			}
+		})
 	}
 
 	sr, closeReader := modalSessionReader(input)
@@ -260,7 +324,8 @@ func readFreeTextAnswer(sr *SessionReader, output io.Writer, promptStyle, active
 		}
 	}
 	const prefix = "  type your answer (Enter to confirm): "
-	if _, err := fmt.Fprint(output, "\r\x1b[K", promptStyle.Render(prefix), "\x1b[?25h"); err != nil {
+	setModalCursorHidden(output, false)
+	if _, err := fmt.Fprint(output, "\r\x1b[K", promptStyle.Render(prefix)); err != nil {
 		return "", true
 	}
 	var answer strings.Builder
@@ -325,7 +390,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 
 	if w != nil {
 		output = w
-		if tty, ok := w.(*os.File); ok {
+		if tty, ok := w.(*os.File); ok && tty != nil {
 			input = tty
 			output = tty
 			fd = int(tty.Fd())
@@ -337,7 +402,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	if activeReaderProvider != nil {
 		activeReader = activeReaderProvider()
 	}
-	hasActiveReader := activeReader != nil
+	hasActiveReader := !isNilReader(activeReader)
 	if hasActiveReader {
 		input = activeReader
 		if w != nil {
@@ -346,27 +411,30 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	}
 	notify := onApprovalPromptChange
 	activeReaderMu.Unlock()
+
+	var inputController approvalInputController
+	if hasActiveReader {
+		if controller, ok := activeReader.(approvalInputController); ok {
+			inputController = controller
+			if approvalInput := controller.BeginApprovalInput(); approvalInput != nil {
+				input = approvalInput
+			}
+		}
+	}
+
 	if notify != nil {
 		notify(true)
 	}
 
-	var inputController approvalInputController
-	if controller, ok := activeReader.(approvalInputController); ok {
-		inputController = controller
-		if approvalInput := controller.BeginApprovalInput(); approvalInput != nil {
-			input = approvalInput
-		}
-	}
-
 	defer func() {
-		if inputController != nil {
-			inputController.EndApprovalInput()
-		}
 		activeReaderMu.Lock()
 		notifyEnd := onApprovalPromptChange
 		activeReaderMu.Unlock()
 		if notifyEnd != nil {
 			notifyEnd(false)
+		}
+		if inputController != nil {
+			inputController.EndApprovalInput()
 		}
 	}()
 
@@ -397,7 +465,11 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	checkedOutput := &modalOutput{Writer: output}
 	output = checkedOutput
 	if isTerm {
-		restorePaste := terminal.Default().BeginBracketedPaste(output)
+		pasteDest := unwrapTerminalWriter(output)
+		if pasteDest == nil {
+			pasteDest = output
+		}
+		restorePaste := terminal.Default().BeginBracketedPaste(pasteDest)
 		defer restorePaste()
 	}
 
@@ -534,12 +606,10 @@ func AskForSubagentCancellationWithReader(w io.Writer, input io.Reader, theme st
 	}
 	var selected int
 	var dismissed bool
-	if input == nil {
+	if isNilReader(input) {
 		selected, dismissed = runModalChoice(w, theme, " cancel active subagent?", options, 1)
 	} else {
-		SetInApprovalPrompt(true)
-		defer SetInApprovalPrompt(false)
-		selected, dismissed = runChoiceMenu(input, w, theme, " cancel active subagent?", options, 1)
+		selected, dismissed = runSubagentChoiceWithReader(w, input, theme, " cancel active subagent?", options, 1)
 	}
 	if dismissed {
 		return agent.SubagentCancellationContinue
@@ -548,4 +618,34 @@ func AskForSubagentCancellationWithReader(w io.Writer, input io.Reader, theme st
 		return agent.SubagentCancellationSkipCurrent
 	}
 	return agent.SubagentCancellationStopAll
+}
+
+func runSubagentChoiceWithReader(w io.Writer, input io.Reader, theme style.UITheme, prompt string, options []ChoiceMenuOption, selected int) (int, bool) {
+	fd := int(os.Stdin.Fd())
+	if f, ok := input.(*os.File); ok && f != nil {
+		fd = int(f.Fd())
+	}
+	if term.IsTerminal(fd) {
+		if oldState, err := term.MakeRaw(fd); err == nil {
+			defer term.Restore(fd, oldState)
+		}
+	}
+
+	var inputController approvalInputController
+	if controller, ok := input.(approvalInputController); ok {
+		inputController = controller
+		if approvalInput := controller.BeginApprovalInput(); approvalInput != nil {
+			input = approvalInput
+		}
+	}
+
+	SetInApprovalPrompt(true)
+	defer func() {
+		SetInApprovalPrompt(false)
+		if inputController != nil {
+			inputController.EndApprovalInput()
+		}
+	}()
+
+	return runChoiceMenu(input, w, theme, prompt, options, selected)
 }

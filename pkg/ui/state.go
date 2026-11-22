@@ -2,7 +2,9 @@ package ui
 
 import (
 	"io"
+	"os"
 	"sync"
+	"sync/atomic"
 
 	"loop/pkg/agent"
 	"loop/pkg/terminal"
@@ -25,7 +27,15 @@ func GetUI() *AgentUIImpl {
 
 var TerminalMu sync.Mutex
 
-var IsInteractive bool
+var interactiveMode atomic.Bool
+
+func SetInteractive(interactive bool) {
+	interactiveMode.Store(interactive)
+}
+
+func IsInteractiveMode() bool {
+	return interactiveMode.Load()
+}
 
 func SetCollapseStatus(collapsed bool) {
 	getUI().SetCollapseStatus(collapsed)
@@ -45,7 +55,7 @@ func ShutdownStatusBar(w io.Writer) {
 
 func ForceExitAlternateScreen(w io.Writer) {
 	terminal.Default().ForceExitAltScreen()
-	if w != nil {
+	if w != nil && agent.UnwrapWriter(w) != os.Stderr {
 		terminal.New(w).ForceExitAltScreen()
 	}
 }

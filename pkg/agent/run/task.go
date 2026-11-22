@@ -260,7 +260,11 @@ func ObserveTool(ctx context.Context, call message.ToolCall, observed *evidence.
 
 // AssessCompletion allows one reminder for known remaining work. A final reply
 // without an explicit assessment is unverified, rather than automatically done.
-func AssessCompletion(ctx context.Context, msg *message.Message) (reminder string) {
+func AssessCompletion(ctx context.Context, msg *message.Message) string {
+	return assessCompletion(ctx, msg, true)
+}
+
+func assessCompletion(ctx context.Context, msg *message.Message, allowReminder bool) (reminder string) {
 	state, _ := ctx.Value(taskKey{}).(*taskState)
 	if state == nil {
 		return ""
@@ -272,7 +276,7 @@ func AssessCompletion(ctx context.Context, msg *message.Message) (reminder strin
 	}
 	pending := state.state.Pending()
 	if state.state.Status == task.Running || (state.state.Status == task.Completed && len(pending) > 0) {
-		if len(pending) > 0 && !state.reminded {
+		if allowReminder && len(pending) > 0 && !state.reminded {
 			state.reminded = true
 			reminder = "Known task work remains.\n" + boundedTaskText(TaskBrief(&state.state), 3072) + "\nFinish the requested work or explain what remains and why. Follow the user's validation restrictions."
 		} else {

@@ -16,6 +16,7 @@ import (
 	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
+	"loop/pkg/buildinfo"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
 	transport "loop/pkg/transport/http"
@@ -97,6 +98,9 @@ type nativeEvent struct {
 }
 
 func (p *OpenAICompatibleProvider) api() string {
+	if p == nil || p.Config == nil {
+		return "chat-completions"
+	}
 	if profile, exists := p.Config.Providers[p.Config.ActiveProvider]; exists && profile.API != "" {
 		return profile.API
 	}
@@ -108,6 +112,9 @@ func (p *OpenAICompatibleProvider) nativeRequest(messages []db.Message, tools []
 }
 
 func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (string, map[string]any, error) {
+	if p == nil || p.Config == nil {
+		return "", nil, fmt.Errorf("provider config is nil")
+	}
 	api := p.api()
 	base := strings.TrimRight(p.Config.Endpoint, "/")
 	if historyCompressionEnabled(p.Config) {
@@ -307,6 +314,8 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 			definitions = append(definitions, map[string]any{"name": function.Name, "description": function.Description, "parametersJsonSchema": function.Parameters})
 		}
 	}
+	caps := p.chatCapabilities()
+	hasReasoningCap := len(p.selectedModel().Reasoning) > 0 || caps.ReasoningEffort || caps.ThinkingControls || p.ThinkingEnabled()
 	switch api {
 	case "responses":
 		payload["input"] = turns
@@ -323,7 +332,7 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 			payload["reasoning"] = map[string]string{"effort": effort}
 		} else {
 			modelID := strings.ToLower(strings.TrimSpace(p.Config.Model))
-			if len(p.selectedModel().Reasoning) > 0 || strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6") || strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") || strings.HasPrefix(modelID, "o4") {
+			if hasReasoningCap || strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6") || strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") || strings.HasPrefix(modelID, "o4") {
 				// A missing reasoning field allows the backend to use its default.
 				// Models that cannot disable reasoning must reject this setting.
 				payload["reasoning"] = map[string]string{"effort": "none"}
@@ -342,12 +351,12 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 		payload["max_tokens"] = maxTokens
 		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
 			modelID := strings.ToLower(p.Config.Model)
-			if len(p.selectedModel().Reasoning) > 0 || strings.Contains(modelID, "sonnet-5") || strings.Contains(modelID, "opus-5") || strings.Contains(modelID, "haiku-5") || strings.Contains(modelID, "fable-5") || strings.Contains(modelID, "mythos") {
+			if hasReasoningCap || strings.Contains(modelID, "claude-3-7") || strings.Contains(modelID, "sonnet-4") || strings.Contains(modelID, "opus-4") || strings.Contains(modelID, "haiku-4") || strings.Contains(modelID, "sonnet-5") || strings.Contains(modelID, "opus-5") || strings.Contains(modelID, "haiku-5") || strings.Contains(modelID, "fable-5") || strings.Contains(modelID, "mythos") {
 				// Explicitly disable thinking on models that otherwise enable it by default.
 				// Models with mandatory thinking will reject this instead of silently reasoning.
 				payload["thinking"] = map[string]any{"type": "disabled"}
 			}
-		} else if len(p.selectedModel().Reasoning) > 0 && maxTokens > 1024 {
+		} else if maxTokens > 1024 {
 			budget := max(p.GetLimits().ReasoningTokenBudgets[effort], 1024)
 			payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": min(budget, maxTokens-1)}
 		}
@@ -371,11 +380,15 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 			modelID := strings.ToLower(strings.TrimPrefix(p.Config.Model, "models/"))
 			switch {
 			case strings.HasPrefix(modelID, "gemini-2.5-flash"):
-				generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+				generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
 			case strings.HasPrefix(modelID, "gemini-2.5-"), strings.HasPrefix(modelID, "gemini-3"), strings.HasPrefix(modelID, "gemini-4"):
 				return "", nil, fmt.Errorf("reasoning:off is not supported by Gemini model %q; select a model that supports disabling thinking", p.Config.Model)
+			default:
+				if hasReasoningCap {
+					generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
+				}
 			}
-		} else if len(p.selectedModel().Reasoning) > 0 {
+		} else {
 			generation["thinkingConfig"] = map[string]any{"thinkingBudget": p.GetLimits().ReasoningTokenBudgets[effort], "includeThoughts": true}
 		}
 		payload["generationConfig"] = generation
@@ -390,10 +403,16 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 }
 
 func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []db.Message, tools []tool.Tool, chunks chan<- StreamChunk) (*db.Message, error) {
-	if !p.ThinkingProbeChecked() {
-		p.ProbeServerCapabilities(ctx)
+	if p == nil || p.Config == nil {
+		return nil, fmt.Errorf("provider config is nil")
 	}
-	endpoint, payload, err := p.nativeRequestContext(ctx, messages, tools)
+	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
+	defer stop()
+	if !p.ThinkingProbeChecked() {
+		p.ProbeServerCapabilities(streamCtx)
+		kick()
+	}
+	endpoint, payload, err := p.nativeRequestContext(streamCtx, messages, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -405,31 +424,38 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	if err != nil {
 		return nil, err
 	}
-	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
-	defer stop()
-	client := transport.NewResilientClient(transport.RetryConfig{MaxRetries: 3, BaseDelay: time.Second, Client: p.HTTPClient, BeforeAttempt: func(int) error {
-		if err := streamCtx.Err(); err != nil {
-			return err
-		}
-		if err := run.RecordRequestAttempt(ctx); err != nil {
-			return err
-		}
-		if counter, _ := ctx.Value(contextKeyHTTPAttempts).(*atomic.Int64); counter != nil {
-			counter.Add(1)
-		}
-		return nil
-	}})
+	client := transport.NewResilientClient(transport.RetryConfig{
+		MaxRetries: 3,
+		BaseDelay:  time.Second,
+		Client:     p.HTTPClient,
+		BeforeAttempt: func(int) error {
+			if err := p.checkContextOrTimeout(ctx, streamCtx, timedOut, "LLM request timed out after "); err != nil {
+				return err
+			}
+			if err := run.RecordRequestAttempt(ctx); err != nil {
+				return err
+			}
+			if counter, _ := ctx.Value(contextKeyHTTPAttempts).(*atomic.Int64); counter != nil {
+				counter.Add(1)
+			}
+			return nil
+		},
+		DescribeError: func(err error) error {
+			return fmt.Errorf("HTTP request failed: %w. Check your endpoint (%s)", err, transport.RedactURL(p.Config.Endpoint))
+		},
+	})
 	response, err := client.DoWithRetry(streamCtx, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(streamCtx, "POST", endpoint, bytes.NewReader(body))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Accept", "text/event-stream")
-		transport.ApplyProviderAuthHeaders(request.Header, p.api(), p.requestKey(streamCtx))
+		request.Header.Set("loop", buildinfo.Version)
 		if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
 			transport.ApplyProviderHeaders(request.Header, profile.Headers)
 		}
+		transport.ApplyProviderAuthHeaders(request.Header, p.api(), p.requestKey(streamCtx))
 		return request, nil
 	})
 	if err != nil {
@@ -438,6 +464,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		}
 		return nil, err
 	}
+	kick()
 	defer response.Body.Close()
 	result := &db.Message{Role: "assistant", Provider: p.Config.ActiveProvider, Model: p.Config.Model}
 	defer func() { p.requestCounter().observe(result.PromptTokens, estimatedInput) }()
@@ -688,9 +715,15 @@ readStream:
 				return result, fmt.Errorf("provider response failed: %s", transport.RedactDiagnostic(event.Response.Error.Message))
 			}
 		case "generate-content":
-			result.PromptTokens = event.UsageMetadata.Input
-			result.CompletionTokens = event.UsageMetadata.Output + event.UsageMetadata.Thinking
-			result.CacheReadTokens = event.UsageMetadata.Cached
+			if event.UsageMetadata.Input > 0 {
+				result.PromptTokens = max(result.PromptTokens, event.UsageMetadata.Input)
+			}
+			if out := event.UsageMetadata.Output + event.UsageMetadata.Thinking; out > 0 {
+				result.CompletionTokens = max(result.CompletionTokens, out)
+			}
+			if event.UsageMetadata.Cached > 0 {
+				result.CacheReadTokens = max(result.CacheReadTokens, event.UsageMetadata.Cached)
+			}
 			if len(event.Candidates) == 0 {
 				continue
 			}

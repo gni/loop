@@ -16,6 +16,11 @@ import (
 	"loop/pkg/db"
 )
 
+type taskRequest struct {
+	ctx  context.Context
+	done chan struct{}
+}
+
 type MultiAgent struct {
 	planMu        sync.RWMutex
 	todos         []tool.TodoItem
@@ -39,12 +44,14 @@ type MultiAgent struct {
 	stateStore    *subagent.Storage
 	supervisor    *subagent.TaskSupervisor
 	persistenceMu sync.Mutex
+	started       bool
 	stopped       bool
+	loopWG        sync.WaitGroup
 
 	ActiveContext context.Context
 	ActiveCancel  context.CancelFunc
 	ActiveStarted time.Time
-	requests      map[string]context.Context
+	requests      map[string]taskRequest
 
 	StreamBuffer   *bytes.Buffer
 	StreamBufferMu sync.Mutex
@@ -203,10 +210,7 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 		return nil
 	}
 
-	maxDepth := 0
-	if ma.BaseAgent.Config != nil {
-		maxDepth = ma.BaseAgent.Config.MaxSubagentDepth
-	}
+	maxDepth := ma.BaseAgent.LiveSettings().MaxSubagentDepth
 	canSpawn := ma.Depth()+1 < subagent.EffectiveMaxDepth(maxDepth)
 
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()

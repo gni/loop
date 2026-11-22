@@ -41,7 +41,7 @@ func (a *Agent) newTurnLoader(ctx context.Context, w io.Writer, theme style.UITh
 		startTime:        startTime,
 		done:             make(chan struct{}),
 		hasDots:          true,
-		showMicroseconds: a.Config != nil && a.Config.ShowMicroseconds,
+		showMicroseconds: a.LiveSettings().ShowMicroseconds,
 		lastFeed:         time.Now(),
 	}
 	go tl.run(ctx)
@@ -60,13 +60,16 @@ func (tl *turnLoader) renderFrame(frame string) {
 		return
 	default:
 	}
+	if frame == "" {
+		frame = style.NewStyle().Foreground(tl.theme.Border).Render("🕛\uFE0E")
+	}
 	timeStr := fmt.Sprintf("(%s)", style.FormatElapsedDuration(time.Since(tl.startTime), tl.showMicroseconds))
 	timeStyled := style.NewStyle().Foreground(tl.theme.Border).Render(timeStr)
 	tl.agent.UI.DrawStatsLine(tl.w, tl.theme, frame, timeStyled)
 }
 
 func (tl *turnLoader) run(ctx context.Context) {
-	ticker := time.NewTicker(240 * time.Millisecond)
+	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
 	tl.mu.Lock()

@@ -79,7 +79,7 @@ func handleBranchCommand(
 		a.SyncSessionSystemPrompt(messages, "")
 	}
 
-	if history := ui.GetUI().ChatHistory; history != nil {
+	if history := ui.GetUI().GetChatHistory(); history != nil {
 		ui.MarkSessionReloaded()
 	} else if kiReader != nil {
 		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
@@ -116,7 +116,7 @@ func handleForkCommand(
 		return
 	}
 	fmt.Fprintf(w, "successfully forked session from '%s'. active session is now '%s'.\n", parentID, newID)
-	if ui.GetUI().ChatHistory != nil {
+	if ui.GetUI().GetChatHistory() != nil {
 		ui.MarkSessionReloaded()
 	}
 	ui.DrawStatusBar(os.Stderr, *theme)

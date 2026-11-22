@@ -4,10 +4,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"loop/pkg/resources"
 )
+
+func isCaseInsensitiveFS() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+}
+
+func samePath(a, b string) bool {
+	if isCaseInsensitiveFS() {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func hasPathPrefix(target, prefix string) bool {
+	if isCaseInsensitiveFS() {
+		return strings.HasPrefix(strings.ToLower(target), strings.ToLower(prefix))
+	}
+	return strings.HasPrefix(target, prefix)
+}
+
+func firstSubpathSegment(root, target string) string {
+	rootParts := strings.Split(strings.TrimSuffix(filepath.ToSlash(filepath.Clean(root)), "/"), "/")
+	targetParts := strings.Split(strings.TrimSuffix(filepath.ToSlash(filepath.Clean(target)), "/"), "/")
+	if len(targetParts) <= len(rootParts) {
+		return "."
+	}
+	return targetParts[len(rootParts)]
+}
 
 func resolveExistingAncestorSymlinks(cleanTarget, inputPath string) (string, error) {
 	ancestor := cleanTarget
@@ -45,11 +73,11 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 		if absConfig, err := filepath.Abs(a.ConfigPath); err == nil {
 			cleanConfig := filepath.Clean(absConfig)
 			if evalCfg, evalErr := resolveExistingAncestorSymlinks(cleanConfig, cleanConfig); evalErr == nil {
-				if candidate == evalCfg || candidate == evalCfg+".lock" {
+				if samePath(candidate, evalCfg) || samePath(candidate, evalCfg+".lock") {
 					return fmt.Errorf("security violation: accessing the active configuration file is not allowed")
 				}
 			}
-			if candidate == cleanConfig || candidate == cleanConfig+".lock" {
+			if samePath(candidate, cleanConfig) || samePath(candidate, cleanConfig+".lock") {
 				return fmt.Errorf("security violation: accessing the active configuration file is not allowed")
 			}
 		}
@@ -77,12 +105,12 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 		if !withinRoot(dir, candidate) {
 			continue
 		}
-		rel, err := filepath.Rel(dir, candidate)
-		if err != nil {
-			return fmt.Errorf("security violation: access to runtime state directory is not allowed")
+		top := firstSubpathSegment(dir, candidate)
+		topCompare := top
+		if isCaseInsensitiveFS() {
+			topCompare = strings.ToLower(top)
 		}
-		top := strings.Split(filepath.ToSlash(rel), "/")[0]
-		switch top {
+		switch topCompare {
 		case "sessions":
 			return fmt.Errorf("security violation: accessing session database files is not allowed")
 		case "agents", "trust", "recovery":
@@ -91,19 +119,35 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 		if privateRuntimeConfigName(top) {
 			return fmt.Errorf("security violation: accessing runtime credentials or configuration is not allowed")
 		}
-		if strings.HasSuffix(top, ".lock") {
+		if strings.HasSuffix(topCompare, ".lock") {
 			return fmt.Errorf("security violation: accessing runtime lock files is not allowed")
 		}
 	}
 
 	parentBase := filepath.Base(filepath.Dir(candidate))
 	base := filepath.Base(candidate)
-	if parentBase == ".loop" {
+	if samePath(parentBase, ".loop") {
 		if privateRuntimeConfigName(base) {
 			return fmt.Errorf("security violation: accessing protected .loop configuration is not allowed")
 		}
-		if strings.HasSuffix(base, ".lock") {
+		baseCompare := base
+		if isCaseInsensitiveFS() {
+			baseCompare = strings.ToLower(base)
+		}
+		if strings.HasSuffix(baseCompare, ".lock") {
 			return fmt.Errorf("security violation: accessing .loop lock files is not allowed")
+		}
+	}
+	return nil
+}
+
+func (a *Agent) checkProtectedTarget(cleanTarget, inputPath string) error {
+	if err := a.isProtectedRuntimePath(cleanTarget); err != nil {
+		return err
+	}
+	if evalTarget, evalErr := resolveExistingAncestorSymlinks(cleanTarget, inputPath); evalErr == nil {
+		if err := a.isProtectedRuntimePath(evalTarget); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -111,12 +155,13 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 
 // SafePath canonicalizes paths and enforces workspace sandbox boundary containment.
 func (a *Agent) SafePath(inputPath string) (string, error) {
-	if inputPath == "" {
-		return a.WorkspaceRoot, nil
-	}
-
 	target := inputPath
-	if !filepath.IsAbs(target) {
+	if target == "" {
+		if a.WorkspaceRoot == "" {
+			return "", nil
+		}
+		target = a.WorkspaceRoot
+	} else if !filepath.IsAbs(target) {
 		target = filepath.Join(a.WorkspaceRoot, target)
 	}
 
@@ -128,7 +173,10 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	cleanRoot := filepath.Clean(a.WorkspaceRoot)
 	cleanTarget := filepath.Clean(absTarget)
 
-	if cleanTarget == cleanRoot {
+	if samePath(cleanTarget, cleanRoot) {
+		if err := a.checkProtectedTarget(cleanTarget, inputPath); err != nil {
+			return "", err
+		}
 		return cleanTarget, nil
 	}
 
@@ -137,7 +185,10 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	// Resolve that before any containment check so legitimate paths are not rejected.
 	cleanTarget = a.resolveRepeatedRootName(cleanRoot, cleanTarget, inputPath)
 
-	if cleanTarget == cleanRoot {
+	if samePath(cleanTarget, cleanRoot) {
+		if err := a.checkProtectedTarget(cleanTarget, inputPath); err != nil {
+			return "", err
+		}
 		return cleanTarget, nil
 	}
 
@@ -158,12 +209,12 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		globalLoopDir := filepath.Clean(filepath.Join(home, ".loop"))
 		globalLoop := filepath.Join(globalLoopDir, "LOOP.md")
-		if cleanTarget == globalLoop {
+		if samePath(cleanTarget, globalLoop) {
 			evalLoopDir := globalLoopDir
 			if resolvedDir, evalErr := resolveExistingAncestorSymlinks(globalLoopDir, globalLoopDir); evalErr == nil {
 				evalLoopDir = resolvedDir
 			}
-			if evalTarget != filepath.Join(evalLoopDir, "LOOP.md") {
+			if !samePath(evalTarget, filepath.Join(evalLoopDir, "LOOP.md")) {
 				return "", fmt.Errorf("security violation: global LOOP.md resolves via symlink outside %s", globalLoopDir)
 			}
 			return cleanTarget, nil
@@ -223,14 +274,14 @@ func (a *Agent) SafeReadPath(inputPath string) (string, error) {
 }
 
 func withinRoot(cleanRoot, target string) bool {
-	if target == cleanRoot {
+	if samePath(target, cleanRoot) {
 		return true
 	}
 	prefix := cleanRoot
 	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
 		prefix += string(filepath.Separator)
 	}
-	return strings.HasPrefix(target, prefix)
+	return hasPathPrefix(target, prefix)
 }
 
 // resolveRepeatedRootName repairs inputs that repeat the workspace root folder name as their
@@ -238,7 +289,7 @@ func withinRoot(cleanRoot, target string) bool {
 // It rewrites the path only when the original form is absent on disk and the de-duplicated form
 // exists, so genuine paths that happen to start with the root name are never mangled.
 func (a *Agent) resolveRepeatedRootName(cleanRoot, cleanTarget, inputPath string) string {
-	if cleanTarget == cleanRoot {
+	if samePath(cleanTarget, cleanRoot) {
 		return cleanTarget
 	}
 

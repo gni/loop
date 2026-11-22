@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/ui/render"
 )
@@ -172,8 +171,8 @@ func (h *ChatHistory) turnMessages(turn *displayTurn) ([]db.Message, error) {
 }
 
 func (h *ChatHistory) getPageSize() int {
-	if h.a != nil && h.a.Config != nil && h.a.Config.HistoryPageSize > 0 {
-		return h.a.Config.HistoryPageSize
+	if pageSize := configuredHistoryPageSize(h.a); pageSize > 0 {
+		return pageSize
 	}
 	if h.buffer != nil {
 		return h.buffer.PageSize()
@@ -189,7 +188,7 @@ func (h *ChatHistory) loadOlderLocked() int {
 	if h.readyPage != nil {
 		return h.applyOlderPageLocked()
 	}
-	cfg, err := config.Clone(h.a.Config)
+	cfg, err := h.a.Configuration()
 	if err != nil {
 		h.historyErr = err
 		return 0

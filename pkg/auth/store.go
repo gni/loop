@@ -45,6 +45,33 @@ type refreshRequestCanceled struct{ cause error }
 func (e *refreshRequestCanceled) Error() string { return e.cause.Error() }
 func (e *refreshRequestCanceled) Unwrap() error { return e.cause }
 
+type cachedFile struct {
+	size        int64
+	modified    time.Time
+	identity    os.FileInfo
+	changeStamp int64
+	stampKnown  bool
+}
+
+func cacheFile(info os.FileInfo) cachedFile {
+	stamp, known := storage.FileChangeStamp(info)
+	return cachedFile{
+		size:        info.Size(),
+		modified:    info.ModTime(),
+		identity:    info,
+		changeStamp: stamp,
+		stampKnown:  known,
+	}
+}
+
+func (c cachedFile) matches(info os.FileInfo) bool {
+	if c.size != info.Size() || !c.modified.Equal(info.ModTime()) || c.identity == nil || !os.SameFile(c.identity, info) {
+		return false
+	}
+	stamp, known := storage.FileChangeStamp(info)
+	return c.stampKnown == known && (!known || c.changeStamp == stamp)
+}
+
 type Store struct {
 	refreshing  map[string]*credentialRefresh
 	path        string
@@ -52,8 +79,7 @@ type Store struct {
 	Client      *http.Client
 	cached      bool
 	cacheExists bool
-	cacheMod    time.Time
-	cacheSize   int64
+	cacheMeta   cachedFile
 	cacheCreds  map[string]Credential
 }
 
@@ -111,8 +137,7 @@ func (s *Store) read() (map[string]Credential, error) {
 		empty := make(map[string]Credential)
 		s.cached = true
 		s.cacheExists = false
-		s.cacheMod = time.Time{}
-		s.cacheSize = 0
+		s.cacheMeta = cachedFile{}
 		s.cacheCreds = empty
 		return cloneCredentialMap(empty), nil
 	}
@@ -138,8 +163,7 @@ func (s *Store) read() (map[string]Credential, error) {
 	}
 	s.cached = true
 	s.cacheExists = true
-	s.cacheMod = info.ModTime()
-	s.cacheSize = info.Size()
+	s.cacheMeta = cacheFile(info)
 	s.cacheCreds = cloneCredentialMap(credentials)
 	return credentials, nil
 }
@@ -156,7 +180,7 @@ func (s *Store) lockCredentials(ctx context.Context) (map[string]Credential, err
 		credentials := cloneCredentialMap(s.cacheCreds)
 		return credentials, nil
 	}
-	if statErr == nil && s.cached && s.cacheExists && info.ModTime().Equal(s.cacheMod) && info.Size() == s.cacheSize {
+	if statErr == nil && s.cached && s.cacheExists && s.cacheMeta.matches(info) {
 		credentials := cloneCredentialMap(s.cacheCreds)
 		return credentials, nil
 	}
@@ -177,27 +201,7 @@ func (s *Store) lockCredentials(ctx context.Context) (map[string]Credential, err
 }
 
 func (s *Store) lock(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if ctx.Done() == nil {
-		s.mu.Lock()
-		return nil
-	}
-	for !s.mu.TryLock() {
-		timer := time.NewTimer(20 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	return nil
+	return storage.LockMutexContext(ctx, &s.mu)
 }
 
 func (s *Store) Save(name string, credential Credential) error {
@@ -238,8 +242,7 @@ func (s *Store) write(credentials map[string]Credential) error {
 	if info, statErr := os.Stat(s.path); statErr == nil {
 		s.cached = true
 		s.cacheExists = true
-		s.cacheMod = info.ModTime()
-		s.cacheSize = info.Size()
+		s.cacheMeta = cacheFile(info)
 		s.cacheCreds = cloneCredentialMap(credentials)
 	} else {
 		s.cached = false

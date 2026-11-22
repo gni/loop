@@ -7,12 +7,60 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
+
+func padRightCells(text string, width int) string {
+	pad := width - style.CellWidth(text)
+	if pad <= 0 {
+		return text
+	}
+	return text + strings.Repeat(" ", pad)
+}
+
+// tailCells returns s unchanged when its display width fits within maxCells;
+// otherwise it keeps the trailing grapheme clusters fitting alongside "…".
+func tailCells(s string, maxCells int) string {
+	if maxCells <= 0 {
+		return ""
+	}
+	if style.CellWidth(s) <= maxCells {
+		return s
+	}
+	if maxCells == 1 {
+		return "…"
+	}
+	type graphemeSpan struct {
+		text  string
+		width int
+	}
+	var clusters []graphemeSpan
+	for i := 0; i < len(s); {
+		cluster, cw, sz := style.NextGrapheme(s[i:])
+		clusters = append(clusters, graphemeSpan{text: cluster, width: cw})
+		i += sz
+	}
+	budget := maxCells - 1
+	used := 0
+	start := len(clusters)
+	for start > 0 {
+		w := clusters[start-1].width
+		if used+w > budget {
+			break
+		}
+		used += w
+		start--
+	}
+	var b strings.Builder
+	b.WriteString("…")
+	for _, g := range clusters[start:] {
+		b.WriteString(g.text)
+	}
+	return b.String()
+}
 
 func isReadLike(lower string) bool {
 	return lower == "read" || strings.Contains(lower, "read") || strings.Contains(lower, "view")
@@ -199,7 +247,7 @@ func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 	return style.NewStyle().Foreground(c).Bold(true)
 }
 
-func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
+func formatToolTitleForWidth(symbol string, toolName string, path string, theme style.UITheme, width int) string {
 	toolName = domaintool.NormalizeName(toolName)
 	if toolName == "task_state" {
 		return symbol + " " + GetActionStyle(toolName, theme).Render("Task progress")
@@ -207,12 +255,12 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 	toolStyle := GetActionStyle(toolName, theme)
 	pathStyle := style.NewStyle().Foreground(theme.Text)
 
-	width, _ := terminal.GetDimensions()
 	if width <= 0 {
 		width = 80
 	}
-	targetWidth := width - 2
+	targetWidth := max(1, width-2)
 
+	path = style.StripAnsi(path)
 	path = strings.Join(strings.FieldsFunc(path, func(r rune) bool {
 		return r == '\n' || r == '\r' || r == '\t'
 	}), " ")
@@ -235,11 +283,9 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 				}
 			}
 		}
-		symbolLen := utf8.RuneCountInString(style.StripAnsi(symbol))
-		maxPathRunes := max(targetWidth-symbolLen-utf8.RuneCountInString(toolName)-6, 8)
-		if pathRunes := []rune(relPath); len(pathRunes) > maxPathRunes {
-			relPath = string(pathRunes[:maxPathRunes-3]) + "..."
-		}
+		symbolLen := style.CellWidth(symbol)
+		maxPathCells := max(targetWidth-symbolLen-style.CellWidth(toolName)-6, 8)
+		relPath = style.TruncateCells(relPath, maxPathCells)
 		if symbol != "" {
 			return fmt.Sprintf("%s %s %s", symbol, toolStyle.Render(toolName), pathStyle.Render(relPath))
 		}
@@ -252,32 +298,18 @@ func FormatToolTitle(symbol string, toolName string, path string, theme style.UI
 	return toolStyle.Render(toolName)
 }
 
+func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
+	width, _ := terminal.GetDimensions()
+	return formatToolTitleForWidth(symbol, toolName, path, theme, width)
+}
+
 func WrapText(text string, limit int) []string {
 	if limit <= 0 {
 		return []string{text}
 	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if collapsed == "" {
 		return []string{""}
 	}
-
-	var lines []string
-	var currentLine strings.Builder
-
-	for _, word := range words {
-		if currentLine.Len() == 0 {
-			currentLine.WriteString(word)
-		} else if currentLine.Len()+1+len(word) <= limit {
-			currentLine.WriteByte(' ')
-			currentLine.WriteString(word)
-		} else {
-			lines = append(lines, currentLine.String())
-			currentLine.Reset()
-			currentLine.WriteString(word)
-		}
-	}
-	if currentLine.Len() > 0 {
-		lines = append(lines, currentLine.String())
-	}
-	return lines
+	return style.WrapAnsiLine(collapsed, limit)
 }

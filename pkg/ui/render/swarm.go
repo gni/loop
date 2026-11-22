@@ -12,7 +12,6 @@ import (
 )
 
 func RenderSwarmStats(w io.Writer, baseMessages []db.Message, agents []message.AgentUsageSnapshot, tr *agent.TimingRecorder, theme style.UITheme) {
-	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 	valueStyle := style.NewStyle().Foreground(theme.Text)
 
@@ -31,20 +30,19 @@ func RenderSwarmStats(w io.Writer, baseMessages []db.Message, agents []message.A
 
 	totalSwarmP := baseP
 	totalSwarmC := baseC
+	roleBudget := max(12, min(60, renderWidth(w)-26))
 
 	if len(agents) > 0 {
 		for _, snapshot := range agents {
-			name := snapshot.Name
+			name := SanitizeTerminalText(snapshot.Name)
 			subP, subC := agent.CalculateHistoryTokens(snapshot.Messages)
 			subUsage := message.TotalUsage(snapshot.Messages)
 			allMessages = append(allMessages, snapshot.Messages...)
 			totalSwarmP += subP
 			totalSwarmC += subC
 
-			role := strings.ReplaceAll(snapshot.Role, "\n", " ")
-			if len(role) > 60 {
-				role = role[:57] + "..."
-			}
+			role := strings.Join(strings.Fields(SanitizeTerminalText(snapshot.Role)), " ")
+			role = style.TruncateCells(role, roleBudget)
 
 			fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Subagent: "+name))
 			fmt.Fprintf(w, "    Role/Goal:          %s\n", valueStyle.Render(role))
@@ -53,7 +51,7 @@ func RenderSwarmStats(w io.Writer, baseMessages []db.Message, agents []message.A
 			fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(formatCost(subUsage.Cost)))
 		}
 
-		fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
+		printUsageDivider(w, theme)
 		fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Total Swarm Utilization"))
 		fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", totalSwarmP)))
 		fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", totalSwarmC)))

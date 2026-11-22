@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	domaintool "loop/pkg/domain/tool"
@@ -40,12 +41,58 @@ type JSONStreamParser struct {
 	ActiveToolIndex      int
 	StreamWrites         bool
 	IsRawStream          bool
+
+	utf8Pending     [utf8.UTFMax]byte
+	utf8PendingLen  int
+	inUnicodeEscape bool
+	unicodeHex      [4]byte
+	unicodeHexLen   int
+	pendingHighSurr rune
 }
 
 func NewJSONStreamParser(streamWrites bool) *JSONStreamParser {
 	return &JSONStreamParser{
 		StreamWrites: streamWrites,
 	}
+}
+
+func (p *JSONStreamParser) resetEscapeState() {
+	p.utf8PendingLen = 0
+	p.inUnicodeEscape = false
+	p.unicodeHexLen = 0
+	p.pendingHighSurr = 0
+}
+
+func isASCIIHex(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+func (p *JSONStreamParser) flushPendingHighSurrogate(w io.Writer, theme style.UITheme) {
+	if p.pendingHighSurr != 0 {
+		p.pendingHighSurr = 0
+		p.appendStringChunk(string(utf8.RuneError), w, theme)
+	}
+}
+
+func (p *JSONStreamParser) flushPendingUTF8(w io.Writer, theme style.UITheme) {
+	if p.utf8PendingLen > 0 {
+		p.utf8PendingLen = 0
+		p.appendStringChunk(string(utf8.RuneError), w, theme)
+	}
+}
+
+// FlushPending flushes any incomplete escape, surrogate, or trailing UTF-8 bytes
+// when a streamed JSON tool call terminates unexpectedly.
+func (p *JSONStreamParser) FlushPending(w io.Writer, theme style.UITheme) {
+	p.flushPendingUTF8(w, theme)
+	if p.inUnicodeEscape {
+		p.flushPendingHighSurrogate(w, theme)
+		partial := "\\u" + string(p.unicodeHex[:p.unicodeHexLen])
+		p.inUnicodeEscape = false
+		p.unicodeHexLen = 0
+		p.appendStringChunk(partial, w, theme)
+	}
+	p.flushPendingHighSurrogate(w, theme)
 }
 
 func IsToolTargetPathKey(key string, toolName string) bool {
@@ -322,45 +369,103 @@ func (p *JSONStreamParser) FeedRaw(chunk string, w io.Writer, theme style.UIThem
 func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) {
 	for i := 0; i < len(chunk); {
 		if p.InString {
+			if p.utf8PendingLen > 0 {
+				b := chunk[i]
+				if b&0xC0 == 0x80 && p.utf8PendingLen < utf8.UTFMax {
+					p.utf8Pending[p.utf8PendingLen] = b
+					p.utf8PendingLen++
+					i++
+					if utf8.FullRune(p.utf8Pending[:p.utf8PendingLen]) {
+						r, sz := utf8.DecodeRune(p.utf8Pending[:p.utf8PendingLen])
+						out := string(p.utf8Pending[:sz])
+						if r == utf8.RuneError && sz == 1 {
+							out = string(utf8.RuneError)
+						}
+						p.utf8PendingLen = 0
+						p.appendStringChunk(out, w, theme)
+					} else if p.utf8PendingLen == utf8.UTFMax {
+						p.flushPendingUTF8(w, theme)
+					}
+					continue
+				}
+				p.flushPendingUTF8(w, theme)
+			}
+			if p.inUnicodeEscape {
+				for p.unicodeHexLen < 4 && i < len(chunk) {
+					if !isASCIIHex(chunk[i]) {
+						p.flushPendingHighSurrogate(w, theme)
+						partial := "\\u" + string(p.unicodeHex[:p.unicodeHexLen])
+						p.inUnicodeEscape = false
+						p.unicodeHexLen = 0
+						p.appendStringChunk(partial, w, theme)
+						break
+					}
+					p.unicodeHex[p.unicodeHexLen] = chunk[i]
+					p.unicodeHexLen++
+					i++
+				}
+				if p.inUnicodeEscape && p.unicodeHexLen == 4 {
+					val, err := strconv.ParseUint(string(p.unicodeHex[:4]), 16, 32)
+					p.inUnicodeEscape = false
+					p.unicodeHexLen = 0
+					if err != nil {
+						p.flushPendingHighSurrogate(w, theme)
+						p.appendStringChunk("\\u"+string(p.unicodeHex[:4]), w, theme)
+						continue
+					}
+					unit := rune(val)
+					switch {
+					case unit >= 0xD800 && unit <= 0xDBFF:
+						p.flushPendingHighSurrogate(w, theme)
+						p.pendingHighSurr = unit
+					case unit >= 0xDC00 && unit <= 0xDFFF:
+						if p.pendingHighSurr != 0 {
+							combined := utf16.DecodeRune(p.pendingHighSurr, unit)
+							p.pendingHighSurr = 0
+							p.appendStringChunk(string(combined), w, theme)
+						} else {
+							p.appendStringChunk(string(utf8.RuneError), w, theme)
+						}
+					default:
+						p.flushPendingHighSurrogate(w, theme)
+						p.appendStringChunk(string(unit), w, theme)
+					}
+				}
+				continue
+			}
 			if p.InEscape {
 				p.InEscape = false
 				char := chunk[i]
+				i++
+				if char == 'u' {
+					p.inUnicodeEscape = true
+					p.unicodeHexLen = 0
+					continue
+				}
+				p.flushPendingHighSurrogate(w, theme)
 				var unescaped string
 				switch char {
 				case 'n':
 					unescaped = "\n"
-					i++
 				case 't':
 					unescaped = "\t"
-					i++
 				case 'r':
 					unescaped = "\r"
-					i++
+				case 'b':
+					unescaped = "\b"
+				case 'f':
+					unescaped = "\f"
 				case '"', '\\', '/':
 					unescaped = string(char)
-					i++
-				case 'u':
-					if i+5 <= len(chunk) {
-						if val, err := strconv.ParseUint(chunk[i+1:i+5], 16, 32); err == nil {
-							unescaped = string(rune(val))
-							i += 5
-						} else {
-							unescaped = "\\u"
-							i++
-						}
-					} else {
-						unescaped = "\\u"
-						i++
-					}
 				default:
 					unescaped = "\\" + string(char)
-					i++
 				}
 				p.appendStringChunk(unescaped, w, theme)
 			} else if chunk[i] == '\\' {
 				p.InEscape = true
 				i++
 			} else if chunk[i] == '"' {
+				p.flushPendingHighSurrogate(w, theme)
 				p.InString = false
 				i++
 				strVal := p.Buf.String()
@@ -397,14 +502,24 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 					p.IsPath = false
 				}
 			} else {
-				r, size := utf8.DecodeRuneInString(chunk[i:])
-				if r != utf8.RuneError {
-					p.appendStringChunk(chunk[i:i+size], w, theme)
-					i += size
-				} else {
-					p.appendStringChunk(string(chunk[i]), w, theme)
+				p.flushPendingHighSurrogate(w, theme)
+				if chunk[i] < utf8.RuneSelf {
+					p.appendStringChunk(chunk[i:i+1], w, theme)
 					i++
+					continue
 				}
+				if !utf8.FullRuneInString(chunk[i:]) {
+					p.utf8PendingLen = copy(p.utf8Pending[:], chunk[i:])
+					i = len(chunk)
+					break
+				}
+				r, size := utf8.DecodeRuneInString(chunk[i:])
+				if r == utf8.RuneError && size == 1 {
+					p.appendStringChunk(string(utf8.RuneError), w, theme)
+				} else {
+					p.appendStringChunk(chunk[i:i+size], w, theme)
+				}
+				i += size
 			}
 		} else {
 			switch chunk[i] {
@@ -467,12 +582,12 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 	}
 }
 
-func (p *JSONStreamParser) formatCurrentTitle(theme style.UITheme) string {
+func (p *JSONStreamParser) formatCurrentTitle(w io.Writer, theme style.UITheme) string {
 	symbol := RenderToolSymbol(p.ActiveToolName, ToolStatusPending, theme)
 	if p.ActiveToolName == "bash" {
 		return FormatBashCommandLine(symbol, p.Path, theme)
 	}
-	return FormatToolTitle(symbol, p.ActiveToolName, p.Path, theme)
+	return formatToolTitleForWidth(symbol, p.ActiveToolName, p.Path, theme, renderWidth(w))
 }
 
 func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
@@ -483,7 +598,7 @@ func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
 	p.EnsureTrackingIndex()
 	p.ToolTitlePrinted[p.ActiveToolIndex] = true
 	p.ToolTitleLineNumbers[p.ActiveToolIndex] = GetNewlineCount(w)
-	fmt.Fprintln(w, p.formatCurrentTitle(theme))
+	fmt.Fprintln(w, p.formatCurrentTitle(w, theme))
 }
 
 func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UITheme) {
@@ -496,7 +611,7 @@ func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UI
 		return
 	}
 	if line := p.ToolTitleLineNumbers[p.ActiveToolIndex]; line >= 0 {
-		_ = ReplaceTrackedStreamLine(w, line, p.formatCurrentTitle(theme))
+		_ = ReplaceTrackedStreamLine(w, line, p.formatCurrentTitle(w, theme))
 	}
 }
 

@@ -14,51 +14,50 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
-	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
 	"loop/pkg/ui/style"
 )
 
 type KeyInterceptorReader struct {
-	InputContext      context.Context
-	R                 io.Reader
-	Agent             *agent.Agent
-	Theme             style.UITheme
-	W                 io.Writer
-	RL                *term.Terminal
-	DraftMu           sync.Mutex
-	CurrentInputLine  string
-	CurrentInputPos   int
-	Messages          *[]db.Message
-	PasteRemaining    []byte
-	InputRemaining    []byte // Unprocessed input after a completed paste frame.
-	PasteStartPending []byte
-	PastedText        string
-	CtrlCInterrupted  bool
-	MAM               *swarm.MultiAgentManager
-	AllowedTools      []string
-	InputChan         chan byte
-	ApprovalChan      chan byte
-	ApprovalReader    *ApprovalByteReader
-	approvalCancel    func()
-	InjectChan        chan byte
-	TypeAheadBuffer   []byte
-	TypeAheadPastes   []string
-	HistoryIndex      int
-	SavedTypeAhead    []byte
-	Hist              term.History
-	InBracketedPaste  bool
-	BracketedBuffer   []byte
-	IsAtMainPrompt    atomic.Bool
-	LastCtrlDTime     time.Time
-	PastedCodeBlocks  map[string]string
-	PendingPastes     []string // Bulk edits consumed by the foreground prompt editor.
-	PastedLiterals    []string // Clipboard text or previews in the current prompt.
-	PromptQueue       []PromptInput
-	PromptQueueMu     sync.Mutex
-	PasteLinesOffset  int
-	PasteCounter      int
+	InputContext       context.Context
+	R                  io.Reader
+	Agent              *agent.Agent
+	Theme              style.UITheme
+	W                  io.Writer
+	RL                 *term.Terminal
+	DraftMu            sync.Mutex
+	CurrentInputLine   string
+	CurrentInputPos    int
+	Messages           *[]db.Message
+	PasteRemaining     []byte
+	InputRemaining     []byte // Unprocessed input after a completed paste frame.
+	PasteStartPending  []byte
+	PastedText         string
+	CtrlCInterrupted   bool
+	MAM                *swarm.MultiAgentManager
+	AllowedTools       []string
+	InputChan          chan byte
+	ApprovalChan       chan byte
+	ApprovalReader     *ApprovalByteReader
+	approvalCancel     func()
+	InjectChan         chan byte
+	TypeAheadBuffer    []byte
+	TypeAheadPastes    []string
+	HistoryIndex       int
+	SavedTypeAhead     []byte
+	Hist               term.History
+	InBracketedPaste   bool
+	BracketedBuffer    []byte
+	bracketedTruncated bool
+	bracketedTail      []byte
+	IsAtMainPrompt     atomic.Bool
+	PastedCodeBlocks   map[string]string
+	PendingPastes      []string // Bulk edits consumed by the foreground prompt editor.
+	PastedLiterals     []string // Clipboard text or previews in the current prompt.
+	PromptQueue        []PromptInput
+	PromptQueueMu      sync.Mutex
+	PasteCounter       int
 
 	OnClearPromptHint       func()
 	OnRedrawScreen          func()
@@ -102,6 +101,174 @@ func (ki *KeyInterceptorReader) HasPromptDraft() bool {
 	return ki.CurrentInputLine != ""
 }
 
+func (ki *KeyInterceptorReader) GetRL() *term.Terminal {
+	if ki == nil {
+		return nil
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.RL
+}
+
+func (ki *KeyInterceptorReader) SetRL(rl *term.Terminal) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.RL = rl
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) GetPastedText() string {
+	if ki == nil {
+		return ""
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.PastedText
+}
+
+func (ki *KeyInterceptorReader) SetPastedText(text string) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.PastedText = text
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) TakePastedText() string {
+	if ki == nil {
+		return ""
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	text := ki.PastedText
+	ki.PastedText = ""
+	return text
+}
+
+func (ki *KeyInterceptorReader) GetTheme() style.UITheme {
+	if ki == nil {
+		return style.UITheme{}
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.Theme
+}
+
+func (ki *KeyInterceptorReader) SetTheme(theme style.UITheme) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.Theme = theme
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) GetAllowedTools() []string {
+	if ki == nil {
+		return nil
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	if ki.AllowedTools == nil {
+		return nil
+	}
+	copied := make([]string, len(ki.AllowedTools))
+	copy(copied, ki.AllowedTools)
+	return copied
+}
+
+func (ki *KeyInterceptorReader) SetAllowedTools(tools []string) {
+	if ki == nil {
+		return
+	}
+	var copied []string
+	if tools != nil {
+		copied = make([]string, len(tools))
+		copy(copied, tools)
+	}
+	ki.DraftMu.Lock()
+	ki.AllowedTools = copied
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) ResetTypeAhead() {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.resetTypeAheadLocked()
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) resetTypeAheadLocked() {
+	ki.TypeAheadBuffer = nil
+	ki.TypeAheadPastes = nil
+	ki.HistoryIndex = -1
+	ki.SavedTypeAhead = nil
+}
+
+func (ki *KeyInterceptorReader) GetTypeAheadDraft() (string, int) {
+	if ki == nil {
+		return "", 0
+	}
+	ki.DraftMu.Lock()
+	text := string(ki.TypeAheadBuffer)
+	ki.DraftMu.Unlock()
+	return text, len([]rune(text))
+}
+
+func (ki *KeyInterceptorReader) TakeTypeAhead() ([]byte, []string) {
+	if ki == nil {
+		return nil, nil
+	}
+	ki.DraftMu.Lock()
+	buf := append([]byte(nil), ki.TypeAheadBuffer...)
+	pastes := append([]string(nil), ki.TypeAheadPastes...)
+	ki.resetTypeAheadLocked()
+	ki.DraftMu.Unlock()
+	return buf, pastes
+}
+
+func (ki *KeyInterceptorReader) AppendTypeAheadByte(b byte) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.TypeAheadBuffer = append(ki.TypeAheadBuffer, b)
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) AppendTypeAheadPaste(text string) {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.TypeAheadBuffer = append(ki.TypeAheadBuffer, text...)
+	ki.TypeAheadPastes = append(ki.TypeAheadPastes, text)
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) ResetHistoryIndex() {
+	if ki == nil {
+		return
+	}
+	ki.DraftMu.Lock()
+	ki.HistoryIndex = -1
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) GetHistoryIndex() int {
+	if ki == nil {
+		return -1
+	}
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.HistoryIndex
+}
+
 func drainByteChannel(ch <-chan byte) {
 	if ch == nil {
 		return
@@ -127,6 +294,8 @@ func (ki *KeyInterceptorReader) Drain() {
 	ki.InputRemaining = nil
 	ki.PasteStartPending = nil
 	ki.BracketedBuffer = nil
+	ki.bracketedTruncated = false
+	ki.bracketedTail = nil
 	ki.InBracketedPaste = false
 }
 
@@ -141,15 +310,9 @@ func (ki *KeyInterceptorReader) resolveTargetWriter(fallback io.Writer) io.Write
 }
 
 func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
-	var cfg *config.Config
-	if ki.Agent != nil {
-		cfg = ki.Agent.Config
-	}
-	activeTheme := style.ResolveConfiguredTheme("", "")
+	live := ki.Agent.LiveSettings()
+	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	promptPrefix := "> "
-	if cfg != nil {
-		activeTheme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
-	}
 	if ki.MAM != nil {
 		if name := ki.MAM.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
@@ -179,7 +342,7 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	if ki.IsAtMainPrompt.Load() && ki.RL != nil {
+	if ki.IsAtMainPrompt.Load() && ki.GetRL() != nil {
 		if ki.OnDrawStaticControls != nil {
 			ki.OnDrawStaticControls(ki.resolveTargetWriter(os.Stderr))
 		}
@@ -250,20 +413,6 @@ func (ki *KeyInterceptorReader) readFromChannels(p []byte) (int, error) {
 	return n, nil
 
 readInputChannel:
-	if n == 1 && n < len(p) {
-		timer := time.NewTimer(3 * time.Millisecond)
-		select {
-		case input, ok := <-ki.InputChan:
-			timer.Stop()
-			if !ok {
-				return n, nil
-			}
-			p[n] = input
-			n++
-		case <-timer.C:
-		}
-	}
-
 	var escTimer *time.Timer
 	defer func() {
 		if escTimer != nil {
@@ -272,7 +421,7 @@ readInputChannel:
 	}()
 
 	for n < len(p) {
-		if bytes.IndexByte(p[:n], 27) >= 0 {
+		if hasIncompleteEscape(p[:n]) {
 			timeout := limits.EscapeDisambiguation()
 			if escTimer == nil {
 				escTimer = time.NewTimer(timeout)
@@ -286,6 +435,8 @@ readInputChannel:
 				escTimer.Reset(timeout)
 			}
 			select {
+			case <-done:
+				return n, nil
 			case input, ok := <-ki.InputChan:
 				if !ok {
 					return n, nil
@@ -310,6 +461,53 @@ readInputChannel:
 	}
 
 	return n, nil
+}
+
+// hasIncompleteEscape reports whether data ends with a partial ANSI escape
+// sequence that may still have bytes in flight. Complete sequences such as
+// "\x1b[A", "\x1b[3~", or "\x1bOH" return false immediately with zero wait.
+func hasIncompleteEscape(data []byte) bool {
+	idx := bytes.LastIndexByte(data, '\x1b')
+	if idx < 0 {
+		return false
+	}
+	tail := data[idx:]
+	if len(tail) == 1 {
+		return true
+	}
+	switch tail[1] {
+	case '[':
+		if len(tail) == 2 {
+			return true
+		}
+		if tail[2] == 'M' {
+			return len(tail) < 6
+		}
+		for i := 2; i < len(tail); i++ {
+			if tail[i] >= 0x40 && tail[i] <= 0x7e {
+				return false
+			}
+		}
+		return len(tail) < 64
+	case 'O':
+		return len(tail) < 3
+	case ']', 'P', 'X', '^', '_':
+		for i := 2; i < len(tail); i++ {
+			if tail[i] == '\a' {
+				return false
+			}
+		}
+		return len(tail) < 64
+	default:
+		if tail[1] >= 0x20 && tail[1] <= 0x2f {
+			i := 1
+			for i < len(tail) && tail[i] >= 0x20 && tail[i] <= 0x2f {
+				i++
+			}
+			return i >= len(tail)
+		}
+		return false
+	}
 }
 
 func (ki *KeyInterceptorReader) Read(p []byte) (int, error) {
@@ -349,9 +547,10 @@ readInput:
 	if pasted && n == 0 {
 		goto readInput
 	}
-	if !pasted {
-		n = ki.copyReadData(p, ki.normalizePromptEditKeys(p[:n]))
+	if pasted {
+		return n, nil
 	}
+	n = ki.copyReadData(p, ki.normalizePromptEditKeys(p[:n]))
 
 	writeIdx := 0
 	for i := 0; i < n; i++ {

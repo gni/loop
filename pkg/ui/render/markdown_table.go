@@ -121,19 +121,35 @@ func markdownTableRow(line string) ([]string, bool) {
 	return cells, piped || len(cells) == 1
 }
 
-func markdownWidth(w io.Writer) int {
+// renderWidth resolves the viewport width from w's MarkdownWidth() hook when
+// available (such as Scrollback or historyPageWriter), falling back to cached
+// terminal dimensions.
+func renderWidth(w io.Writer) int {
 	for depth := 0; w != nil && depth < 16; depth++ {
 		if sized, ok := w.(interface{ MarkdownWidth() int }); ok {
-			return max(1, sized.MarkdownWidth()-1)
+			if width := sized.MarkdownWidth(); width > 0 {
+				return width
+			}
 		}
 		if wrapped, ok := w.(interface{ Unwrap() io.Writer }); ok {
-			w = wrapped.Unwrap()
+			next := wrapped.Unwrap()
+			if next == nil || next == w {
+				break
+			}
+			w = next
 		} else {
 			break
 		}
 	}
 	width, _ := terminal.GetDimensions()
-	return max(1, width-1)
+	if width <= 0 {
+		return 80
+	}
+	return width
+}
+
+func markdownWidth(w io.Writer) int {
+	return max(1, renderWidth(w)-1)
 }
 
 type markdownTable struct {
@@ -145,6 +161,7 @@ type markdownTable struct {
 	numeric   []bool
 	width     int
 	stacked   bool
+	measured  bool
 	started   bool
 	rows      int
 	theme     style.UITheme
@@ -166,7 +183,15 @@ func (t *markdownTable) border(left, middle, right string) string {
 }
 
 func (t *markdownTable) start(w io.Writer, first []string) {
-	t.measure(first)
+	if !t.measured {
+		if first != nil {
+			t.measure(first)
+		} else {
+			t.measureRows(nil)
+		}
+	}
+	// Lock emitted geometry once the header is drawn so mid-stream terminal
+	// resizes cannot produce jagged box borders.
 	t.layout(markdownWidth(w))
 	t.started = true
 	if t.stacked {
@@ -182,8 +207,6 @@ func (t *markdownTable) start(w io.Writer, first []string) {
 func (t *markdownTable) writeRow(w io.Writer, cells []string) {
 	if !t.started {
 		t.start(w, cells)
-	} else {
-		t.reflow(w)
 	}
 	if t.stacked {
 		fmt.Fprint(w, "\n", style.NewStyle().Foreground(t.theme.Border).Render(strings.Repeat("─", t.width)))
@@ -195,7 +218,7 @@ func (t *markdownTable) writeRow(w io.Writer, cells []string) {
 			label = renderInlineMarkdownBlock(label+":", false, t.theme, MarkdownHeading, 2)
 			fmt.Fprint(w, "\n", strings.Join(wrapMarkdownCell(label, t.width), "\n"))
 			indent := min(2, max(0, t.width-2))
-			for _, line := range wrapMarkdownCell(RenderInlineMarkdown(SanitizeTerminalText(value), false, t.theme), t.width-indent) {
+			for _, line := range wrapMarkdownCell(RenderInlineMarkdown(SanitizeTerminalText(value), false, t.theme), max(1, t.width-indent)) {
 				fmt.Fprint(w, "\n", strings.Repeat(" ", indent), line)
 			}
 		}
@@ -250,16 +273,8 @@ func (t *markdownTable) writeCells(w io.Writer, cells []string, heading bool) {
 func (t *markdownTable) finish(w io.Writer) {
 	if !t.started {
 		t.start(w, nil)
-	} else {
-		t.reflow(w)
 	}
 	if !t.stacked {
 		fmt.Fprint(w, "\n", t.border("╰", "┴", "╯"))
-	}
-}
-
-func (t *markdownTable) reflow(w io.Writer) {
-	if markdownWidth(w) != t.width {
-		t.layout(markdownWidth(w))
 	}
 }

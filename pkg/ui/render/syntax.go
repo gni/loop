@@ -58,7 +58,7 @@ func HighlightWithoutTrailingNewline(w io.Writer, source, lang, chromaStyle stri
 	case "sh":
 		lang = "bash"
 	}
-	if chromaStyle == "" || chromaStyle == "bw" {
+	if chromaStyle == "" {
 		chromaStyle = "friendly"
 	}
 	// Callers pass an explicit Chroma language name (or alias). Re-resolving

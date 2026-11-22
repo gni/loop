@@ -35,15 +35,15 @@ func compactSettingCell(item *settingItem, selected bool, width int, theme style
 }
 
 // Reserve header, details and controls before assigning rows to settings.
-// Frames use one fewer terminal row and column to avoid scrolling on redraw.
-func renderSettingsMenu(title, query string, items []*settingItem, selected, width, height int, theme style.UITheme, extraRender func(*strings.Builder)) (string, settingsLayout) {
+// Compositor clipping prevents auto-wrap and scroll artifacts on redraw.
+func renderSettingsMenuRows(title, query string, items []*settingItem, selected, width, height int, theme style.UITheme, extraRender func(*strings.Builder)) ([]string, settingsLayout) {
 	width = max(1, width-1)
-	capacity := max(1, height-1)
+	capacity := max(1, height)
 	layout := settingsLayout{rows: len(items), pageSize: 1}
 	titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	muted := style.NewStyle().Foreground(theme.TextMuted)
 	if width < 17 || capacity < 5 {
-		return "\x1b[H" + style.TruncateCells("Resize; Esc saves", width) + "\x1b[K\x1b[J", layout
+		return []string{style.TruncateCells("Resize; Esc saves", width)}, layout
 	}
 	position := "0/0"
 	if len(items) > 0 {
@@ -65,8 +65,10 @@ func renderSettingsMenu(title, query string, items []*settingItem, selected, wid
 	if extraRender != nil && capacity >= 19 && title != "endpoint providers config" {
 		var extra strings.Builder
 		extraRender(&extra)
-		extras = strings.Split(strings.TrimRight(extra.String(), "\r\n"), "\n")
-		extras = extras[:min(3, len(extras))]
+		rawExtras := strings.Split(strings.TrimRight(extra.String(), "\r\n"), "\n")
+		for i := 0; i < len(rawExtras) && i < 3; i++ {
+			extras = append(extras, strings.TrimRight(rawExtras[i], "\r"))
+		}
 	}
 	visible := max(1, capacity-len(rows)-2-detailRows-len(extras))
 	layout.twoColumns = title != "endpoint providers config" && width >= 100 && capacity >= 13 && len(items) > 1
@@ -118,14 +120,5 @@ func renderSettingsMenu(title, query string, items []*settingItem, selected, wid
 		footer = "Type search · Esc"
 	}
 	rows = append(rows, muted.Render(controls), muted.Render(footer))
-	var frame strings.Builder
-	frame.WriteString("\x1b[H")
-	for i, row := range rows[:min(len(rows), capacity)] {
-		if i > 0 {
-			frame.WriteString("\r\n")
-		}
-		frame.WriteString(style.TruncateCells(row, width) + "\x1b[K")
-	}
-	frame.WriteString("\x1b[J")
-	return frame.String(), layout
+	return rows[:min(len(rows), capacity)], layout
 }

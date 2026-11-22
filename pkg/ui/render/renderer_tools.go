@@ -3,10 +3,8 @@ package render
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"loop/pkg/agent"
-	"loop/pkg/ui/style"
 )
 
 // ObserveToolLifecycle keeps the renderer's per-call state keyed by the
@@ -16,101 +14,6 @@ func (sr *StreamRenderer) ObserveToolLifecycle(event agent.ToolLifecycleEvent) {
 	defer sr.mu.Unlock()
 	sr.toolStates[event.CallID] = event
 	sr.toolIDs[event.Index] = event.CallID
-}
-
-// ShowToolDraft renders deferred tool generation in the conversation output,
-// never in the pinned token or elapsed-time status line. It keeps one mutable
-// preview row, so repeated argument chunks do not flood scrollback. All writes
-// still execute only after validated tool calls are returned by the model.
-func (sr *StreamRenderer) ShowToolDraft(index int, name, excerpt string, size int) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	if sr.trackedRowsInvalidated || !sr.sequentialResults || !CanReplaceTrackedStreamLine(sr.w) {
-		return
-	}
-	// Do not allow model-provided tool names to introduce terminal controls.
-	name = strings.Map(func(r rune) rune {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
-			return r
-		}
-		return -1
-	}, name)
-	if name == "" {
-		name = "tool"
-	}
-	escape := false
-	clean := strings.Map(func(r rune) rune {
-		if r == '\x1b' {
-			escape = true
-			return -1
-		}
-		if escape {
-			if unicode.IsLetter(r) || r == '\a' {
-				escape = false
-			}
-			return -1
-		}
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, excerpt)
-	clean = strings.Join(strings.Fields(clean), " ")
-	maxExcerpt := 72
-	if width, _ := style.GetTerminalSize(); width > 0 && width < 100 {
-		maxExcerpt = width - 28
-	}
-	if maxExcerpt < 0 {
-		maxExcerpt = 0
-	}
-	runes := []rune(clean)
-	if len(runes) > maxExcerpt {
-		clean = "…" + string(runes[len(runes)-maxExcerpt:])
-	}
-	label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", name, index+1, size)
-	if clean != "" && maxExcerpt > 0 && name == "write" {
-		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
-	}
-	line := style.NewStyle().Foreground(sr.theme.Border).Render(label)
-	if sr.chatDraftVisible {
-		if ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, line) {
-			return
-		}
-		// The row has scrolled out of the visible region. A stale row cannot
-		// be changed safely, so do not print a duplicate progress row.
-		return
-	}
-	// The first tool's JSON must be complete before this method is called.
-	// Flush its unfinished body so progress never interrupts file content.
-	sr.flushActiveToolLocked()
-	position := GetNewlineCount(sr.w)
-	if position < 0 {
-		return
-	}
-	fmt.Fprintln(sr.w, line)
-	sr.chatDraftLine = position
-	sr.chatDraftVisible = true
-}
-
-// ClearToolDraft ends live generation. For a first write, its preview row
-// becomes that call's inline completion slot. Other calls clear the temporary
-// text before execution; their actual output is rendered by the engine.
-func (sr *StreamRenderer) ClearToolDraft() {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	if !sr.chatDraftVisible {
-		return
-	}
-	firstBodyStreamed := sr.parser != nil && len(sr.parser.ToolBodyStreamed) > 0 && sr.parser.ToolBodyStreamed[0]
-	if sr.firstToolName == "write" && sr.sequentialResults && firstBodyStreamed {
-		if ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "⎿  writing...") {
-			sr.writeResultLines[0] = sr.chatDraftLine
-		}
-	} else {
-		ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "")
-	}
-	sr.chatDraftVisible = false
-	sr.chatDraftLine = -1
 }
 
 // SetSequentialToolResults disables speculative result rows. Tool output then
@@ -141,16 +44,6 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	if sr.pendingThoughtTextGap {
 		fmt.Fprint(sr.w, "\n")
 		sr.pendingThoughtTextGap = false
-	}
-	if toolCallIndex == 0 {
-		// Unnamed provider arguments may produce an early chat progress row.
-		// Remove it before rendering the first real tool title.
-		if sr.chatDraftVisible && sr.firstToolName == "" {
-			ReplaceTrackedStreamLine(sr.w, sr.chatDraftLine, "")
-			sr.chatDraftVisible = false
-			sr.chatDraftLine = -1
-		}
-		sr.firstToolName = toolName
 	}
 	// finishLiveTextLocked already ends the prior text on a fresh line.
 	// Do not add a second newline before the streamed tool title.
@@ -192,6 +85,7 @@ func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 		sr.parser.LineBuffer.Reset()
 		sr.parser.InString = false
 		sr.parser.InEscape = false
+		sr.parser.resetEscapeState()
 		sr.parser.CurrentKey = ""
 		sr.parser.InValue = false
 		sr.parser.Buf.Reset()
@@ -231,14 +125,13 @@ func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
 }
 
 func (sr *StreamRenderer) WriteToolCall(content string) {
+	if len(content) > 0 {
+		sr.runBeforeWrite()
+	}
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.parser != nil && sr.parser.ActiveToolName == "task_state" {
 		return
-	}
-
-	if len(content) > 0 {
-		sr.checkFirstWrite()
 	}
 
 	if sr.parser != nil {
@@ -295,6 +188,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 			return
 		}
 	}
+	width := renderWidth(sr.w)
 	if view := sr.liveCallViews[index]; view != nil && view.headerShown {
 		view.completed = true
 		view.failed = isError
@@ -313,7 +207,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 			status = ToolStatusError
 		}
 		if target != "" && view.titleLine >= 0 && toolName != "bash" {
-			ReplaceTrackedStreamLine(sr.w, view.titleLine, FormatToolTitle(RenderToolSymbol(toolName, status, sr.theme), toolName, safeLiveLabel(target), sr.theme))
+			ReplaceTrackedStreamLine(sr.w, view.titleLine, formatToolTitleForWidth(RenderToolSymbol(toolName, status, sr.theme), toolName, safeLiveLabel(target), sr.theme, width))
 		}
 		return
 	}
@@ -339,7 +233,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatBashCommandLine(symbol, target, sr.theme))
 		return
 	}
-	ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], FormatToolTitle(symbol, toolName, target, sr.theme))
+	ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], formatToolTitleForWidth(symbol, toolName, target, sr.theme, width))
 }
 
 // HasPendingWriteResult reports whether a streamed write or edit has an inline completion row.

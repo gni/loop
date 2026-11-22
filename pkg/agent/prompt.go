@@ -324,14 +324,24 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 	skillsDir := "skills"
 	compact := false
 	instruction := ""
+	contextFiles := true
+	nativeSchemas := true
+	skipObservation := false
+	sequentialTools := true
+	a.LLMProviderMu.RLock()
 	if a.Config != nil {
 		skillsDir = tool.FirstNonEmpty(a.Config.SkillsDir, "skills")
 		compact = a.Config.CompactPrompt
 		instruction = a.Config.SystemInstruction
+		contextFiles = a.Config.ContextFiles
+		nativeSchemas = !strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml")
+		skipObservation = !a.Config.FileObservationGuard
+		sequentialTools = !a.Config.ParallelToolCalls
 	}
+	a.LLMProviderMu.RUnlock()
 
 	projectCtx := ""
-	if a != nil && (a.Config == nil || a.Config.ContextFiles) {
+	if contextFiles {
 		projectCtx = resources.DetectProjectContext(a.WorkspaceRoot)
 	}
 
@@ -342,10 +352,10 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		WorkspaceRoot:     tool.FirstNonEmpty(a.WorkspaceRoot, "."),
 		SkillsDir:         skillsDir,
 		CompactPrompt:     compact,
-		NativeToolSchemas: a.Config == nil || !strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml"),
+		NativeToolSchemas: nativeSchemas,
 		GuidedMode:        a.IsGuidedMode(),
-		SkipObservation:   a.Config != nil && !a.Config.FileObservationGuard,
-		SequentialTools:   a.Config == nil || !a.Config.ParallelToolCalls,
+		SkipObservation:   skipObservation,
+		SequentialTools:   sequentialTools,
 		Skills:            a.GetActiveSkills(),
 		MemoryContext:     a.LoadMemoryContext(),
 		ProjectContext:    projectCtx,

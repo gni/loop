@@ -61,16 +61,26 @@ func DrawStatusBar(w io.Writer, theme UITheme) {
 }
 
 func DrawStatusBarLocked(w io.Writer, theme UITheme) {
+	if terminal.Default().InAltScreen() {
+		return
+	}
 	ui := getUI()
 	ui.StateMu.Lock()
-	defer ui.StateMu.Unlock()
-
-	if !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || terminal.Default().InAltScreen() {
+	blocked := !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu
+	ui.StateMu.Unlock()
+	if blocked {
 		return
 	}
 
 	width, height := GetTerminalSize()
 	if height <= 3 {
+		return
+	}
+	branch := CachedGitBranch()
+
+	ui.StateMu.Lock()
+	if !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || terminal.Default().InAltScreen() {
+		ui.StateMu.Unlock()
 		return
 	}
 
@@ -81,18 +91,37 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 		ui.LastStatusBarText = ""
 	}
 
-	ui.State.GitBranch = CachedGitBranch()
-	newStatusBarText := render.FormatStatusBarLine(ui.State, theme, width)
-	indicator := "▾"
-	if ui.CollapseResults {
-		indicator = "›"
+	ui.State.GitBranch = branch
+	stateSnapshot := ui.State
+	collapse := ui.CollapseResults
+	showCollapse := true
+	if ui.Config != nil {
+		showCollapse = ui.Config.ShowCollapseBadge
+	}
+	lastText := ui.LastStatusBarText
+	ui.StateMu.Unlock()
+
+	newStatusBarText := render.FormatStatusBarLine(stateSnapshot, theme, width)
+	indicator := ""
+	if showCollapse {
+		indicator = "▾"
+		if collapse {
+			indicator = "▸"
+		}
 	}
 	deltaKey := newStatusBarText + indicator
 
-	if deltaKey == ui.LastStatusBarText && height == ui.LastH {
+	if deltaKey == lastText {
+		return
+	}
+
+	ui.StateMu.Lock()
+	if !ui.Enabled || ui.InApprovalPrompt || ui.InInteractiveMenu || terminal.Default().InAltScreen() {
+		ui.StateMu.Unlock()
 		return
 	}
 	ui.LastStatusBarText = deltaKey
+	ui.StateMu.Unlock()
 
 	// Pinned controls bypass transcript writers, which acquire TerminalMu and
 	// would otherwise capture screen-control bytes as conversation output.

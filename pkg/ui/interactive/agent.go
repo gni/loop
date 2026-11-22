@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/agent/swarm"
 	"loop/pkg/terminal"
+	"loop/pkg/ui/screen"
 	"loop/pkg/ui/style"
 )
 
@@ -24,6 +25,7 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 		sr := NewSessionReader(rlInput)
 		defer sr.Close()
 
+		comp := screen.NewCompositor(80, 24)
 		notice := ""
 		selectedIdx := 0
 		for i, name := range mam.ListAgents() {
@@ -47,7 +49,14 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 
 			selectedName := list[selectedIdx]
 			width, height := terminal.GetDimensions()
-			if _, err := io.WriteString(rlOutput, renderAgentManager(mam, list, activeName, selectedIdx, width, height, theme, notice)); err != nil {
+			if width <= 0 {
+				width = 80
+			}
+			if height <= 0 {
+				height = 24
+			}
+			rows := renderAgentManagerRows(mam, list, activeName, selectedIdx, width, height, theme, notice)
+			if err := flushMenuScreen(comp, rlOutput, width, height, rows, screen.FlushOptions{}); err != nil {
 				return err
 			}
 
@@ -56,48 +65,43 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 				return errReader
 			}
 			if resized {
+				terminal.RefreshDimensions()
 				continue
 			}
-			n := len(readBuf)
 
-			if n == 1 {
-				switch readBuf[0] {
-				case 3, 27, 4:
+			switch string(readBuf) {
+			case "\x03", "\x1b", "\x04":
+				return nil
+			case "\r", "\n":
+				if mam.JoinAgent(selectedName) {
 					return nil
-				case 13, 10:
-					if mam.JoinAgent(selectedName) {
-						return nil
-					}
-					continue
-				case 'c', 'C':
-					created, err := createManagedAgent(mam, sr, sigChan, rlOutput, theme)
-					var inputErr *menuInputError
-					if errors.As(err, &inputErr) && !errors.Is(err, ErrSelectionCancelled) {
-						return err
-					}
-					if created {
-						return nil
-					}
-					notice = agentActionNotice(err)
-					continue
-				case 'd', 'D':
-					err := deleteManagedAgent(mam, selectedName, sr, sigChan, rlOutput, theme)
-					var inputErr *menuInputError
-					if errors.As(err, &inputErr) && !errors.Is(err, ErrSelectionCancelled) {
-						return err
-					}
-					notice = agentActionNotice(err)
-					continue
 				}
-			}
-
-			if n >= 3 && readBuf[0] == 27 && readBuf[1] == '[' {
-				switch readBuf[2] {
-				case 'A':
-					selectedIdx = (selectedIdx - 1 + len(list)) % len(list)
-				case 'B':
-					selectedIdx = (selectedIdx + 1) % len(list)
+				continue
+			case "c", "C":
+				created, err := createManagedAgent(mam, sr, sigChan, rlOutput, theme)
+				comp.Invalidate()
+				var inputErr *menuInputError
+				if errors.As(err, &inputErr) && !errors.Is(err, ErrSelectionCancelled) {
+					return err
 				}
+				if created {
+					return nil
+				}
+				notice = agentActionNotice(err)
+				continue
+			case "d", "D":
+				err := deleteManagedAgent(mam, selectedName, sr, sigChan, rlOutput, theme)
+				comp.Invalidate()
+				var inputErr *menuInputError
+				if errors.As(err, &inputErr) && !errors.Is(err, ErrSelectionCancelled) {
+					return err
+				}
+				notice = agentActionNotice(err)
+				continue
+			case "\x1b[A", "\x1bOA":
+				selectedIdx = (selectedIdx - 1 + len(list)) % len(list)
+			case "\x1b[B", "\x1bOB":
+				selectedIdx = (selectedIdx + 1) % len(list)
 			}
 		}
 	})

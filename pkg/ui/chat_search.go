@@ -51,7 +51,7 @@ func (h *ChatHistory) Latest() {
 		return
 	}
 	h.searchQuery, h.searchNotice = "", ""
-	h.searchEditing = false
+	h.setSearchEditingLocked(false)
 	h.searchDraft = ""
 	h.searchPending = false
 	h.searchScan = nil
@@ -181,7 +181,9 @@ func (h *ChatHistory) adjustSearchRowsLocked(start, end, newEnd, delta, padding 
 func (h *ChatHistory) searchRowsLocked(rows []string) []string {
 	if h.searchQuery != "" && h.searchRow >= h.top && h.searchRow < h.top+len(rows) {
 		index := h.searchRow - h.top
-		rows[index] = style.NewStyle().Foreground(GetConfiguredTheme(h.a.Config).Highlight).Underline(true).Render(style.StripAnsi(rows[index]))
+		live := h.a.LiveSettings()
+		theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+		rows[index] = style.NewStyle().Foreground(theme.Highlight).Underline(true).Render(style.StripAnsi(rows[index]))
 	}
 	return rows
 }

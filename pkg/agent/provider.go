@@ -27,6 +27,7 @@ type OpenAICompatibleProvider struct {
 	HTTPClient             *http.Client
 	ThinkingSupported      bool
 	ThinkingSupportChecked bool
+	ProbedCapabilities     config.ChatCapabilities
 	DetectedContextLimit   int
 	ContextLimitChecked    bool
 	ContextLimitMu         sync.RWMutex
@@ -77,7 +78,14 @@ func (p *OpenAICompatibleProvider) ResetThinkingCapabilities() {
 	p.thinkingMu.Lock()
 	p.ThinkingSupported = false
 	p.ThinkingSupportChecked = false
+	p.ProbedCapabilities = config.ChatCapabilities{}
 	p.thinkingMu.Unlock()
+}
+
+func (p *OpenAICompatibleProvider) ProbedChatCapabilities() config.ChatCapabilities {
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.ProbedCapabilities
 }
 
 func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Context, func(), *atomic.Bool, func()) {
@@ -161,9 +169,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	chunkChan chan<- StreamChunk,
 ) (result *db.Message, runErr error) {
 	estimatedInput := 0
-	if p != nil {
-		p.clearContextBudget()
+	if p == nil || p.Config == nil {
+		return nil, fmt.Errorf("provider config is nil")
 	}
+	p.clearContextBudget()
 	if err := p.validateCapabilities(messages); err != nil {
 		return nil, err
 	}
@@ -189,8 +198,10 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				seen[call.ID] = true
 				call.Type = "function"
 			}
-			result.Provider = p.Config.ActiveProvider
-			result.Model = p.Config.Model
+			if p.Config != nil {
+				result.Provider = p.Config.ActiveProvider
+				result.Model = p.Config.Model
+			}
 			selected := p.selectedModel()
 			if selected.Pricing != nil {
 				result.Cost = selected.Pricing.Cost(result.PromptTokens, result.CompletionTokens, result.CacheReadTokens, result.CacheWriteTokens)
@@ -521,6 +532,9 @@ type credentialContextKey struct{}
 func (p *OpenAICompatibleProvider) requestKey(ctx context.Context) string {
 	if key, ok := ctx.Value(credentialContextKey{}).(string); ok {
 		return key
+	}
+	if p == nil || p.Config == nil {
+		return ""
 	}
 	return config.ProviderConfig{APIKey: p.Config.APIKey}.ResolvedAPIKey()
 }

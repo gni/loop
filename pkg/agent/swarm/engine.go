@@ -79,7 +79,7 @@ func (r *swarmRenderer) ToolHeader(w io.Writer, theme style.UITheme, toolName, a
 
 func (r *swarmRenderer) ToolOutput(w io.Writer, theme style.UITheme, output string, isError bool, toolName, args string, bodyStreamed bool) {
 	if r.ma != nil && r.ma.BaseAgent != nil && r.ma.BaseAgent.UI != nil {
-		r.ma.BaseAgent.UI.RenderToolOutput(w, output, isError, r.ma.BaseAgent.Config.CollapseResults, theme, toolName, args, bodyStreamed)
+		r.ma.BaseAgent.UI.RenderToolOutput(w, output, isError, r.ma.BaseAgent.LiveSettings().CollapseResults, theme, toolName, args, bodyStreamed)
 	} else if !bodyStreamed {
 		fmt.Fprintln(w, output)
 	}

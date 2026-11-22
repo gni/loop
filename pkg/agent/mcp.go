@@ -232,7 +232,7 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 		a.MCPClientsMu.Unlock()
 		return nil, fmt.Errorf("MCP server '%s' connection superseded by a config reload", name)
 	}
-	if existing := a.MCPClients[name]; existing != nil && existing.initialized && existing.healthy() {
+	if existing := a.MCPClients[name]; existing != nil && existing.isInitialized() && existing.healthy() {
 		a.MCPClientsMu.Unlock()
 		return existing, nil
 	}
@@ -250,7 +250,18 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	if a.mcpConnecting == nil {
 		a.mcpConnecting = make(map[string]*mcpConnectAttempt)
 	}
-	client := a.newMCPClient(name, cfg)
+	client, initErr := a.newMCPClient(name, cfg)
+	if initErr != nil {
+		initErr = transporthttp.RedactError(initErr)
+		if a.mcpGeneration == generation {
+			if a.MCPStartErrors == nil {
+				a.MCPStartErrors = make(map[string]error)
+			}
+			a.MCPStartErrors[name] = initErr
+		}
+		a.MCPClientsMu.Unlock()
+		return nil, initErr
+	}
 	attempt := &mcpConnectAttempt{done: make(chan struct{}), cancel: client.cancel}
 	a.mcpConnecting[name] = attempt
 	a.MCPClientsMu.Unlock()
@@ -398,7 +409,7 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	return a.connectServer(name, cfg, generation)
 }
 
-func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient {
+func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) (*mcpClient, error) {
 	connectTimeout := a.GetLimits().MCPConnectTimeout
 
 	var transport *http.Transport
@@ -408,8 +419,15 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
 	transport.ResponseHeaderTimeout = connectTimeout
-	if a.Config != nil && (a.Config.CAFile != "" || a.Config.CertFile != "" || a.Config.KeyFile != "" || !a.Config.TLSVerify) {
-		if tlsConfig, err := config.GetTLSConfig(a.Config); err == nil && tlsConfig != nil {
+	a.LLMProviderMu.RLock()
+	cfgSnapshot := a.Config
+	a.LLMProviderMu.RUnlock()
+	if cfgSnapshot != nil && (cfgSnapshot.CAFile != "" || cfgSnapshot.CertFile != "" || cfgSnapshot.KeyFile != "" || !cfgSnapshot.TLSVerify) {
+		tlsConfig, err := config.GetTLSConfig(cfgSnapshot)
+		if err != nil {
+			return nil, fmt.Errorf("MCP server '%s' TLS configuration error: %w", name, err)
+		}
+		if tlsConfig != nil {
 			transport.TLSClientConfig = tlsConfig
 		}
 	}
@@ -449,7 +467,7 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) *mcpClient
 			}
 			return a.Credentials.Resolve(ctx, "mcp:"+name+":"+config.WorkspaceKey(cfg.URL), config.ProviderConfig{Endpoint: cfg.URL, OAuth: cfg.OAuth})
 		},
-	}
+	}, nil
 }
 
 func (a *Agent) StopMCPServers() {

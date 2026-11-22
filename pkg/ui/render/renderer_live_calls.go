@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"loop/pkg/ui/style"
 )
@@ -51,19 +52,25 @@ func (sr *StreamRenderer) SetInteractiveQuestions(enabled bool) {
 	sr.mu.Unlock()
 }
 
-// safeLiveLabel strips model-supplied cursor controls and line breaks. A tool
-// argument must never be able to manipulate the terminal outside the body.
+// safeLiveLabel strips complete ANSI escape sequences and control characters
+// from model-supplied labels while keeping grapheme clusters intact.
 func safeLiveLabel(value string) string {
+	value = style.StripAnsi(strings.ToValidUTF8(value, ""))
 	var b strings.Builder
-	b.Grow(len(value))
-	for _, r := range value {
-		if r == '\x1b' || unicode.IsControl(r) {
+	b.Grow(min(len(value), 240))
+	cells := 0
+	for i := 0; i < len(value); {
+		cluster, cw, sz := style.NextGrapheme(value[i:])
+		i += sz
+		first, _ := utf8.DecodeRuneInString(cluster)
+		if unicode.IsControl(first) {
 			continue
 		}
-		b.WriteRune(r)
-		if b.Len() >= 240 {
+		if cells+cw > 240 {
 			break
 		}
+		b.WriteString(cluster)
+		cells += cw
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -92,12 +99,15 @@ func (sr *StreamRenderer) trackProgressCallLocked(index int) {
 // rewriting an arbitrarily sized block of terminal rows. Writes stream even
 // before their filename arrives; edits retain their target-based diff preview.
 func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta string) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
 	name = safeLiveLabel(name)
 	if name == "" {
 		return
 	}
+	if name != "task_state" {
+		sr.runBeforeWrite()
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
 	if name == "task_state" {
 		sr.trackProgressCallLocked(index)
 		return
@@ -220,22 +230,15 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	view.endsWithNewline = strings.HasSuffix(delta, "\n")
 }
 
-// showCollapsedLiveCallLocked updates a single compact progress row, using
-// the same label format as ShowToolDraft instead of streaming file content.
-// The source still accumulates in the tool sequencer for normal execution.
+// showCollapsedLiveCallLocked updates a single compact progress row instead of
+// streaming file content. The source still accumulates in the tool sequencer.
 func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallView) {
 	clean := safeLiveLabel(strings.Join(strings.Fields(string(view.compactTail)), " "))
 	maxExcerpt := 72
-	if width, _ := style.GetTerminalSize(); width > 0 && width < 100 {
-		maxExcerpt = width - 28
+	if width := renderWidth(sr.w); width > 0 && width < 100 {
+		maxExcerpt = max(0, width-28)
 	}
-	if maxExcerpt < 0 {
-		maxExcerpt = 0
-	}
-	runes := []rune(clean)
-	if len(runes) > maxExcerpt {
-		clean = "…" + string(runes[len(runes)-maxExcerpt:])
-	}
+	clean = tailCells(clean, maxExcerpt)
 	label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", view.name, index+1, view.receivedBytes)
 	if clean != "" && maxExcerpt > 0 && view.name == "write" {
 		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
@@ -301,7 +304,7 @@ func (sr *StreamRenderer) flushLiveCodeLineLocked(view *liveCallView) {
 		return
 	}
 
-	width, _ := style.GetTerminalSize()
+	width := renderWidth(sr.w)
 	if width <= 1 || len(line) >= width {
 		sr.requestLiveSyntaxRefreshLocked()
 		return
@@ -400,7 +403,7 @@ func (sr *StreamRenderer) liveToolTitle(name, path string) string {
 	if name == "bash" {
 		return FormatBashCommandLine(symbol, "", sr.theme) + " "
 	}
-	return FormatToolTitle(symbol, name, path, sr.theme)
+	return formatToolTitleForWidth(symbol, name, path, sr.theme, renderWidth(sr.w))
 }
 
 // BeginToolExecution repeats a heading only if another call's preview now
@@ -419,7 +422,7 @@ func (sr *StreamRenderer) BeginToolExecution(index int, name, arguments string) 
 	if name == "bash" {
 		fmt.Fprintln(sr.w, FormatBashCommandLine(symbol, target, sr.theme))
 	} else {
-		fmt.Fprintln(sr.w, FormatToolTitle(symbol, name, safeLiveLabel(target), sr.theme))
+		fmt.Fprintln(sr.w, formatToolTitleForWidth(symbol, name, safeLiveLabel(target), sr.theme, renderWidth(sr.w)))
 	}
 	sr.liveVisibleCall = index
 }

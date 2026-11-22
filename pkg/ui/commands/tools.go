@@ -42,7 +42,7 @@ func handleToolsCommand(
 	}
 
 	openInteractiveMenu := func() {
-		input, output, cleanup := interactive.GetInteractiveIO(kiReader)
+		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 
 		ui.ShutdownStatusBar(os.Stderr)

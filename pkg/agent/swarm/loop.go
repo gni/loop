@@ -80,8 +80,42 @@ func (ma *MultiAgent) recordTaskAndAgentState(taskID, taskStatus, agentStatus, r
 	return nil
 }
 
+func (ma *MultiAgent) publishOutput(msg db.Message) {
+	if ma == nil || ma.Output == nil {
+		return
+	}
+	for range 2 {
+		select {
+		case ma.Output <- msg:
+			return
+		default:
+			select {
+			case <-ma.Output:
+			default:
+				return
+			}
+		}
+	}
+}
+
+func closeTaskDone(ch chan struct{}) {
+	if ch != nil {
+		close(ch)
+	}
+}
+
 func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
+	ma.persistenceMu.Lock()
+	if ma.stopped || ma.started {
+		ma.persistenceMu.Unlock()
+		return
+	}
+	ma.started = true
+	ma.loopWG.Add(1)
+	ma.persistenceMu.Unlock()
+
 	go func() {
+		defer ma.loopWG.Done()
 		nameStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
 		errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
 
@@ -93,97 +127,98 @@ func (ma *MultiAgent) Start(w io.Writer, theme style.UITheme) {
 				if !ok || ma.Context.Err() != nil {
 					return
 				}
-				ma.HistoryMu.Lock()
-				requestCtx := ma.requests[msg.ToolCallID]
-				delete(ma.requests, msg.ToolCallID)
-				ma.HistoryMu.Unlock()
-				if requestCtx != nil && requestCtx.Err() != nil {
-					ma.supervisor.UpdateTaskStatus(msg.ToolCallID, "failed", "", requestCtx.Err())
-					continue
-				}
-
-				ma.HistoryMu.Lock()
-				ma.History = append(ma.History, msg)
-				ma.HistoryMu.Unlock()
-
-				if msg.Role != "user" {
-					continue
-				}
-				taskID := msg.ToolCallID
-				startErr := ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
-
-				writer := ma.resolveWriter(w)
-				fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
-					nameStyle.Render(ma.Name),
-					msg.Name,
-					msg.Content,
-				)
-
-				turnCtx, turnCancel := context.WithCancel(run.WithInheritedInstructions(ma.Context, msg.InheritedInstructions))
-				stopRequest := func() bool { return false }
-				if requestCtx != nil {
-					stopRequest = context.AfterFunc(requestCtx, turnCancel)
-				}
-				ma.setActiveTurn(turnCtx, turnCancel, time.Now())
-
-				var response db.Message
-				err := startErr
-				if err == nil {
-					response, err = ma.executeLoop(turnCtx, writer, theme)
-				}
-				if ma.Manager != nil && taskID != "" {
-					ma.supervisor.UpdateTaskAssessment(taskID, response.TaskState)
-				}
-
-				turnCancel()
-				stopRequest()
-				ma.setActiveTurn(nil, nil, time.Time{})
-
-				if err != nil {
-					if saveErr := ma.recordTaskAndAgentState(taskID, "failed", "failed", "", err); saveErr != nil {
-						err = errors.Join(err, saveErr)
-					}
-
-					if errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled) {
-						label := "error"
-						if errors.Is(err, context.DeadlineExceeded) {
-							label = "timed out"
-						}
-						fmt.Fprintf(writer, "\n%s [%s] %s: %v\n",
-							errStyle.Render("!"),
-							nameStyle.Render(ma.Name),
-							label,
-							err,
-						)
-					}
-
-					select {
-					case ma.Output <- db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", err)}:
-					case <-ma.Context.Done():
-						return
-					}
-					continue
-				}
-
-				parentResult := response.Content
-				if response.TaskState != nil {
-					parentResult = fmt.Sprintf("[Subagent task outcome: %s; %s assessment]\n%s\n\n%s", response.TaskState.Status, response.TaskState.Source, response.TaskState.Summary, parentResult)
-				}
-				if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", parentResult, nil); saveErr != nil {
-					if ma.Manager != nil && taskID != "" {
-						ma.supervisor.UpdateTaskStatus(taskID, "failed", "", saveErr)
-					}
-					response = db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", saveErr)}
-				}
-
-				select {
-				case ma.Output <- response:
-				case <-ma.Context.Done():
-					return
-				}
+				ma.processInputMessage(msg, w, theme, nameStyle, errStyle)
 			}
 		}
 	}()
+}
+
+func (ma *MultiAgent) processInputMessage(msg db.Message, w io.Writer, theme style.UITheme, nameStyle, errStyle style.Style) {
+	ma.HistoryMu.Lock()
+	req := ma.requests[msg.ToolCallID]
+	delete(ma.requests, msg.ToolCallID)
+	ma.HistoryMu.Unlock()
+	defer closeTaskDone(req.done)
+
+	requestCtx := req.ctx
+	if requestCtx != nil && requestCtx.Err() != nil {
+		ma.supervisor.UpdateTaskStatus(msg.ToolCallID, "failed", "", requestCtx.Err())
+		return
+	}
+
+	ma.HistoryMu.Lock()
+	ma.History = append(ma.History, msg)
+	ma.HistoryMu.Unlock()
+
+	if msg.Role != "user" {
+		return
+	}
+	taskID := msg.ToolCallID
+	startErr := ma.recordTaskAndAgentState(taskID, "running", "running", "", nil)
+
+	writer := ma.resolveWriter(w)
+	if ma.Context.Err() == nil {
+		fmt.Fprintf(writer, "\n[%s] received task from %s: %s\n",
+			nameStyle.Render(ma.Name),
+			msg.Name,
+			msg.Content,
+		)
+	}
+
+	turnCtx, turnCancel := context.WithCancel(run.WithInheritedInstructions(ma.Context, msg.InheritedInstructions))
+	stopRequest := func() bool { return false }
+	if requestCtx != nil {
+		stopRequest = context.AfterFunc(requestCtx, turnCancel)
+	}
+	ma.setActiveTurn(turnCtx, turnCancel, time.Now())
+
+	var response db.Message
+	err := startErr
+	if err == nil {
+		response, err = ma.executeLoop(turnCtx, writer, theme)
+	}
+	if ma.Manager != nil && taskID != "" {
+		ma.supervisor.UpdateTaskAssessment(taskID, response.TaskState)
+	}
+
+	turnCancel()
+	stopRequest()
+	ma.setActiveTurn(nil, nil, time.Time{})
+
+	if err != nil {
+		if saveErr := ma.recordTaskAndAgentState(taskID, "failed", "failed", "", err); saveErr != nil {
+			err = errors.Join(err, saveErr)
+		}
+
+		if ma.Context.Err() == nil && (errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, context.Canceled)) {
+			label := "error"
+			if errors.Is(err, context.DeadlineExceeded) {
+				label = "timed out"
+			}
+			fmt.Fprintf(writer, "\n%s [%s] %s: %v\n",
+				errStyle.Render("!"),
+				nameStyle.Render(ma.Name),
+				label,
+				err,
+			)
+		}
+
+		ma.publishOutput(db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", err)})
+		return
+	}
+
+	parentResult := response.Content
+	if response.TaskState != nil {
+		parentResult = fmt.Sprintf("[Subagent task outcome: %s; %s assessment]\n%s\n\n%s", response.TaskState.Status, response.TaskState.Source, response.TaskState.Summary, parentResult)
+	}
+	if saveErr := ma.recordTaskAndAgentState(taskID, "completed", "idle", parentResult, nil); saveErr != nil {
+		if ma.Manager != nil && taskID != "" {
+			ma.supervisor.UpdateTaskStatus(taskID, "failed", "", saveErr)
+		}
+		response = db.Message{Role: "assistant", Name: ma.Name, Content: fmt.Sprintf("Error: %v", saveErr)}
+	}
+
+	ma.publishOutput(response)
 }
 
 func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.UITheme) (response db.Message, runErr error) {
@@ -196,6 +231,9 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	ctx, runConfig, err := ma.BaseAgent.SnapshotRun(ctx)
 	if err != nil {
 		return db.Message{}, err
+	}
+	if runConfig == nil {
+		return db.Message{}, fmt.Errorf("configuration is unavailable")
 	}
 	if _, cancel, started, ok := ma.activeTurn(); ok {
 		ma.setActiveTurn(ctx, cancel, started)
@@ -336,7 +374,8 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			updateSubagentStatus := func(generating bool, tps float64, tokens int) {
 				activeSelected := ma.Manager == nil || ma.Manager.CurrentActiveAgent() == ma || (ma.parent() == nil && ma.Manager.CurrentActiveAgent() == nil)
 				if activeSelected && ma.BaseAgent != nil && ma.BaseAgent.UI != nil {
-					ma.BaseAgent.UI.UpdateStatus(ma.BaseAgent.Config.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), ma.BaseAgent.Config.ShowTokens)
+					live := ma.BaseAgent.LiveSettings()
+					ma.BaseAgent.UI.UpdateStatus(live.Model, -1, -1, tokens, subagentCtxLimit, generating, tps, ma.BaseAgent.CountActiveTasks(), live.ShowTokens)
 					ma.BaseAgent.UI.DrawStatusBar(rawW, theme)
 				}
 			}

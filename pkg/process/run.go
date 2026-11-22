@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type Result struct {
 // Buffer drains output while retaining at most Limit bytes. Configure TailBytes
 // before writing to retain recent diagnostics as well as the beginning.
 type Buffer struct {
+	mu    sync.Mutex
 	data  bytes.Buffer
 	tail  bytes.Buffer
 	Limit int
@@ -50,6 +52,8 @@ func (w BestEffortWriter) Write(data []byte) (int, error) {
 }
 
 func (b *Buffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	size := len(data)
 	if b.TailBytes > 0 && b.Limit > 0 {
 		tailLimit := min(b.TailBytes, b.Limit)
@@ -79,6 +83,8 @@ func (b *Buffer) Write(data []byte) (int, error) {
 
 // String returns the retained output, up to Limit bytes.
 func (b *Buffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.tail.Len() == 0 {
 		return b.data.String()
 	}

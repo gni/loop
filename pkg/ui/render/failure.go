@@ -3,7 +3,6 @@ package render
 import (
 	"fmt"
 	"io"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 	"regexp"
 	"strings"
@@ -84,8 +83,7 @@ func renderFailure(w io.Writer, message, toolName string, collapse bool, theme s
 	if message == "" {
 		message = "The operation failed without a diagnostic."
 	}
-	width, _ := terminal.GetDimensions()
-	width = max(1, width-4)
+	width := max(1, renderWidth(w)-4)
 	first, _, _ := strings.Cut(message, "\n")
 	first = style.TruncateCells(first, width)
 	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render("✗ "+first))

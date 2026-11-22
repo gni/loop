@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -483,9 +484,33 @@ func (a *Agent) ListTasks() []TaskInfo {
 	}
 
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].ID < list[j].ID
+		return compareTaskID(list[i].ID, list[j].ID)
 	})
 	return list
+}
+
+func parseTaskNumericID(id string) (int, bool) {
+	rest, ok := strings.CutPrefix(id, "task_")
+	if !ok || rest == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func compareTaskID(a, b string) bool {
+	na, oka := parseTaskNumericID(a)
+	nb, okb := parseTaskNumericID(b)
+	if oka != okb {
+		return oka
+	}
+	if oka && okb && na != nb {
+		return na < nb
+	}
+	return a < b
 }
 
 func (a *Agent) ToggleStreaming(id string, w io.Writer) {

@@ -13,6 +13,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/terminal"
 	transporthttp "loop/pkg/transport/http"
+	"loop/pkg/ui/screen"
 	"loop/pkg/ui/style"
 )
 
@@ -31,6 +32,7 @@ type mcpManager struct {
 	failed       bool
 	busy         bool
 	actions      MCPConfigActions
+	comp         *screen.Compositor
 }
 
 func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.Reader, output io.Writer, actions MCPConfigActions) (*config.Config, error) {
@@ -41,7 +43,7 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 	if draft.MCPServers == nil {
 		draft.MCPServers = make(map[string]config.MCPServerConfig)
 	}
-	manager := &mcpManager{draft: draft, saved: cfg, actions: actions}
+	manager := &mcpManager{draft: draft, saved: cfg, actions: actions, comp: screen.NewCompositor(80, 24)}
 	cancelled := false
 	isTTY, err := withAltScreenTerminal(input, output, func() error {
 		sr := NewSessionReader(input)
@@ -53,8 +55,14 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 			names := manager.names()
 			manager.selected = max(0, min(manager.selected, len(names)-1))
 			width, height := terminal.GetDimensions()
-			frame, page := renderMCPManager(manager, names, manager.statuses(), width, height, theme)
-			if err := writeMenuFrame(output, frame); err != nil {
+			if width <= 0 {
+				width = 80
+			}
+			if height <= 0 {
+				height = 24
+			}
+			rows, page := renderMCPManagerRows(manager, names, manager.statuses(), width, height, theme)
+			if err := flushMenuScreen(manager.comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 				return err
 			}
 			key, resized, err := sr.ReadKeyOrResize(signals)
@@ -62,6 +70,7 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 				return err
 			}
 			if resized {
+				terminal.RefreshDimensions()
 				continue
 			}
 			value := string(key)
@@ -140,6 +149,7 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 				}
 			case "a", "A":
 				name, err := addMCPServer(manager.draft, sr, signals, output, theme)
+				manager.comp.Invalidate()
 				if err := manager.actionResult(err); err != nil {
 					return err
 				}
@@ -161,6 +171,7 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 			case "\r", "\n":
 				if len(names) > 0 {
 					err := editMCPServer(manager.draft, names[manager.selected], sr, output, theme)
+					manager.comp.Invalidate()
 					if err := manager.actionResult(err); err != nil {
 						return err
 					}
@@ -219,8 +230,8 @@ func (m *mcpManager) reconnect(output io.Writer, width, height int, theme style.
 		return nil
 	}
 	m.busy, m.failed, m.notice = true, false, "Reconnecting enabled servers..."
-	frame, _ := renderMCPManager(m, m.names(), m.statuses(), width, height, theme)
-	if err := writeMenuFrame(output, frame); err != nil {
+	rows, _ := renderMCPManagerRows(m, m.names(), m.statuses(), width, height, theme)
+	if err := flushMenuScreen(m.comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 		m.busy = false
 		return err
 	}

@@ -8,21 +8,15 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func (sr *StreamRenderer) getThinkingStyle() style.Style {
-	border := sr.theme.Border
-	if border == nil {
-		border = style.Color("#4C566A")
-	}
-	return style.NewStyle().Foreground(border).Italic(true)
-}
-
 func (sr *StreamRenderer) WriteReasoning(chunk string) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-
 	if !sr.showThinking || chunk == "" {
 		return
 	}
+	if strings.TrimSpace(chunk) != "" {
+		sr.runBeforeWrite()
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
 
 	if sr.echoFilter != nil {
 		chunk = sr.echoFilter.Write(chunk)
@@ -39,7 +33,6 @@ func (sr *StreamRenderer) WriteReasoning(chunk string) {
 }
 
 func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
-	sr.checkFirstWrite()
 	if sr.liveActiveCall >= 0 {
 		if view := sr.liveCallViews[sr.liveActiveCall]; view != nil {
 			sr.endLiveCallLocked(sr.liveActiveCall, view)
@@ -48,7 +41,7 @@ func (sr *StreamRenderer) writeReasoningChunk(chunk string) {
 		sr.liveActiveCall = -1
 	}
 
-	dimStyle := sr.getThinkingStyle()
+	dimStyle := GetThinkingStyle(sr.theme)
 	startSeq, resetSeq := dimStyle.GetSequence()
 
 	if !sr.inThinking {
@@ -134,7 +127,7 @@ func (sr *StreamRenderer) endThinking() {
 			break
 		}
 	}
-	labelStyle := style.NewStyle().Foreground(sr.theme.Border).Italic(true)
+	labelStyle := GetThinkingStyle(sr.theme)
 
 	if sr.reasoningCollapsed {
 		if !ReplaceTrackedStreamLine(sr.w, sr.reasoningSummaryLine, FormatThinkingSummary(sr.theme, elapsed, false, sr.reasoningLineCount, sr.showMicroseconds)) {

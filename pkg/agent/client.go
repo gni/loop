@@ -48,6 +48,7 @@ type mcpClient struct {
 	nextID            int64
 	initialized       bool
 	client            *http.Client
+	sseTransport      *http.Transport
 	cancel            context.CancelFunc
 	connectTimeout    time.Duration
 }
@@ -192,23 +193,30 @@ func (c *mcpClient) startSSE() error {
 		}
 	}
 
+	var sseTransport *http.Transport
+	if transport, ok := c.client.Transport.(*http.Transport); ok && transport != nil {
+		sseTransport = transport.Clone()
+		sseTransport.ResponseHeaderTimeout = c.connectTimeout
+	} else {
+		sseTransport = &http.Transport{ResponseHeaderTimeout: c.connectTimeout}
+	}
 	sseClient := *c.client
 	sseClient.Timeout = 0
-	if transport, ok := c.client.Transport.(*http.Transport); ok && transport != nil {
-		cloned := transport.Clone()
-		cloned.ResponseHeaderTimeout = c.connectTimeout
-		sseClient.Transport = cloned
-	} else {
-		sseClient.Transport = &http.Transport{ResponseHeaderTimeout: c.connectTimeout}
-	}
+	sseClient.Transport = sseTransport
+
+	c.requestMu.Lock()
+	c.sseTransport = sseTransport
+	c.requestMu.Unlock()
 
 	resp, err := sseClient.Do(req)
 	if err != nil {
+		sseTransport.CloseIdleConnections()
 		cancel()
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
+		sseTransport.CloseIdleConnections()
 		cancel()
 		return fmt.Errorf("HTTP error %d", resp.StatusCode)
 	}
@@ -240,6 +248,8 @@ func (c *mcpClient) startSSE() error {
 		}
 	}()
 
+	connectTimer := time.NewTimer(c.connectTimeout)
+	defer connectTimer.Stop()
 	select {
 	case postURL, ok := <-endpointChan:
 		if !ok {
@@ -254,7 +264,7 @@ func (c *mcpClient) startSSE() error {
 	case <-ctx.Done():
 		c.close()
 		return ctx.Err()
-	case <-time.After(c.connectTimeout):
+	case <-connectTimer.C:
 		c.close()
 		return fmt.Errorf("timeout waiting for SSE endpoint initialization (%s)", c.connectTimeout)
 	}
@@ -297,6 +307,15 @@ func (c *mcpClient) healthy() bool {
 	return !c.closed && !c.dirty.Load()
 }
 
+func (c *mcpClient) isInitialized() bool {
+	if c == nil {
+		return false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	return c.initialized
+}
+
 func (c *mcpClient) close() {
 	c.closeOnce.Do(func() {
 		// Cancel and stop the child before waiting for a writer that may be
@@ -317,12 +336,21 @@ func (c *mcpClient) close() {
 			_ = c.sseBody.Close()
 		}
 		if c.processDone != nil {
+			waitTimer := time.NewTimer(2 * time.Second)
 			select {
 			case <-c.processDone:
-			case <-time.After(2 * time.Second):
+			case <-waitTimer.C:
 			}
+			waitTimer.Stop()
 		}
 		c.failPendingRequests()
+		c.requestMu.Lock()
+		sseTransport := c.sseTransport
+		c.sseTransport = nil
+		c.requestMu.Unlock()
+		if sseTransport != nil {
+			sseTransport.CloseIdleConnections()
+		}
 		if c.client != nil {
 			c.client.CloseIdleConnections()
 		}
@@ -491,8 +519,10 @@ func (c *mcpClient) handshake() error {
 	if err := decodeRPCResponse(res, &initialized); err != nil {
 		return err
 	}
+	c.requestMu.Lock()
 	c.protocolVersion = initialized.ProtocolVersion
 	c.capabilities = initialized.Capabilities
+	c.requestMu.Unlock()
 
 	data, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -504,7 +534,9 @@ func (c *mcpClient) handshake() error {
 		if err := c.sendStdio(string(data)); err != nil {
 			return fmt.Errorf("failed to send MCP initialized notification: %w", err)
 		}
+		c.requestMu.Lock()
 		c.initialized = true
+		c.requestMu.Unlock()
 		return nil
 	}
 
@@ -518,15 +550,21 @@ func (c *mcpClient) handshake() error {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("MCP initialized notification returned HTTP %d", resp.StatusCode)
 	}
+	c.requestMu.Lock()
 	c.initialized = true
+	c.requestMu.Unlock()
 	return nil
 }
 
 func (c *mcpClient) listTools() ([]MCPTool, error) {
-	if !c.initialized {
+	c.requestMu.Lock()
+	initialized := c.initialized
+	caps := c.capabilities
+	c.requestMu.Unlock()
+	if !initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
-	if c.capabilities != nil && c.capabilities.Tools == nil {
+	if caps != nil && caps.Tools == nil {
 		return nil, nil
 	}
 

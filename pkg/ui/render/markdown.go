@@ -17,6 +17,43 @@ func GetThinkingStyle(theme style.UITheme) style.Style {
 	return style.NewStyle().Foreground(border).Italic(true)
 }
 
+// parseOpeningCodeFence checks whether line opens a backtick code fence of length >= 3.
+// Per CommonMark, up to 3 leading spaces are allowed and the info string cannot contain backticks.
+func parseOpeningCodeFence(line string) (ticks int, language string, ok bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return 0, "", false
+	}
+	for ticks < len(trimmed) && trimmed[ticks] == '`' {
+		ticks++
+	}
+	if ticks < 3 {
+		return 0, "", false
+	}
+	after := trimmed[ticks:]
+	if strings.ContainsRune(after, '`') {
+		return 0, "", false
+	}
+	language = "plaintext"
+	if fields := strings.Fields(strings.TrimSpace(after)); len(fields) > 0 {
+		language = fields[0]
+	}
+	return ticks, language, true
+}
+
+// isClosingCodeFence checks whether line closes a backtick fence opened with openTicks backticks.
+func isClosingCodeFence(line string, openTicks int) bool {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return false
+	}
+	ticks := 0
+	for ticks < len(trimmed) && trimmed[ticks] == '`' {
+		ticks++
+	}
+	return ticks >= max(3, openTicks) && strings.TrimSpace(trimmed[ticks:]) == ""
+}
+
 // IsNumberedList detects whether a trimmed line is an ordered list item (e.g. "1. Item").
 func IsNumberedList(trimmed string) (bool, string, string) {
 	if len(trimmed) < 3 {
@@ -146,18 +183,21 @@ func PrintNormalMarkdownLine(w io.Writer, line string, theme style.UITheme) {
 func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, string), onTextLine func(string), onTable func([]string, []tableAlignment, []string)) {
 	lines := strings.Split(content, "\n")
 	inCodeBlock := false
+	fenceLen := 0
 	language := "plaintext"
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(trimmed, "```"); ok {
-			if !inCodeBlock {
-				language = "plaintext"
-				if fields := strings.Fields(strings.TrimSpace(after)); len(fields) > 0 {
-					language = fields[0]
-				}
+		if !inCodeBlock {
+			if ticks, lang, ok := parseOpeningCodeFence(line); ok {
+				inCodeBlock = true
+				fenceLen = ticks
+				language = lang
+				continue
 			}
-			inCodeBlock = !inCodeBlock
+		} else if isClosingCodeFence(line, fenceLen) {
+			inCodeBlock = false
+			fenceLen = 0
+			language = "plaintext"
 			continue
 		}
 		if inCodeBlock {
@@ -208,8 +248,12 @@ func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
 		func(line string) { PrintNormalMarkdownLine(w, line, theme) },
 		func(header []string, align []tableAlignment, rows []string) {
 			table := newMarkdownTable(w, header, align, theme)
-			for _, row := range rows {
-				cells, _ := markdownTableRow(row)
+			parsed := make([][]string, len(rows))
+			for i, row := range rows {
+				parsed[i], _ = markdownTableRow(row)
+			}
+			table.measureRows(parsed)
+			for _, cells := range parsed {
 				table.writeRow(w, cells)
 			}
 			table.finish(w)

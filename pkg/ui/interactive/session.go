@@ -20,9 +20,11 @@ import (
 
 func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
 	ctx := context.Background()
-	if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
-		if inputCtx := provider.GetInputContext(); inputCtx != nil {
-			ctx = inputCtx
+	if !isNilReader(rlInput) {
+		if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
+			if inputCtx := provider.GetInputContext(); inputCtx != nil {
+				ctx = inputCtx
+			}
 		}
 	}
 	return RunSessionExplorerContext(ctx, theme, rlInput, rlOutput)
@@ -35,12 +37,7 @@ func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput
 	SetInInteractiveMenu(true)
 	defer SetInInteractiveMenu(false)
 
-	fd := int(os.Stdin.Fd())
-	if f, ok := rlInput.(*os.File); ok {
-		fd = int(f.Fd())
-	} else if f, ok := rlOutput.(*os.File); ok {
-		fd = int(f.Fd())
-	}
+	fd := resolveTerminalFD(rlInput, rlOutput)
 	if term.IsTerminal(fd) {
 		oldState, err := term.MakeRaw(fd)
 		if err != nil {
@@ -58,6 +55,7 @@ func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput
 		defer terminal.Default().ExitAltScreen(rlOutput)
 		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
 		defer restorePaste()
+		terminal.RefreshDimensions()
 		signals := make(chan os.Signal, 1)
 		terminal.NotifyResize(signals)
 		defer signal.Stop(signals)

@@ -177,6 +177,9 @@ func (s *JSONLStore) writeLatestID(sessionID string) error {
 	if err := os.Rename(f.Name(), s.latestSessionPath()); err != nil {
 		return fmt.Errorf("replace latest-session pointer: %w", err)
 	}
+	if err := storage.SyncDirectory(s.core.dir); err != nil {
+		return fmt.Errorf("sync latest-session directory: %w", err)
+	}
 	return nil
 }
 
@@ -276,6 +279,9 @@ func (s *JSONLStore) RenameSessionContext(ctx context.Context, oldID, newID stri
 	}
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return fmt.Errorf("failed to rename session file: %w", err)
+	}
+	if err := storage.SyncDirectory(s.core.dir); err != nil {
+		return fmt.Errorf("sync renamed session directory: %w", err)
 	}
 
 	s.invalidateSessionCacheLocked(oldID)

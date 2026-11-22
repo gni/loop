@@ -129,7 +129,7 @@ func (t *writeTool) execute(ctx domaintool.AgentContext, arguments string, obser
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	if err := CommitFileMutation(ctx, safePath, []byte(content), 0644); err != nil {
+	if err := commitFileMutation(ctx, safePath, []byte(content), 0644, true); err != nil {
 		if !mutationCommitted(err, safePath) {
 			discardIfUncommitted()
 		}

@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -246,7 +247,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 
-		data, err := storage.ReadFile(validated, maxFileBytes)
+		data, err := storage.ReadFileContext(ctx.Context(), validated, maxFileBytes)
 		if err != nil {
 			return fmt.Errorf("read search file %s: %w", filePath, err)
 		}
@@ -356,6 +357,12 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return cancelErr
 			}
 			if err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					if d != nil && d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				return fmt.Errorf("walk search path %s: %w", path, err)
 			}
 			if skip, skipErr := ShouldSkipWalkEntry(path, d, workspaceRoot, gitIgnorePatterns); skip {
@@ -368,7 +375,13 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 					return nil
 				}
 			}
-			return processFile(path)
+			if err := processFile(path); err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					return nil
+				}
+				return err
+			}
+			return nil
 		})
 		if walkErr != nil && walkErr != fs.SkipAll {
 			return "", walkErr

@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"path/filepath"
-	"time"
 
 	"loop/pkg/storage"
 )
@@ -17,22 +16,7 @@ func (s *JSONLStore) lockStore(ctx context.Context, exclusive bool) (func(), err
 	if err != nil {
 		return nil, err
 	}
-	if ctx.Done() == nil {
-		s.core.mu.Lock()
-	} else {
-		for !s.core.mu.TryLock() {
-			timer := time.NewTimer(20 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				releaseFile()
-				return nil, ctx.Err()
-			case <-timer.C:
-			}
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		s.core.mu.Unlock()
+	if err := storage.LockMutexContext(ctx, &s.core.mu); err != nil {
 		releaseFile()
 		return nil, err
 	}

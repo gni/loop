@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -142,11 +143,22 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-	defer server.Close()
+	var shutdownOnce sync.Once
+	shutdownServer := func() {
+		shutdownOnce.Do(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				_ = server.Close()
+			}
+		})
+	}
+	defer shutdownServer()
 	notify(endpoint.String())
 	var code string
 	select {
 	case result := <-results:
+		shutdownServer()
 		if result.err != nil {
 			return result.err
 		}

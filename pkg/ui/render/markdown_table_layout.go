@@ -7,28 +7,52 @@ import (
 	"loop/pkg/ui/style"
 )
 
-// The first complete row supplies a bounded sample. Once displayed, columns
-// retain their widths so later values can wrap without moving earlier rows.
+// measure uses the first complete row as a bounded sample while streaming.
+// Once displayed, columns retain their widths so earlier rows never shift.
 func (t *markdownTable) measure(first []string) {
+	t.measureRowsWithHeuristic([][]string{first}, true)
+}
+
+// measureRows measures all rows in batch mode so every column gets optimal width.
+func (t *markdownTable) measureRows(rows [][]string) {
+	t.measureRowsWithHeuristic(rows, false)
+}
+
+func (t *markdownTable) measureRowsWithHeuristic(rows [][]string, streamingSample bool) {
 	count := len(t.header)
 	t.preferred, t.minimum, t.numeric = make([]int, count), make([]int, count), make([]bool, count)
 	for i, label := range t.header {
 		headerWidth := style.CellWidth(RenderInlineMarkdown(label, false, t.theme))
-		value := ""
-		if i < len(first) {
-			value = style.StripAnsi(RenderInlineMarkdown(SanitizeTerminalText(first[i]), false, t.theme))
+		allNumeric := true
+		hasValue := false
+		maxValWidth := 0
+		for _, row := range rows {
+			if i >= len(row) {
+				continue
+			}
+			value := style.StripAnsi(RenderInlineMarkdown(SanitizeTerminalText(row[i]), false, t.theme))
+			if value == "" {
+				continue
+			}
+			hasValue = true
+			if w := style.CellWidth(value); w > maxValWidth {
+				maxValWidth = w
+			}
+			number := strings.ReplaceAll(strings.TrimSuffix(strings.TrimSpace(value), "%"), ",", "")
+			if _, err := strconv.ParseFloat(number, 64); err != nil {
+				allNumeric = false
+			}
 		}
-		number := strings.ReplaceAll(strings.TrimSuffix(strings.TrimSpace(value), "%"), ",", "")
-		_, err := strconv.ParseFloat(number, 64)
-		t.numeric[i] = value == "" || err == nil
-		preferred := max(1, headerWidth, style.CellWidth(value))
-		if !t.numeric[i] {
+		t.numeric[i] = !hasValue || allNumeric
+		preferred := max(1, headerWidth, maxValWidth)
+		if !t.numeric[i] && streamingSample {
 			// Give text modest room for later rows without stretching the table.
 			preferred = max(12, preferred)
 		}
 		t.preferred[i] = min(40, preferred)
 		t.minimum[i] = min(6, t.preferred[i])
 	}
+	t.measured = true
 }
 
 func (t *markdownTable) layout(width int) {

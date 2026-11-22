@@ -22,10 +22,13 @@ func (a *Agent) IsGuidedMode() bool {
 	if a == nil {
 		return false
 	}
-	if a.Guided != nil {
-		return a.Guided.IsEnabled()
+	a.stateMu.Lock()
+	guided := a.Guided
+	a.stateMu.Unlock()
+	if guided != nil {
+		return guided.IsEnabled()
 	}
-	return a.Config != nil && a.Config.GuidedMode
+	return a.LiveSettings().GuidedMode
 }
 
 func (a *Agent) SetGuidedMode(enabled bool) {

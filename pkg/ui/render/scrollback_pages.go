@@ -13,16 +13,21 @@ import (
 // HistoryPageSize counts terminal rows, including wrapped tool output.
 const HistoryPageSize = 500
 
+// scrollArchiveCompactMinBytes is the minimum archive file size before
+// dead-space compaction reclaims obsolete rows from resizes and repaints.
+const scrollArchiveCompactMinBytes = 2 << 20 // 2 MiB
+
 // Only row offsets and wrap boundaries remain resident outside the recent page
 // and the page being read. The live screen is always writable during browsing.
 type scrollArchive struct {
-	file    *os.File
-	end     int64
-	err     error
-	mu      sync.Mutex
-	refs    int
-	warming bool
-	warm    map[int64]string
+	file      *os.File
+	end       int64
+	liveBytes int64
+	err       error
+	mu        sync.Mutex
+	refs      int
+	warming   bool
+	warm      map[int64]string
 }
 
 func NewPagedScrollback(width, height int) (*Scrollback, error) {
@@ -69,13 +74,17 @@ func (a *scrollArchive) release() error {
 	return removeErr
 }
 
+func (a *scrollArchive) getErr() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.err
+}
+
 func (b *Scrollback) Err() error {
 	if b.archive == nil {
 		return nil
 	}
-	b.archive.mu.Lock()
-	defer b.archive.mu.Unlock()
-	return b.archive.err
+	return b.archive.getErr()
 }
 
 func (a *scrollArchive) read(offset int64, size int) string {
@@ -130,6 +139,7 @@ func (a *scrollArchive) evict(r *scrollRow) {
 		}
 		text := r.text
 		a.end += int64(len(text))
+		a.liveBytes += int64(len(text))
 		a.refs++
 		a.mu.Unlock()
 
@@ -153,6 +163,91 @@ func (a *scrollArchive) evict(r *scrollRow) {
 	}
 	r.text = ""
 	a.mu.Unlock()
+}
+
+// maybeCompactArchive rewrites live archived rows into a fresh temp file when
+// the archive exceeds scrollArchiveCompactMinBytes and less than 50% of the
+// file holds live rows. Cloned rows keep shared history pages safe without locks.
+func (b *Scrollback) maybeCompactArchive() {
+	if b == nil || b.archive == nil || !b.archiveOwned {
+		return
+	}
+	oldArch := b.archive
+	oldArch.mu.Lock()
+	totalBytes := oldArch.end
+	hasErr := oldArch.err != nil || oldArch.file == nil
+	oldArch.mu.Unlock()
+	if hasErr || totalBytes <= scrollArchiveCompactMinBytes {
+		return
+	}
+	var liveBytes int64
+	for _, r := range b.rows {
+		if !r.dirty && r.size > 0 && r.archive == oldArch {
+			liveBytes += int64(r.size)
+		}
+	}
+	if liveBytes*2 >= totalBytes {
+		return
+	}
+	_ = b.compactArchive()
+}
+
+func (b *Scrollback) compactArchive() error {
+	if b == nil || b.archive == nil || !b.archiveOwned {
+		return nil
+	}
+	oldArch := b.archive
+	f, err := os.CreateTemp("", "loop-scrollback-*")
+	if err != nil {
+		return fmt.Errorf("compact chat history cache: %w", err)
+	}
+	_ = os.Remove(f.Name())
+	newArch := &scrollArchive{file: f, refs: 1}
+
+	type compactedEntry struct {
+		index  int
+		offset int64
+		size   int
+	}
+	var entries []compactedEntry
+	for i, r := range b.rows {
+		if r.dirty || r.size == 0 || r.archive == nil {
+			continue
+		}
+		text := r.text
+		if text == "" {
+			text = r.archive.read(r.offset, r.size)
+			if readErr := r.archive.getErr(); readErr != nil {
+				_ = newArch.release()
+				return readErr
+			}
+		}
+		if text == "" {
+			continue
+		}
+		offset := newArch.end
+		n, writeErr := newArch.file.WriteAt([]byte(text), offset)
+		if writeErr == nil && n != len(text) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			_ = newArch.release()
+			return fmt.Errorf("compact chat history cache write: %w", writeErr)
+		}
+		newArch.end += int64(n)
+		newArch.liveBytes += int64(n)
+		entries = append(entries, compactedEntry{index: i, offset: offset, size: n})
+	}
+
+	for _, e := range entries {
+		cloned := *b.rows[e.index]
+		cloned.archive = newArch
+		cloned.offset = e.offset
+		cloned.size = e.size
+		b.rows[e.index] = &cloned
+	}
+	b.archive = newArch
+	return oldArch.release()
 }
 
 // NewHistoryPage has an independent row collection and shares the append-only
@@ -326,7 +421,7 @@ func (b *Scrollback) Prefetch(top, direction int) {
 	bytes := 0
 	for i := start; i < min(start+pageSize, len(b.rows)-max(pageSize, b.Height)); i++ {
 		r := b.rows[i]
-		if r.size == 0 {
+		if r.size == 0 || r.archive != a {
 			continue
 		}
 		if bytes+r.size > 1<<20 {
@@ -390,7 +485,6 @@ func (b *Scrollback) loadPage(top int) {
 	}
 	b.releasePage()
 	b.pageStart, b.pageEnd = start, min(len(b.rows), max(start+pageSize, top+b.Height))
-
 }
 
 func (b *Scrollback) trimMemory() {

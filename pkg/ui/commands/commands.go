@@ -43,7 +43,7 @@ func commandContext(a *agent.Agent, reader *interceptor.KeyInterceptorReader) co
 
 func terminalFromReader(kiReader *interceptor.KeyInterceptorReader) *term.Terminal {
 	if kiReader != nil {
-		return kiReader.RL
+		return kiReader.GetRL()
 	}
 	return nil
 }
@@ -72,7 +72,8 @@ func syncCommandStatus(
 	ui.GetUI().LastStatusBarText = ""
 	ui.GetUI().StateMu.Unlock()
 
-	ui.UpdateStatus(a.Config.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), a.Config.ShowTokens, estimated)
+	live := a.LiveSettings()
+	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
 	if refreshConsole {
 		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, terminalFromReader(kiReader))
 	}
@@ -117,7 +118,7 @@ func HandleSlashCommand(
 		return true, false
 
 	case "/find", "/latest":
-		history := ui.GetUI().ChatHistory
+		history := ui.GetUI().GetChatHistory()
 		if history == nil {
 			fmt.Fprintln(w, "chat navigation is only available in an interactive conversation")
 			return true, false
@@ -223,7 +224,7 @@ func HandleSlashCommand(
 			return true, false
 		}
 		saveConfigUpdate(a, w)
-		ui.SetCollapseStatus(a.Config.CollapseResults)
+		ui.SetCollapseStatus(a.LiveSettings().CollapseResults)
 		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
 		return true, false
 	case "/queue", "/queues":

@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -18,12 +19,27 @@ func ChatHistoryRows(text string, width int) []string {
 	text = strings.TrimRight(text, "\r\n")
 	var rows []string
 	var line strings.Builder
-	var active string
+	var active, emitted style.SGRState
 	column := 0
+	syncStyle := func() {
+		if active == emitted {
+			return
+		}
+		if !emitted.IsZero() {
+			line.WriteString(terminal.ResetAttributes)
+		}
+		if !active.IsZero() {
+			line.WriteString(active.Sequence())
+		}
+		emitted = active
+	}
 	finish := func() {
-		rows = append(rows, line.String()+"\x1b[0m")
+		if !emitted.IsZero() {
+			line.WriteString(terminal.ResetAttributes)
+			emitted.Reset()
+		}
+		rows = append(rows, line.String())
 		line.Reset()
-		line.WriteString(active)
 		column = 0
 	}
 	for i := 0; i < len(text); {
@@ -31,40 +47,43 @@ func ChatHistoryRows(text string, width int) []string {
 			end := style.SkipAnsiEscape(text, i)
 			seq := text[i:end]
 			if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
-				if seq == "\x1b[0m" || seq == "\x1b[m" {
-					active = ""
-				} else {
-					active += seq
-				}
-				line.WriteString(seq)
+				active.Apply(seq)
 			}
 			i = end
 			continue
 		}
-		r, size := utf8.DecodeRuneInString(text[i:])
-		i += size
-		if r == '\n' {
+		if text[i] == '\n' {
 			finish()
+			i++
 			continue
 		}
-		if r == '\r' {
+		if text[i] == '\r' {
+			i++
 			continue
 		}
-		cells := promptRuneWidth(r)
-		if r == '\t' {
-			cells = min(4-column%4, width)
+		if text[i] == '\t' {
+			cells := min(style.TabAdvance(column, style.DefaultTabWidth), width)
+			if column > 0 && column+cells > width {
+				finish()
+				cells = min(style.TabAdvance(0, style.DefaultTabWidth), width)
+			}
+			syncStyle()
+			line.WriteString(strings.Repeat(" ", cells))
+			column += cells
+			i++
+			continue
 		}
-		if unicode.IsControl(r) && r != '\t' {
+		cluster, cells, size := style.NextGrapheme(text[i:])
+		i += size
+		first, _ := utf8.DecodeRuneInString(cluster)
+		if unicode.IsControl(first) {
 			continue
 		}
 		if column > 0 && column+cells > width {
 			finish()
 		}
-		if r == '\t' {
-			line.WriteString(strings.Repeat(" ", cells))
-		} else {
-			line.WriteRune(r)
-		}
+		syncStyle()
+		line.WriteString(cluster)
 		column += cells
 	}
 	finish()
@@ -74,11 +93,26 @@ func ChatHistoryRows(text string, width int) []string {
 // DrawChatViewport updates changed rows and the counter on the stats row.
 // Showing or hiding the counter never changes the chat area's height.
 func DrawChatViewport(w io.Writer, rows, previous []string, hint, previousHint string) {
+	DrawChatViewportAtomic(w, rows, previous, hint, previousHint, "")
+}
+
+// DrawChatViewportAtomic updates changed rows and the stats/hint row in a single
+// synchronized frame. When hint is empty and fallbackStats is non-empty,
+// fallbackStats is painted on the stats row in the same write so leaving history
+// or search mode never produces a one-frame blank flash.
+func DrawChatViewportAtomic(w io.Writer, rows, previous []string, hint, previousHint, fallbackStats string) {
+	if w == nil {
+		return
+	}
 	var frame bytes.Buffer
+	sync := !inSyncFrame(w)
 	begin := func() {
 		if frame.Len() == 0 {
-			frame.WriteString("\x1b[?2026h\x1b7")
-			fmt.Fprintf(&frame, "\x1b[1;%dr", len(rows))
+			if sync {
+				frame.WriteString(terminal.BeginSyncOutput)
+			}
+			frame.WriteString("\x1b7")
+			fmt.Fprintf(&frame, "\x1b[1;%dr", max(1, len(rows)))
 		}
 	}
 	for row, text := range rows {
@@ -86,18 +120,31 @@ func DrawChatViewport(w io.Writer, rows, previous []string, hint, previousHint s
 			continue
 		}
 		begin()
-		fmt.Fprintf(&frame, "\x1b[%d;1H%s\x1b[0m\x1b[K", row+1, text)
+		fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s%s", row+1, text, terminal.ResetAttributes)
 	}
-	if len(previous) != len(rows) || hint != previousHint {
+	statsText := hint
+	if statsText == "" {
+		statsText = fallbackStats
+	}
+	statsChanged := len(previous) != len(rows) || hint != previousHint || (frame.Len() > 0 && hint == "" && fallbackStats != "")
+	if statsChanged {
 		begin()
 		for row := len(rows) + 1; row <= len(rows)+style.ActivityGapLines; row++ {
 			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", row)
 		}
-		fmt.Fprintf(&frame, "\x1b[%d;1H%s\x1b[0m\x1b[K", len(rows)+style.ActivityGapLines+1, hint)
+		statsRow := len(rows) + style.ActivityGapLines + 1
+		if statsText != "" {
+			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s%s", statsRow, statsText, terminal.ResetAttributes)
+		} else {
+			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", statsRow)
+		}
 	}
 	if frame.Len() == 0 {
 		return
 	}
-	frame.WriteString("\x1b8\x1b[?2026l")
+	frame.WriteString("\x1b8")
+	if sync {
+		frame.WriteString(terminal.EndSyncOutput)
+	}
 	_, _ = w.Write(frame.Bytes())
 }

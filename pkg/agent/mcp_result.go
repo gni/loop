@@ -40,7 +40,7 @@ func (m *mcpToolExecutor) ExecuteResult(ctx tool.AgentContext, arguments string)
 }
 
 func (client *mcpClient) callToolResult(ctx context.Context, name, arguments string) (tool.ToolResult, error) {
-	if !client.initialized {
+	if !client.isInitialized() {
 		return tool.ToolResult{}, fmt.Errorf("client not initialized")
 	}
 	if strings.TrimSpace(arguments) == "" {

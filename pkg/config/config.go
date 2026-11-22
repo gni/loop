@@ -79,6 +79,10 @@ type Config struct {
 	HistoryPageSize          int                        `json:"history_page_size,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
 	ShowMicroseconds         bool                       `json:"show_microseconds"`
+	ShowReasoningBadge       bool                       `json:"show_reasoning_badge"`
+	ShowCollapseBadge        bool                       `json:"show_collapse_badge"`
+	ShowGitBranch            bool                       `json:"show_git_branch"`
+	ShowStickyQuestion       bool                       `json:"show_sticky_question"`
 	Theme                    string                     `json:"theme"`
 	DirectCommands           bool                       `json:"direct_commands"`
 	CertFile                 string                     `json:"cert_file,omitempty"`

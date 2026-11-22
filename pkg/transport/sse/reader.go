@@ -16,8 +16,30 @@ type Event struct {
 	ID   string
 }
 
+type ctxReader struct {
+	r   io.Reader
+	ctx context.Context
+}
+
+func (c *ctxReader) Read(p []byte) (int, error) {
+	if c.ctx != nil {
+		if err := c.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	n, err := c.r.Read(p)
+	if c.ctx != nil {
+		if cerr := c.ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+	}
+	return n, err
+}
+
 type Reader struct {
 	scanner    *bufio.Scanner
+	source     *ctxReader
+	closer     io.Closer
 	OnActivity func()
 	remaining  int64
 	limited    bool
@@ -32,18 +54,42 @@ func NewLimitedReader(input io.Reader, maxBytes int64) *Reader {
 }
 
 func NewReader(input io.Reader) *Reader {
-	scanner := bufio.NewScanner(input)
+	source := &ctxReader{r: input}
+	closer, _ := input.(io.Closer)
+	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64<<10), MaxEventBytes)
-	return &Reader{scanner: scanner}
+	return &Reader{scanner: scanner, source: source, closer: closer}
 }
 
 func (r *Reader) Read(ctx context.Context) (Event, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return Event{}, err
+		}
+	}
+	r.source.ctx = ctx
+	defer func() { r.source.ctx = nil }()
+	if ctx != nil && ctx.Done() != nil && r.closer != nil {
+		closed := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() {
+			defer close(closed)
+			_ = r.closer.Close()
+		})
+		defer func() {
+			if !stop() {
+				<-closed
+			}
+		}()
+	}
+
 	var event Event
 	var data strings.Builder
 	seen := false
 	for r.scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return Event{}, err
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return Event{}, err
+			}
 		}
 		if r.OnActivity != nil {
 			r.OnActivity()
@@ -84,10 +130,12 @@ func (r *Reader) Read(ctx context.Context) (Event, error) {
 			seen = true
 		}
 	}
-	if err := r.scanner.Err(); err != nil {
-		return Event{}, err
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return Event{}, err
+		}
 	}
-	if err := ctx.Err(); err != nil {
+	if err := r.scanner.Err(); err != nil {
 		return Event{}, err
 	}
 	if seen {

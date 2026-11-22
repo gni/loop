@@ -16,6 +16,7 @@ import (
 	"loop/pkg/domain/limits"
 	"loop/pkg/domain/task"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/ui/style"
 )
 
 type SubagentExecutor struct {
@@ -86,7 +87,7 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 		return "", fmt.Errorf("subagent has no manager reference")
 	}
 	managerBase := s.subagent.Manager.BaseAgent
-	if managerBase == nil || managerBase.Config == nil || managerBase.Config.MaxSubagentDepth <= 0 {
+	if managerBase == nil || managerBase.LiveSettings().MaxSubagentDepth <= 0 {
 		return "", fmt.Errorf("subagents are disabled")
 	}
 	settings, err := managerBase.Configuration()
@@ -153,11 +154,12 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 	if err := s.subagent.supervisor.RegisterTask(taskID, s.subagent.Name, prompt); err != nil {
 		return "", err
 	}
+	doneCh := make(chan struct{})
 	s.subagent.HistoryMu.Lock()
 	if s.subagent.requests == nil {
-		s.subagent.requests = make(map[string]context.Context)
+		s.subagent.requests = make(map[string]taskRequest)
 	}
-	s.subagent.requests[taskID] = executionCtx
+	s.subagent.requests[taskID] = taskRequest{ctx: executionCtx, done: doneCh}
 	s.subagent.HistoryMu.Unlock()
 	enqueued := false
 	defer func() {
@@ -189,9 +191,6 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 		enqueued = true
 	}
 
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
 	checkTask := func() (string, bool, error) {
 		task, err := s.subagent.supervisor.GetTask(taskID)
 		if err != nil {
@@ -212,35 +211,27 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 		}
 	}
 
-	for {
-		select {
-		case <-ctx.Context().Done():
-			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
-			drainSubagentOutput(s.subagent.Output)
-			return "", ctx.Context().Err()
-		case <-s.subagent.Context.Done():
-			errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
-			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
-			return "", errSub
-		case <-executionCtx.Done():
-			errTimeout := fmt.Errorf("subagent '%s' execution stopped after %v: %w", s.subagent.Name, timeout, executionCtx.Err())
-			s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errTimeout)
-			drainSubagentOutput(s.subagent.Output)
-			return "", errTimeout
-		case _, ok := <-s.subagent.Output:
-			if !ok {
-				errClosed := fmt.Errorf("subagent '%s' output channel closed before task completion", s.subagent.Name)
-				s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errClosed)
-				return "", errClosed
-			}
-			if res, done, err := checkTask(); done {
-				return res, err
-			}
-		case <-ticker.C:
-			if res, done, err := checkTask(); done {
-				return res, err
-			}
+	select {
+	case <-doneCh:
+		if res, done, err := checkTask(); done {
+			return res, err
 		}
+		errSub := fmt.Errorf("subagent '%s' finished without recording task status", s.subagent.Name)
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
+		return "", errSub
+	case <-ctx.Context().Done():
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
+		drainSubagentOutput(s.subagent.Output)
+		return "", ctx.Context().Err()
+	case <-s.subagent.Context.Done():
+		errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
+		return "", errSub
+	case <-executionCtx.Done():
+		errTimeout := fmt.Errorf("subagent '%s' execution stopped after %v: %w", s.subagent.Name, timeout, executionCtx.Err())
+		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errTimeout)
+		drainSubagentOutput(s.subagent.Output)
+		return "", errTimeout
 	}
 }
 
@@ -347,10 +338,7 @@ func (s *ListSubagentsTool) Execute(ctx tool.AgentContext, arguments string) (st
 		}
 
 		sb.WriteString(fmt.Sprintf("- %s (Parent: %s) [Skills: %s]\n", name, parentStr, skillStr))
-		sysPrompt := strings.ReplaceAll(s.mam.GetAgentSystemPrompt(name), "\n", " ")
-		if len(sysPrompt) > 100 {
-			sysPrompt = sysPrompt[:97] + "..."
-		}
+		sysPrompt := style.TruncateRunes(strings.ReplaceAll(s.mam.GetAgentSystemPrompt(name), "\n", " "), 100)
 		sb.WriteString(fmt.Sprintf("  Goal: %s\n", sysPrompt))
 	}
 	return sb.String(), nil

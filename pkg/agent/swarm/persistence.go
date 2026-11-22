@@ -118,7 +118,7 @@ func (mam *MultiAgentManager) saveAgentDef(ma *MultiAgent) error {
 }
 
 func (mam *MultiAgentManager) LoadSavedAgents() error {
-	if mam.ephemeral || mam.BaseAgent == nil || mam.BaseAgent.Config == nil || mam.BaseAgent.Config.MaxSubagentDepth <= 0 {
+	if mam.ephemeral || mam.BaseAgent == nil || mam.BaseAgent.LiveSettings().MaxSubagentDepth <= 0 {
 		return nil
 	}
 
@@ -247,10 +247,11 @@ func (mam *MultiAgentManager) ClearAllAgents() error {
 	return clearErr
 }
 
-// persistAgentRemoval runs under mam.mu. Reparent saved children before deleting
-// their parent so a restart at any successful write boundary has a valid tree.
-// If a write fails, restore attempted definitions before changing the live tree.
-func (mam *MultiAgentManager) persistAgentRemoval(ma *MultiAgent) error {
+// persistAgentRemovalSnapshot runs outside mam.mu against a reserved snapshot
+// of direct children. Reparent saved children before deleting their parent so a
+// restart at any successful write boundary has a valid tree. If a write fails,
+// restore attempted definitions before changing the live tree.
+func (mam *MultiAgentManager) persistAgentRemovalSnapshot(ma *MultiAgent, parentName string, children []*MultiAgent) error {
 	type savedDefinition struct {
 		store *subagent.Storage
 		def   AgentDef
@@ -265,18 +266,7 @@ func (mam *MultiAgentManager) persistAgentRemoval(ma *MultiAgent) error {
 		}
 		return errors.Join(failures...)
 	}
-	parentName := ""
-	if parent := ma.parent(); parent != nil {
-		parentName = parent.Name
-	}
-	// Manager mutations own the child map; workers only read it under its lock.
-	names := make([]string, 0, len(ma.Subagents))
-	for name := range ma.Subagents {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		child := ma.Subagents[name]
+	for _, child := range children {
 		if child == nil || child.stateStore == nil {
 			continue
 		}

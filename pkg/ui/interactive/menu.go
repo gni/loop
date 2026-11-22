@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
 
 	"loop/pkg/terminal"
+	"loop/pkg/ui/screen"
 	"loop/pkg/ui/style"
 )
 
@@ -22,6 +24,30 @@ func writeMenuFrame(w io.Writer, frame string) error {
 		return io.ErrShortWrite
 	}
 	return err
+}
+
+func resolveTerminalFD(rlInput io.Reader, rlOutput io.Writer) int {
+	if f, ok := rlInput.(*os.File); ok && f != nil {
+		return int(f.Fd())
+	}
+	if f, ok := rlOutput.(*os.File); ok && f != nil {
+		return int(f.Fd())
+	}
+	return int(os.Stdin.Fd())
+}
+
+func flushMenuScreen(comp *screen.Compositor, w io.Writer, width, height int, rows []string, opts screen.FlushOptions) error {
+	width = max(1, width)
+	height = max(1, height)
+	if comp.Width() != width || comp.Height() != height {
+		comp.Resize(width, height)
+	}
+	comp.Clear()
+	limit := min(len(rows), height)
+	for y := range limit {
+		comp.SetRowANSI(y, rows[y])
+	}
+	return comp.Flush(w, opts)
 }
 
 type settingItem struct {
@@ -38,13 +64,7 @@ type settingItem struct {
 }
 
 func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() error) (bool, error) {
-	var fd int
-	if f, ok := rlInput.(*os.File); ok {
-		fd = int(f.Fd())
-	} else {
-		fd = int(os.Stdin.Fd())
-	}
-
+	fd := resolveTerminalFD(rlInput, rlOutput)
 	if !term.IsTerminal(fd) {
 		return false, nil
 	}
@@ -63,13 +83,14 @@ func withAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 	restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
 	defer restorePaste()
 
+	terminal.RefreshDimensions()
 	return true, fn()
 }
 
 func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	var input io.Reader = kiReader
 	var inputCloser io.Closer
-	if input == nil {
+	if isNilReader(input) {
 		input = os.Stdin
 		if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 			input = tty
@@ -107,21 +128,21 @@ func formatMenuCell(item *settingItem, selected bool, colWidth int, theme style.
 		keyColWidth = min(max(colWidth-16, 14), 26)
 	}
 
-	if utf8.RuneCountInString(nameStr) > keyColWidth-1 {
+	if style.CellWidth(nameStr) > keyColWidth-1 {
 		nameStr = style.TruncateCells(nameStr, keyColWidth-1)
 	}
 
 	if colWidth > 0 && !hasAnsiVal {
-		maxValRunes := max(colWidth-keyColWidth-6, 6)
-		if utf8.RuneCountInString(valStr) > maxValRunes {
-			valStr = style.TruncateCells(valStr, maxValRunes)
+		maxValCells := max(colWidth-keyColWidth-6, 6)
+		if style.CellWidth(valStr) > maxValCells {
+			valStr = style.TruncateCells(valStr, maxValCells)
 		}
 	}
 
-	nameLen := utf8.RuneCountInString(nameStr)
+	nameWidth := style.CellWidth(nameStr)
 	leader := ""
-	if nameLen < keyColWidth {
-		leader = strings.Repeat("·", keyColWidth-nameLen)
+	if nameWidth < keyColWidth {
+		leader = strings.Repeat("·", keyColWidth-nameWidth)
 	}
 	leaderStyled := style.NewStyle().Foreground(theme.Border).Render(leader)
 
@@ -161,13 +182,14 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 	searchQuery := ""
 	selectedIdx := 0
 
-	var sigChan chan os.Signal
-	sr, hasSessionReader := rlInput.(*SessionReader)
-	if hasSessionReader {
-		sigChan = make(chan os.Signal, 1)
-		terminal.NotifyResize(sigChan)
-		defer signal.Stop(sigChan)
-	}
+	sr, closeSR := modalSessionReader(rlInput)
+	defer closeSR()
+
+	sigChan := make(chan os.Signal, 1)
+	terminal.NotifyResize(sigChan)
+	defer signal.Stop(sigChan)
+
+	comp := screen.NewCompositor(80, 24)
 
 	for {
 		items := itemsProvider()
@@ -203,42 +225,33 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			termH = 24
 		}
 
-		frame, layout := renderSettingsMenu(title, searchQuery, filtered, selectedIdx, termW, termH, theme, extraRender)
-		if err := writeMenuFrame(rlOutput, frame); err != nil {
+		menuRows, layout := renderSettingsMenuRows(title, searchQuery, filtered, selectedIdx, termW, termH, theme, extraRender)
+		if err := flushMenuScreen(comp, rlOutput, termW, termH, menuRows, screen.FlushOptions{}); err != nil {
 			return err
 		}
 		useTwoCols, rows := layout.twoColumns, layout.rows
 
-		var readBuf [16]byte
-		var n int
-		var err error
-		if hasSessionReader {
-			keyData, resized, readErr := sr.ReadKeyOrResize(sigChan)
-			if readErr != nil {
-				return readErr
-			}
-			if resized {
-				continue
-			}
-			if appendPastedQuery(keyData, &searchQuery, maxMenuInputBytes) {
-				selectedIdx = 0
-				continue
-			}
-			n = copy(readBuf[:], keyData)
-		} else {
-			n, err = rlInput.Read(readBuf[:])
-			if err != nil {
-				return err
-			}
+		keyData, resized, readErr := sr.ReadKeyOrResize(sigChan)
+		if readErr != nil {
+			return readErr
 		}
-		if n == 0 {
+		if resized {
+			terminal.RefreshDimensions()
+			continue
+		}
+		if appendPastedQuery(keyData, &searchQuery, maxMenuInputBytes) {
+			selectedIdx = 0
+			continue
+		}
+		if len(keyData) == 0 {
 			continue
 		}
 
-		key := string(readBuf[:n])
+		key := string(keyData)
 		if (termW < 18 || termH < 6) && key != "\x1b" && key != "\x03" && key != "\x04" {
 			continue
 		}
+
 		switch key {
 		case "\x1b[5~":
 			selectedIdx = max(0, selectedIdx-layout.pageSize)
@@ -252,99 +265,83 @@ func runSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 		case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
 			selectedIdx = max(0, len(filtered)-1)
 			continue
-		}
-		if n >= 3 && readBuf[0] == 27 && (readBuf[1] == '[' || readBuf[1] == 'O') {
+		case "\x1b[A", "\x1bOA":
 			if len(filtered) > 0 {
-				switch readBuf[2] {
-				case 'A':
-					selectedIdx = (selectedIdx - 1 + len(filtered)) % len(filtered)
-				case 'B':
-					selectedIdx = (selectedIdx + 1) % len(filtered)
-				case 'C':
-					if useTwoCols && selectedIdx < rows {
-						target := selectedIdx + rows
-						if target >= len(filtered) {
-							target = len(filtered) - 1
-						}
-						selectedIdx = target
+				selectedIdx = (selectedIdx - 1 + len(filtered)) % len(filtered)
+			}
+			continue
+		case "\x1b[B", "\x1bOB":
+			if len(filtered) > 0 {
+				selectedIdx = (selectedIdx + 1) % len(filtered)
+			}
+			continue
+		case "\x1b[C", "\x1bOC":
+			if len(filtered) > 0 && useTwoCols && selectedIdx < rows {
+				target := min(selectedIdx+rows, len(filtered)-1)
+				selectedIdx = target
+			}
+			continue
+		case "\x1b[D", "\x1bOD":
+			if len(filtered) > 0 && useTwoCols && selectedIdx >= rows {
+				selectedIdx -= rows
+			}
+			continue
+		case "\x03", "\x04":
+			return fmt.Errorf("cancelled")
+		case " ":
+			if searchQuery == "" && len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
+				item := filtered[selectedIdx]
+				if item.isBool {
+					if err := item.toggle(); err != nil {
+						return err
 					}
-				case 'D':
-					if useTwoCols && selectedIdx >= rows {
-						selectedIdx -= rows
+					if item.onAction != nil || item.onToggle != nil {
+						comp.Invalidate()
+					}
+					continue
+				}
+			}
+		case "\r", "\n":
+			if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
+				item := filtered[selectedIdx]
+				if item.isBool || item.onToggle != nil || item.onAction != nil {
+					if err := item.toggle(); err != nil {
+						return err
+					}
+					if item.onAction != nil || item.onToggle != nil {
+						comp.Invalidate()
+					}
+				} else if item.onEdit != nil {
+					_, err := readMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.name, item.description, "Value", item.value(), item.onEdit)
+					comp.Invalidate()
+					if err != nil && !errors.Is(err, ErrSelectionCancelled) {
+						return err
 					}
 				}
 			}
 			continue
-		}
-
-		if n == 1 {
-			char := readBuf[0]
-			switch char {
-			case 3, 4:
-				return fmt.Errorf("cancelled")
-			case ' ':
-				if searchQuery == "" && len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
-					item := filtered[selectedIdx]
-					if item.isBool {
-						if err := item.toggle(); err != nil {
-							return err
-						}
-						continue
-					}
-				}
-			case 13, 10:
-				if len(filtered) > 0 && selectedIdx >= 0 && selectedIdx < len(filtered) {
-					item := filtered[selectedIdx]
-					if item.isBool || item.onToggle != nil || item.onAction != nil {
-						if err := item.toggle(); err != nil {
-							return err
-						}
-					} else if item.onEdit != nil {
-						if hasSessionReader {
-							_, err := readMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.name, item.description, "Value", item.value(), item.onEdit)
-							if err != nil && !errors.Is(err, ErrSelectionCancelled) {
-								return err
-							}
-							continue
-						}
-						if err := writeMenuFrame(rlOutput, fmt.Sprintf("\r\n  edit %s (current: %s): ", item.name, item.value())); err != nil {
-							return err
-						}
-						newVal, err := ReadInputRaw(rlInput, rlOutput)
-						if err == nil {
-							if err = item.onEdit(strings.TrimSpace(newVal)); err != nil {
-								if err := writeMenuFrame(rlOutput, fmt.Sprintf("\r\n  error: %v. press enter to continue...", err)); err != nil {
-									return err
-								}
-								_, _ = ReadInputRaw(rlInput, rlOutput)
-							}
-						}
-					}
-				}
-				continue
-			case 27:
-				if searchQuery != "" {
-					searchQuery = ""
-					continue
-				}
-				return nil
-			case 127, 8:
-				if len(searchQuery) > 0 {
-					_, size := utf8.DecodeLastRuneInString(searchQuery)
-					searchQuery = searchQuery[:len(searchQuery)-size]
-				}
+		case "\x1b":
+			if searchQuery != "" {
+				searchQuery = ""
 				continue
 			}
+			return nil
+		case "\x7f", "\x08":
+			if len(searchQuery) > 0 {
+				_, size := utf8.DecodeLastRuneInString(searchQuery)
+				searchQuery = searchQuery[:len(searchQuery)-size]
+			}
+			continue
 		}
 
-		if readBuf[0] != 27 {
-			for i := 0; i < n; {
-				r, size := utf8.DecodeRune(readBuf[i:n])
+		if keyData[0] != 27 {
+			for i := 0; i < len(keyData); {
+				r, size := utf8.DecodeRune(keyData[i:])
 				if r == utf8.RuneError && size == 1 {
 					i++
 					continue
 				}
-				if r >= 32 && r != 127 {
+				if r >= 32 && r != 127 && !unicode.IsControl(r) && len(searchQuery)+size <= maxMenuInputBytes {
 					searchQuery += string(r)
 				}
 				i += size
@@ -360,6 +357,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		return -1, fmt.Errorf("no items to select")
 	}
 	selected, query := 0, ""
+	comp := screen.NewCompositor(80, 24)
 	for {
 		var indexes []int
 		for i, item := range items {
@@ -369,13 +367,24 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		}
 		selected = max(0, min(selected, len(indexes)-1))
 		width, height := terminal.GetDimensions()
+		if width <= 0 {
+			width = 80
+		}
+		if height <= 0 {
+			height = 24
+		}
 		if width < 12 || height < 7 {
-			if err := writeMenuFrame(output, "\x1b[H\x1b[J"+style.TruncateCells("Resize terminal; Esc exits", max(1, width-1))); err != nil {
+			rows := []string{style.TruncateCells("Resize terminal; Esc exits", max(1, width))}
+			if err := flushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 				return -1, err
 			}
-			key, _, err := sr.ReadKeyOrResize(signals)
+			key, resized, err := sr.ReadKeyOrResize(signals)
 			if err != nil {
 				return -1, err
+			}
+			if resized {
+				terminal.RefreshDimensions()
+				continue
 			}
 			switch string(key) {
 			case "\x1b", "\x03", "\x04":
@@ -386,11 +395,14 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		visible := max(1, height-7)
 		start := max(0, selected-visible+1)
 		end := min(len(indexes), start+visible)
-		var screen strings.Builder
-		screen.WriteString("\x1b[H" + style.NewStyle().Foreground(theme.Primary).Bold(true).Render(style.TruncateCells(title, max(1, width-1))) + "\n")
-		screen.WriteString(style.TruncateCells("  Search: "+query, max(1, width-1)) + "\n\n")
+		rows := make([]string, 0, end-start+5)
+		rows = append(rows,
+			style.NewStyle().Foreground(theme.Primary).Bold(true).Render(style.TruncateCells(title, max(1, width-1))),
+			style.TruncateCells("  Search: "+menuDisplayText(query), max(1, width-1)),
+			"",
+		)
 		if len(indexes) == 0 {
-			screen.WriteString("  No matching items\n")
+			rows = append(rows, "  No matching items")
 		}
 		for row := start; row < end; row++ {
 			text := style.TruncateCells(strings.Join(strings.Fields(style.StripAnsi(items[indexes[row]])), " "), max(1, width-7))
@@ -400,10 +412,10 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 				prefix = "  › "
 				tint = theme.Primary
 			}
-			screen.WriteString(prefix + style.NewStyle().Foreground(tint).Render(text) + "\n")
+			rows = append(rows, prefix+style.NewStyle().Foreground(tint).Render(text))
 		}
-		screen.WriteString("\n" + style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)) + "\x1b[J")
-		if err := writeMenuFrame(output, strings.ReplaceAll(screen.String(), "\n", "\x1b[K\r\n")); err != nil {
+		rows = append(rows, "", style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)))
+		if err := flushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 			return -1, err
 		}
 		key, resized, err := sr.ReadKeyOrResize(signals)
@@ -411,6 +423,7 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			return -1, err
 		}
 		if resized {
+			terminal.RefreshDimensions()
 			continue
 		}
 		if appendPastedQuery(key, &query, maxMenuInputBytes) {
@@ -441,6 +454,10 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			selected = max(0, selected-visible)
 		case "\x1b[6~":
 			selected = min(max(0, len(indexes)-1), selected+visible)
+		case "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~":
+			selected = 0
+		case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
+			selected = max(0, len(indexes)-1)
 		case "\x7f", "\x08":
 			if len(query) > 0 {
 				_, size := utf8.DecodeLastRuneInString(query)
@@ -450,8 +467,11 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		default:
 			if len(key) > 0 && key[0] != 27 {
 				for _, r := range string(key) {
-					if r >= 32 && r != 127 {
-						query += string(r)
+					if r >= 32 && r != 127 && !unicode.IsControl(r) {
+						size := utf8.RuneLen(r)
+						if size > 0 && len(query)+size <= maxMenuInputBytes {
+							query += string(r)
+						}
 					}
 				}
 				selected = 0

@@ -70,7 +70,7 @@ func (h *ChatHistory) prefetchOlderLocked() {
 	if h.closed.Load() || h.captureOnly || (!h.hasOlderLocked()) || h.pageJob != nil || h.readyPage != nil {
 		return
 	}
-	cfg, err := config.Clone(h.a.Config)
+	cfg, err := h.a.Configuration()
 	if err != nil {
 		h.historyErr = err
 		return

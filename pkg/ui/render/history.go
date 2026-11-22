@@ -11,7 +11,6 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -43,9 +42,15 @@ func extractBacktickCommandAndOutput(content, prefix string) (string, string, bo
 }
 
 func printPromptDivider(w io.Writer, borderStyle style.Style) {
-	termW, _ := terminal.GetDimensions()
-	dashesCount := max(termW-12, 5)
-	fmt.Fprintln(w, borderStyle.Render("─── prompt "+strings.Repeat("─", dashesCount)))
+	termW := renderWidth(w)
+	prefix := "─── prompt "
+	available := max(1, termW-1)
+	if available <= style.CellWidth(prefix) {
+		fmt.Fprintln(w, borderStyle.Render(style.TruncateCells(prefix, available)))
+		return
+	}
+	dashesCount := max(available-style.CellWidth(prefix), 1)
+	fmt.Fprintln(w, borderStyle.Render(prefix+strings.Repeat("─", dashesCount)))
 }
 
 func renderToolTitleLine(w io.Writer, toolName, argsJSON string, status ToolRenderStatus, theme style.UITheme) {
@@ -54,7 +59,7 @@ func renderToolTitleLine(w io.Writer, toolName, argsJSON string, status ToolRend
 	if toolName == "bash" || IsCommandLikeTool(toolName) {
 		fmt.Fprintln(w, FormatBashCommandLine(symbol, path, theme))
 	} else {
-		fmt.Fprintln(w, FormatToolTitle(symbol, toolName, path, theme))
+		fmt.Fprintln(w, formatToolTitleForWidth(symbol, toolName, path, theme, renderWidth(w)))
 	}
 }
 

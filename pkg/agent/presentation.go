@@ -64,28 +64,29 @@ type ToolResultRecorder interface {
 type ProgressCallTracker interface{ TrackProgressCall(int) }
 
 func (a *Agent) ShouldShowThinking() bool {
-	if a == nil || a.Config == nil || !a.Config.ShowThinking {
+	live := a.LiveSettings()
+	if !live.ShowThinking {
 		return false
 	}
-	effort := strings.ToLower(strings.TrimSpace(a.Config.ReasoningEffort))
+	effort := strings.ToLower(strings.TrimSpace(live.ReasoningEffort))
 	return effort != "off" && effort != "none"
 }
 
 func (a *Agent) NewTurnStreamRenderer(w io.Writer, theme style.UITheme, agentName, prompt string) StreamRenderer {
+	live := a.LiveSettings()
 	var sr StreamRenderer
 	if a != nil && a.UI != nil {
-		streamWrites := a.Config == nil || a.Config.StreamWrites
-		sr = a.UI.NewStreamRenderer(w, theme, a.ShouldShowThinking(), streamWrites, agentName)
+		sr = a.UI.NewStreamRenderer(w, theme, a.ShouldShowThinking(), live.StreamWrites, agentName)
 	} else {
 		sr = &FallbackStreamRenderer{w: w}
 	}
 	sr.SetPrompt(prompt)
-	if presenter, ok := sr.(interface{ SetLiveCollapse(bool) }); ok && a != nil && a.Config != nil {
-		presenter.SetLiveCollapse(a.Config.CollapseResults)
+	if presenter, ok := sr.(interface{ SetLiveCollapse(bool) }); ok && a != nil {
+		presenter.SetLiveCollapse(live.CollapseResults)
 	}
 	if presenter, ok := sr.(interface{ SetInteractiveQuestions(bool) }); ok {
 		presenter.SetInteractiveQuestions(a != nil && a.UI != nil && a.Inquirer == nil &&
-			(a.Config == nil || a.Config.AskUserMode != "auto_recommended"))
+			live.AskUserMode != "auto_recommended")
 	}
 	return sr
 }

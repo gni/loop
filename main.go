@@ -93,7 +93,7 @@ func restoreTerminalForExit(fd int, state *termpkg.State) {
 			output = os.Stdout
 		}
 		if termpkg.IsTerminal(int(output.Fd())) {
-			_, _ = output.WriteString(terminal.ExitAlternateScreen + terminal.DisableBracketedPaste + "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[r\x1b[0m")
+			_, _ = output.WriteString(terminal.FullCleanupSequence)
 		}
 	}()
 	// Even a direct terminal write may block on a full buffer or file lock.

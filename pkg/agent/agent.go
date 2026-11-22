@@ -289,7 +289,10 @@ func (a *Agent) ConfiguredSkillDirs() []string {
 	if a == nil {
 		return nil
 	}
-	return a.skillDirsForConfig(a.Config)
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	return a.skillDirsForConfig(cfg)
 }
 
 func (a *Agent) skillDirsForConfig(cfg *config.Config) []string {
@@ -323,10 +326,16 @@ func (a *Agent) ReloadSkills() []tool.Skill {
 }
 
 func (a *Agent) ReloadSkillsChecked() ([]tool.Skill, error) {
-	if a == nil || a.Config == nil {
+	if a == nil {
+		return nil, nil
+	}
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	if cfg == nil {
 		return a.GetActiveSkills(), nil
 	}
-	dirs := a.ConfiguredSkillDirs()
+	dirs := a.skillDirsForConfig(cfg)
 	if len(dirs) == 0 {
 		a.SetActiveSkills(nil)
 		return nil, nil
@@ -349,15 +358,19 @@ func (a *Agent) estimateTurnContext(messages []db.Message, allowlist []string) (
 }
 
 func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommended string) (string, error) {
-	if a.Config != nil && a.Config.AskUserMode == "disabled" {
+	if a == nil {
+		return "", fmt.Errorf("agent is unavailable")
+	}
+	mode := a.LiveSettings().AskUserMode
+	if mode == "disabled" {
 		return "", fmt.Errorf("ask_user tool is disabled by configuration")
 	}
 	if a.Inquirer == nil {
-		if a.Config != nil && a.Config.AskUserMode == "auto_recommended" {
+		if mode == "auto_recommended" {
 			return defaultAskUserSelection(options, recommended), nil
 		}
 		if a.UI == nil {
-			if a.Config != nil && a.Config.AskUserMode == "always_ask" {
+			if mode == "always_ask" {
 				return "", fmt.Errorf("ask_user_mode=always_ask requires an interactive UI; no UI attached")
 			}
 			return defaultAskUserSelection(options, recommended), nil
@@ -397,6 +410,9 @@ func (a *Agent) askUserInteractively(question string, options []tool.AskUserOpti
 }
 
 func (a *Agent) IsPersistentBashEnabled() bool {
+	if a == nil {
+		return true
+	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
@@ -415,12 +431,18 @@ func (a *Agent) IsShellScanDefaultsEnabled() bool {
 }
 
 func (a *Agent) IsStrictSyntaxEnabled() bool {
+	if a == nil {
+		return false
+	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	return a.Config != nil && a.Config.StrictSyntax
 }
 
 func (a *Agent) IsAtomicWritesEnabled() bool {
+	if a == nil {
+		return true
+	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
@@ -437,12 +459,18 @@ func (a *Agent) ReloadPlugins() error { return a.ReloadPluginsContext(a.Context(
 
 // ReloadPluginsContext cancels plugin discovery before replacing active tools.
 func (a *Agent) ReloadPluginsContext(ctx context.Context) error {
-	if a.Config != nil && !a.Config.LocalPlugins {
+	if a == nil || a.Registry == nil {
+		return fmt.Errorf("agent is unavailable")
+	}
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	if cfg != nil && !cfg.LocalPlugins {
 		return fmt.Errorf("local plugins are disabled for this workspace (run with trust to enable)")
 	}
 
 	staged := tool.NewToolRegistry()
-	for _, dir := range a.pluginDirs() {
+	for _, dir := range a.pluginDirsForConfig(cfg) {
 		if err := tool.RegisterPluginsContext(ctx, staged, dir); err != nil {
 			return err
 		}
@@ -461,7 +489,15 @@ func (a *Agent) HasSubagent(name string) bool {
 	return a.SpawnedAgents[name]
 }
 
-func (a *Agent) ProjectResourceAllowed(path string) bool { return a.resourceAllowed(a.Config, path) }
+func (a *Agent) ProjectResourceAllowed(path string) bool {
+	if a == nil {
+		return true
+	}
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	return a.resourceAllowed(cfg, path)
+}
 
 func (a *Agent) resourceAllowed(cfg *config.Config, path string) bool {
 	if cfg == nil || cfg.ProjectResources {
@@ -471,12 +507,24 @@ func (a *Agent) resourceAllowed(cfg *config.Config, path string) bool {
 	return err == nil && (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func (a *Agent) pluginDirs() []string { return a.pluginDirsForConfig(a.Config) }
+func (a *Agent) pluginDirs() []string {
+	if a == nil {
+		return nil
+	}
+	a.LLMProviderMu.RLock()
+	cfg := a.Config
+	a.LLMProviderMu.RUnlock()
+	return a.pluginDirsForConfig(cfg)
+}
 
 func (a *Agent) pluginDirsForConfig(cfg *config.Config) []string {
 	var allowed []string
 	seen := make(map[string]bool)
-	for _, dir := range append(getPluginDirs(a.WorkspaceRoot), cfg.PluginDirectories...) {
+	dirs := getPluginDirs(a.WorkspaceRoot)
+	if cfg != nil {
+		dirs = append(dirs, cfg.PluginDirectories...)
+	}
+	for _, dir := range dirs {
 		dir = filepath.Clean(dir)
 		if seen[dir] {
 			continue
