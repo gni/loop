@@ -16,13 +16,14 @@ func RenderSkills(w io.Writer, skills []tool.Skill, theme style.UITheme) {
 		return
 	}
 
+	borderStyle := style.NewStyle().Foreground(theme.Border)
 	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	descStyle := style.NewStyle().Foreground(theme.Text)
-	pathStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
+	pathStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
 
 	width := max(1, markdown.RenderWidth(w)-6)
-	border := headerStyle.Render("│")
+	border := borderStyle.Render("│")
 	hline := strings.Repeat("─", width+4)
 	pad := func(n int) string { return strings.Repeat(" ", max(0, n)) }
 	row := func(content string) {
@@ -53,9 +54,9 @@ func RenderSkills(w io.Writer, skills []tool.Skill, theme style.UITheme) {
 	}
 
 	hdr := style.TruncateCells("AVAILABLE SKILLS (Reference Guides)", width)
-	fmt.Fprintln(w, headerStyle.Render("╭"+hline+"╮"))
-	fmt.Fprintln(w, headerStyle.Render("│  "+hdr+pad(width-style.CellWidth(hdr))+"  │"))
-	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
+	fmt.Fprintln(w, borderStyle.Render("╭"+hline+"╮"))
+	fmt.Fprintf(w, "%s  %s%s  %s\n", border, headerStyle.Render(hdr), pad(width-style.CellWidth(hdr)), border)
+	fmt.Fprintln(w, borderStyle.Render("├"+hline+"┤"))
 
 	for i, s := range skills {
 		name := strings.Join(strings.Fields(SanitizeTerminalText(s.Name)), " ")
@@ -84,5 +85,5 @@ func RenderSkills(w io.Writer, skills []tool.Skill, theme style.UITheme) {
 		}
 	}
 
-	fmt.Fprintln(w, headerStyle.Render("╰"+hline+"╯"))
+	fmt.Fprintln(w, borderStyle.Render("╰"+hline+"╯"))
 }

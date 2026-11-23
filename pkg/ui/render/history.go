@@ -112,7 +112,7 @@ func PrintSessionHistory(
 			clear(displayedResults)
 		}
 		if msg.IsContextSummary() {
-			fmt.Fprintln(w, borderStyle.Italic(true).Render("[earlier conversation compressed; summary retained for the agent]"))
+			fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render("[earlier conversation compressed; summary retained for the agent]"))
 			fmt.Fprintln(w, agent.CompressionSummaryPreview(msg.Content))
 			fmt.Fprintln(w)
 			continue
@@ -153,7 +153,7 @@ func PrintSessionHistory(
 				if lastRole != "" {
 					fmt.Fprintln(w)
 				}
-				fmt.Fprintf(w, "%s\n", style.NewStyle().Foreground(theme.Border).Italic(true).Render("✦ "+msg.Content))
+				fmt.Fprintf(w, "%s\n", style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render("✦ "+msg.Content))
 				lastRole = "system_event"
 				continue
 			}
@@ -197,7 +197,7 @@ func PrintSessionHistory(
 						} else {
 							hooks.RenderReasoning(w, strings.Trim(cleanReasoning, "\r\n"), theme)
 							fmt.Fprintln(w)
-							labelStyle := borderStyle.Italic(true)
+							labelStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
 							if msg.ReasoningDuration > 0 {
 								fmt.Fprintf(w, "%s\n", labelStyle.Render("thought ("+style.FormatElapsedDuration(time.Duration(msg.ReasoningDuration*float64(time.Second)), cfg.ShowMicroseconds)+")"))
 							} else {

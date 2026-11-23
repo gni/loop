@@ -64,11 +64,25 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 }
 
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, error) {
-	if a.autoCompactionDue(*messages, promptTokens, completionTokens, effectiveLimit) {
+	if a != nil {
+		a.MessagesMu.RLock()
+	}
+	current := append([]db.Message(nil), (*messages)...)
+	if a != nil {
+		a.MessagesMu.RUnlock()
+	}
+	if a.autoCompactionDue(current, promptTokens, completionTokens, effectiveLimit) {
 		if err := a.CompressHistory(ctx, messages, sessionID, theme, w); err != nil {
 			return promptTokens, effectiveLimit, err
 		}
-		recomputed, limit := a.estimateTurnContext(*messages, allowlist)
+		if a != nil {
+			a.MessagesMu.RLock()
+		}
+		updated := append([]db.Message(nil), (*messages)...)
+		if a != nil {
+			a.MessagesMu.RUnlock()
+		}
+		recomputed, limit := a.estimateTurnContext(updated, allowlist)
 		return recomputed, limit, nil
 	}
 	return promptTokens, effectiveLimit, nil
@@ -186,28 +200,41 @@ func (a *Agent) CompressHistory(
 	}
 	a.emit(Event{Type: "compaction_start", SessionID: sessionID})
 	started := time.Now()
-	beforeCount, beforeTokens := len(*messages), 0
-	if a.EventSink != nil {
-		beforeTokens = requestTokens(*messages)
+	if a != nil {
+		a.MessagesMu.RLock()
 	}
+	snapshot := message.CloneAll(*messages)
+	if a != nil {
+		a.MessagesMu.RUnlock()
+	}
+	beforeCount := len(snapshot)
+	beforeTokens := requestTokens(snapshot)
 	defer func() {
 		var metrics any
 		if a.EventSink != nil {
-			metrics = map[string]any{"elapsed_ms": time.Since(started).Milliseconds(), "before_messages": beforeCount, "after_messages": len(*messages), "before_tokens_estimate": beforeTokens, "after_tokens_estimate": requestTokens(*messages)}
+			if a != nil {
+				a.MessagesMu.RLock()
+			}
+			afterCount := len(*messages)
+			afterTokens := requestTokens(*messages)
+			if a != nil {
+				a.MessagesMu.RUnlock()
+			}
+			metrics = map[string]any{"elapsed_ms": time.Since(started).Milliseconds(), "before_messages": beforeCount, "after_messages": afterCount, "before_tokens_estimate": beforeTokens, "after_tokens_estimate": afterTokens}
 		}
 		a.emit(Event{Type: "compaction_end", SessionID: sessionID, IsError: compressionErr != nil, Data: metrics})
 	}()
 
-	keepMsgCount := keepRecentMessageCount(*messages, max(512, a.GetEffectiveContextLimit(0)/3))
-	keepIdx := len(*messages) - keepMsgCount
+	keepMsgCount := keepRecentMessageCount(snapshot, max(512, a.GetEffectiveContextLimit(0)/3))
+	keepIdx := len(snapshot) - keepMsgCount
 	if keepIdx <= 1 {
 		fmt.Fprintln(w, "conversation is already compact (too few messages to compress).")
 		return
 	}
 
-	toCompress := (*messages)[1:keepIdx]
+	toCompress := snapshot[1:keepIdx]
 
-	transcriptBudget := min(24000, max(2000, a.GetEffectiveContextLimit(0)*2))
+	transcriptBudget := min(64000, max(4000, a.GetEffectiveContextLimit(0)*2))
 	transcript := compactionTranscript(toCompress, transcriptBudget)
 	readFilesMap, modifiedFilesMap := observedCompactionFiles(toCompress)
 
@@ -224,22 +251,30 @@ func (a *Agent) CompressHistory(
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, infoStyle.Render("[system: context usage threshold reached. compressing older conversation history...]"))
 
-	dummyChan := make(chan StreamChunk, 100)
-	drained := make(chan struct{})
-	go func() {
-		for range dummyChan {
+	runSummaryAttempt := func() (*db.Message, error) {
+		dummyChan := make(chan StreamChunk, 100)
+		drained := make(chan struct{})
+		go func() {
+			for range dummyChan {
+			}
+			close(drained)
+		}()
+		msg, _, _, callErr := a.StreamChatCompletionsIsolated(run.WithoutTaskInstructions(ctx), summaryMsgs, []string{}, dummyChan)
+		close(dummyChan)
+		select {
+		case <-drained:
+		case <-time.After(2 * time.Second):
 		}
-		close(drained)
-	}()
-
-	summaryAssistantMsg, _, _, err := a.StreamChatCompletionsIsolated(run.WithoutTaskInstructions(ctx), summaryMsgs, []string{}, dummyChan)
-	close(dummyChan)
-	select {
-	case <-drained:
-	case <-time.After(2 * time.Second):
+		if callErr == nil && (!hasUsableAssistantResponse(msg) || strings.TrimSpace(msg.Content) == "" || len(msg.ToolCalls) > 0) {
+			callErr = ErrEmptyResponse
+		}
+		return msg, callErr
 	}
-	if err == nil && (!hasUsableAssistantResponse(summaryAssistantMsg) || strings.TrimSpace(summaryAssistantMsg.Content) == "" || len(summaryAssistantMsg.ToolCalls) > 0) {
-		err = ErrEmptyResponse
+
+	summaryAssistantMsg, err := runSummaryAttempt()
+	if err != nil && ctx.Err() == nil {
+		// Retry once on transient/empty summarizer failure before giving up.
+		summaryAssistantMsg, err = runSummaryAttempt()
 	}
 	if err != nil {
 		compressionErr = err
@@ -272,31 +307,36 @@ func (a *Agent) CompressHistory(
 	usage := message.MergeUsage(message.TotalUsage(toCompress), message.TotalUsage([]db.Message{*summaryAssistantMsg}))
 	inherited := run.DelegationInstructions(ctx)
 	if len(inherited) == 0 {
-		inherited = delegationUserInstructions(*messages)
+		inherited = delegationUserInstructions(snapshot)
 	}
 	summaryMsg := db.Message{
 		InheritedInstructions: inherited,
-		TaskState:             taskSnapshotForHistory(ctx, *messages),
+		TaskState:             taskSnapshotForHistory(ctx, snapshot),
 		Usage:                 &usage,
 		Role:                  "user",
 		ContextKind:           "summary",
 		Content:               fmt.Sprintf(domaintool.RuntimeMessage("compression_summary_scaffold", "[System: Below is a summary of the earlier conversation history:%s\n%s]"), fileOpsHeader, summaryAssistantMsg.Content),
 	}
 
-	keptMessages := make([]db.Message, 0, len((*messages)[keepIdx:]))
-	for _, m := range (*messages)[keepIdx:] {
+	keptMessages := make([]db.Message, 0, len(snapshot[keepIdx:]))
+	for _, m := range snapshot[keepIdx:] {
 		m.Content = truncateNonFileToolContent(m, nonFileToolMaxBytes)
 		keptMessages = append(keptMessages, m)
 	}
 
 	newMessages := make([]db.Message, 0, 2+len(keptMessages))
-	newMessages = append(newMessages, (*messages)[0])
-	newMessages = append(newMessages, pinnedTaskInstructions(ctx, keptMessages, *messages)...)
+	newMessages = append(newMessages, snapshot[0])
+	newMessages = append(newMessages, pinnedTaskInstructions(ctx, keptMessages, snapshot)...)
 	newMessages = append(newMessages, summaryMsg)
 	newMessages = append(newMessages, pinnedSkillInstructions(toCompress, keptMessages)...)
 	newMessages = append(newMessages, keptMessages...)
 	newMessages = EnforceToolPairingInvariance(newMessages)
 	markCompactionBoundary(newMessages, summaryMsg.Usage)
+
+	if afterTokens := requestTokens(newMessages); beforeTokens > 0 && afterTokens >= beforeTokens && len(instructions) == 0 {
+		fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render("[system: compression summary was not smaller than existing history; keeping current messages]"))
+		return
+	}
 
 	if sessionID != "" {
 		if err := a.AppendEntryContext(ctx, sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
@@ -312,7 +352,7 @@ func (a *Agent) CompressHistory(
 		a.MessagesMu.Unlock()
 	}
 
-	compressedStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
+	compressedStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, compressedStyle.Render("[system: context compression complete]"))
 	fmt.Fprintf(w, "  %d older messages condensed into 1 summary; %d recent messages retained.\n", len(toCompress), len(keptMessages))

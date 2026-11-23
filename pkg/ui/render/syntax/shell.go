@@ -163,10 +163,18 @@ func highlightSyntaxFragment(prefix, source, language, chromaStyle string) strin
 		}
 	}
 	if chromaStyle == "" {
-		chromaStyle = "friendly"
+		chromaStyle = "github-dark"
+	}
+	formatterName := style.ChromaFormatterName()
+	if formatterName == "" {
+		return source
+	}
+	formatter := formatters.Get(formatterName)
+	if formatter == nil {
+		formatter = formatters.Get("terminal256")
 	}
 	var colored bytes.Buffer
-	if err := formatters.Get("terminal256").Format(&colored, styles.Get(chromaStyle), clipped); err != nil {
+	if err := formatter.Format(&colored, styles.Get(chromaStyle), clipped); err != nil {
 		return source
 	}
 	// Lexers may normalize whitespace. Shell output must stay byte-for-byte

@@ -13,7 +13,7 @@ import (
 // Normalize enhanced terminal key protocols before dispatch, including modal
 // input and Ctrl+C. Bracketed paste stays literal rather than becoming keys.
 func normalizeKeyboardInput(ctx context.Context, rawInput <-chan byte, historyInput func([]byte) []byte) <-chan byte {
-	output := make(chan byte, 1000)
+	output := make(chan byte, 16384)
 	go func() {
 		defer close(output)
 		var done <-chan struct{}

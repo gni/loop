@@ -35,6 +35,7 @@ type cachedSummary struct {
 	info       session.SessionInfo
 	startTime  string
 	prompts    []string
+	used       uint64
 }
 
 type storeCore struct {

@@ -1,11 +1,12 @@
 package logo
 
 import (
-	"fmt"
 	"image/color"
 	"math"
 	"sort"
 	"strings"
+
+	"loop/pkg/ui/style"
 )
 
 const (
@@ -407,7 +408,14 @@ func Render(cols, rows, frame int, appearance ...Appearance) []string {
 				gOut = min(255, max(0, int(g*(1-avgT)+tg*avgT)))
 				bOut = min(255, max(0, int(g*(1-avgT)+tb*avgT)))
 			}
-			fmt.Fprintf(&line, "\x1b[38;2;%d;%d;%dm%c\x1b[0m", rOut, gOut, bOut, 0x2800+mask)
+			startSeq, resetSeq := style.FormatRGBForeground(uint8(rOut), uint8(gOut), uint8(bOut))
+			if startSeq != "" {
+				line.WriteString(startSeq)
+				line.WriteRune(0x2800 + mask)
+				line.WriteString(resetSeq)
+			} else {
+				line.WriteRune(0x2800 + mask)
+			}
 		}
 		lines[row] = line.String()
 	}

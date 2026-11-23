@@ -63,7 +63,7 @@ func RenderMCPServers(w io.Writer, cfg *config.Config, theme style.UITheme) {
 	sb.WriteString(titleStyle.Render("configured mcp servers") + "\n\n")
 
 	if len(cfg.MCPServers) == 0 {
-		sb.WriteString(style.NewStyle().Foreground(theme.Border).Italic(true).Render("  (no mcp servers configured)") + "\n")
+		sb.WriteString(style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render("  (no mcp servers configured)") + "\n")
 	} else {
 		var keys []string
 		for k := range cfg.MCPServers {

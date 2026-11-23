@@ -40,9 +40,28 @@ func readNextRawByte(ctx context.Context, rawChan <-chan byte, timeout time.Dura
 }
 
 func forwardToInputChan(kiReader *interceptor.KeyInterceptorReader, data ...byte) bool {
+	if len(data) == 0 {
+		return true
+	}
 	var done <-chan struct{}
 	if kiReader.InputContext != nil {
 		done = kiReader.InputContext.Done()
+	}
+	// Never split short control/UTF-8 sequences mid-frame: wait briefly for
+	// contiguous room and drop the whole frame if InputChan stays stalled so
+	// partial escape bytes cannot corrupt the prompt while keeping Ctrl+C free.
+	if len(data) > 1 && len(data) <= 64 && cap(kiReader.InputChan) >= len(data) {
+		deadline := time.Now().Add(25 * time.Millisecond)
+		for cap(kiReader.InputChan)-len(kiReader.InputChan) < len(data) {
+			if time.Now().After(deadline) {
+				return true
+			}
+			select {
+			case <-done:
+				return false
+			case <-time.After(time.Millisecond):
+			}
+		}
 	}
 	for _, b := range data {
 		select {
@@ -52,7 +71,7 @@ func forwardToInputChan(kiReader *interceptor.KeyInterceptorReader, data ...byte
 			continue
 		default:
 		}
-		timer := time.NewTimer(10 * time.Millisecond)
+		timer := time.NewTimer(15 * time.Millisecond)
 		select {
 		case <-done:
 			timer.Stop()
@@ -60,7 +79,7 @@ func forwardToInputChan(kiReader *interceptor.KeyInterceptorReader, data ...byte
 		case kiReader.InputChan <- b:
 			timer.Stop()
 		case <-timer.C:
-			// Drop excess bytes if InputChan is stalled so Ctrl+C / ApprovalChan never starve.
+			// Drop remaining bytes if InputChan is stalled so Ctrl+C / ApprovalChan never starve.
 			return true
 		}
 	}
@@ -317,7 +336,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 						output = uiImpl.PPWriter
 					}
 				}
-				qStyle := style.NewStyle().Foreground(activeTheme.Border).Italic(true)
+				qStyle := style.NewStyle().Foreground(activeTheme.TextMuted).Italic(true)
 				fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
 			}
 		}

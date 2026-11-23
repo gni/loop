@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -22,18 +21,6 @@ import (
 	transport "loop/pkg/transport/http"
 	"loop/pkg/transport/sse"
 )
-
-type nativePart struct {
-	Type         string `json:"type"`
-	Text         string `json:"text"`
-	Thinking     bool   `json:"thought"`
-	Signature    string `json:"thoughtSignature"`
-	FunctionCall *struct {
-		ID        string          `json:"id"`
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"args"`
-	} `json:"functionCall"`
-}
 
 type nativeUsage struct {
 	Input      int `json:"input_tokens"`
@@ -53,48 +40,34 @@ type nativeItem struct {
 	Arguments string          `json:"arguments"`
 	Text      string          `json:"text"`
 	Input     json.RawMessage `json:"input"`
-	Content   []nativePart    `json:"content"`
 }
 
-type nativeEvent struct {
-	Type        string          `json:"type"`
-	Index       int             `json:"index"`
-	OutputIndex int             `json:"output_index"`
-	ItemID      string          `json:"item_id"`
-	Arguments   string          `json:"arguments"`
-	Delta       json.RawMessage `json:"delta"`
-	Item        nativeItem      `json:"item"`
-	Block       nativeItem      `json:"content_block"`
-	Usage       nativeUsage     `json:"usage"`
-	Message     struct {
-		Usage nativeUsage `json:"usage"`
-	} `json:"message"`
-	Response struct {
-		Status            string       `json:"status"`
-		Usage             nativeUsage  `json:"usage"`
-		Output            []nativeItem `json:"output"`
-		IncompleteDetails struct {
-			Reason string `json:"reason"`
-		} `json:"incomplete_details"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	} `json:"response"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-	Candidates []struct {
-		Content struct {
-			Parts []nativePart `json:"parts"`
-		} `json:"content"`
-		FinishReason string `json:"finishReason"`
-	} `json:"candidates"`
-	UsageMetadata struct {
-		Input    int `json:"promptTokenCount"`
-		Output   int `json:"candidatesTokenCount"`
-		Cached   int `json:"cachedContentTokenCount"`
-		Thinking int `json:"thoughtsTokenCount"`
-	} `json:"usageMetadata"`
+type nativeRequestInput struct {
+	base            string
+	modelName       string
+	system          []string
+	history         []db.Message
+	tools           []tool.Tool
+	maxTokens       int
+	hasReasoningCap bool
+}
+
+type nativeProtocol interface {
+	buildRequest(p *OpenAICompatibleProvider, in nativeRequestInput) (endpoint string, payload map[string]any, err error)
+	handleEvent(s *nativeStreamState, data []byte) (done bool, err error)
+}
+
+func nativeProtocolFor(api string) (nativeProtocol, error) {
+	switch api {
+	case "responses":
+		return responsesProtocol{}, nil
+	case "messages":
+		return anthropicProtocol{}, nil
+	case "generate-content":
+		return geminiProtocol{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported provider API %q", api)
+	}
 }
 
 func (p *OpenAICompatibleProvider) api() string {
@@ -115,44 +88,29 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 	if p == nil || p.Config == nil {
 		return "", nil, fmt.Errorf("provider config is nil")
 	}
-	api := p.api()
+	proto, err := nativeProtocolFor(p.api())
+	if err != nil {
+		return "", nil, err
+	}
 	base := strings.TrimRight(p.Config.Endpoint, "/")
 	if historyCompressionEnabled(p.Config) {
 		messages = CompactHistoricalToolOutputs(messages)
 	}
 	messages, _ = sanitizeRequestMessages(messages)
-	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
+	if strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
 		tools = nil
 	} else {
-		tools = prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
+		tools = prepareToolDefinitions(tools, p.Config.CompactPrompt)
 	}
 	clean, maxTokens, err := p.budgetRequestContext(ctx, messages, tools)
 	if err != nil {
 		return "", nil, err
 	}
 	clean = mergeAdjacentUserMessages(clean)
-	messages = clean
 
-	modelName := p.Config.ResolveModelAlias(p.Config.Model)
-	payload := map[string]any{"model": modelName, "stream": true}
 	var system []string
-	var turns []map[string]any
-	var pendingToolImages []map[string]any
-	flushToolImages := func() {
-		if len(pendingToolImages) == 0 {
-			return
-		}
-		// Keep the complete function-response batch ahead of image input.
-		// Ordinary user image parts also work with pre-Gemini-3 models.
-		parts := append([]map[string]any{{"text": "Attached image(s) from tool result:"}}, pendingToolImages...)
-		if len(turns) > 0 && turns[len(turns)-1]["role"] == "user" {
-			turns[len(turns)-1]["parts"] = append(turns[len(turns)-1]["parts"].([]map[string]any), parts...)
-		} else {
-			turns = append(turns, map[string]any{"role": "user", "parts": parts})
-		}
-		pendingToolImages = nil
-	}
-	for i, msg := range nativeHistory(EnforceToolPairingInvariance(messages)) {
+	var history []db.Message
+	for i, msg := range nativeHistory(EnforceToolPairingInvariance(clean)) {
 		if msg.Role == "system" {
 			if i == 0 {
 				system = append(system, msg.Content)
@@ -161,250 +119,131 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 			// Retain non-leading system messages (e.g. compaction continuity summaries)
 			// in chronological sequence as conversation context turns, rather than hoisting
 			// into the root system prompt (which corrupts prompt prefix caching).
-			msg = db.Message{
-				Role:    "user",
-				Content: msg.Content,
-			}
+			msg = db.Message{Role: "user", Content: msg.Content}
 		}
 		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "tool" {
 			continue
 		}
-		if msg.Role != "tool" {
-			flushToolImages()
-		}
-		switch api {
-		case "responses":
-			if msg.Role == "tool" {
-				var output any = msg.Content
-				if images := responsesBlockParts(msg.ContentBlocks, "input_text"); len(images) > 0 {
-					parts := make([]map[string]any, 0, len(images)+1)
-					if msg.Content != "" {
-						parts = append(parts, map[string]any{"type": "input_text", "text": msg.Content})
-					}
-					output = append(parts, images...)
-				}
-				turns = append(turns, map[string]any{"type": "function_call_output", "call_id": msg.ToolCallID, "output": output})
-				continue
-			}
-			parts := make([]map[string]any, 0)
-			kind := "input_text"
-			if msg.Role == "assistant" {
-				kind = "output_text"
-			}
-			if msg.Content != "" {
-				parts = append(parts, map[string]any{"type": kind, "text": msg.Content})
-			}
-			parts = append(parts, responsesBlockParts(msg.ContentBlocks, kind)...)
-			if len(parts) > 0 {
-				turns = append(turns, map[string]any{"role": msg.Role, "content": parts})
-			}
-			for _, call := range msg.ToolCalls {
-				turns = append(turns, map[string]any{"type": "function_call", "call_id": call.ID, "name": call.Function.Name, "arguments": call.Function.Arguments})
-			}
-		case "messages":
-			role := msg.Role
-			var content []map[string]any
-			if role == "tool" {
-				role = "user"
-				var toolContent any = msg.Content
-				if len(msg.ContentBlocks) > 0 {
-					var blocks []map[string]any
-					if msg.Content != "" {
-						blocks = append(blocks, map[string]any{"type": "text", "text": msg.Content})
-					}
-					for _, block := range msg.ContentBlocks {
-						if block.Type == "image" {
-							source := map[string]any{"type": "base64", "media_type": block.MimeType, "data": block.Data}
-							if block.URL != "" {
-								source = map[string]any{"type": "url", "url": block.URL}
-							}
-							blocks = append(blocks, map[string]any{"type": "image", "source": source})
-						}
-					}
-					if len(blocks) > 0 {
-						toolContent = blocks
-					}
-				}
-				content = append(content, map[string]any{"type": "tool_result", "tool_use_id": msg.ToolCallID, "content": toolContent, "is_error": msg.IsError})
-			} else {
-				for _, block := range msg.ContentBlocks {
-					if block.Type == "thinking" && block.Signature != "" && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
-						content = append(content, map[string]any{"type": "thinking", "thinking": block.Text, "signature": block.Signature})
-					}
-				}
-				if msg.Content != "" {
-					content = append(content, map[string]any{"type": "text", "text": msg.Content})
-				}
-				for _, block := range msg.ContentBlocks {
-					if block.Type == "image" {
-						source := map[string]any{"type": "base64", "media_type": block.MimeType, "data": block.Data}
-						if block.URL != "" {
-							source = map[string]any{"type": "url", "url": block.URL}
-						}
-						content = append(content, map[string]any{"type": "image", "source": source})
-					} else if block.Type == "text" && block.Text != "" {
-						content = append(content, map[string]any{"type": "text", "text": block.Text})
-					}
-				}
-				for _, call := range msg.ToolCalls {
-					var arguments map[string]any
-					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
-						arguments = map[string]any{"_raw_arguments": call.Function.Arguments}
-					}
-					content = append(content, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Function.Name, "input": arguments})
-				}
-			}
-			if len(content) == 0 {
-				continue
-			}
-			if len(turns) > 0 && turns[len(turns)-1]["role"] == role {
-				turns[len(turns)-1]["content"] = append(turns[len(turns)-1]["content"].([]map[string]any), content...)
-			} else {
-				turns = append(turns, map[string]any{"role": role, "content": content})
-			}
-		case "generate-content":
-			role := "user"
-			if msg.Role == "assistant" {
-				role = "model"
-			}
-			var parts []map[string]any
-			if msg.Role == "tool" {
-				parts = append(parts, map[string]any{"functionResponse": map[string]any{"name": msg.Name, "id": msg.ToolCallID, "response": map[string]any{"result": msg.Content}}})
-				pendingToolImages = append(pendingToolImages, generateContentBlockParts(msg.ContentBlocks)...)
-			} else {
-				if msg.Content != "" {
-					parts = append(parts, map[string]any{"text": msg.Content})
-				}
-				parts = append(parts, generateContentBlockParts(msg.ContentBlocks)...)
-				for _, call := range msg.ToolCalls {
-					var arguments map[string]any
-					if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
-						arguments = map[string]any{"_raw_arguments": call.Function.Arguments}
-					}
-					part := map[string]any{"functionCall": map[string]any{"id": call.ID, "name": call.Function.Name, "args": arguments}}
-					for _, block := range msg.ContentBlocks {
-						if block.Type == "signature" && block.Signature != "" && (block.ToolCallID == "" || block.ToolCallID == call.ID) && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
-							part["thoughtSignature"] = block.Signature
-						}
-					}
-					parts = append(parts, part)
-				}
-			}
-			if len(parts) > 0 {
-				if len(turns) > 0 && turns[len(turns)-1]["role"] == role {
-					turns[len(turns)-1]["parts"] = append(turns[len(turns)-1]["parts"].([]map[string]any), parts...)
-				} else {
-					turns = append(turns, map[string]any{"role": role, "parts": parts})
-				}
-			}
-		default:
-			return "", nil, fmt.Errorf("unsupported provider API %q", api)
-		}
+		history = append(history, msg)
 	}
-	flushToolImages()
-	var definitions []map[string]any
-	for _, definition := range tools {
-		function := definition.Function
-		switch api {
-		case "responses":
-			definitions = append(definitions, map[string]any{"type": "function", "name": function.Name, "description": function.Description, "parameters": function.Parameters, "strict": false})
-		case "messages":
-			definitions = append(definitions, map[string]any{"name": function.Name, "description": function.Description, "input_schema": function.Parameters})
-		case "generate-content":
-			definitions = append(definitions, map[string]any{"name": function.Name, "description": function.Description, "parametersJsonSchema": function.Parameters})
-		}
-	}
+
 	caps := p.chatCapabilities()
 	hasReasoningCap := len(p.selectedModel().Reasoning) > 0 || caps.ReasoningEffort || caps.ThinkingControls || p.ThinkingEnabled()
-	switch api {
-	case "responses":
-		payload["input"] = turns
-		payload["instructions"] = strings.Join(system, "\n\n")
-		payload["max_output_tokens"] = maxTokens
-		payload["store"] = false
-		if len(definitions) > 0 {
-			payload["tools"] = definitions
+	return proto.buildRequest(p, nativeRequestInput{
+		base:            base,
+		modelName:       p.Config.ResolveModelAlias(p.Config.Model),
+		system:          system,
+		history:         history,
+		tools:           tools,
+		maxTokens:       maxTokens,
+		hasReasoningCap: hasReasoningCap,
+	})
+}
+
+type nativeStreamState struct {
+	streamCtx          context.Context
+	api                string
+	chunks             chan<- StreamChunk
+	observer           ChunkDropObserver
+	result             *db.Message
+	text               strings.Builder
+	reasoning          strings.Builder
+	calls              map[int]*db.ToolCall
+	argumentBuffers    toolArgumentBuffers
+	itemIndexes        map[string]int
+	thinking           map[int]*message.ContentBlock
+	thinkingText       map[int]*strings.Builder
+	thinkingSignatures map[int]*strings.Builder
+	budget             responseBudget
+	outputErr          error
+	generationStart    time.Time
+	complete           bool
+	finish             string
+}
+
+func (s *nativeStreamState) applyUsage(usage nativeUsage) {
+	if usage.Input > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 {
+		s.result.PromptTokens = usage.Input
+		if s.api == "messages" {
+			s.result.PromptTokens += usage.CacheRead + usage.CacheWrite
 		}
-		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort != "" && effort != "off" && effort != "none" {
-			if effort == "max" {
-				effort = "high"
-			}
-			payload["reasoning"] = map[string]string{"effort": effort}
-		} else {
-			modelID := strings.ToLower(strings.TrimSpace(p.Config.Model))
-			if hasReasoningCap || strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6") || strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") || strings.HasPrefix(modelID, "o4") {
-				// A missing reasoning field allows the backend to use its default.
-				// Models that cannot disable reasoning must reject this setting.
-				payload["reasoning"] = map[string]string{"effort": "none"}
-			}
-		}
-		if strings.HasSuffix(base, "/responses") {
-			return base, payload, nil
-		}
-		if !strings.HasSuffix(base, "/v1") {
-			base += "/v1"
-		}
-		return base + "/responses", payload, nil
-	case "messages":
-		payload["messages"] = turns
-		payload["system"] = strings.Join(system, "\n\n")
-		payload["max_tokens"] = maxTokens
-		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
-			modelID := strings.ToLower(p.Config.Model)
-			if hasReasoningCap || strings.Contains(modelID, "claude-3-7") || strings.Contains(modelID, "sonnet-4") || strings.Contains(modelID, "opus-4") || strings.Contains(modelID, "haiku-4") || strings.Contains(modelID, "sonnet-5") || strings.Contains(modelID, "opus-5") || strings.Contains(modelID, "haiku-5") || strings.Contains(modelID, "fable-5") || strings.Contains(modelID, "mythos") {
-				// Explicitly disable thinking on models that otherwise enable it by default.
-				// Models with mandatory thinking will reject this instead of silently reasoning.
-				payload["thinking"] = map[string]any{"type": "disabled"}
-			}
-		} else if maxTokens > 1024 {
-			budget := max(p.GetLimits().ReasoningTokenBudgets[effort], 1024)
-			payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": min(budget, maxTokens-1)}
-		}
-		if len(definitions) > 0 {
-			payload["tools"] = definitions
-		}
-		if strings.HasSuffix(base, "/messages") {
-			return base, payload, nil
-		}
-		if !strings.HasSuffix(base, "/v1") {
-			base += "/v1"
-		}
-		return base + "/messages", payload, nil
-	default:
-		delete(payload, "model")
-		delete(payload, "stream")
-		payload["contents"] = turns
-		payload["systemInstruction"] = map[string]any{"parts": []map[string]string{{"text": strings.Join(system, "\n\n")}}}
-		generation := map[string]any{"maxOutputTokens": maxTokens}
-		if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
-			modelID := strings.ToLower(strings.TrimPrefix(p.Config.Model, "models/"))
-			switch {
-			case strings.HasPrefix(modelID, "gemini-2.5-flash"):
-				generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
-			case strings.HasPrefix(modelID, "gemini-2.5-"), strings.HasPrefix(modelID, "gemini-3"), strings.HasPrefix(modelID, "gemini-4"):
-				return "", nil, fmt.Errorf("reasoning:off is not supported by Gemini model %q; select a model that supports disabling thinking", p.Config.Model)
-			default:
-				if hasReasoningCap {
-					generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
-				}
-			}
-		} else {
-			generation["thinkingConfig"] = map[string]any{"thinkingBudget": p.GetLimits().ReasoningTokenBudgets[effort], "includeThoughts": true}
-		}
-		payload["generationConfig"] = generation
-		if len(definitions) > 0 {
-			payload["tools"] = []map[string]any{{"functionDeclarations": definitions}}
-		}
-		if !strings.HasSuffix(base, "/v1beta") && !strings.HasSuffix(base, "/v1") {
-			base += "/v1beta"
-		}
-		return base + "/models/" + url.PathEscape(strings.TrimPrefix(modelName, "models/")) + ":streamGenerateContent?alt=sse", payload, nil
 	}
+	if usage.Output > 0 {
+		s.result.CompletionTokens = usage.Output
+	}
+	s.result.CacheReadTokens = max(s.result.CacheReadTokens, max(usage.CacheRead, usage.Details.Cached))
+	s.result.CacheWriteTokens = max(s.result.CacheWriteTokens, usage.CacheWrite)
+}
+
+func (s *nativeStreamState) emit(kind, delta string) {
+	if s.outputErr != nil {
+		return
+	}
+	if s.outputErr = s.budget.add(delta); s.outputErr != nil {
+		return
+	}
+	if delta != "" && s.generationStart.IsZero() {
+		s.generationStart = time.Now()
+	}
+	if kind == "reasoning" {
+		s.reasoning.WriteString(delta)
+	} else {
+		s.text.WriteString(delta)
+	}
+	emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: kind, Content: delta}, s.observer)
+}
+
+func (s *nativeStreamState) setCall(index int, item nativeItem) {
+	if s.outputErr != nil {
+		return
+	}
+	if index < 0 || len(s.calls) >= maxResponseToolCalls {
+		s.outputErr = fmt.Errorf("invalid or excessive provider tool call index")
+		return
+	}
+	_, knownItem := s.itemIndexes[item.ID]
+	if s.calls[index] != nil || (item.ID != "" && knownItem) {
+		s.outputErr = fmt.Errorf("duplicate provider tool call")
+		return
+	}
+	if s.generationStart.IsZero() {
+		s.generationStart = time.Now()
+	}
+	id := item.CallID
+	if id == "" {
+		id = item.ID
+	}
+	if id == "" {
+		id = "call_" + db.NewUUID()
+	}
+	if item.Arguments == "" && len(item.Input) > 0 && string(item.Input) != "{}" {
+		item.Arguments = string(item.Input)
+	}
+	if s.outputErr = s.budget.add(item.Name, item.Arguments); s.outputErr != nil {
+		return
+	}
+	normName := tool.NormalizeName(item.Name)
+	s.calls[index] = &db.ToolCall{ID: id, Type: "function", Function: db.ToolFunction{Name: normName, Arguments: item.Arguments}}
+	s.argumentBuffers.replace(index, item.Arguments)
+	if item.ID != "" {
+		s.itemIndexes[item.ID] = index
+	}
+	emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: index}, s.observer)
+}
+
+func (s *nativeStreamState) emitToolCallDelta(index int, delta string) {
+	s.argumentBuffers.append(index, delta)
+	emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: "tool_call", Content: delta, ToolCallIndex: index}, s.observer)
 }
 
 func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []db.Message, tools []tool.Tool, chunks chan<- StreamChunk) (*db.Message, error) {
 	if p == nil || p.Config == nil {
 		return nil, fmt.Errorf("provider config is nil")
+	}
+	api := p.api()
+	proto, err := nativeProtocolFor(api)
+	if err != nil {
+		return nil, err
 	}
 	streamCtx, kick, timedOut, stop := startStreamWatchdog(ctx, p.streamTimeout())
 	defer stop()
@@ -455,7 +294,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		if profile, ok := p.Config.Providers[p.Config.ActiveProvider]; ok {
 			transport.ApplyProviderHeaders(request.Header, profile.Headers)
 		}
-		transport.ApplyProviderAuthHeaders(request.Header, p.api(), p.requestKey(streamCtx))
+		transport.ApplyProviderAuthHeaders(request.Header, api, p.requestKey(streamCtx))
 		return request, nil
 	})
 	if err != nil {
@@ -466,98 +305,34 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	kick()
 	defer response.Body.Close()
+
 	result := &db.Message{Role: "assistant", Provider: p.Config.ActiveProvider, Model: p.Config.Model}
 	defer func() { p.requestCounter().observe(result.PromptTokens, estimatedInput) }()
-	var text, reasoning strings.Builder
-	calls := make(map[int]*db.ToolCall)
-	argumentBuffers := make(toolArgumentBuffers)
-	itemIndexes := make(map[string]int)
-	complete := false
-	finish := ""
-	thinking := make(map[int]*message.ContentBlock)
-	thinkingText := make(map[int]*strings.Builder)
-	thinkingSignatures := make(map[int]*strings.Builder)
-	applyUsage := func(usage nativeUsage) {
-		if usage.Input > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 {
-			result.PromptTokens = usage.Input
-			if p.api() == "messages" {
-				result.PromptTokens += usage.CacheRead + usage.CacheWrite
-			}
-		}
-		if usage.Output > 0 {
-			result.CompletionTokens = usage.Output
-		}
-		result.CacheReadTokens = max(result.CacheReadTokens, max(usage.CacheRead, usage.Details.Cached))
-		result.CacheWriteTokens = max(result.CacheWriteTokens, usage.CacheWrite)
+
+	state := &nativeStreamState{
+		streamCtx:          streamCtx,
+		api:                api,
+		chunks:             chunks,
+		observer:           p.chunkDropObserver(ctx),
+		result:             result,
+		calls:              make(map[int]*db.ToolCall),
+		argumentBuffers:    make(toolArgumentBuffers),
+		itemIndexes:        make(map[string]int),
+		thinking:           make(map[int]*message.ContentBlock),
+		thinkingText:       make(map[int]*strings.Builder),
+		thinkingSignatures: make(map[int]*strings.Builder),
 	}
-	observer := p.chunkDropObserver(ctx)
-	var budget responseBudget
-	var outputErr error
-	var generationStart time.Time
-	emit := func(kind, delta string) {
-		if outputErr != nil {
-			return
-		}
-		if outputErr = budget.add(delta); outputErr != nil {
-			return
-		}
-		if delta != "" && generationStart.IsZero() {
-			generationStart = time.Now()
-		}
-		if kind == "reasoning" {
-			reasoning.WriteString(delta)
-		} else {
-			text.WriteString(delta)
-		}
-		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: kind, Content: delta}, observer)
-	}
-	setCall := func(index int, item nativeItem) {
-		if outputErr != nil {
-			return
-		}
-		if index < 0 || len(calls) >= maxResponseToolCalls {
-			outputErr = fmt.Errorf("invalid or excessive provider tool call index")
-			return
-		}
-		_, knownItem := itemIndexes[item.ID]
-		if calls[index] != nil || (item.ID != "" && knownItem) {
-			outputErr = fmt.Errorf("duplicate provider tool call")
-			return
-		}
-		if generationStart.IsZero() {
-			generationStart = time.Now()
-		}
-		id := item.CallID
-		if id == "" {
-			id = item.ID
-		}
-		if id == "" {
-			id = "call_" + db.NewUUID()
-		}
-		if item.Arguments == "" && len(item.Input) > 0 && string(item.Input) != "{}" {
-			item.Arguments = string(item.Input)
-		}
-		if outputErr = budget.add(item.Name, item.Arguments); outputErr != nil {
-			return
-		}
-		normName := tool.NormalizeName(item.Name)
-		calls[index] = &db.ToolCall{ID: id, Type: "function", Function: db.ToolFunction{Name: normName, Arguments: item.Arguments}}
-		argumentBuffers.replace(index, item.Arguments)
-		if item.ID != "" {
-			itemIndexes[item.ID] = index
-		}
-		emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: index}, observer)
-	}
+
 	finalized := false
 	defer func() {
 		if !finalized {
-			result.Content = text.String()
-			result.ReasoningContent = reasoning.String()
+			result.Content = state.text.String()
+			result.ReasoningContent = state.reasoning.String()
 		}
 	}()
+
 	reader := sse.NewLimitedReader(response.Body, 128<<20)
 	reader.OnActivity = kick
-readStream:
 	for {
 		packet, err := reader.Read(streamCtx)
 		if err == io.EOF {
@@ -576,211 +351,40 @@ readStream:
 		if data == "[DONE]" {
 			break
 		}
-		var event nativeEvent
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return result, fmt.Errorf("invalid provider event: %w", err)
+		done, err := proto.handleEvent(state, []byte(data))
+		if err != nil {
+			return result, err
 		}
-		if event.Error != nil {
-			return result, fmt.Errorf("provider error: %s", transport.RedactDiagnostic(event.Error.Message))
+		if state.outputErr != nil {
+			return result, state.outputErr
 		}
-		switch p.api() {
-		case "messages":
-			var delta struct {
-				Type       string `json:"type"`
-				Text       string `json:"text"`
-				Thinking   string `json:"thinking"`
-				Signature  string `json:"signature"`
-				JSON       string `json:"partial_json"`
-				StopReason string `json:"stop_reason"`
-			}
-			if len(event.Delta) > 0 {
-				if err := json.Unmarshal(event.Delta, &delta); err != nil {
-					return result, err
-				}
-			}
-			switch event.Type {
-			case "message_start":
-				applyUsage(event.Message.Usage)
-			case "content_block_start":
-				if event.Block.Type == "tool_use" {
-					setCall(event.Index, event.Block)
-				}
-				if event.Block.Type == "thinking" {
-					if event.Index < 0 || len(thinking) >= maxResponseToolCalls || thinking[event.Index] != nil {
-						return result, fmt.Errorf("invalid or excessive provider content blocks")
-					}
-					thinking[event.Index] = &message.ContentBlock{Type: "thinking"}
-					thinkingText[event.Index], thinkingSignatures[event.Index] = &strings.Builder{}, &strings.Builder{}
-				}
-				if event.Block.Text != "" {
-					emit("text", event.Block.Text)
-				}
-			case "content_block_delta":
-				switch delta.Type {
-				case "text_delta":
-					emit("text", delta.Text)
-				case "thinking_delta":
-					emit("reasoning", delta.Thinking)
-					if thinking[event.Index] != nil {
-						thinkingText[event.Index].WriteString(delta.Thinking)
-					}
-				case "signature_delta":
-					if err := budget.add(delta.Signature); err != nil {
-						return result, err
-					}
-					if thinking[event.Index] != nil {
-						thinkingSignatures[event.Index].WriteString(delta.Signature)
-					}
-				case "input_json_delta":
-					if err := budget.add(delta.JSON); err != nil {
-						return result, err
-					}
-					if call := calls[event.Index]; call != nil {
-						argumentBuffers.append(event.Index, delta.JSON)
-						emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta.JSON, ToolCallIndex: event.Index}, observer)
-					} else {
-						return result, fmt.Errorf("arguments for unknown tool call")
-					}
-				}
-			case "message_delta":
-				if delta.StopReason != "" {
-					if finish != "" && finish != delta.StopReason {
-						return result, fmt.Errorf("provider changed stop reason from %q to %q: %w", finish, delta.StopReason, ErrIncompleteResponse)
-					}
-					finish = delta.StopReason
-				}
-				applyUsage(event.Usage)
-			case "message_stop":
-				complete = true
-				break readStream
-			}
-		case "responses":
-			var delta string
-			switch event.Type {
-			case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.function_call_arguments.delta":
-				if string(event.Delta) == "null" || len(event.Delta) == 0 {
-					return result, fmt.Errorf("missing delta for provider event %q", event.Type)
-				}
-				if err := json.Unmarshal(event.Delta, &delta); err != nil {
-					return result, fmt.Errorf("invalid delta for provider event %q: %w", event.Type, err)
-				}
-			}
-			switch event.Type {
-			case "response.output_text.delta":
-				emit("text", delta)
-			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-				emit("reasoning", delta)
-			case "response.output_item.added":
-				if event.Item.Type == "function_call" {
-					setCall(event.OutputIndex, event.Item)
-				}
-			case "response.function_call_arguments.delta":
-				if err := budget.add(delta); err != nil {
-					return result, err
-				}
-				index, ok := itemIndexes[event.ItemID]
-				if !ok {
-					return result, fmt.Errorf("arguments for unknown tool call")
-				}
-				argumentBuffers.append(index, delta)
-				emitChunkObserved(streamCtx, chunks, StreamChunk{Type: "tool_call", Content: delta, ToolCallIndex: index}, observer)
-			case "response.function_call_arguments.done":
-				if err := budget.add(event.Arguments); err != nil {
-					return result, err
-				}
-				if index, ok := itemIndexes[event.ItemID]; ok {
-					argumentBuffers.replace(index, event.Arguments)
-				} else {
-					return result, fmt.Errorf("arguments for unknown tool call")
-				}
-			case "response.completed":
-				applyUsage(event.Response.Usage)
-				if status := event.Response.Status; status != "" && status != "completed" {
-					return result, fmt.Errorf("provider completion reported status %q: %w", status, ErrIncompleteResponse)
-				}
-				complete = true
-				finish = "stop"
-				break readStream
-			case "response.incomplete":
-				applyUsage(event.Response.Usage)
-				result.StopReason = event.Response.IncompleteDetails.Reason
-				if result.StopReason == "" {
-					result.StopReason = "incomplete"
-				}
-				if result.StopReason == "content_filter" {
-					return result, fmt.Errorf("provider stopped with incomplete outcome %s", result.StopReason)
-				}
-				return result, fmt.Errorf("provider stopped with %s: %w", result.StopReason, ErrIncompleteResponse)
-			case "response.failed":
-				return result, fmt.Errorf("provider response failed: %s", transport.RedactDiagnostic(event.Response.Error.Message))
-			}
-		case "generate-content":
-			if event.UsageMetadata.Input > 0 {
-				result.PromptTokens = max(result.PromptTokens, event.UsageMetadata.Input)
-			}
-			if out := event.UsageMetadata.Output + event.UsageMetadata.Thinking; out > 0 {
-				result.CompletionTokens = max(result.CompletionTokens, out)
-			}
-			if event.UsageMetadata.Cached > 0 {
-				result.CacheReadTokens = max(result.CacheReadTokens, event.UsageMetadata.Cached)
-			}
-			if len(event.Candidates) == 0 {
-				continue
-			}
-			candidate := event.Candidates[0]
-			for _, part := range candidate.Content.Parts {
-				if part.Text != "" {
-					kind := "text"
-					if part.Thinking {
-						kind = "reasoning"
-					}
-					emit(kind, part.Text)
-				}
-				if part.FunctionCall != nil {
-					call := part.FunctionCall
-					index := len(calls)
-					setCall(index, nativeItem{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
-				}
-				if part.Signature != "" {
-					if len(result.ContentBlocks) >= maxResponseToolCalls {
-						return result, fmt.Errorf("excessive provider content blocks")
-					}
-					if err := budget.add(part.Signature); err != nil {
-						return result, err
-					}
-					result.ContentBlocks = append(result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature, ToolCallID: signatureCallID(calls)})
-				}
-			}
-			if candidate.FinishReason != "" {
-				finish = candidate.FinishReason
-				complete = true
-			}
+		if done {
+			break
 		}
-		if outputErr != nil {
-			return result, outputErr
-		}
-	}
-	rawText := text.String()
-	result.Content = rawText
-	result.ReasoningContent = reasoning.String()
-	result.StopReason = finish
-	finalized = true
-	if !complete || finish == "" {
-		return result, fmt.Errorf("provider stream ended before completion: %w", ErrIncompleteResponse)
-	}
-	switch finish {
-	case "length", "max_tokens", "MAX_TOKENS":
-		return result, fmt.Errorf("provider stopped with %s: %w", finish, ErrIncompleteResponse)
-	case "SAFETY", "RECITATION", "content_filter":
-		return result, fmt.Errorf("provider stopped with incomplete outcome %s", finish)
 	}
 
-	argumentBuffers.flush(calls)
-	if err := validateProviderCalls(calls); err != nil {
+	rawText := state.text.String()
+	result.Content = rawText
+	result.ReasoningContent = state.reasoning.String()
+	result.StopReason = state.finish
+	finalized = true
+
+	if !state.complete || state.finish == "" {
+		return result, fmt.Errorf("provider stream ended before completion: %w", ErrIncompleteResponse)
+	}
+	switch state.finish {
+	case "length", "max_tokens", "MAX_TOKENS":
+		return result, fmt.Errorf("provider stopped with %s: %w", state.finish, ErrIncompleteResponse)
+	case "SAFETY", "RECITATION", "content_filter":
+		return result, fmt.Errorf("provider stopped with incomplete outcome %s", state.finish)
+	}
+
+	state.argumentBuffers.flush(state.calls)
+	if err := validateProviderCalls(state.calls); err != nil {
 		return result, err
 	}
-	if len(calls) > 0 {
-		result.ToolCalls = orderedToolCalls(calls)
+	if len(state.calls) > 0 {
+		result.ToolCalls = orderedToolCalls(state.calls)
 	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
 		var err error
 		result.ToolCalls, err = fallback.ParseFallbackToolCallsStrict(rawText)
@@ -789,31 +393,26 @@ readStream:
 		}
 		result.Content = StripFallbackToolMarkup(rawText)
 	}
-	indexes := make([]int, 0, len(thinking))
-	for index := range thinking {
+
+	indexes := make([]int, 0, len(state.thinking))
+	for index := range state.thinking {
 		indexes = append(indexes, index)
 	}
 	sort.Ints(indexes)
 	for _, index := range indexes {
-		thinking[index].Text, thinking[index].Signature = thinkingText[index].String(), thinkingSignatures[index].String()
-		result.ContentBlocks = append(result.ContentBlocks, *thinking[index])
+		state.thinking[index].Text = state.thinkingText[index].String()
+		state.thinking[index].Signature = state.thinkingSignatures[index].String()
+		result.ContentBlocks = append(result.ContentBlocks, *state.thinking[index])
 	}
 	if !hasUsableAssistantResponse(result) {
 		return result, ErrEmptyResponse
 	}
 	var duration time.Duration
-	if !generationStart.IsZero() {
-		duration = time.Since(generationStart)
+	if !state.generationStart.IsZero() {
+		duration = time.Since(state.generationStart)
 	}
 	if callback, ok := ctx.Value(contextKeyGenerationDuration).(func(time.Duration)); ok {
 		callback(duration)
 	}
 	return result, nil
-}
-
-func signatureCallID(calls map[int]*db.ToolCall) string {
-	if len(calls) == 0 {
-		return ""
-	}
-	return calls[len(calls)-1].ID
 }

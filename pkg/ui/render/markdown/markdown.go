@@ -11,10 +11,13 @@ import (
 )
 
 func thinkingBaseColor(theme style.UITheme) color.Color {
-	if theme.Border != nil {
-		return theme.Border
+	if theme.Border != nil && theme.TextMuted != nil {
+		return style.BlendColor(theme.Border, theme.TextMuted, 0.72)
 	}
-	return style.Color("#4C566A")
+	if theme.TextMuted != nil {
+		return theme.TextMuted
+	}
+	return style.Color("#79889C")
 }
 
 func thinkingAccentColor(theme style.UITheme) color.Color {
@@ -111,17 +114,18 @@ func MarkdownStyle(theme style.UITheme, block MarkdownBlock, headingLevel int, b
 	current := style.NewStyle().Foreground(theme.Text)
 	switch block {
 	case MarkdownHeading:
-		current = current.Foreground(theme.Secondary).Bold(true)
+		if headingLevel <= 2 {
+			current = current.Foreground(theme.Primary).Bold(true)
+		} else {
+			current = current.Foreground(theme.Secondary).Bold(true)
+		}
 		if headingLevel == 1 {
 			current = current.Underline(true)
 		}
 	case MarkdownQuote:
-		current = current.Foreground(theme.Border).Italic(true)
+		current = current.Foreground(theme.TextMuted).Italic(true)
 	}
 	if bold {
-		if block == MarkdownBody {
-			current = current.Foreground(theme.Primary)
-		}
 		current = current.Bold(true)
 	}
 	if italic {
@@ -131,7 +135,7 @@ func MarkdownStyle(theme style.UITheme, block MarkdownBlock, headingLevel int, b
 		current = current.Strikethrough(true)
 	}
 	if code {
-		current = current.Foreground(theme.Highlight)
+		current = current.Foreground(theme.Secondary)
 	}
 	return current
 }
@@ -212,7 +216,7 @@ func printMarkdownLine(w io.Writer, line string, theme style.UITheme, thinking b
 		return
 	}
 
-	listMarkerColor := theme.Primary
+	listMarkerColor := theme.TextMuted
 	if thinking {
 		listMarkerColor = thinkingAccentColor(theme)
 	}

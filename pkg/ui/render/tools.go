@@ -20,24 +20,26 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 		return
 	}
 
+	borderStyle := style.NewStyle().Foreground(theme.Border)
 	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-	enabledBadge := style.NewStyle().Foreground(theme.Success).Bold(true).Render("enabled ")
-	disabledBadge := style.NewStyle().Foreground(theme.Error).Bold(true).Render("disabled")
-	typeStyle := style.NewStyle().Foreground(theme.Secondary).Italic(true)
-	descStyle := style.NewStyle().Foreground(theme.Text)
-	hintStyle := style.NewStyle().Foreground(theme.Border).Italic(true)
-	cmdStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
+	titleStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
+	enabledBadge := style.NewStyle().Foreground(theme.Success).Render("enabled ")
+	disabledBadge := style.NewStyle().Foreground(theme.Error).Render("disabled")
+	typeStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
+	descStyle := style.NewStyle().Foreground(theme.TextMuted)
+	hintStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
+	cmdStyle := style.NewStyle().Foreground(theme.Primary)
 
 	termW := markdown.RenderWidth(w)
 	inner := max(1, min(termW-3, 82))
 	hline := strings.Repeat("─", inner)
 	titleText := style.TruncateCells("TOOLS CATALOG & PERMISSIONS", max(1, inner-4))
-	titleLine := "│  " + titleText + strings.Repeat(" ", max(0, inner-2-style.CellWidth(titleText))) + "│"
+	vbar := borderStyle.Render("│")
+	titleLine := vbar + "  " + headerStyle.Render(titleText) + strings.Repeat(" ", max(0, inner-2-style.CellWidth(titleText))) + vbar
 
-	fmt.Fprintln(w, headerStyle.Render("╭"+hline+"╮"))
-	fmt.Fprintln(w, headerStyle.Render(titleLine))
-	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
+	fmt.Fprintln(w, borderStyle.Render("╭"+hline+"╮"))
+	fmt.Fprintln(w, titleLine)
+	fmt.Fprintln(w, borderStyle.Render("├"+hline+"┤"))
 
 	executors := a.Registry.GetAllExecutors()
 	var names []string
@@ -80,7 +82,7 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 		)
 	}
 
-	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
+	fmt.Fprintln(w, borderStyle.Render("├"+hline+"┤"))
 	fmt.Fprintf(w, "  summary: %s enabled, %s disabled (total %d)\n\n",
 		style.NewStyle().Foreground(theme.Success).Bold(true).Render(fmt.Sprintf("%d", enabledCount)),
 		style.NewStyle().Foreground(theme.Error).Bold(true).Render(fmt.Sprintf("%d", disabledCount)),
@@ -93,7 +95,7 @@ func RenderToolsList(w io.Writer, a *agent.Agent, theme style.UITheme) {
 	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools toggle <name>"), 32), hintStyle.Render("toggle tool enabled/disabled"))
 	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools reset"), 32), hintStyle.Render("enable all tools"))
 	fmt.Fprintf(w, "  %s %s\n", padRightCells(cmdStyle.Render("/tools menu"), 32), hintStyle.Render("interactive toggle menu"))
-	fmt.Fprintln(w, headerStyle.Render("╰"+hline+"╯"))
+	fmt.Fprintln(w, borderStyle.Render("╰"+hline+"╯"))
 }
 
 func classifyTool(name string) string {

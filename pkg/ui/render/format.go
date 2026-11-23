@@ -2,7 +2,6 @@ package render
 
 import (
 	"fmt"
-	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,7 +162,7 @@ func FormatThinkingSummary(theme style.UITheme, seconds float64, active bool, li
 	if !active {
 		label += " · Ctrl+O to expand"
 	}
-	return style.NewStyle().Foreground(theme.Border).Italic(true).Render(label)
+	return style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render(label)
 }
 
 func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITheme) string {
@@ -172,36 +171,25 @@ func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITh
 		return style.NewStyle().Foreground(theme.Error).Bold(true).Render("!")
 	}
 
-	var c color.Color
+	c := theme.Primary
 	if status == ToolStatusSuccess {
 		c = theme.Success
-	} else {
-		lower := strings.ToLower(toolName)
-		switch {
-		case isReadLike(lower):
-			c = theme.Primary
-		case lower == "write" || strings.Contains(lower, "write") ||
-			lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace") ||
-			isAskLike(lower) || isSkillLike(lower):
-			c = theme.Highlight
-		case isSubagentLike(lower) || isTodoLike(lower):
-			c = theme.Secondary
-		default:
-			c = theme.Primary
-		}
 	}
 	return style.NewStyle().Foreground(c).Render(GetToolGlyph(toolName))
 }
 
-func FormatBashCommandLine(_ string, command string, theme style.UITheme) string {
-	promptStyle := style.NewStyle().Foreground(theme.Success)
+func FormatBashCommandLine(symbol string, command string, theme style.UITheme) string {
+	prompt := symbol
+	if strings.TrimSpace(prompt) == "" {
+		prompt = style.NewStyle().Foreground(theme.Primary).Render("$")
+	}
 	cmdStyle := style.NewStyle().Foreground(theme.Text)
 
 	command = strings.ReplaceAll(command, "\r\n", "\n")
 	command = strings.ReplaceAll(command, "\r", "\n")
 	command = strings.TrimRight(command, "\n")
 	if strings.TrimSpace(command) == "" {
-		return promptStyle.Render("$")
+		return prompt
 	}
 
 	lines := strings.Split(command, "\n")
@@ -215,7 +203,7 @@ func FormatBashCommandLine(_ string, command string, theme style.UITheme) string
 		}, line)
 
 		if idx == 0 {
-			formatted[idx] = fmt.Sprintf("%s %s", promptStyle.Render("$"), cmdStyle.Render(cleaned))
+			formatted[idx] = fmt.Sprintf("%s %s", prompt, cmdStyle.Render(cleaned))
 		} else {
 			formatted[idx] = fmt.Sprintf("  %s", cmdStyle.Render(cleaned))
 		}
@@ -227,18 +215,9 @@ func FormatBashCommandLine(_ string, command string, theme style.UITheme) string
 func GetActionStyle(toolName string, theme style.UITheme) style.Style {
 	toolName = domaintool.NormalizeName(toolName)
 	lower := strings.ToLower(toolName)
-	var c color.Color
-	switch {
-	case isTaskKillLike(lower):
+	c := theme.Primary
+	if isTaskKillLike(lower) {
 		c = theme.Error
-	case isTaskStatusLike(lower) || isTodoLike(lower) || isSubagentLike(lower):
-		c = theme.Secondary
-	case isAskLike(lower) || lower == "edit" || strings.Contains(lower, "edit") || strings.Contains(lower, "replace"):
-		c = theme.Highlight
-	case lower == "write" || strings.Contains(lower, "write"):
-		c = theme.Success
-	default:
-		c = theme.Primary
 	}
 	return style.NewStyle().Foreground(c).Bold(true)
 }

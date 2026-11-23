@@ -19,6 +19,8 @@ import (
 type bashTool struct {
 	gate       chan struct{}
 	currentDir string
+	envVars    map[string]string
+	unsetVars  map[string]bool
 }
 
 // NewBashTool creates a new bash command executor.
@@ -147,6 +149,8 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	}
 	if !persistentBash {
 		t.currentDir = ""
+		t.envVars = nil
+		t.unsetVars = nil
 	}
 
 	workDir := t.currentDir
@@ -184,7 +188,14 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		var err error
 		bgCmd := normalized
 		if spawner, ok := ctx.(domaintool.BackgroundTaskSpawner); ok {
-			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir})
+			var bgEnv map[string]string
+			if persistentBash && len(t.envVars) > 0 {
+				bgEnv = make(map[string]string, len(t.envVars))
+				for k, v := range t.envVars {
+					bgEnv[k] = v
+				}
+			}
+			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir, Environment: bgEnv})
 		} else {
 			if workDir != workspaceRoot {
 				bgCmd = "cd -- " + ShellQuote(workDir) + " && {\n" + bgCmd + "\n}"
@@ -217,25 +228,29 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 	defer cancel()
 
 	wrappedCmd := args.Command
-	var directory *directoryCapture
+	var shellCapture *shellStateCapture
 	if persistentBash {
 		var err error
-		wrappedCmd, directory, err = captureDirectory(args.Command)
+		wrappedCmd, shellCapture, err = captureShellState(args.Command)
 		if err != nil {
 			return "", err
 		}
-		defer directory.Close()
+		defer shellCapture.Close()
 	}
 	if settings, ok := ctx.(domaintool.ShellScanSettings); ok && settings.IsShellScanDefaultsEnabled() {
 		wrappedCmd = WithScanDefaults(wrappedCmd, workspaceRoot)
 	}
 	cmd := NewCommand(wrappedCmd)
 	cmd.Dir = workDir
+	if persistentBash && (len(t.envVars) > 0 || len(t.unsetVars) > 0) {
+		cmd.Env = applyPersistentEnv(cmd.Env, t.envVars, t.unsetVars)
+	}
 	if ep, ok := ctx.(domaintool.ExecutionEnvironment); ok {
 		for k, v := range ep.GetExecutionEnv() {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
+	beforeEnv := append([]string(nil), cmd.Env...)
 
 	cmd.WaitDelay = 100 * time.Millisecond
 	stdout := &process.Buffer{Limit: 8 << 20, TailBytes: 64 << 10}
@@ -299,13 +314,16 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		errOutput += "\n[stderr capture limit reached at 8 MiB; middle output omitted]\n"
 	}
 
-	if directory != nil && timeoutCtx.Err() == nil {
-		if extractedDir := directory.Read(ctx.Context()); extractedDir != "" {
+	if shellCapture != nil && timeoutCtx.Err() == nil {
+		if extractedDir := shellCapture.ReadDir(ctx.Context()); extractedDir != "" {
 			if safe, err := ctx.SafePath(extractedDir); err == nil {
 				if info, err := os.Stat(safe); err == nil && info.IsDir() {
 					t.currentDir = safe
 				}
 			}
+		}
+		if capturedEnv, ok := shellCapture.ReadEnv(ctx.Context()); ok {
+			t.updatePersistedEnv(beforeEnv, capturedEnv)
 		}
 	}
 

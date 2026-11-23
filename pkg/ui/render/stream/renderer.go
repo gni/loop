@@ -314,7 +314,7 @@ func (sr *StreamRenderer) flushActiveToolLocked() {
 			if !sr.sequentialResults && CanReplaceTrackedStreamLine(sr.w) {
 				if line := GetNewlineCount(sr.w); line >= 0 {
 					sr.writeResultLines[sr.parser.ActiveToolIndex] = line
-					fmt.Fprintln(sr.w, style.NewStyle().Foreground(sr.theme.Border).Render("⎿  writing..."))
+					fmt.Fprintln(sr.w, style.NewStyle().Foreground(sr.theme.TextMuted).Render("⎿  writing..."))
 				}
 			}
 		}

@@ -54,12 +54,25 @@ func detectColorProfile() colorProfile {
 			cachedColorProfile = profileTrueColor
 			return
 		}
-		if strings.Contains(termEnv, "256color") || strings.Contains(termEnv, "kitty") || strings.Contains(termEnv, "ghostty") || strings.Contains(termEnv, "wezterm") || strings.Contains(termEnv, "alacritty") || strings.Contains(termEnv, "xterm") {
-			// Modern terminal emulators generally accept TrueColor even without COLORTERM.
-			if ct == "" && strings.HasSuffix(termEnv, "256color") && os.Getenv("WT_SESSION") == "" && os.Getenv("TERM_PROGRAM") == "" && os.Getenv("KITTY_WINDOW_ID") == "" {
-				cachedColorProfile = profile256
-				return
-			}
+		if strings.Contains(termEnv, "truecolor") || strings.Contains(termEnv, "direct") ||
+			strings.Contains(termEnv, "kitty") || strings.Contains(termEnv, "ghostty") ||
+			strings.Contains(termEnv, "wezterm") || strings.Contains(termEnv, "alacritty") {
+			cachedColorProfile = profileTrueColor
+			return
+		}
+		if os.Getenv("WT_SESSION") != "" || os.Getenv("TERM_PROGRAM") != "" ||
+			os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("WEZTERM_EXECUTABLE") != "" ||
+			os.Getenv("GHOSTTY_RESOURCES_DIR") != "" || os.Getenv("KONSOLE_VERSION") != "" ||
+			os.Getenv("VTE_VERSION") != "" || os.Getenv("ALACRITTY_SOCKET") != "" ||
+			os.Getenv("ITERM_SESSION_ID") != "" || os.Getenv("TMUX") != "" {
+			cachedColorProfile = profileTrueColor
+			return
+		}
+		if strings.Contains(termEnv, "256color") {
+			cachedColorProfile = profile256
+			return
+		}
+		if strings.Contains(termEnv, "xterm") {
 			cachedColorProfile = profileTrueColor
 			return
 		}
@@ -72,20 +85,58 @@ func detectColorProfile() colorProfile {
 	return cachedColorProfile
 }
 
-func rgbToANSI256(r, g, b uint8) int {
-	if r == g && g == b {
-		if r < 8 {
-			return 16
-		}
-		if r > 248 {
-			return 231
-		}
-		return int(((uint16(r)-8)*24)/247) + 232
+// ChromaFormatterName returns the Chroma terminal formatter matching the active color profile.
+// Returns "" when color output is disabled (NO_COLOR or TERM=dumb).
+func ChromaFormatterName() string {
+	switch detectColorProfile() {
+	case profileNone:
+		return ""
+	case profileANSI16:
+		return "terminal16"
+	case profile256:
+		return "terminal256"
+	default:
+		return "terminal16m"
 	}
-	ri := int(r) * 5 / 255
-	gi := int(g) * 5 / 255
-	bi := int(b) * 5 / 255
-	return 16 + 36*ri + 6*gi + bi
+}
+
+var ansi256CubeLevels = [6]int{0, 95, 135, 175, 215, 255}
+
+func nearestCubeIndex(v int) int {
+	bestIdx := 0
+	bestDist := 1 << 30
+	for i, level := range ansi256CubeLevels {
+		d := v - level
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDist {
+			bestDist = d
+			bestIdx = i
+		}
+	}
+	return bestIdx
+}
+
+func rgbToANSI256(r, g, b uint8) int {
+	ir, ig, ib := int(r), int(g), int(b)
+	ri := nearestCubeIndex(ir)
+	gi := nearestCubeIndex(ig)
+	bi := nearestCubeIndex(ib)
+	cr, cg, cb := ansi256CubeLevels[ri], ansi256CubeLevels[gi], ansi256CubeLevels[bi]
+	cubeIdx := 16 + 36*ri + 6*gi + bi
+	cubeDist := (ir-cr)*(ir-cr) + (ig-cg)*(ig-cg) + (ib-cb)*(ib-cb)
+
+	// Compare against the 24-level xterm grayscale ramp [8, 18, ..., 238].
+	avg := (ir + ig + ib + 1) / 3
+	grayStep := (avg - 8 + 5) / 10
+	grayStep = min(23, max(0, grayStep))
+	gv := 8 + grayStep*10
+	grayDist := (ir-gv)*(ir-gv) + (ig-gv)*(ig-gv) + (ib-gv)*(ib-gv)
+	if grayDist < cubeDist {
+		return 232 + grayStep
+	}
+	return cubeIdx
 }
 
 func rgbToANSI16(r, g, b uint8, isBG bool) int {
@@ -134,6 +185,17 @@ func formatColorEscape(c *colorVal, isBG bool) string {
 		}
 		return fmt.Sprintf("\x1b[%d;2;%d;%d;%dm", code, c.R, c.G, c.B)
 	}
+}
+
+// FormatRGBForeground returns ANSI foreground start and reset escapes matching
+// the active terminal color profile (TrueColor, ANSI256, ANSI16, or empty for NO_COLOR/dumb).
+func FormatRGBForeground(r, g, b uint8) (start, reset string) {
+	c := colorVal{R: r, G: g, B: b}
+	start = formatColorEscape(&c, false)
+	if start == "" {
+		return "", ""
+	}
+	return start, "\x1b[0m"
 }
 
 type Style struct {

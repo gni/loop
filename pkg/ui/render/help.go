@@ -15,7 +15,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		Underline(true)
 
 	cmdStyle := style.NewStyle().
-		Foreground(theme.Secondary).
+		Foreground(theme.Primary).
 		Bold(true)
 
 	descStyle := style.NewStyle().
@@ -82,7 +82,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 func RenderHotkeys(w io.Writer, theme style.UITheme) {
 	cmdStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	descStyle := style.NewStyle().Foreground(theme.Text)
-	headerStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
+	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true).Underline(true)
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, headerStyle.Render("keyboard shortcuts:"))

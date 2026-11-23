@@ -135,7 +135,7 @@ func DrawConsoleControls(w io.Writer, options ConsoleControls) {
 		}
 		line := layout.Rows[index].Text
 		if line == "" && len(options.InputLine) == 0 && options.Hint != "" {
-			line = style.NewStyle().Foreground(options.Theme.Border).Italic(true).Render(style.TruncateCells(options.Hint, promptColumns))
+			line = style.NewStyle().Foreground(options.Theme.TextMuted).Italic(true).Render(style.TruncateCells(options.Hint, promptColumns))
 		}
 		frame.WriteString(line)
 	}

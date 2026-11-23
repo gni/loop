@@ -21,6 +21,7 @@ const (
 	maxCachedRecords    = 4096
 	maxCachedFileBytes  = 4 << 20
 	maxCachedTotalBytes = 8 << 20
+	maxCachedSummaries  = 256
 )
 
 type cachedFile struct {
@@ -239,4 +240,23 @@ func (s *JSONLStore) appendStateContext(ctx context.Context, id string) (cachedE
 func (s *JSONLStore) invalidateSessionCacheLocked(sessionID string) {
 	delete(s.core.cache, sessionID)
 	delete(s.core.summaryCache, sessionID)
+}
+
+func (s *JSONLStore) cacheSummaryLocked(sessionID string, sum cachedSummary) {
+	s.core.cacheClock++
+	sum.used = s.core.cacheClock
+	s.core.summaryCache[sessionID] = sum
+	for len(s.core.summaryCache) > maxCachedSummaries {
+		oldest := ""
+		var oldestUsed uint64
+		for key, entry := range s.core.summaryCache {
+			if oldest == "" || entry.used < oldestUsed {
+				oldest, oldestUsed = key, entry.used
+			}
+		}
+		if oldest == "" {
+			return
+		}
+		delete(s.core.summaryCache, oldest)
+	}
 }

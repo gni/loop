@@ -25,13 +25,14 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks, TaskState: run.TaskSnapshot(a.Context()), InheritedInstructions: run.DelegationInstructions(a.Context())}
 	a.MessagesMu.Lock()
 	*messages = append(*messages, userMsg)
+	checkpointMsgs := append([]db.Message(nil), (*messages)...)
 	a.MessagesMu.Unlock()
 
 	if sessionID != "" {
 		if !a.HasMessages(sessionID) {
 			// Draft-only reference instructions become durable with the first
 			// real input, alongside the leading prompt and accepted message.
-			if err := a.CheckpointSession(a.Context(), sessionID, *messages); err != nil {
+			if err := a.CheckpointSession(a.Context(), sessionID, checkpointMsgs); err != nil {
 				a.recordPersistenceError(err)
 			}
 		} else if err := a.SaveMessage(sessionID, userMsg); err != nil {
@@ -47,14 +48,25 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, allowlist []string, sessionID string, iter int, previousTrailingNewlines int, engine *TurnEngine, sink HistorySink, timer *TimingRecorder, w io.Writer, theme style.UITheme) (globalPromptTokensEst, effectiveLimit int, err error) {
 	engine.BeginTurn()
 
-	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
-	beforeCompression := *messages
+	a.MessagesMu.RLock()
+	stepSnapshot := append([]db.Message(nil), (*messages)...)
+	var beforeFirst *db.Message
+	if len(*messages) > 0 {
+		beforeFirst = &(*messages)[0]
+	}
+	beforeLen := len(*messages)
+	a.MessagesMu.RUnlock()
+
+	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(stepSnapshot, allowlist)
 	timer.Time("compaction", "start")
 	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(*messages) != len(beforeCompression) || (len(beforeCompression) > 0 && &(*messages)[0] != &beforeCompression[0]) {
+	a.MessagesMu.RLock()
+	compacted := len(*messages) != beforeLen || (beforeLen > 0 && &(*messages)[0] != beforeFirst)
+	a.MessagesMu.RUnlock()
+	if compacted {
 		engine.HistoryCompacted()
 	}
 	if err := a.persistenceError(); err != nil {
@@ -63,8 +75,14 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 	timer.Time("compaction", "end")
 
 	if engine.ShouldRecap() {
-		engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(*messages), effectiveLimit, w, theme)
-		globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(*messages, allowlist)
+		a.MessagesMu.RLock()
+		recapSnapshot := append([]db.Message(nil), (*messages)...)
+		a.MessagesMu.RUnlock()
+		engine.MaybeRecap(sink, globalPromptTokensEst, a.GetSessionTotalCompletionTokens(recapSnapshot), effectiveLimit, w, theme)
+		a.MessagesMu.RLock()
+		postRecap := append([]db.Message(nil), (*messages)...)
+		a.MessagesMu.RUnlock()
+		globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(postRecap, allowlist)
 	}
 
 	if iter > 1 {

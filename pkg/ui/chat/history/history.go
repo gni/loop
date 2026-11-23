@@ -277,7 +277,7 @@ func (h *ChatHistory) paintLocked() {
 		} else {
 			text += " · [Back to latest: End] · Shift+drag: select"
 		}
-		hint = style.NewStyle().Foreground(theme.Border).Render(style.TruncateCells(text, max(1, width-1)))
+		hint = style.NewStyle().Foreground(theme.TextMuted).Render(style.TruncateCells(text, max(1, width-1)))
 	}
 	if h.searchNotice != "" {
 		notice := h.searchNotice

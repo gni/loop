@@ -246,7 +246,7 @@ func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallV
 	if clean != "" && maxExcerpt > 0 && view.name == "write" {
 		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
 	}
-	line := style.NewStyle().Foreground(sr.theme.Border).Render(label)
+	line := style.NewStyle().Foreground(sr.theme.TextMuted).Render(label)
 	if view.compactLine != -1 {
 		// If the row scrolled away, leave the earlier progress text alone.
 		if view.compactLine >= 0 {

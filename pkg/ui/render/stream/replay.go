@@ -188,7 +188,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 					label = fmt.Sprintf("↳ receiving write #%d: %s", call.index+1, clean)
 				}
 				if !call.completed {
-					fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Render(label))
+					fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Render(label))
 				}
 			} else if call.content != "" {
 				if call.name == "write" {

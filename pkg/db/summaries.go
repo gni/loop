@@ -56,6 +56,9 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 		return cachedSummary{}, false
 	}
 	if sum, ok := s.core.summaryCache[sessionID]; ok && sum.matches(info) {
+		s.core.cacheClock++
+		sum.used = s.core.cacheClock
+		s.core.summaryCache[sessionID] = sum
 		return sum, true
 	}
 
@@ -213,7 +216,7 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 			ParentSession: parentSession,
 		},
 	}
-	s.core.summaryCache[sessionID] = sum
+	s.cacheSummaryLocked(sessionID, sum)
 	return sum, true
 }
 

@@ -60,13 +60,22 @@ func HighlightWithoutTrailingNewline(w io.Writer, source, lang, chromaStyle stri
 		lang = "bash"
 	}
 	if chromaStyle == "" {
-		chromaStyle = "friendly"
+		chromaStyle = "github-dark"
+	}
+	formatter := style.ChromaFormatterName()
+	if formatter == "" {
+		_, writeErr := io.WriteString(w, source)
+		return writeErr
 	}
 	// Callers pass an explicit Chroma language name (or alias). Re-resolving
 	// that name as if it were a filename can discard a valid lexer and turn
 	// an already detected language into plaintext during live rendering.
 	var buf bytes.Buffer
-	err := quick.Highlight(&buf, source, lang, "terminal256", chromaStyle)
+	err := quick.Highlight(&buf, source, lang, formatter, chromaStyle)
+	if err != nil && formatter != "terminal256" {
+		buf.Reset()
+		err = quick.Highlight(&buf, source, lang, "terminal256", chromaStyle)
+	}
 	if err != nil {
 		buf.Reset()
 		err = quick.Highlight(&buf, source, lang, "terminal16", chromaStyle)

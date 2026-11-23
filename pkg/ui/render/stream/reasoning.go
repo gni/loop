@@ -180,7 +180,7 @@ func (sr *StreamRenderer) endThinking() {
 			break
 		}
 	}
-	labelStyle := markdown.GetThinkingStyle(sr.theme)
+	labelStyle := style.NewStyle().Foreground(sr.theme.TextMuted).Italic(true)
 
 	if sr.reasoningCollapsed {
 		if !ReplaceTrackedStreamLine(sr.w, sr.reasoningSummaryLine, render.FormatThinkingSummary(sr.theme, elapsed, false, sr.reasoningLineCount, sr.showMicroseconds)) {

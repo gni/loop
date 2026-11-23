@@ -84,10 +84,18 @@ func highlightToolBody(body, toolName, argsJSON string, isJSON, bodyWasStreamed 
 	lang = syntax.ResolveSyntaxLanguage(lang, body)
 	chromaStyle := theme.ChromaStyle
 	if chromaStyle == "" {
-		chromaStyle = "friendly"
+		chromaStyle = "github-dark"
+	}
+	formatter := style.ChromaFormatterName()
+	if formatter == "" {
+		return body
 	}
 	var codeBuf bytes.Buffer
-	err := quick.Highlight(&codeBuf, body, lang, "terminal256", chromaStyle)
+	err := quick.Highlight(&codeBuf, body, lang, formatter, chromaStyle)
+	if err != nil && formatter != "terminal256" {
+		codeBuf.Reset()
+		err = quick.Highlight(&codeBuf, body, lang, "terminal256", chromaStyle)
+	}
 	if err != nil {
 		codeBuf.Reset()
 		err = quick.Highlight(&codeBuf, body, lang, "terminal16", chromaStyle)
@@ -130,13 +138,13 @@ func trimRenderedToolBody(body string) string {
 }
 
 func RenderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
-	collapseMarker := style.NewStyle().Foreground(theme.Border).Render("⋮  ")
+	collapseMarker := style.NewStyle().Foreground(theme.TextMuted).Render("⋮  ")
 	unit := "lines"
 	if lineCount == 1 {
 		unit = "line"
 	}
 	msg := fmt.Sprintf("%s%d %s hidden · Ctrl+O to expand", collapseMarker, lineCount, unit)
-	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(msg))
+	fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render(msg))
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
@@ -237,7 +245,14 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		RenderCollapsedNotice(w, len(lines), theme)
 	} else {
 		bodyStyle := style.NewStyle().Foreground(theme.Text)
+		isDiffTool := IsEditLikeTool(toolName)
 		for _, line := range lines {
+			if isDiffTool {
+				if styled, ok := styleDiffOutputLine(line, theme); ok {
+					fmt.Fprintln(w, styled)
+					continue
+				}
+			}
 			if strings.Contains(line, "\x1b[") {
 				fmt.Fprintln(w, line)
 			} else {
@@ -248,6 +263,16 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 	if !isError && IsEditLikeTool(toolName) {
 		renderEditSummary(w, theme, toolName, argsJSON, output)
 	}
+}
+
+func styleDiffOutputLine(line string, theme style.UITheme) (string, bool) {
+	if strings.HasPrefix(line, "\x1b[32m") {
+		return style.NewStyle().Foreground(theme.Success).Render(style.StripAnsi(line)), true
+	}
+	if strings.HasPrefix(line, "\x1b[31m") {
+		return style.NewStyle().Foreground(theme.Error).Render(style.StripAnsi(line)), true
+	}
+	return line, false
 }
 
 // The complete question and answer remain in model history. The question is

@@ -19,8 +19,8 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	}
 
 	borderStyle := style.NewStyle().Foreground(theme.Border)
-	branchStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
-	autoOnStyle := style.NewStyle().Foreground(theme.Warning).Bold(true)
+	branchStyle := style.NewStyle().Foreground(theme.TextMuted)
+	autoOnStyle := style.NewStyle().Foreground(theme.Warning)
 	autoOffStyle := style.NewStyle().Foreground(theme.Border)
 	autoOffHoverStyle := style.NewStyle().Foreground(theme.TextMuted)
 
@@ -49,11 +49,7 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 		if hovered == HoverCommandsButton {
 			raw = "/ commands"
 			padHit = 0
-			if commandsOpen {
-				st = style.NewStyle().Foreground(theme.Primary).Bold(true)
-			} else {
-				st = style.NewStyle().Foreground(theme.Highlight).Bold(true)
-			}
+			st = style.NewStyle().Foreground(theme.Primary).Bold(true)
 		}
 		rightParts = append(rightParts, rightPart{
 			target: HoverCommandsButton,
@@ -70,6 +66,7 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 			st = autoOnStyle
 			if hovered == HoverAutoBadge {
 				raw = "♾\uFE0E auto mode on"
+				st = style.NewStyle().Foreground(theme.Warning).Bold(true)
 				padHit = 0
 			}
 		} else {
@@ -105,16 +102,16 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 		labelStyle := style.NewStyle().Foreground(theme.TextMuted)
 		if active {
 			if showThinking {
-				iconStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
-				labelStyle = style.NewStyle().Foreground(theme.Highlight).Bold(true)
+				iconStyle = style.NewStyle().Foreground(theme.Primary)
+				labelStyle = style.NewStyle().Foreground(theme.Primary)
 			} else {
-				iconStyle = style.NewStyle().Foreground(theme.Secondary)
-				labelStyle = style.NewStyle().Foreground(theme.Secondary)
+				iconStyle = style.NewStyle().Foreground(theme.TextMuted)
+				labelStyle = style.NewStyle().Foreground(theme.TextMuted)
 			}
 		}
 		if hovered == HoverReasoningBadge {
 			iconStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
-			labelStyle = style.NewStyle().Foreground(theme.Highlight).Bold(true)
+			labelStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
 			label = "reasoning: " + label
 		}
 
@@ -155,7 +152,7 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 			branchDisplay := "⎇ " + b
 			if hovered == HoverGitBranch {
 				branchDisplay = "⎇ branch: " + b
-				branchStyle = style.NewStyle().Foreground(theme.Highlight).Bold(true)
+				branchStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
 			}
 			branchRaw := "─── " + branchDisplay + " "
 			branchLen = style.CellWidth(branchRaw)

@@ -200,8 +200,8 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 	checkedOutput := &modalOutput{Writer: output}
 	output = checkedOutput
 
-	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	promptStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
+	activeStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	firstRender := true
 	setModalCursorHidden(output, true)
 	defer setModalCursorHidden(output, false)
@@ -476,8 +476,8 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 	// A free-text-only question is already an editor, not a choice menu.
 	// Open it immediately so users can type without selecting "Other" first.
 	if len(options) == 1 && options[0].FreeText {
-		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-		activeStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+		promptStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
+		activeStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 		fmt.Fprintln(output, promptStyle.Render(MenuDisplayText(prompt)))
 		answer, dismissed := readFreeTextAnswer(sr, output, promptStyle, activeStyle)
 		return 0, dismissed, answer
@@ -485,7 +485,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 
 	// Fallback only if NOT a terminal AND no active reader
 	if !isTerm && !hasActiveReader {
-		promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+		promptStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 		shortcutLabels := make([]string, 0, len(options))
 		for _, option := range options {
 			key := ""
@@ -499,7 +499,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 			shortcutLabels = append(shortcutLabels, label)
 		}
 		fmt.Fprint(output, promptStyle.Render(fmt.Sprintf("%s [%s]: ", MenuDisplayText(prompt), strings.Join(shortcutLabels, "/"))))
-		return readChoiceSelection(sr, output, promptStyle, style.NewStyle().Foreground(theme.Highlight).Bold(true), options, selected, nil, false)
+		return readChoiceSelection(sr, output, promptStyle, style.NewStyle().Foreground(theme.Primary).Bold(true), options, selected, nil, false)
 	}
 
 	return runChoiceMenuEx(sr, output, theme, prompt, options, selected)

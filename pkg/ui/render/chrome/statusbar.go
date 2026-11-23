@@ -101,12 +101,15 @@ func padLeftCells(s string, width int) string {
 
 // contextGaugeBar returns a fixed 5-cell progress bar and threshold style.
 func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
-	tint := theme.Primary
+	barTint := theme.Primary
+	metricTint := theme.Text
 	switch {
 	case pct >= 90:
-		tint = theme.Error
+		barTint = theme.Error
+		metricTint = theme.Error
 	case pct >= 75:
-		tint = theme.Warning
+		barTint = theme.Warning
+		metricTint = theme.Warning
 	}
 
 	const barCells = 5
@@ -120,9 +123,9 @@ func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
 	if filled < 0 {
 		filled = 0
 	}
-	filledPart := style.NewStyle().Foreground(tint).Render(strings.Repeat("▰", filled))
+	filledPart := style.NewStyle().Foreground(barTint).Render(strings.Repeat("▰", filled))
 	emptyPart := style.NewStyle().Foreground(theme.Border).Render(strings.Repeat("▱", barCells-filled))
-	return filledPart + emptyPart, style.NewStyle().Foreground(tint)
+	return filledPart + emptyPart, style.NewStyle().Foreground(metricTint)
 }
 
 // FormatStatusBarLeft renders token metrics, TPS, and context usage in fixed-width tabular columns.
@@ -132,21 +135,21 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 	}
 
 	div := style.NewStyle().Foreground(theme.Border).Render(" │ ")
-	pStyle := style.NewStyle().Foreground(theme.Secondary)
-	cStyle := style.NewStyle().Foreground(theme.Highlight)
-	speedStyle := style.NewStyle().Foreground(theme.Success)
+	labelStyle := style.NewStyle().Foreground(theme.TextMuted)
+	valStyle := style.NewStyle().Foreground(theme.Text)
+	speedStyle := style.NewStyle().Foreground(theme.TextMuted)
 
 	inVal := formatTabularTokens(state.PromptTokens, state.TokenEstimate)
 	outVal := formatTabularTokens(state.CompletionTokens, false)
 
 	if width < 44 {
-		pCompact := pStyle.Render("↑" + strings.TrimSpace(inVal))
-		cCompact := cStyle.Render("↓" + strings.TrimSpace(outVal))
+		pCompact := labelStyle.Render("↑") + valStyle.Render(strings.TrimSpace(inVal))
+		cCompact := labelStyle.Render("↓") + valStyle.Render(strings.TrimSpace(outVal))
 		return fmt.Sprintf(" %s %s", pCompact, cCompact)
 	}
 
-	inSeg := pStyle.Render("↑ in " + inVal)
-	outSeg := cStyle.Render("↓ out " + outVal)
+	inSeg := labelStyle.Render("↑ in ") + valStyle.Render(inVal)
+	outSeg := labelStyle.Render("↓ out ") + valStyle.Render(outVal)
 
 	if width < 64 {
 		return " " + inSeg + div + outSeg
@@ -168,20 +171,18 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 
 	var ctxSeg string
 	if width < 92 {
-		ctxSeg = ctxStyle.Render(fmt.Sprintf("ctx %s/%s", usedVal, strings.TrimRight(limitVal, " ")))
+		ctxSeg = labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s/%s", usedVal, strings.TrimRight(limitVal, " ")))
 	} else if width < 106 {
-		ctxSeg = ctxStyle.Render(fmt.Sprintf("ctx %s %s/%s", pctVal, usedVal, limitVal))
+		ctxSeg = labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s %s/%s", pctVal, usedVal, limitVal))
 	} else {
-		label := ctxStyle.Render("ctx ")
-		metrics := ctxStyle.Render(fmt.Sprintf(" %s %s/%s", pctVal, usedVal, limitVal))
-		ctxSeg = label + bar + metrics
+		ctxSeg = labelStyle.Render("ctx ") + bar + ctxStyle.Render(fmt.Sprintf(" %s %s/%s", pctVal, usedVal, limitVal))
 	}
 
 	line := " " + inSeg + div + outSeg + div + ctxSeg
 
 	if (state.IsGenerating || state.HasLastTps) && state.LastTps > 0 && width >= 116 {
 		tpsVal := fmt.Sprintf("%5.1f", min(999.9, state.LastTps))
-		line += div + speedStyle.Render("» "+tpsVal+" t/s")
+		line += div + speedStyle.Render("» ") + valStyle.Render(tpsVal) + speedStyle.Render(" t/s")
 	}
 
 	return line
@@ -262,7 +263,7 @@ func formatWorkspaceSessionPrefix(state StatusBarState, theme style.UITheme, wid
 	}
 	wsStyle := style.NewStyle().Foreground(theme.TextMuted)
 	sessStyle := style.NewStyle().Foreground(theme.TextMuted)
-	iconStyle := style.NewStyle().Foreground(theme.Secondary)
+	iconStyle := style.NewStyle().Foreground(theme.Border)
 
 	// Keep workspace and session inside deterministic column slots so changing
 	// session IDs or titles never shifts the token columns to the right.
@@ -328,7 +329,10 @@ func FormatStatusBarSeparatorLayout(width, row int, indicator string, collapsed,
 		return "", nil
 	}
 	borderStyle := style.NewStyle().Foreground(theme.Border)
-	collapseStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	collapseStyle := style.NewStyle().Foreground(theme.TextMuted)
+	if hovered {
+		collapseStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
+	}
 
 	if indicator == "" {
 		return borderStyle.Render(strings.Repeat("─", available)), nil

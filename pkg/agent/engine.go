@@ -196,7 +196,7 @@ func (e *TurnEngine) MaybeRecap(sink HistorySink, promptTokens, totalCompletion,
 	content := e.awareness.Format(e.agentLabel(), promptTokens, totalCompletion, effectiveLimit)
 	sink.Append(db.Message{Role: "user", ContextKind: "runtime", Content: content})
 	if e.policy.ShowRecapLine && e.agent != nil && e.agent.UI != nil {
-		fmt.Fprintln(w, style.NewStyle().Foreground(theme.Border).Italic(true).Render(content))
+		fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render(content))
 	}
 	return content
 }

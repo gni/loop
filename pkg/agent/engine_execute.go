@@ -165,6 +165,9 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 	workers := max(a.GetLimits().ParallelToolWorkers, 1)
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
+	// Parallel workers never stream live stdout directly to the terminal; clear
+	// the shared flag once on the foreground goroutine before spawning workers.
+	a.SetLiveBodyStreamed(false)
 	// Tool execution remains parallel, but the renderer consumes each result
 	// as soon as the next call in model order completes. We never wait for
 	// the entire worker pool before presenting the first completed read.
@@ -219,7 +222,6 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 			}
 
 			p.started = true
-			a.SetLiveBodyStreamed(false)
 			rich, err := tool.ExecutePreparedResult(executionContext(e, a), p.executor, p.call.Function.Arguments)
 			p.rich = rich
 			if ctx.Err() != nil {

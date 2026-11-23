@@ -18,17 +18,18 @@ import (
 func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
 	now := time.Now()
 	timeStr := fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
-	return style.NewStyle().Foreground(theme.Border).Render(timeStr)
+	return style.NewStyle().Foreground(theme.TextMuted).Render(timeStr)
 }
 
 func formatCompletionTokensBadge(tokens int, theme style.UITheme) string {
-	currentCStr := fmt.Sprintf("↓ %d out", tokens)
+	valStr := fmt.Sprintf("%d", tokens)
 	if tokens >= 1000 {
-		currentCStr = fmt.Sprintf("↓ %.1fk out", float64(tokens)/1000.0)
+		valStr = fmt.Sprintf("%.1fk", float64(tokens)/1000.0)
 	}
-	cStyled := style.NewStyle().Foreground(theme.Highlight).Render(currentCStr)
-	dotStyled := style.NewStyle().Foreground(theme.Border).Render(" • ")
-	return cStyled + dotStyled
+	muted := style.NewStyle().Foreground(theme.TextMuted)
+	val := style.NewStyle().Foreground(theme.Text)
+	dot := style.NewStyle().Foreground(theme.Border).Render(" · ")
+	return muted.Render("↓ ") + val.Render(valStr) + muted.Render(" out") + dot
 }
 
 func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, err error, ctxErr error, isNonInteractive bool, theme style.UITheme) {
@@ -284,7 +285,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		},
 		Infer: func(ctx context.Context, iter int) (*db.Message, error) {
 			toolsForLog := a.Registry.GetAvailableTools(allowlist)
-			a.DebugLogLLMRequest(sessionID, iter, runConfig.Model, runConfig.Endpoint, *messages, toolsForLog)
+			a.MessagesMu.RLock()
+			requestMessages := message.CloneAll(*messages)
+			a.MessagesMu.RUnlock()
+			a.DebugLogLLMRequest(sessionID, iter, runConfig.Model, runConfig.Endpoint, requestMessages, toolsForLog)
 
 			chunkChan := make(chan StreamChunk, 200)
 			type streamResult struct {
@@ -295,7 +299,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 			timer.Time("llm", "start")
 			go func() {
-				msg, err := a.StreamChatCompletions(ctx, *messages, allowlist, chunkChan)
+				msg, err := a.StreamChatCompletions(ctx, requestMessages, allowlist, chunkChan)
 				close(chunkChan)
 				resChan <- streamResult{msg: msg, err: err}
 			}()

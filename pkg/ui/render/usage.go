@@ -94,7 +94,7 @@ func GetUsageCostBreakdown(messages []db.Message, defaultModel string) []UsageCo
 }
 
 func RenderStats(w io.Writer, msgs []db.Message, defaultModel string, tr *agent.TimingRecorder, theme style.UITheme) {
-	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	titleStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	valueStyle := style.NewStyle().Foreground(theme.Text)
 
 	printUsageHeader(w, theme)
@@ -126,24 +126,26 @@ func usageBoxInnerWidth(w io.Writer) int {
 }
 
 func printUsageHeader(w io.Writer, theme style.UITheme) {
+	borderStyle := style.NewStyle().Foreground(theme.Border)
 	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	inner := usageBoxInnerWidth(w)
 	hline := strings.Repeat("─", inner)
 	title := style.TruncateCells("SWARM TOKEN UTILIZATION & COST STATS", max(1, inner-4))
-	titleLine := "│  " + title + strings.Repeat(" ", max(0, inner-2-style.CellWidth(title))) + "│"
-	fmt.Fprintln(w, headerStyle.Render("╭"+hline+"╮"))
-	fmt.Fprintln(w, headerStyle.Render(titleLine))
-	fmt.Fprintln(w, headerStyle.Render("├"+hline+"┤"))
+	vbar := borderStyle.Render("│")
+	titleLine := vbar + "  " + headerStyle.Render(title) + strings.Repeat(" ", max(0, inner-2-style.CellWidth(title))) + vbar
+	fmt.Fprintln(w, borderStyle.Render("╭"+hline+"╮"))
+	fmt.Fprintln(w, titleLine)
+	fmt.Fprintln(w, borderStyle.Render("├"+hline+"┤"))
 }
 
 func printUsageDivider(w io.Writer, theme style.UITheme) {
-	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	borderStyle := style.NewStyle().Foreground(theme.Border)
 	inner := usageBoxInnerWidth(w)
-	fmt.Fprintln(w, headerStyle.Render("├"+strings.Repeat("─", inner)+"┤"))
+	fmt.Fprintln(w, borderStyle.Render("├"+strings.Repeat("─", inner)+"┤"))
 }
 
 func printUsageFooter(w io.Writer, theme style.UITheme) {
-	headerStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	borderStyle := style.NewStyle().Foreground(theme.Border)
 	inner := usageBoxInnerWidth(w)
-	fmt.Fprintln(w, headerStyle.Render("╰"+strings.Repeat("─", inner)+"╯"))
+	fmt.Fprintln(w, borderStyle.Render("╰"+strings.Repeat("─", inner)+"╯"))
 }

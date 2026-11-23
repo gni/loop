@@ -1,6 +1,7 @@
 package interactive
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -107,6 +108,56 @@ func WithAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 	return true, fn()
 }
 
+// RunAltScreenSession provides a unified terminal lifecycle for interactive pickers
+// and modals: raw mode, alt-screen, bracketed paste, resize signals, context cancellation,
+// and non-TTY fallback.
+func RunAltScreenSession(
+	ctx context.Context,
+	rlInput io.Reader,
+	rlOutput io.Writer,
+	onTTY func(sr *SessionReader, signals chan os.Signal) error,
+	onFallback func(sr *SessionReader) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	SetInInteractiveMenu(true)
+	defer SetInInteractiveMenu(false)
+
+	fd := ResolveTerminalFD(rlInput, rlOutput)
+	isTTY := term.IsTerminal(fd)
+	if isTTY {
+		oldState, err := term.MakeRaw(fd)
+		if err != nil {
+			return fmt.Errorf("prepare interactive terminal: %w", err)
+		}
+		defer term.Restore(fd, oldState)
+	}
+
+	sr := NewSessionReader(rlInput)
+	defer sr.Close()
+	sr.SetContext(ctx)
+
+	if isTTY {
+		terminal.Default().EnterAltScreen(rlOutput)
+		defer terminal.Default().ExitAltScreen(rlOutput)
+		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
+		defer restorePaste()
+		terminal.RefreshDimensions()
+		signals := make(chan os.Signal, 1)
+		terminal.NotifyResize(signals)
+		defer signal.Stop(signals)
+		if onTTY == nil {
+			return nil
+		}
+		return onTTY(sr, signals)
+	}
+	if onFallback == nil {
+		return fmt.Errorf("interactive terminal required")
+	}
+	return onFallback(sr)
+}
+
 func GetInteractiveIO(kiReader io.Reader) (io.Reader, io.Writer, func()) {
 	var input io.Reader = kiReader
 	var inputCloser io.Closer
@@ -171,9 +222,9 @@ func FormatMenuCell(item *SettingItem, selected bool, colWidth int, theme style.
 		nameStyled := style.NewStyle().Foreground(theme.Primary).Bold(true).Render(nameStr)
 		valStyled := valStr
 		if !hasAnsiVal {
-			valStyled = style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(valStr)
+			valStyled = style.NewStyle().Foreground(theme.Text).Bold(true).Render(valStr)
 		}
-		bracket := style.NewStyle().Foreground(theme.Secondary)
+		bracket := style.NewStyle().Foreground(theme.TextMuted)
 
 		valStrFormatted := ""
 		if valStr != "" {
@@ -185,7 +236,7 @@ func FormatMenuCell(item *SettingItem, selected bool, colWidth int, theme style.
 	nameStyled := style.NewStyle().Foreground(theme.Text).Render(nameStr)
 	valStyled := valStr
 	if !hasAnsiVal {
-		valStyled = style.NewStyle().Foreground(theme.Secondary).Render(valStr)
+		valStyled = style.NewStyle().Foreground(theme.TextMuted).Render(valStr)
 	}
 	return fmt.Sprintf("  %s %s %s", nameStyled, leaderStyled, valStyled)
 }
@@ -412,29 +463,83 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 			}
 			continue
 		}
-		visible := max(1, height-7)
+		availW := max(1, width-1)
+		borderStyle := style.NewStyle().Foreground(theme.Border)
+		mutedStyle := style.NewStyle().Foreground(theme.TextMuted)
+		titleStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+		showDetail := height >= 12
+		chromeRows := 5 // header + search + top rule + spacer/rule + footer
+		if showDetail {
+			chromeRows = 8 // header + search + top rule + bottom rule + 2 detail rows + footer
+		}
+		visible := max(1, height-chromeRows)
 		start := max(0, selected-visible+1)
 		end := min(len(indexes), start+visible)
-		rows := make([]string, 0, end-start+5)
-		rows = append(rows,
-			style.NewStyle().Foreground(theme.Primary).Bold(true).Render(style.TruncateCells(title, max(1, width-1))),
-			style.TruncateCells("  Search: "+MenuDisplayText(query), max(1, width-1)),
-			"",
-		)
+
+		counter := fmt.Sprintf("0/%d", len(items))
+		if len(indexes) > 0 {
+			counter = fmt.Sprintf("%d/%d", selected+1, len(indexes))
+			if query != "" {
+				counter = fmt.Sprintf("%d/%d matches", selected+1, len(indexes))
+			}
+		}
+		titleMax := max(1, availW-style.CellWidth(counter)-2)
+		heading := style.TruncateCells(title, titleMax)
+		headerGap := strings.Repeat(" ", max(1, availW-style.CellWidth(heading)-style.CellWidth(counter)))
+		headerRow := titleStyle.Render(heading) + headerGap + mutedStyle.Render(counter)
+
+		var searchRow string
+		if query == "" {
+			searchRow = mutedStyle.Render(style.TruncateCells("  / type to filter", availW))
+		} else {
+			searchRow = mutedStyle.Render("  / ") + style.NewStyle().Foreground(theme.Text).Render(style.TruncateCells(MenuDisplayText(query), max(1, availW-4)))
+		}
+		divider := borderStyle.Render(strings.Repeat("─", availW))
+
+		rows := make([]string, 0, height)
+		rows = append(rows, headerRow, searchRow, divider)
 		if len(indexes) == 0 {
-			rows = append(rows, "  No matching items")
+			rows = append(rows, mutedStyle.Render("  No matching items"))
 		}
 		for row := start; row < end; row++ {
-			text := style.TruncateCells(strings.Join(strings.Fields(style.StripAnsi(items[indexes[row]])), " "), max(1, width-7))
-			prefix := "    "
-			tint := theme.Text
-			if row == selected {
-				prefix = "  › "
-				tint = theme.Primary
+			clean := strings.Join(strings.Fields(style.StripAnsi(items[indexes[row]])), " ")
+			maxCells := max(1, availW-4)
+			if style.CellWidth(clean) > maxCells && maxCells > 1 {
+				clean = style.TruncateCells(clean, maxCells-1) + "…"
+			} else {
+				clean = style.TruncateCells(clean, maxCells)
 			}
-			rows = append(rows, prefix+style.NewStyle().Foreground(tint).Render(text))
+			if row == selected {
+				rows = append(rows, titleStyle.Render("  › "+clean))
+			} else {
+				rows = append(rows, "    "+style.NewStyle().Foreground(theme.Text).Render(clean))
+			}
 		}
-		rows = append(rows, "", style.TruncateCells("  ↑/↓ move · Enter select · type to filter · Esc back", max(1, width-1)))
+		if showDetail {
+			for len(rows) < 3+visible {
+				rows = append(rows, "")
+			}
+			rows = append(rows, divider)
+			detail1, detail2 := "", ""
+			if len(indexes) > 0 {
+				full := strings.Join(strings.Fields(style.StripAnsi(items[indexes[selected]])), " ")
+				wrapped := style.WrapAnsiLine(full, max(1, availW-2))
+				if len(wrapped) > 0 {
+					detail1 = "  " + wrapped[0]
+				}
+				if len(wrapped) > 1 {
+					second := wrapped[1]
+					if len(wrapped) > 2 && availW > 4 {
+						second = style.TruncateCells(second, max(1, availW-3)) + "…"
+					}
+					detail2 = "  " + second
+				}
+			}
+			rows = append(rows, mutedStyle.Render(style.TruncateCells(detail1, availW)), mutedStyle.Render(style.TruncateCells(detail2, availW)))
+		} else {
+			rows = append(rows, "")
+		}
+		rows = append(rows, mutedStyle.Render(style.TruncateCells("  ↑/↓ move · PgUp/PgDn page · Enter select · Esc back", availW)))
 		if err := FlushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
 			return -1, err
 		}

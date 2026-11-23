@@ -6,15 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/db"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/style"
 )
@@ -32,36 +28,27 @@ func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writ
 }
 
 func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return "", false, err
-	}
-	interactive.SetInInteractiveMenu(true)
-	defer interactive.SetInInteractiveMenu(false)
+	var selected string
+	var startNew bool
+	err := interactive.RunAltScreenSession(
+		ctx,
+		rlInput,
+		rlOutput,
+		func(sr *interactive.SessionReader, signals chan os.Signal) error {
+			var pickErr error
+			selected, startNew, pickErr = runSessionPickerContext(ctx, sr, signals, rlOutput, theme)
+			return pickErr
+		},
+		func(sr *interactive.SessionReader) error {
+			var pickErr error
+			selected, startNew, pickErr = runSessionFallbackContext(ctx, sr, rlOutput)
+			return pickErr
+		},
+	)
+	return selected, startNew, err
+}
 
-	fd := interactive.ResolveTerminalFD(rlInput, rlOutput)
-	if term.IsTerminal(fd) {
-		oldState, err := term.MakeRaw(fd)
-		if err != nil {
-			return "", false, fmt.Errorf("prepare session picker: %w", err)
-		}
-		defer term.Restore(fd, oldState)
-	}
-
-	sr := interactive.NewSessionReader(rlInput)
-	defer sr.Close()
-	sr.SetContext(ctx)
-
-	if term.IsTerminal(fd) {
-		terminal.Default().EnterAltScreen(rlOutput)
-		defer terminal.Default().ExitAltScreen(rlOutput)
-		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
-		defer restorePaste()
-		terminal.RefreshDimensions()
-		signals := make(chan os.Signal, 1)
-		terminal.NotifyResize(signals)
-		defer signal.Stop(signals)
-		return runSessionPickerContext(ctx, sr, signals, rlOutput, theme)
-	}
+func runSessionFallbackContext(ctx context.Context, sr *interactive.SessionReader, rlOutput io.Writer) (string, bool, error) {
 	for {
 		sessions, err := db.GetSessionsContext(ctx)
 		if err != nil {

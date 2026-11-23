@@ -106,7 +106,7 @@ func renderSettingsMenuRows(title, query string, items []*SettingItem, selected,
 			description = MenuDisplayText(items[selected].Description)
 			value = MenuDisplayText(items[selected].Value())
 		}
-		rows = append(rows, muted.Render(description), style.NewStyle().Foreground(theme.Highlight).Render("Value: "+value))
+		rows = append(rows, muted.Render(description), muted.Render("Value: ")+style.NewStyle().Foreground(theme.Text).Render(value))
 	}
 	rows = append(rows, extras...)
 	controls := "↑↓ move · Enter edit · Space toggle"

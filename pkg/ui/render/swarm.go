@@ -13,7 +13,7 @@ import (
 )
 
 func RenderSwarmStats(w io.Writer, baseMessages []db.Message, agents []message.AgentUsageSnapshot, tr *agent.TimingRecorder, theme style.UITheme) {
-	titleStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
+	titleStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 	valueStyle := style.NewStyle().Foreground(theme.Text)
 
 	printUsageHeader(w, theme)

@@ -33,39 +33,40 @@ func RunInteractiveConfig(cfg *config.Config, theme style.UITheme, rlInput io.Re
 		items := buildConfigSettingItems(&cloned)
 
 		extraRender := func(buf *strings.Builder) {
-			borderStyle := style.NewStyle().Foreground(theme.Border)
-			labelStyle := style.NewStyle().Foreground(theme.Secondary).Bold(true)
 			previewTheme := style.ResolveConfiguredTheme(cloned.Theme, cloned.SyntaxTheme)
+			borderStyle := style.NewStyle().Foreground(previewTheme.Border)
+			labelStyle := style.NewStyle().Foreground(previewTheme.TextMuted)
 
-			synTheme := cloned.SyntaxTheme
-			if synTheme == "" || synTheme == "auto" {
-				synTheme = previewTheme.ChromaStyle
-			}
+			synTheme := previewTheme.ChromaStyle
 			if synTheme == "" {
-				synTheme = "monokai"
+				synTheme = "github-dark"
 			}
 
 			var codeBuf bytes.Buffer
 			sampleCode := `func main() { fmt.Println("Hello, loop!") }`
-			_ = quick.Highlight(&codeBuf, sampleCode, "go", "terminal256", synTheme)
+			if formatter := style.ChromaFormatterName(); formatter != "" {
+				_ = quick.Highlight(&codeBuf, sampleCode, "go", formatter, synTheme)
+			} else {
+				codeBuf.WriteString(sampleCode)
+			}
 			codeLine := strings.TrimSpace(codeBuf.String())
 
 			buf.WriteString("  " + borderStyle.Render("────────────────────────────────────────────────────────────────────────") + "\n")
 			buf.WriteString(fmt.Sprintf("  %s %s %s %s %s %s %s   %s %s\n",
 				labelStyle.Render("Palette:"),
 				style.NewStyle().Foreground(previewTheme.Primary).Bold(true).Render("Primary"),
-				style.NewStyle().Foreground(previewTheme.Secondary).Bold(true).Render("Secondary"),
-				style.NewStyle().Foreground(previewTheme.Highlight).Bold(true).Render("Highlight"),
+				style.NewStyle().Foreground(previewTheme.Secondary).Render("Secondary"),
+				style.NewStyle().Foreground(previewTheme.Highlight).Render("Highlight"),
 				style.NewStyle().Foreground(previewTheme.Success).Render("Success"),
-				style.NewStyle().Foreground(previewTheme.Error).Render("Error"),
 				style.NewStyle().Foreground(previewTheme.Warning).Render("Warning"),
+				style.NewStyle().Foreground(previewTheme.Error).Render("Error"),
 				labelStyle.Render("Syntax ("+synTheme+"):"),
 				codeLine,
 			))
 		}
 
 		advanced := false
-		basic := map[string]bool{"mcp": true, "logo": true, "reduced_motion": true, "logo_brightness": true, "model": true, "theme": true, "show_thinking": true, "markdown_render": true, "collapse_results": true, "show_tokens": true, "auto_approve": true, "guided_mode": true, "prompt_max_lines": true, "reasoning_effort": true, "timeout": true}
+		basic := map[string]bool{"mcp": true, "logo": true, "reduced_motion": true, "logo_brightness": true, "model": true, "theme": true, "syntax_theme": true, "show_thinking": true, "markdown_render": true, "collapse_results": true, "show_tokens": true, "auto_approve": true, "guided_mode": true, "prompt_max_lines": true, "reasoning_effort": true, "timeout": true}
 		toggle := &interactive.SettingItem{ID: "advanced", Name: "advanced settings", Description: "Switch between everyday and all settings", Value: func() string {
 			if advanced {
 				return "shown"

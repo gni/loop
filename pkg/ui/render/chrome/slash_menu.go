@@ -418,11 +418,11 @@ func RenderSlashMenuRows(
 	window := items[visibleStart : visibleStart+visibleCount]
 
 	selIndicatorStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	selCmdStyle := style.NewStyle().Foreground(theme.Highlight).Bold(true)
-	selArgsStyle := style.NewStyle().Foreground(theme.Secondary)
+	selCmdStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	selArgsStyle := style.NewStyle().Foreground(theme.TextMuted)
 	selDescStyle := style.NewStyle().Foreground(theme.Text)
 
-	cmdStyle := style.NewStyle().Foreground(theme.Primary)
+	cmdStyle := style.NewStyle().Foreground(theme.Text)
 	argsStyle := style.NewStyle().Foreground(theme.TextMuted)
 	descStyle := style.NewStyle().Foreground(theme.TextMuted)
 	divider := borderStyle.Render(" │ ")

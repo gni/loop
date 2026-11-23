@@ -5,16 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent/tool"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/interactive"
 	"loop/pkg/ui/style"
 )
@@ -47,37 +43,23 @@ func RunSkillPickerContext(
 	rlInput io.Reader,
 	rlOutput io.Writer,
 ) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	interactive.SetInInteractiveMenu(true)
-	defer interactive.SetInInteractiveMenu(false)
-
-	fd := interactive.ResolveTerminalFD(rlInput, rlOutput)
-	if term.IsTerminal(fd) {
-		oldState, err := term.MakeRaw(fd)
-		if err != nil {
-			return "", fmt.Errorf("prepare skill picker: %w", err)
-		}
-		defer term.Restore(fd, oldState)
-	}
-
-	sr := interactive.NewSessionReader(rlInput)
-	defer sr.Close()
-	sr.SetContext(ctx)
-
-	if term.IsTerminal(fd) {
-		terminal.Default().EnterAltScreen(rlOutput)
-		defer terminal.Default().ExitAltScreen(rlOutput)
-		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
-		defer restorePaste()
-		terminal.RefreshDimensions()
-		signals := make(chan os.Signal, 1)
-		terminal.NotifyResize(signals)
-		defer signal.Stop(signals)
-		return runSkillPickerTTY(sr, signals, rlOutput, loadSkills, reloadSkills, loadedNames, theme)
-	}
-	return runSkillPickerFallback(sr, rlOutput, loadSkills, reloadSkills, loadedNames)
+	var selected string
+	err := interactive.RunAltScreenSession(
+		ctx,
+		rlInput,
+		rlOutput,
+		func(sr *interactive.SessionReader, signals chan os.Signal) error {
+			var pickErr error
+			selected, pickErr = runSkillPickerTTY(sr, signals, rlOutput, loadSkills, reloadSkills, loadedNames, theme)
+			return pickErr
+		},
+		func(sr *interactive.SessionReader) error {
+			var pickErr error
+			selected, pickErr = runSkillPickerFallback(sr, rlOutput, loadSkills, reloadSkills, loadedNames)
+			return pickErr
+		},
+	)
+	return selected, err
 }
 
 func runSkillPickerTTY(
