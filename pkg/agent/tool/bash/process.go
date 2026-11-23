@@ -37,11 +37,6 @@ func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-// FormatExitError formats an execution failure with signal and status details.
-func FormatExitError(err error, timeoutCtx context.Context) string {
-	return FormatExitErrorWithTimeout(err, timeoutCtx, 120*time.Second)
-}
-
 // FormatExitErrorWithTimeout formats an execution failure using the configured timeout.
 func FormatExitErrorWithTimeout(err error, timeoutCtx context.Context, timeout time.Duration) string {
 	if timeoutCtx.Err() == context.DeadlineExceeded {

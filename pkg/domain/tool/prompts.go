@@ -113,16 +113,6 @@ func AgentTemplatesSnapshot() AgentToolTemplates {
 	return MasterAgentTemplates
 }
 
-func ToolGuidelines(name string) []string {
-	name = NormalizeName(name)
-	catalogMu.RLock()
-	defer catalogMu.RUnlock()
-	if p, ok := MasterToolPrompts[name]; ok && p.Guidelines != nil {
-		return append([]string(nil), p.Guidelines...)
-	}
-	return nil
-}
-
 func LoadPromptCatalog(path string) error {
 	customTools := make(map[string]bool)
 	catalog, err := decodeCatalog(embeddedPromptCatalog)

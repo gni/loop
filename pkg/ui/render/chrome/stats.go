@@ -227,11 +227,6 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	return branchStyled + dashes + statusStyled, hitboxes
 }
 
-// FormatPromptSeparator formats the horizontal line with optional reasoning status and git branch above the prompt.
-func FormatPromptSeparator(showThinking bool, reasoningEffort string, theme style.UITheme, width int, gitBranch ...string) string {
-	return FormatPromptSeparatorWithAuto(showThinking, reasoningEffort, false, false, theme, width, gitBranch...)
-}
-
 // FormatPromptSeparatorWithAuto formats the horizontal prompt separator with optional auto-approve, reasoning, and git branch indicators.
 func FormatPromptSeparatorWithAuto(showThinking bool, reasoningEffort string, showAutoBadge, autoApprove bool, theme style.UITheme, width int, gitBranch ...string) string {
 	line := formatPromptSeparatorLine(showThinking, reasoningEffort, showAutoBadge, autoApprove, theme, width, gitBranch...)

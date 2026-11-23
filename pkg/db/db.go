@@ -369,14 +369,6 @@ func (s *JSONLStore) commitSessionRecordsLocked(ctx context.Context, sessionID s
 	return nil
 }
 
-func AppendEntry(sessionID string, record session.Record) error {
-	return AppendEntryContext(context.Background(), sessionID, record)
-}
-
-func AppendEntryContext(ctx context.Context, sessionID string, record session.Record) error {
-	return withStore(func(s *JSONLStore) error { return s.AppendEntryContext(ctx, sessionID, record) })
-}
-
 var (
 	defaultStore *JSONLStore
 	storeMu      sync.RWMutex
@@ -445,14 +437,6 @@ func LoadMessagesContext(ctx context.Context, sessionID string) ([]Message, erro
 func HasMessages(sessionID string) bool {
 	store, err := getStore()
 	return err == nil && store.HasMessages(sessionID)
-}
-
-func OpenHistory(sessionID string) (*HistoryReader, error) {
-	return OpenHistoryContext(context.Background(), sessionID)
-}
-
-func OpenHistoryContext(ctx context.Context, sessionID string) (*HistoryReader, error) {
-	return withStoreVal(func(s *JSONLStore) (*HistoryReader, error) { return s.OpenHistoryContext(ctx, sessionID) })
 }
 
 func (s *JSONLStore) ForWorkspace(workspace string) *JSONLStore {

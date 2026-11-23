@@ -103,10 +103,6 @@ func safeAttachmentPath(rawPath, workspace string) (string, error) {
 	return resolved, nil
 }
 
-func Attachments(input, workspace string) (string, []message.ContentBlock, error) {
-	return AttachmentsContext(context.Background(), input, workspace, nil)
-}
-
 // AttachmentsContext shares one byte budget across unique files. The optional
 // validator applies the active session's path policy without coupling resources
 // to the agent implementation.

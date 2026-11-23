@@ -89,13 +89,6 @@ var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/exit", Description: "exit loop cleanly"},
 }
 
-// BuiltinSlashCommands returns a copy of the curated built-in top-level slash commands.
-func BuiltinSlashCommands() []SlashCommandItem {
-	out := make([]SlashCommandItem, len(builtinSlashCommands))
-	copy(out, builtinSlashCommands)
-	return out
-}
-
 func builtinSubcommands(cmd string) []SlashCommandItem {
 	switch cmd {
 	case "/config":

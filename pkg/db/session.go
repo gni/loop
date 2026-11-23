@@ -295,10 +295,6 @@ func (s *JSONLStore) RenameSessionContext(ctx context.Context, oldID, newID stri
 	return nil
 }
 
-func readEntries(filePath string) ([]session.Record, error) {
-	return readEntriesContext(context.Background(), filePath)
-}
-
 func readEntriesContext(ctx context.Context, filePath string) ([]session.Record, error) {
 	f, err := storage.OpenRegularFile(filePath)
 	if err != nil {
@@ -337,32 +333,16 @@ func readEntriesContext(ctx context.Context, filePath string) ([]session.Record,
 	return entries, nil
 }
 
-func ForkSession(parentSessionID, entryID string) (string, error) {
-	return ForkSessionContext(context.Background(), parentSessionID, entryID)
-}
-
 func ForkSessionContext(ctx context.Context, parentSessionID, entryID string) (string, error) {
 	return withStoreVal(func(s *JSONLStore) (string, error) { return s.ForkSessionContext(ctx, parentSessionID, entryID) })
-}
-
-func ClearHistory() error {
-	return ClearHistoryContext(context.Background())
 }
 
 func ClearHistoryContext(ctx context.Context) error {
 	return withStore(func(s *JSONLStore) error { return s.ClearHistoryContext(ctx) })
 }
 
-func ClearSession(sessionID string) error {
-	return ClearSessionContext(context.Background(), sessionID)
-}
-
 func ClearSessionContext(ctx context.Context, sessionID string) error {
 	return withStore(func(s *JSONLStore) error { return s.ClearSessionContext(ctx, sessionID) })
-}
-
-func SetLatestSessionID(sessionID string) error {
-	return SetLatestSessionIDContext(context.Background(), sessionID)
 }
 
 func SetLatestSessionIDContext(ctx context.Context, sessionID string) error {
@@ -377,32 +357,12 @@ func GetSessionsContext(ctx context.Context) ([]SessionInfo, error) {
 	return withStoreVal(func(s *JSONLStore) ([]SessionInfo, error) { return s.GetSessionsContext(ctx) })
 }
 
-func Branch(sessionID, entryID string) error {
-	return BranchContext(context.Background(), sessionID, entryID)
-}
-
 func BranchContext(ctx context.Context, sessionID, entryID string) error {
 	return withStore(func(s *JSONLStore) error { return s.BranchContext(ctx, sessionID, entryID) })
 }
 
-func Entries(sessionID string) ([]session.Record, error) {
-	return EntriesContext(context.Background(), sessionID)
-}
-
 func EntriesContext(ctx context.Context, sessionID string) ([]session.Record, error) {
 	return withStoreVal(func(s *JSONLStore) ([]session.Record, error) { return s.EntriesContext(ctx, sessionID) })
-}
-
-func RenameSession(oldID, newID string) error {
-	return RenameSessionContext(context.Background(), oldID, newID)
-}
-
-func RenameSessionContext(ctx context.Context, oldID, newID string) error {
-	return withStore(func(s *JSONLStore) error { return s.RenameSessionContext(ctx, oldID, newID) })
-}
-
-func RewriteSession(sessionID string, messages []message.Message) error {
-	return RewriteSessionContext(context.Background(), sessionID, messages)
 }
 
 func RewriteSessionContext(ctx context.Context, sessionID string, messages []message.Message) error {

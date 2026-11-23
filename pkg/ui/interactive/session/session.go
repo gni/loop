@@ -15,18 +15,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func RunSessionExplorer(theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
-	ctx := context.Background()
-	if !interactive.IsNilReader(rlInput) {
-		if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
-			if inputCtx := provider.GetInputContext(); inputCtx != nil {
-				ctx = inputCtx
-			}
-		}
-	}
-	return RunSessionExplorerContext(ctx, theme, rlInput, rlOutput)
-}
-
 func RunSessionExplorerContext(ctx context.Context, theme style.UITheme, rlInput io.Reader, rlOutput io.Writer) (string, bool, error) {
 	var selected string
 	var startNew bool

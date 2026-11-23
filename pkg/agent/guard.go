@@ -82,10 +82,6 @@ func (g *TurnExecutionGuard) SetObservationInvalidator(inv ObservationInvalidato
 	}
 }
 
-func CanonicalizeArguments(arguments string) string {
-	return CanonicalizeToolArguments("", arguments)
-}
-
 func CanonicalizeToolArguments(toolName, arguments string) string {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {

@@ -30,10 +30,6 @@ type PackageResources struct {
 	Hooks      []Hook
 }
 
-func LoadPackages(directories ...string) (PackageResources, error) {
-	return LoadPackagesContext(context.Background(), directories...)
-}
-
 // LoadPackagesContext lets session construction and reload stop between packages.
 func LoadPackagesContext(ctx context.Context, directories ...string) (PackageResources, error) {
 	resources := PackageResources{Providers: make(map[string]config.ProviderConfig)}

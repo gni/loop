@@ -180,11 +180,6 @@ func renderInlineMarkdownBlock(text string, inThinking bool, theme style.UITheme
 	return output.String()
 }
 
-// PrintNormalMarkdownLine renders a single line with markdown blocks (headers, quotes, bullets, lists).
-func PrintNormalMarkdownLine(w io.Writer, line string, theme style.UITheme) {
-	printMarkdownLine(w, line, theme, false)
-}
-
 func printMarkdownLine(w io.Writer, line string, theme style.UITheme, thinking bool) {
 	trimmed := strings.TrimSpace(line)
 

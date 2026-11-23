@@ -24,14 +24,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func RunREPL(a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
-	ctx := a.Lifetime
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	RunREPLContext(ctx, a, allowedTools, theme, initialSessionID)
-}
-
 func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, theme style.UITheme, initialSessionID string) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

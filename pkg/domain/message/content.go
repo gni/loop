@@ -1,13 +1,10 @@
 package message
 
 import (
-	"context"
 	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
-
-	"loop/pkg/storage"
 )
 
 type ContentBlock struct {
@@ -18,18 +15,6 @@ type ContentBlock struct {
 	URL        string `json:"url,omitempty"`
 	Signature  string `json:"signature,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
-}
-
-func ReadAttachment(path string) (ContentBlock, error) {
-	return ReadAttachmentContext(context.Background(), path, 20<<20)
-}
-
-func ReadAttachmentContext(ctx context.Context, path string, limit int64) (ContentBlock, error) {
-	data, err := storage.ReadFileContext(ctx, path, limit)
-	if err != nil {
-		return ContentBlock{}, err
-	}
-	return AttachmentFromBytes(data)
 }
 
 // AttachmentFromBytes uses the same content detection for explicit attachments

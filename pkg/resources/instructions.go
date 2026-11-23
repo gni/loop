@@ -98,10 +98,6 @@ func Ancestors(workspace string) []string {
 	return directories
 }
 
-func Instructions(agentDir, workspace string) (string, []Diagnostic) {
-	return InstructionsForDirectories(append([]string{agentDir}, Ancestors(workspace)...)...)
-}
-
 func InstructionsForDirectories(directories ...string) (string, []Diagnostic) {
 	var output strings.Builder
 	var diagnostics []Diagnostic

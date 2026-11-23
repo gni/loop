@@ -78,10 +78,6 @@ func TrustWorkspace(configPath, workspace string, trusted bool) error {
 	return WritePrivateFile(filepath.Join(filepath.Dir(configPath), "trust", WorkspaceKey(canonical)+".json"), data)
 }
 
-func LoadWorkspaceConfig(path, workspace string, trusted bool) (*Config, error) {
-	return LoadWorkspaceConfigContext(context.Background(), path, workspace, trusted)
-}
-
 // LoadWorkspaceConfigContext applies workspace overrides after a cancellable global load.
 func LoadWorkspaceConfigContext(ctx context.Context, path, workspace string, trusted bool) (*Config, error) {
 	if path == "" {

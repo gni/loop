@@ -21,11 +21,6 @@ func ParseHeaderArgs(args []string) map[string]string {
 	return headers
 }
 
-func ParseBool(val string) bool {
-	value, _ := ParseBoolValue(val)
-	return value
-}
-
 func ParseReasoningEffort(val string) (string, error) {
 	switch v := strings.ToLower(strings.TrimSpace(val)); v {
 	case "off", "none", "false", "0":

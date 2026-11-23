@@ -20,21 +20,6 @@ type savedSettings struct {
 	Todos         []tool.TodoItem `json:"todos"`
 }
 
-func restoreSettings(store session.ContextStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
-	return restoreSettingsContext(context.Background(), store, id, cfg, tools, keepSelection)
-}
-
-func restoreSettingsContext(ctx context.Context, store session.ContextStore, id string, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
-	if !store.HasMessages(id) {
-		return nil, nil
-	}
-	entries, err := store.EntriesContext(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return restoreSettingsFromEntries(entries, cfg, tools, keepSelection)
-}
-
 func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
 	todos, _, err := restoreSettingsFromPath(session.LeafPath(entries, ""), cfg, tools, keepSelection)
 	return todos, err

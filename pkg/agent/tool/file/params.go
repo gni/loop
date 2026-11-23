@@ -222,22 +222,6 @@ func findPathInGenericMap(m map[string]any) string {
 	return ""
 }
 
-// ExtractEdits retains the legacy helper while using strict request parsing.
-func ExtractEdits(rawJSON string, candidateEdits ...[]ReplaceEdit) []ReplaceEdit {
-	if strings.TrimSpace(rawJSON) != "" {
-		_, edits, err := ParseEditArguments(rawJSON)
-		if err != nil {
-			return nil
-		}
-		return edits
-	}
-	var edits []ReplaceEdit
-	for _, group := range candidateEdits {
-		edits = append(edits, group...)
-	}
-	return edits
-}
-
 func ExtractFileContent(rawJSON string, candidateContents ...string) (string, bool) {
 	for _, c := range candidateContents {
 		if c != "" {

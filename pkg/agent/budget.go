@@ -20,10 +20,6 @@ func requestTokens(messages []db.Message) int {
 	return tokens
 }
 
-func (p *OpenAICompatibleProvider) budgetRequest(messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
-	return p.budgetRequestContext(nil, messages, tools)
-}
-
 func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
 	schemaTokens := EstimateToolSchemaTokens(tools)
 	contextLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), requestTokens(messages)+schemaTokens)

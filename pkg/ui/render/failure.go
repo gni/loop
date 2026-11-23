@@ -13,10 +13,6 @@ import (
 
 var failureHTTPStatus = regexp.MustCompile(`\b(?:http(?: status(?: code)?)?|status(?: code)?)[\s:=]+(401|403|429)\b`)
 
-func FailureAdvice(message string) string {
-	return failureAdvice(message, "")
-}
-
 // Tool output can contain arbitrary source, paths, and subprocess diagnostics.
 // Provider-specific advice belongs only to failures outside a tool result.
 func failureAdvice(message, toolName string) string {

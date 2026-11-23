@@ -157,11 +157,6 @@ func SuggestVerification(ctx context.Context, checks []evidence.Check) {
 	}
 }
 
-func UpdateTask(ctx context.Context, update task.Update) error {
-	_, _, err := UpdateTaskSnapshot(ctx, update)
-	return err
-}
-
 // UpdateTaskSnapshot commits an assessment and detects repeats under one lock.
 func UpdateTaskSnapshot(ctx context.Context, update task.Update) (*task.State, bool, error) {
 	syncTaskPlan(ctx)
@@ -256,12 +251,6 @@ func ObserveTool(ctx context.Context, call message.ToolCall, observed *evidence.
 	if len(state.state.Observations) > 24 {
 		state.state.Observations = append([]task.Observation(nil), state.state.Observations[len(state.state.Observations)-24:]...)
 	}
-}
-
-// AssessCompletion allows one reminder for known remaining work. A final reply
-// without an explicit assessment is unverified, rather than automatically done.
-func AssessCompletion(ctx context.Context, msg *message.Message) string {
-	return assessCompletion(ctx, msg, true)
 }
 
 func assessCompletion(ctx context.Context, msg *message.Message, allowReminder bool) (reminder string) {

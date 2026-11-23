@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-func Lock(path string, exclusive bool) (func(), error) {
-	return LockContext(context.Background(), path, exclusive)
-}
-
 // LockContext waits without leaving a goroutine or descriptor blocked in the
 // kernel after cancellation. Background callers retain the blocking fast path.
 func LockContext(ctx context.Context, path string, exclusive bool) (func(), error) {

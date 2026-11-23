@@ -15,25 +15,6 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func RunSkillPicker(
-	loadSkills func() []tool.Skill,
-	reloadSkills func() ([]tool.Skill, error),
-	loadedNames func([]tool.Skill) map[string]bool,
-	theme style.UITheme,
-	rlInput io.Reader,
-	rlOutput io.Writer,
-) (string, error) {
-	ctx := context.Background()
-	if !interactive.IsNilReader(rlInput) {
-		if provider, ok := rlInput.(interface{ GetInputContext() context.Context }); ok {
-			if inputCtx := provider.GetInputContext(); inputCtx != nil {
-				ctx = inputCtx
-			}
-		}
-	}
-	return RunSkillPickerContext(ctx, loadSkills, reloadSkills, loadedNames, theme, rlInput, rlOutput)
-}
-
 func RunSkillPickerContext(
 	ctx context.Context,
 	loadSkills func() []tool.Skill,

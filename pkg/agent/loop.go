@@ -46,16 +46,6 @@ func (a *Agent) formatNotice(text, level string, theme style.UITheme) string {
 	return text
 }
 
-func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
-	var nilAgent *Agent
-	return nilAgent.formatTurnElapsedLine(startTime, theme, showMicroseconds)
-}
-
-func formatCompletionTokensBadge(tokens int, theme style.UITheme) string {
-	var nilAgent *Agent
-	return nilAgent.formatCompletionBadge(tokens, theme)
-}
-
 func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, err error, ctxErr error, isNonInteractive bool, theme style.UITheme) {
 	if ctxErr != nil {
 		if !isNonInteractive {

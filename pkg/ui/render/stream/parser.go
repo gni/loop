@@ -677,50 +677,6 @@ func CanReplaceTrackedStreamLine(w io.Writer) bool {
 	return false
 }
 
-// ReplaceTrackedStreamBlock atomically repaints a bounded set of chat rows.
-// No tool text is executed or used as an escape sequence by this operation.
-func ReplaceTrackedStreamBlock(w io.Writer, start int, lines []string) bool {
-	if start < 0 || len(lines) == 0 {
-		return false
-	}
-	current := GetNewlineCount(w)
-	if current < start {
-		return false
-	}
-	if replacer := findScrollReplacer(w); replacer != nil {
-		if block, ok := replacer.(interface{ ReplaceScrollBlockBack(int, []string) bool }); ok {
-			return block.ReplaceScrollBlockBack(current-start, lines)
-		}
-		return false
-	}
-	for w != nil {
-		if buf, ok := w.(interface {
-			String() string
-			Reset()
-			WriteString(string) (int, error)
-		}); ok {
-			original := strings.Split(buf.String(), "\n")
-			if start+len(lines) > len(original) {
-				return false
-			}
-			copy(original[start:], lines)
-			buf.Reset()
-			_, err := buf.WriteString(strings.Join(original, "\n"))
-			return err == nil
-		}
-		unwrapper, ok := w.(interface{ Unwrap() io.Writer })
-		if !ok {
-			break
-		}
-		next := unwrapper.Unwrap()
-		if next == w {
-			break
-		}
-		w = next
-	}
-	return false
-}
-
 func ReplaceTrackedStreamLine(w io.Writer, line int, content string) bool {
 	if line < 0 {
 		return false

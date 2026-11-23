@@ -140,18 +140,6 @@ func WriteSpill(ctx context.Context, workspace, path, data string, maxFiles int,
 	return nil
 }
 
-func PruneSpillDirectory(path string, maxFiles int, maxAge time.Duration) error {
-	if path == "" {
-		return nil
-	}
-	dir, err := os.OpenRoot(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return pruneSpills(context.Background(), dir, maxFiles, maxAge, "")
-}
-
 func pruneSpills(ctx context.Context, root *os.Root, maxFiles int, maxAge time.Duration, keep string) error {
 	dir, err := root.Open(".")
 	if err != nil {

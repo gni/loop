@@ -40,14 +40,6 @@ func DrawStaticStatsLine(w io.Writer, theme style.UITheme, spinnerFrame, textToD
 	_, _ = w.Write(buf.Bytes())
 }
 
-func DrawStaticPromptSeparator(w io.Writer, showThinking bool, reasoningEffort string, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) {
-	DrawStaticPromptSeparatorWithAuto(w, showThinking, reasoningEffort, false, false, theme, width, height, pasteLinesOffset, gitBranch...)
-}
-
-func DrawStaticPromptSeparatorWithAuto(w io.Writer, showThinking bool, reasoningEffort string, showAutoBadge, autoApprove bool, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) {
-	_ = DrawStaticPromptSeparatorWithHover(w, showThinking, reasoningEffort, showAutoBadge, autoApprove, false, "", HoverNone, theme, width, height, pasteLinesOffset, gitBranch...)
-}
-
 func DrawStaticPromptSeparatorWithHover(w io.Writer, showThinking bool, reasoningEffort string, showAutoBadge, autoApprove, commandsOpen bool, activeThemeName string, hovered HoverTarget, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) []Hitbox {
 	if w == nil || height < 5 {
 		return nil
@@ -71,10 +63,6 @@ func DrawStaticPromptSeparatorWithHover(w io.Writer, showThinking bool, reasonin
 	}
 	_, _ = w.Write(buf.Bytes())
 	return hitboxes
-}
-
-func DrawStatusBar(w io.Writer, theme style.UITheme, width, height, scrollBottom int, indicator, newStatusBarText string) {
-	_ = DrawStatusBarWithHover(w, theme, width, height, scrollBottom, indicator, false, false, newStatusBarText)
 }
 
 func DrawStatusBarWithHover(w io.Writer, theme style.UITheme, width, height, scrollBottom int, indicator string, collapsed, hovered bool, newStatusBarText string) *Hitbox {

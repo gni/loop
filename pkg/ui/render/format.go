@@ -8,7 +8,6 @@ import (
 	"time"
 
 	domaintool "loop/pkg/domain/tool"
-	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
 
@@ -271,11 +270,6 @@ func FormatToolTitleForWidth(symbol string, toolName string, path string, theme 
 		return fmt.Sprintf("%s %s", symbol, toolStyle.Render(toolName))
 	}
 	return toolStyle.Render(toolName)
-}
-
-func FormatToolTitle(symbol string, toolName string, path string, theme style.UITheme) string {
-	width, _ := terminal.GetDimensions()
-	return FormatToolTitleForWidth(symbol, toolName, path, theme, width)
 }
 
 func WrapText(text string, limit int) []string {

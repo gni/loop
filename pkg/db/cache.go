@@ -139,10 +139,6 @@ func (s *JSONLStore) cacheEntries(id string, c cachedEntries) {
 	}
 }
 
-func (s *JSONLStore) appendState(id string) (cachedEntries, error) {
-	return s.appendStateContext(context.Background(), id)
-}
-
 func (s *JSONLStore) appendStateContext(ctx context.Context, id string) (cachedEntries, error) {
 	info, err := os.Stat(s.sessionPath(id))
 	if os.IsNotExist(err) {

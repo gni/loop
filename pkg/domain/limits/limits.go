@@ -350,12 +350,6 @@ func Set(l Limits) {
 	limitsMu.Unlock()
 }
 
-func GrepMaxLineLength() int {
-	limitsMu.RLock()
-	defer limitsMu.RUnlock()
-	return Master.GrepMaxLineLength
-}
-
 func WindowsPerTarget() int {
 	limitsMu.RLock()
 	defer limitsMu.RUnlock()

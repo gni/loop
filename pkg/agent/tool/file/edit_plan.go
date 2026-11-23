@@ -111,11 +111,3 @@ func applyMatches(content string, matches []*textMatch, maxBytes int) (string, e
 	result.WriteString(content[position:])
 	return result.String(), nil
 }
-
-func ApplyEditsPreview(content string, edits []ReplaceEdit) (string, bool) {
-	updated, err := ApplyEdits(context.Background(), content, edits, limits.AbsoluteMaxReadFileBytes)
-	if err != nil {
-		return content, false
-	}
-	return updated, updated != content
-}

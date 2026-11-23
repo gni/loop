@@ -104,14 +104,6 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 	return ListDirectoryTreeContext(ctx.Context(), safePath, ctx.GetWorkspaceRoot(), depth, limits.For(ctx).ListMaxEntries, offset)
 }
 
-func ListDirectoryTree(dirPath string, workspaceRoot string, maxDepth int, maxEntries int) (string, error) {
-	return ListDirectoryTreeOffset(dirPath, workspaceRoot, maxDepth, maxEntries, 1)
-}
-
-func ListDirectoryTreeOffset(dirPath string, workspaceRoot string, maxDepth int, maxEntries int, offset int) (string, error) {
-	return ListDirectoryTreeContext(context.Background(), dirPath, workspaceRoot, maxDepth, maxEntries, offset)
-}
-
 func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string, maxDepth, maxEntries, offset int) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

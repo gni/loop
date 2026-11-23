@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"loop/pkg/domain/evidence"
-	"loop/pkg/domain/ignore"
 	domaintool "loop/pkg/domain/tool"
 )
 
@@ -84,10 +83,6 @@ func AtomicWriteFile(filename string, data []byte, perm os.FileMode) error {
 		return &MutationError{Path: filename, Err: err}
 	}
 	return nil
-}
-
-func CommitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode) error {
-	return commitFileMutation(ctx, safePath, data, perm, false)
 }
 
 func commitFileMutation(ctx domaintool.AgentContext, safePath string, data []byte, perm os.FileMode, syntaxInspected bool) error {
@@ -243,11 +238,6 @@ var (
 	fileLocksMu sync.Mutex
 )
 
-func LockPath(path string) func() {
-	unlock, _ := LockPathContext(context.Background(), path)
-	return unlock
-}
-
 // LockPathContext allows queued file operations to stop before they own a path.
 func LockPathContext(ctx context.Context, path string) (func(), error) {
 	if err := ctx.Err(); err != nil {
@@ -303,20 +293,4 @@ func SplitBOM(data []byte) (bool, string) {
 		return true, string(data[3:])
 	}
 	return false, string(data)
-}
-
-func DetectLineEnding(content string) string {
-	crlf := strings.Index(content, "\r\n")
-	lf := strings.Index(content, "\n")
-	if lf == -1 || crlf == -1 {
-		return "\n"
-	}
-	if crlf < lf {
-		return "\r\n"
-	}
-	return "\n"
-}
-
-func HasIgnoredComponent(path string) bool {
-	return ignore.HasComponent(path, "", false)
 }

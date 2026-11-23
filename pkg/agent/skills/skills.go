@@ -179,10 +179,6 @@ func readSkill(path string, warnings io.Writer) (Skill, bool) {
 	}, true
 }
 
-func SearchDirs(skillsDir, workspaceRoot string) []string {
-	return SearchDirsForWorkspace(skillsDir, workspaceRoot, true)
-}
-
 func SearchDirsForWorkspace(skillsDir, workspaceRoot string, trusted bool) []string {
 	var dirs []string
 	seen := make(map[string]bool)

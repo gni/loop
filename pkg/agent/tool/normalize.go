@@ -27,11 +27,6 @@ func IsSubagentTool(name string) bool {
 	return subagentTools[norm] || strings.HasPrefix(norm, "subagent__")
 }
 
-// IsSubagentInspectionTool reports the side-effect-free members of the subagent family.
-func IsSubagentInspectionTool(name string) bool {
-	return IsSubagentTool(name) && PolicyForName(name, "").ReadOnly
-}
-
 // IsSpawnTool reports whether a tool can spawn a subagent.
 func IsSpawnTool(name string) bool {
 	return subagentSpawnTools[NormalizeName(name)]

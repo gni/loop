@@ -54,11 +54,6 @@ type Agent struct {
 	Guided           *GuidedController
 }
 
-func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *Agent {
-	cwd, _ := os.Getwd()
-	return NewAgentAt(cfg, configPath, httpClient, cwd)
-}
-
 func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, workspace string) *Agent {
 	if cfg != nil {
 		cfg.NormalizeSafety()

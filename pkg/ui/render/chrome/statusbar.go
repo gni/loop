@@ -188,11 +188,6 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 	return line
 }
 
-// FormatStatusBarRight renders queue count, plan status, tasks, and model name on the right side.
-func FormatStatusBarRight(state StatusBarState, theme style.UITheme, width int) string {
-	return formatStatusBarRightWithBudget(state, theme, width, max(0, width-1))
-}
-
 func formatStatusBarRightWithBudget(state StatusBarState, theme style.UITheme, width, maxCells int) string {
 	if maxCells <= 0 {
 		return ""
@@ -313,12 +308,6 @@ func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) s
 
 	padding := max(0, available-leftLen-rightLen)
 	return leftPart + strings.Repeat(" ", padding) + rightPart
-}
-
-// FormatStatusBarSeparator formats the horizontal separator line and collapse indicator above the status bar.
-func FormatStatusBarSeparator(width int, indicator string, theme style.UITheme) string {
-	line, _ := FormatStatusBarSeparatorLayout(width, 0, indicator, false, false, theme)
-	return line
 }
 
 // FormatStatusBarSeparatorLayout formats the status separator with optional hover expansion

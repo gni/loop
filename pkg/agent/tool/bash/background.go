@@ -128,9 +128,3 @@ func backgroundAmpersand(command string) (int, bool) {
 func shellWordBoundary(ch byte) bool {
 	return strings.ContainsRune(" \t\r\n;&|()<>", rune(ch))
 }
-
-// CleanBackgroundCommand preserves command arguments and nohup options.
-func CleanBackgroundCommand(command string) string {
-	normalized, _ := backgroundCommand(command)
-	return normalized
-}

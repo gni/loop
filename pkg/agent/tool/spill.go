@@ -22,12 +22,6 @@ const (
 	SpillFileMaxAge           = 24 * time.Hour
 )
 
-// PruneSpillDir removes only Loop-owned logs. Unrecognized files and links
-// remain untouched, including legacy spills referenced by older sessions.
-func PruneSpillDir(path string, maxFiles int, maxAge time.Duration) error {
-	return storage.PruneSpillDirectory(path, maxFiles, maxAge)
-}
-
 // SanitizeFileID keeps short safe IDs and disambiguates altered or long IDs.
 func SanitizeFileID(id string) string {
 	if id == "" {
@@ -52,10 +46,6 @@ func SanitizeFileID(id string) string {
 
 func fileIDRune(r rune) bool {
 	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-'
-}
-
-func SpillAndPruneOutput(workspaceRoot, sessionID, toolCallID, toolName, output string, maxBytes int) (string, string, bool) {
-	return spillAndPruneOutput(context.Background(), workspaceRoot, sessionID, toolCallID, toolName, output, maxBytes, limits.Current())
 }
 
 // SpillToolOutput uses the execution context's limits and cancellation.

@@ -81,10 +81,6 @@ func (s *JSONLStore) GetUserHistoryContext(ctx context.Context) ([]string, error
 	return history, nil
 }
 
-func GetUserHistory() ([]string, error) {
-	return GetUserHistoryContext(context.Background())
-}
-
 func GetUserHistoryContext(ctx context.Context) ([]string, error) {
 	return withStoreVal(func(s *JSONLStore) ([]string, error) { return s.GetUserHistoryContext(ctx) })
 }

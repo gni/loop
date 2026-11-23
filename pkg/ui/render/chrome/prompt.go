@@ -19,8 +19,6 @@ type PromptLayout struct {
 	CursorRow, CursorColumn int
 }
 
-func promptRuneWidth(r rune) int { return style.RuneWidth(r) }
-
 type promptCursor struct {
 	row, column int
 }
@@ -61,15 +59,6 @@ func (c *promptCursor) advanceCluster(cluster string, cells int) {
 	first, _ := utf8.DecodeRuneInString(cluster)
 	if cluster == "\t" || !unicode.IsControl(first) {
 		c.column += cells
-	}
-}
-
-func (c *promptCursor) advanceText(text string, columns int) {
-	for i := 0; i < len(text); {
-		cluster, gw, sz := style.NextGrapheme(text[i:])
-		cells, _ := c.prepareCluster(cluster, gw, columns)
-		c.advanceCluster(cluster, cells)
-		i += sz
 	}
 }
 

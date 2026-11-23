@@ -96,25 +96,6 @@ func EstimateMessageTokens(m db.Message) int {
 	return TokensFromChars(messageChars(m)+len(m.Role)+len(m.Name)+len(m.ToolCallID)) + 8
 }
 
-func EstimateMessagesTokens(messages []db.Message) int {
-	// Summarization replaces older history with new text but retains historical
-	// billing totals separately. Old provider prompt counts no longer describe
-	// the compacted request, so estimate from retained content instead.
-	for _, m := range messages {
-		if (m.Role == "system" || m.Role == "user") && m.Usage != nil {
-			return requestTokens(messages)
-		}
-	}
-	trailingTokens := 0
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "assistant" && messages[i].PromptTokens > 0 {
-			return messages[i].PromptTokens + messages[i].CompletionTokens + trailingTokens
-		}
-		trailingTokens += EstimateMessageTokens(messages[i])
-	}
-	return trailingTokens
-}
-
 func CacheTokenTotals(history []db.Message) (int, int) {
 	var reads, writes int
 	for _, m := range history {

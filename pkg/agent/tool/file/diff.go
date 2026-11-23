@@ -186,12 +186,6 @@ func computeMyersDiff(ctx context.Context, a, b []string) ([]diffPart, error) {
 	return merged, nil
 }
 
-// GenerateDisplayDiff is the synchronous convenience wrapper.
-func GenerateDisplayDiff(oldContent, newContent string, contextLines int) string {
-	diff, _ := GenerateDisplayDiffContext(context.Background(), oldContent, newContent, contextLines)
-	return diff
-}
-
 func diffLines(content string, limit int) []string {
 	if content == "" {
 		return nil

@@ -193,10 +193,6 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 	return installed, m.publishInstall(ctx, entries, preparedDirectory, destination)
 }
 
-func (m Manager) Remove(source string) error {
-	return m.RemoveContext(context.Background(), source)
-}
-
 // RemoveContext allows cancellation while waiting for the package registry.
 func (m Manager) RemoveContext(ctx context.Context, source string) error {
 	if source == "" {
@@ -251,10 +247,6 @@ func (m Manager) Update(ctx context.Context, source string) error {
 		return fmt.Errorf("package %q is not installed", source)
 	}
 	return nil
-}
-
-func ReadManifest(directory string) (Manifest, error) {
-	return ReadManifestContext(context.Background(), directory)
 }
 
 // ReadManifestContext stops resource resolution when startup or installation is canceled.
@@ -330,14 +322,6 @@ func ReadManifestContext(ctx context.Context, directory string) (Manifest, error
 		manifest.Hooks[event] = resolved
 	}
 	return manifest, ctx.Err()
-}
-
-func ResourcePath(directory, relative string) (string, error) {
-	base, err := filepath.EvalSymlinks(directory)
-	if err != nil {
-		return "", err
-	}
-	return resourcePathWithBase(base, directory, relative)
 }
 
 func resourcePathWithBase(base, directory, relative string) (string, error) {

@@ -2,7 +2,6 @@ package file
 
 import (
 	"strings"
-	"unicode/utf8"
 
 	"loop/pkg/domain/limits"
 	domaintool "loop/pkg/domain/tool"
@@ -118,19 +117,6 @@ func TruncateHead(lines []string, maxLines, maxBytes int) HeadTruncation {
 	return res
 }
 
-// TruncateMiddle keeps a head half and a tail half and marks the gap with an
-// explicit character count. Both halves are cut on UTF-8 boundaries.
-func TruncateMiddle(s string, maxBytes int) (string, int) {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s, 0
-	}
-	total := RuneCount(s)
-	budget := max(0, maxBytes-len(MiddleTruncationMarker(total))-2)
-	head, tail := previewEnds(s, budget)
-	omitted := total - RuneCount(head) - RuneCount(tail)
-	return UTF8SafePrefix(joinTextPreview(head, MiddleTruncationMarker(omitted), tail), maxBytes), omitted
-}
-
 // PreviewWithNotice reserves space for the complete notice before taking text
 // from either end. The result never exceeds the supplied byte budget.
 func PreviewWithNotice(s, notice string, maxBytes int) string {
@@ -157,32 +143,13 @@ func joinTextPreview(head, notice, tail string) string {
 	return notice
 }
 
-// RuneCount counts Unicode code points in s.
-func RuneCount(s string) int {
-	return utf8.RuneCountInString(s)
-}
-
 func LineTruncatedMarker() string {
 	return domaintool.RuntimeMessage("read_line_truncated_marker", " ... [truncated]")
-}
-
-func MiddleTruncationMarker(chars int) string {
-	return domaintool.RuntimeMessagef("middle_truncation_marker", "\n\n[... %d characters truncated ...]", chars)
 }
 
 func ReadTruncationNotice(from, to, total, next int) string {
 	return domaintool.RuntimeMessagef("read_truncation_notice",
 		"\n\n[Showing lines %d to %d of %d total lines. Use read with offset=%d to continue.]", from, to, total, next)
-}
-
-func ReadMoreLinesNotice(more, total, next int) string {
-	return domaintool.RuntimeMessagef("read_more_lines_notice",
-		"\n[%d more lines in file (%d total lines). Use read with offset=%d to continue.]", more, total, next)
-}
-
-func ReadFirstLineOverBudgetNotice(maxBytes, lineNo int, path string) string {
-	return domaintool.RuntimeMessagef("read_first_line_over_budget_notice",
-		"\n[Line %d exceeds the byte budget (%d bytes); file may contain minified content or binary data. Use limit or specific offset.]", lineNo, maxBytes)
 }
 
 func SearchLimitNotice(toolName string, shown, total, next int) string {
@@ -215,25 +182,9 @@ func OutputLimitNotice(toolName string, kb, shown, total, next int) string {
 		"\n[output size limit reached: %d KB from %d results of %d total. Use %s with offset=%d to continue.]", kb, shown, total, toolName, next)
 }
 
-func SpillPruneNotice(omittedLines, omittedChars, nextOffset, totalLines int) string {
-	return domaintool.RuntimeMessagef("spill_prune_notice",
-		"\n\n[... %d lines (%d characters) truncated to protect context window ... Showing first %d lines and last lines of %d total lines]",
-		omittedLines, omittedChars, nextOffset-1, totalLines)
-}
-
-func SpillBytePruneNotice(omittedChars, shownChars, totalBytes, totalLines int) string {
-	return domaintool.RuntimeMessagef("spill_byte_prune_notice",
-		"\n\n[... %d characters truncated to protect context window ... Showing first %d characters of %d total bytes across %d total lines]",
-		omittedChars, shownChars, totalBytes, totalLines)
-}
-
 func SpillFullOutputNotice(locator string) string {
 	if locator == "" {
 		return ""
 	}
 	return domaintool.RuntimeMessagef("spill_full_output_notice", "\n[Read saved output: %s]", locator)
-}
-
-func SpillRetrievalHint() string {
-	return domaintool.RuntimeMessage("spill_retrieval_hint", "")
 }

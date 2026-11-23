@@ -43,10 +43,6 @@ func appendPreviewSnippet(builder *strings.Builder, runeCount *int, text string)
 	}
 }
 
-func (s *JSONLStore) summarizeSessionLocked(sessionID string, entry os.DirEntry) (cachedSummary, bool) {
-	return s.summarizeSessionLockedContext(context.Background(), sessionID, entry)
-}
-
 func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionID string, entry os.DirEntry) (cachedSummary, bool) {
 	if ctx.Err() != nil {
 		return cachedSummary{}, false

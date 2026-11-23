@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -475,11 +474,6 @@ func RefreshDimensions() (int, int) {
 	return 80, 24
 }
 
-// InvalidateDimensions clears the cached terminal dimensions so the next read re-probes.
-func InvalidateDimensions() {
-	dimensionsValid.Store(false)
-}
-
 // GetDimensions returns the cached terminal width and height, probing once on first call
 // and falling back to 80x24 when untended or attached to a pipe.
 func GetDimensions() (int, int) {
@@ -493,9 +487,4 @@ func GetDimensions() (int, int) {
 		return w, h
 	}
 	return 80, 24
-}
-
-// FormatCursorPosition formats a 1-based ANSI CUP sequence safely clamped to >= 1.
-func FormatCursorPosition(row, col int) string {
-	return fmt.Sprintf("\x1b[%d;%dH", max(1, row), max(1, col))
 }

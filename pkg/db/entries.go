@@ -18,10 +18,6 @@ import (
 	"loop/pkg/storage"
 )
 
-func (s *JSONLStore) entries(id string) ([]session.Record, error) {
-	return s.entriesContext(context.Background(), id)
-}
-
 func (s *JSONLStore) entriesContext(ctx context.Context, id string) ([]session.Record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

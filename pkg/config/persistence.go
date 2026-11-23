@@ -91,8 +91,6 @@ func populateProviderNames(providers map[string]ProviderConfig) {
 	}
 }
 
-func LoadConfig(path string) (*Config, error) { return LoadConfigContext(context.Background(), path) }
-
 // LoadConfigContext allows cancellation while waiting for configuration storage.
 func LoadConfigContext(ctx context.Context, path string) (*Config, error) {
 	if path == "" {
@@ -226,10 +224,6 @@ func DefaultConfigPath() string {
 		return filepath.Join(home, ".loop", "config.json")
 	}
 	return filepath.Join(os.TempDir(), "loop-config", "config.json")
-}
-
-func SaveConfig(path string, cfg *Config) error {
-	return SaveConfigContext(context.Background(), path, cfg)
 }
 
 // SaveConfigContext cancels lock acquisition before a save starts. Once a
