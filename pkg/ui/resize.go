@@ -3,23 +3,14 @@ package ui
 import (
 	"io"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/terminal"
 )
 
-func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
-	width, height := terminal.RefreshDimensions()
+func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader) {
+	_, height := terminal.RefreshDimensions()
 	if height <= 3 {
 		return
-	}
-
-	if rl == nil && kiReader != nil {
-		rl = kiReader.GetRL()
-	}
-	if rl != nil {
-		_ = rl.SetSize(width, height)
 	}
 
 	TerminalMu.Lock()
@@ -36,7 +27,7 @@ func HandleResize(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, r
 	}
 
 	cw := crnlWriter{W: w}
-	DrawConsoleStaticControlsLocked(cw, a, kiReader, rl, !activeOp)
+	DrawConsoleStaticControlsLocked(cw, a, kiReader, !activeOp)
 	if history != nil {
 		history.PaintIfNeededLocked()
 	}

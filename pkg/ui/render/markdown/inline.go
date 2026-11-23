@@ -34,6 +34,10 @@ func (r *InlineMarkdownWriter) SetWriter(w io.Writer) {
 	r.w = w
 }
 
+func (r *InlineMarkdownWriter) SetTheme(theme style.UITheme) {
+	r.theme = theme
+}
+
 func (r *InlineMarkdownWriter) SetBlock(block MarkdownBlock, level int) {
 	r.EndLine()
 	r.block = block

@@ -6,6 +6,7 @@ type HoverTarget uint8
 const (
 	HoverNone HoverTarget = iota
 	HoverCommandsButton
+	HoverThemeButton
 	HoverAutoBadge
 	HoverReasoningBadge
 	HoverGitBranch

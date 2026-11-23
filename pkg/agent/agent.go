@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,97 +17,41 @@ import (
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/session"
 	"loop/pkg/resources"
-	"loop/pkg/ui/style"
 )
 
 type Agent struct {
+	// Embedded focused subsystems keep Agent modular without breaking callers.
 	providerState
 	mcpState
 	backgroundTasks
-	ReloadResources     func() error
-	Lifetime            context.Context
-	CancelLifetime      context.CancelFunc
-	TransformContext    func(context.Context, []db.Message) ([]db.Message, error)
-	RunSession          func(context.Context, io.Writer, *[]db.Message, string, []string, style.UITheme, string) (RunResult, error)
-	SyncSessionState    func([]db.Message, []string, string, bool) error
-	SelectSessionBranch func(context.Context, string) ([]db.Message, error)
-	SessionMessages     func() []db.Message
-	MessagesMu          sync.RWMutex
-	Ephemeral           bool
-	ToolSelection       []string
-	Timing              *TimingRecorder
-	Bus                 *EventBus
-	Credentials         *auth.Store
-	InputBlocks         []message.ContentBlock
-	Store               session.Store
-	Inquirer            func(string, []tool.AskUserOption, string) (string, error)
-	EventSink           func(Event) error
-	DisposeAgents       func()
-	persistenceErr      error
-	persistenceFirstErr error
-	persistenceFailures uint64
-	NextInput           func() []db.Message
-	UI                  AgentUI
-	Config              *config.Config
-	ConfigControl       ConfigurationController
-	ConfigPath          string
-	ActiveSkills        []Skill
+	sessionHooks
+	persistenceState
+	streamPresentationState
+	turnRuntimeState
+	coordinationState
 
-	Registry      *tool.ToolRegistry
-	WorkspaceRoot string
+	Lifetime       context.Context
+	CancelLifetime context.CancelFunc
+	MessagesMu     sync.RWMutex
+	Ephemeral      bool
+	ToolSelection  []string
+	Timing         *TimingRecorder
+	Bus            *EventBus
+	Credentials    *auth.Store
+	InputBlocks    []message.ContentBlock
+	Store          session.Store
 
-	CurrentStreamBuffer *bytes.Buffer
-	// CurrentHistorySnapshot supplies the history owned by the running loop.
-	// Invoke on the foreground presentation goroutine, alongside stream replay.
-	CurrentHistorySnapshot func() []db.Message
-	// CurrentStreamReplay renders semantic, not terminal-byte, output from
-	// the uncommitted model step. Its renderer locks its own snapshot.
-	CurrentStreamReplay func(io.Writer, bool, style.UITheme)
-	CurrentStreamMu     sync.Mutex
-	// OnStreamProgress runs on the foreground stream consumer after a chunk
-	// has been rendered. It may request a safe redraw of the active turn.
-	OnStreamProgress func() bool
+	UI            AgentUI
+	Config        *config.Config
+	ConfigControl ConfigurationController
+	ConfigPath    string
+	ActiveSkills  []Skill
 
-	stateMu            sync.Mutex
-	activeSessionID    string
-	sessionGeneration  uint64
-	sessionAutoApprove bool
-	sessionName        string
-	sessionNameKnown   bool
-	sessionNameDirty   bool
-	liveToolWriter     io.Writer
-	currentWriter      io.Writer
-	currentContext     context.Context
-	currentTheme       style.UITheme
-
-	lastToolOutput         string
-	lastToolIsError        bool
-	lastToolWasEdit        bool
-	lastGenerationDuration time.Duration
-	liveBodyStreamed       bool
-	droppedChunks          int64
-	lastTurnDropped        int64
-	emittedMemoryErrors    map[string]bool
-
-	TurnStartTime time.Time
-	CurrentLoader TurnLoader
-
-	SpawnedAgents   map[string]bool
-	SpawnedAgentsMu sync.RWMutex
-
-	SystemEvents       chan string
-	pendingSystemEvent string
-
-	ClearAgentsFunc   func() error
-	MultiAgentManager any
-	DebugLogger       *DebugLogger
-
+	Registry         *tool.ToolRegistry
+	WorkspaceRoot    string
+	DebugLogger      *DebugLogger
 	FileObservations *tool.FileObservationTracker
 	Guided           *GuidedController
-	Todos            []tool.TodoItem
-	TodosMu          sync.RWMutex
-
-	ForceSystemPromptUpdate bool
 }
 
 func NewAgent(cfg *config.Config, configPath string, httpClient *http.Client) *Agent {
@@ -136,18 +78,21 @@ func NewAgentAt(cfg *config.Config, configPath string, httpClient *http.Client, 
 
 	lifetime, cancelLifetime := context.WithCancel(context.Background())
 	a := &Agent{
-		Lifetime: lifetime, CancelLifetime: cancelLifetime,
-		Config:           cfg,
-		providerState:    providerState{HTTPClient: httpClient},
-		mcpState:         mcpState{MCPClients: make(map[string]*mcpClient), MCPStartErrors: make(map[string]error), mcpPending: make(map[string]config.MCPServerConfig)},
-		backgroundTasks:  backgroundTasks{Tasks: make(map[string]*Task), NextTaskID: 1},
+		Lifetime:        lifetime,
+		CancelLifetime:  cancelLifetime,
+		Config:          cfg,
+		providerState:   providerState{HTTPClient: httpClient},
+		mcpState:        mcpState{MCPClients: make(map[string]*mcpClient), MCPStartErrors: make(map[string]error), mcpPending: make(map[string]config.MCPServerConfig)},
+		backgroundTasks: backgroundTasks{Tasks: make(map[string]*Task), NextTaskID: 1},
+		coordinationState: coordinationState{
+			SpawnedAgents: make(map[string]bool),
+			SystemEvents:  make(chan string, 100),
+		},
 		Timing:           NewTimingRecorder(),
 		Credentials:      auth.NewStore(filepath.Join(resources.AgentDirectory(configPath), "auth.json")),
 		ConfigPath:       configPath,
 		Registry:         tool.NewToolRegistry(),
 		WorkspaceRoot:    absWorkspace,
-		SpawnedAgents:    make(map[string]bool),
-		SystemEvents:     make(chan string, 100),
 		DebugLogger:      NewDebugLogger(absWorkspace, debugPath),
 		FileObservations: tool.NewFileObservationTracker(),
 		Guided:           NewGuidedController(guidedEnabled),

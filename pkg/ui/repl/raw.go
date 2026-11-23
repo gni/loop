@@ -352,6 +352,8 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 			kiReader.HandleCtrlR()
 		case 20:
 			kiReader.HandleCtrlT()
+		case 25:
+			kiReader.HandleCtrlY()
 		default:
 			return false
 		}

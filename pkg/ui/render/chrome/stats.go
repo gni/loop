@@ -8,11 +8,11 @@ import (
 )
 
 func formatPromptSeparatorLine(showThinking bool, reasoningEffort string, showAutoBadge, autoApprove bool, theme style.UITheme, width int, gitBranch ...string) string {
-	line, _ := formatPromptSeparatorLayout(showThinking, reasoningEffort, showAutoBadge, autoApprove, false, false, HoverNone, 0, theme, width, gitBranch...)
+	line, _ := formatPromptSeparatorLayout(showThinking, reasoningEffort, showAutoBadge, autoApprove, false, false, "", HoverNone, 0, theme, width, gitBranch...)
 	return line
 }
 
-func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, showAutoBadge, autoApprove, showCommandsBtn, commandsOpen bool, hovered HoverTarget, sepRow int, theme style.UITheme, width int, gitBranch ...string) (string, []Hitbox) {
+func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, showAutoBadge, autoApprove, showCommandsBtn, commandsOpen bool, activeThemeName string, hovered HoverTarget, sepRow int, theme style.UITheme, width int, gitBranch ...string) (string, []Hitbox) {
 	available := width - 1
 	if available <= 0 {
 		return "", nil
@@ -24,9 +24,9 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	autoOffStyle := style.NewStyle().Foreground(theme.Border)
 	autoOffHoverStyle := style.NewStyle().Foreground(theme.TextMuted)
 
-	// Optional right-hand badges: slash commands button ("/"), loop icon ("♾︎",
-	// bold amber when auto_approve is on, dim grey when off so it remains
-	// clickable/tappable on desktop and mobile), and reasoning badge
+	// Optional right-hand badges: slash commands button ("/"), theme switcher ("◐"),
+	// loop icon ("♾︎", bold amber when auto_approve is on, dim grey when off so it
+	// remains clickable/tappable on desktop and mobile), and reasoning badge
 	// ("∴ low", "∴ med", "∴ high", "∴ max", "∴ off") unless hidden.
 	// When hovered, each badge expands inline like a tooltip.
 	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
@@ -56,6 +56,25 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 			raw:    raw,
 			styled: st.Render(raw),
 			padHit: padHit,
+		})
+
+		themeLabel := strings.TrimSpace(activeThemeName)
+		if themeLabel == "" {
+			themeLabel = "studio"
+		}
+		themeRaw := "◐"
+		themePad := 1
+		themeSt := style.NewStyle().Foreground(theme.Primary)
+		if hovered == HoverThemeButton {
+			themeRaw = "◐ theme: " + themeLabel
+			themePad = 0
+			themeSt = style.NewStyle().Foreground(theme.Primary).Bold(true)
+		}
+		rightParts = append(rightParts, rightPart{
+			target: HoverThemeButton,
+			raw:    themeRaw,
+			styled: themeSt.Render(themeRaw),
+			padHit: themePad,
 		})
 	}
 	if showAutoBadge {

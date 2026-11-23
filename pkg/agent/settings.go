@@ -59,6 +59,8 @@ type LiveSettings struct {
 	ShowThinking    bool
 	GuidedMode      bool
 	ReasoningEffort string
+	Theme           string
+	SyntaxTheme     string
 }
 
 // LiveSettingsSnapshot is a thread-safe value copy of live and presentation settings.
@@ -138,8 +140,14 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 		return a.Lifetime.Err()
 	}
 	cfg := a.Config
-	next := LiveSettings{CollapseResults: cfg.CollapseResults, ShowThinking: cfg.ShowThinking,
-		GuidedMode: cfg.GuidedMode, ReasoningEffort: cfg.ReasoningEffort}
+	next := LiveSettings{
+		CollapseResults: cfg.CollapseResults,
+		ShowThinking:    cfg.ShowThinking,
+		GuidedMode:      cfg.GuidedMode,
+		ReasoningEffort: cfg.ReasoningEffort,
+		Theme:           cfg.Theme,
+		SyntaxTheme:     cfg.SyntaxTheme,
+	}
 	change(&next)
 	if next.ReasoningEffort != cfg.ReasoningEffort {
 		effort, err := config.ParseReasoningEffort(next.ReasoningEffort)
@@ -150,6 +158,7 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 	}
 	cfg.CollapseResults, cfg.ShowThinking = next.CollapseResults, next.ShowThinking
 	cfg.GuidedMode, cfg.ReasoningEffort = next.GuidedMode, next.ReasoningEffort
+	cfg.Theme, cfg.SyntaxTheme = next.Theme, next.SyntaxTheme
 	if next.GuidedMode {
 		cfg.AutoApprove, cfg.ParallelToolCalls = false, false
 	}

@@ -196,6 +196,91 @@ func GetThemeNames() []string {
 	}
 }
 
+// CanonicalThemeName maps any recognized theme name or alias to its canonical
+// identifier in GetThemeNames. Returns "" for unknown names.
+func CanonicalThemeName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "default", "dark", "studio":
+		return "studio"
+	case "catppuccin", "catppuccin-mocha":
+		return "catppuccin-mocha"
+	case "tokyonight", "tokyo-night", "neon":
+		return "tokyo-night"
+	case "everforest":
+		return "everforest"
+	case "kanagawa", "kanagawa-wave":
+		return "kanagawa"
+	case "rose-pine", "rose-pine-moon", "rosepine":
+		return "rose-pine"
+	case "gruvbox":
+		return "gruvbox"
+	case "nord", "nord-calm":
+		return "nord"
+	case "minimal", "mono", "plain":
+		return "minimal"
+	case "zenburn", "earth-calm", "earth":
+		return "zenburn"
+	case "light":
+		return "light"
+	default:
+		return ""
+	}
+}
+
+// NextThemeName cycles forward (step > 0) or backward (step < 0) through GetThemeNames.
+func NextThemeName(current string, step int) string {
+	names := GetThemeNames()
+	if len(names) == 0 {
+		return "studio"
+	}
+	if step == 0 {
+		step = 1
+	}
+	canon := CanonicalThemeName(current)
+	idx := 0
+	for i, n := range names {
+		if n == canon {
+			idx = i
+			break
+		}
+	}
+	next := (idx + step) % len(names)
+	if next < 0 {
+		next += len(names)
+	}
+	return names[next]
+}
+
+// ThemeDescription returns a brief visual description for a built-in theme.
+func ThemeDescription(name string) string {
+	switch CanonicalThemeName(name) {
+	case "studio":
+		return "crisp dark slate"
+	case "catppuccin-mocha":
+		return "warm pastel dark"
+	case "tokyo-night":
+		return "indigo twilight dark"
+	case "everforest":
+		return "soft forest sage"
+	case "kanagawa":
+		return "ink & wave indigo"
+	case "rose-pine":
+		return "muted plum & pine"
+	case "gruvbox":
+		return "retro warm earth"
+	case "nord":
+		return "arctic frost slate"
+	case "minimal":
+		return "monochrome low-chrome"
+	case "zenburn":
+		return "low-contrast warm charcoal"
+	case "light":
+		return "clean daylight canvas"
+	default:
+		return "custom palette"
+	}
+}
+
 // GetSyntaxThemeNames returns standard supported chroma syntax highlighting styles.
 func GetSyntaxThemeNames() []string {
 	return []string{

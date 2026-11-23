@@ -47,9 +47,6 @@ func (ki *KeyInterceptorReader) BackspaceTypeAhead() {
 
 func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 	ki.DraftMu.Lock()
-	if ki.Hist == nil && ki.RL != nil && ki.RL.History != nil {
-		ki.Hist = ki.RL.History
-	}
 	hist := ki.Hist
 	if hist == nil || hist.Len() == 0 {
 		ki.DraftMu.Unlock()
@@ -184,6 +181,36 @@ func (ki *KeyInterceptorReader) HandleCtrlR() {
 		return
 	}
 	ki.redrawPromptSeparatorOrFallback()
+}
+
+// CycleTheme advances the active UI theme forward (step > 0) or backward (step < 0),
+// persists the updated config, and notifies the REPL chrome to repaint.
+func (ki *KeyInterceptorReader) CycleTheme(step int) (string, style.UITheme, bool) {
+	if ki == nil || ki.Agent == nil {
+		return "", style.UITheme{}, false
+	}
+	var nextName string
+	if !ki.updateLiveSettings(func(next *agent.LiveSettings) {
+		nextName = style.NextThemeName(next.Theme, step)
+		next.Theme = nextName
+		next.SyntaxTheme = "auto"
+	}) {
+		return "", style.UITheme{}, false
+	}
+	live := ki.Agent.LiveSettings()
+	resolved := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	ki.SetTheme(resolved)
+	if ki.OnThemeChanged != nil {
+		ki.OnThemeChanged(nextName, resolved)
+	} else {
+		ki.redrawPromptSeparatorOrFallback()
+	}
+	return nextName, resolved, true
+}
+
+// HandleCtrlY cycles to the next built-in UI theme.
+func (ki *KeyInterceptorReader) HandleCtrlY() {
+	_, _, _ = ki.CycleTheme(1)
 }
 
 func (ki *KeyInterceptorReader) updateLiveSettings(change func(*agent.LiveSettings)) bool {

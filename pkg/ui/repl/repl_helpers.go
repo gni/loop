@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
@@ -26,12 +24,6 @@ func configureREPLCallbacks(kiReader *interceptor.KeyInterceptorReader, _ *style
 		live := kiReader.Agent.LiveSettings()
 		return style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	}
-	isModal := func() bool {
-		ui.GetUI().StateMu.Lock()
-		inModal := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu
-		ui.GetUI().StateMu.Unlock()
-		return inModal || terminal.Default().InAltScreen()
-	}
 
 	kiReader.OnQueueChanged = func() {
 		ui.GetUI().StateMu.Lock()
@@ -40,28 +32,28 @@ func configureREPLCallbacks(kiReader *interceptor.KeyInterceptorReader, _ *style
 		ui.DrawStatusBar(kiReader.W, resolveTheme())
 	}
 	kiReader.OnRedrawTypeAhead = func() {
-		if isModal() {
+		if ui.GetUI().IsInModal() {
 			return
 		}
 		ui.TerminalMu.Lock()
 		defer ui.TerminalMu.Unlock()
-		if isModal() {
+		if ui.GetUI().IsInModal() {
 			return
 		}
-		ui.DrawConsoleStaticControlsLocked(kiReader.W, kiReader.Agent, kiReader, kiReader.GetRL(), true)
+		ui.DrawConsoleStaticControlsLocked(kiReader.W, kiReader.Agent, kiReader, true)
 	}
 	kiReader.OnClearPromptHint = func() { ui.GetUI().ClearPromptHint() }
-	kiReader.OnRedrawScreen = func() { ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader, kiReader.GetRL()) }
+	kiReader.OnRedrawScreen = func() { ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader) }
 	kiReader.OnDrawStaticControls = func(targetWriter io.Writer) {
-		if isModal() {
+		if ui.GetUI().IsInModal() {
 			return
 		}
 		ui.TerminalMu.Lock()
 		defer ui.TerminalMu.Unlock()
-		if isModal() {
+		if ui.GetUI().IsInModal() {
 			return
 		}
-		ui.DrawConsoleStaticControlsLocked(targetWriter, kiReader.Agent, kiReader, kiReader.GetRL(), true)
+		ui.DrawConsoleStaticControlsLocked(targetWriter, kiReader.Agent, kiReader, true)
 	}
 	kiReader.OnRedrawPromptSeparator = func() {
 		live := kiReader.Agent.LiveSettings()
@@ -70,10 +62,37 @@ func configureREPLCallbacks(kiReader *interceptor.KeyInterceptorReader, _ *style
 	kiReader.OnRedrawStatusBar = func() {
 		ui.DrawStatusBar(os.Stderr, resolveTheme())
 	}
-	kiReader.OnClearCancelFunc = func() {
+	kiReader.OnThemeChanged = func(name string, newTheme style.UITheme) {
+		ui.GetUI().SetActiveThemeName(name)
+		if kiReader.MAM != nil {
+			if uiImpl, ok := kiReader.Agent.UI.(*ui.AgentUIImpl); ok && uiImpl.PPWriter != nil {
+				kiReader.MAM.SetOutput(uiImpl.PPWriter, newTheme)
+			}
+		}
 		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = nil
+		ui.GetUI().LastStatusBarText = ""
 		ui.GetUI().StateMu.Unlock()
+		if !kiReader.ActiveTurn.Load() && kiReader.IsAtMainPrompt.Load() {
+			ui.GetUI().SetPromptHint(fmt.Sprintf("theme: %s", name), 2*time.Second, func() {
+				if kiReader.InputContext != nil && kiReader.InputContext.Err() != nil {
+					return
+				}
+				if kiReader.IsAtMainPrompt.Load() {
+					ui.RefreshConsoleAfterPromptCancellation(os.Stderr, kiReader.Agent, kiReader)
+				}
+			})
+		}
+		if kiReader.ActiveTurn.Load() {
+			kiReader.PendingThemeRefresh.Store(true)
+			live := kiReader.Agent.LiveSettings()
+			ui.DrawStaticPromptSeparator(kiReader.W, live.ShowThinking, live.ReasoningEffort, newTheme)
+			ui.DrawStatusBar(os.Stderr, newTheme)
+			return
+		}
+		ui.RedrawScreen(kiReader.W, kiReader.Agent, kiReader)
+	}
+	kiReader.OnClearCancelFunc = func() {
+		ui.GetUI().SetActiveCancel(nil)
 	}
 }
 
@@ -143,17 +162,17 @@ func startREPLSystemNotifications(a *agent.Agent, kiReader *interceptor.KeyInter
 							return
 						}
 						if kiReader.IsAtMainPrompt.Load() {
-							ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, kiReader.GetRL())
+							ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader)
 						}
 					})
-					ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, kiReader.GetRL())
+					ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader)
 				}
 			}
 		}
 	}()
 }
 
-func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader, _ *term.Terminal, _ int) func() {
+func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader) func() {
 	sigChan := make(chan os.Signal, 1)
 	resizeDone := make(chan struct{})
 	var mu sync.Mutex
@@ -182,24 +201,16 @@ func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader
 					}
 					defer mu.Unlock()
 
-					w, h := terminal.RefreshDimensions()
-					ui.GetUI().StateMu.Lock()
-					inModal := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
-					idle := ui.GetUI().ActiveCancelFunc == nil
-					ui.GetUI().StateMu.Unlock()
-					if inModal {
+					terminal.RefreshDimensions()
+					if ui.GetUI().IsInModal() {
 						return
 					}
-					rl := kiReader.GetRL()
-					if rl != nil && w > 0 && h > 0 {
-						_ = rl.SetSize(w, h)
-					}
-					if idle {
+					if !ui.GetUI().IsTurnActive() {
 						if kiReader.IsAtMainPrompt.Load() {
-							ui.RedrawScreen(os.Stderr, a, kiReader, rl)
+							ui.RedrawScreen(os.Stderr, a, kiReader)
 						}
 					} else {
-						ui.HandleResize(os.Stderr, a, kiReader, rl)
+						ui.HandleResize(os.Stderr, a, kiReader)
 					}
 				})
 				mu.Unlock()
@@ -219,7 +230,7 @@ func watchREPLResizes(a *agent.Agent, kiReader *interceptor.KeyInterceptorReader
 	}
 }
 
-func dispatchREPLSlashCommand(a *agent.Agent, line string, messages *[]db.Message, allowedTools []string, theme *style.UITheme, ppWriter *ui.PromptPreservingWriter, currentSessionID *string, rl *term.Terminal, mam *swarm.MultiAgentManager, kiReader *interceptor.KeyInterceptorReader) (string, bool, bool, bool) {
+func dispatchREPLSlashCommand(a *agent.Agent, line string, messages *[]db.Message, allowedTools []string, theme *style.UITheme, ppWriter *ui.PromptPreservingWriter, currentSessionID *string, hist interceptor.PromptHistory, mam *swarm.MultiAgentManager, kiReader *interceptor.KeyInterceptorReader) (string, bool, bool, bool) {
 	trimmedLine := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmedLine, "/") || commands.IsHelpCommand(trimmedLine) {
 		parts := strings.Fields(trimmedLine)
@@ -241,7 +252,7 @@ func dispatchREPLSlashCommand(a *agent.Agent, line string, messages *[]db.Messag
 		}()
 
 		ppWriter.BeginScrollEntry()
-		handled, quit := commands.HandleSlashCommand(a, line, messages, allowedTools, theme, ppWriter, currentSessionID, rl.History, mam, kiReader)
+		handled, quit := commands.HandleSlashCommand(a, line, messages, allowedTools, theme, ppWriter, currentSessionID, hist, mam, kiReader)
 		kiReader.Drain()
 		if handled {
 			return line, false, true, quit

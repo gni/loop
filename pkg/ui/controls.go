@@ -1,11 +1,10 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"path/filepath"
-
-	"golang.org/x/term"
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
@@ -18,7 +17,7 @@ func GetPromptSymbol(_ *config.Config) string {
 	return "▹ "
 }
 
-func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, _ *term.Terminal, drawPrompt bool) {
+func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, drawPrompt bool) {
 	state := getUI()
 	inAlt := terminal.Default().InAltScreen()
 	state.StateMu.Lock()
@@ -54,6 +53,9 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	state.StateMu.Lock()
 	state.State.ShowTokens = live.ShowTokens
+	if canon := style.CanonicalThemeName(live.Theme); canon != "" {
+		state.ActiveThemeName = canon
+	}
 	if live.Model != "" {
 		state.State.Model = live.Model
 	}
@@ -133,4 +135,49 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	if history := state.GetChatHistory(); history != nil {
 		history.PaintIfNeededLocked()
 	}
+}
+
+// ResetPromptAfterSubmit clears any expanded multi-line prompt rows and redraws
+// the single-line prompt, stats line, prompt separator, and status bar atomically.
+func ResetPromptAfterSubmit(w io.Writer, a *agent.Agent, ppWriter *PromptPreservingWriter, theme style.UITheme, promptPrefix string) int {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+
+	state := getUI()
+	prevOffset := state.GetPasteLinesOffset()
+	state.SetPasteLinesOffset(0)
+
+	_, height := GetTerminalSize()
+	if height <= 0 {
+		return 0
+	}
+
+	live := a.LiveSettings()
+	var frame bytes.Buffer
+	frame.WriteString(terminal.BeginSyncOutput)
+	wrappedFrame := render.WrapSyncFrame(&frame)
+	if prevOffset > 0 {
+		for r := height - 4 - prevOffset; r <= height-2; r++ {
+			if r >= 1 {
+				fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", r)
+			}
+		}
+		state.StateMu.Lock()
+		savedStats := state.LastStatsText
+		state.StateMu.Unlock()
+		DrawStaticStatsLineLocked(wrappedFrame, theme, "", savedStats)
+		DrawStaticPromptSeparatorLocked(wrappedFrame, live.ShowThinking, live.ReasoningEffort, theme)
+	} else {
+		fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", height-2)
+	}
+
+	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
+	if ppWriter != nil {
+		ppWriter.SetPromptPositionLocked(height-2, 1+style.CellWidth(promptPrefix))
+	}
+	DrawStatusBarLocked(wrappedFrame, theme)
+	frame.WriteString(terminal.EndSyncOutput)
+	_, _ = w.Write(frame.Bytes())
+	return height
 }

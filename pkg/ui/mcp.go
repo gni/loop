@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
@@ -92,11 +90,7 @@ func HandleMCPCommand(
 			applyMCP(newConfig)
 		}
 
-		var rl *term.Terminal
-		if kiReader != nil {
-			rl = kiReader.GetRL()
-		}
-		RestoreAfterModal(w, a, kiReader, rl)
+		RestoreAfterModal(w, a, kiReader)
 
 		return
 	}

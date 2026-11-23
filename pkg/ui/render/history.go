@@ -95,6 +95,7 @@ func PrintSessionHistory(
 
 	borderStyle := style.NewStyle().Foreground(theme.Border)
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	textStyle := style.NewStyle().Foreground(theme.Text)
 	spacing := agent.NewNewlineCounterWriter(w)
 	w = spacing
 
@@ -129,7 +130,7 @@ func PrintSessionHistory(
 					fmt.Fprintln(w)
 				}
 				printPromptDivider(w, borderStyle)
-				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), cmdStr)
+				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), textStyle.Render(cmdStr))
 				if output != "" {
 					fmt.Fprint(w, output)
 				}
@@ -141,7 +142,7 @@ func PrintSessionHistory(
 				if lastRole != "" {
 					fmt.Fprintln(w)
 				}
-				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), cmdStr)
+				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), textStyle.Render(cmdStr))
 				if output != "" {
 					fmt.Fprint(w, output)
 				}
@@ -162,7 +163,7 @@ func PrintSessionHistory(
 				spacing.EnsureActivityGap()
 			}
 			printPromptDivider(w, borderStyle)
-			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), msg.Content)
+			fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ "), textStyle.Render(msg.Content))
 
 		case "assistant":
 			reasoningVisible := cfg != nil && cfg.ShowThinking && strings.TrimSpace(msg.ReasoningContent) != ""

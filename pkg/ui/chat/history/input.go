@@ -42,7 +42,7 @@ func parseSGRMouse(key []byte) (button, x, y int, release, ok bool) {
 }
 
 func isPromptHoverTarget(t render.HoverTarget) bool {
-	return t == render.HoverCommandsButton || t == render.HoverAutoBadge || t == render.HoverReasoningBadge || t == render.HoverGitBranch
+	return t == render.HoverCommandsButton || t == render.HoverThemeButton || t == render.HoverAutoBadge || t == render.HoverReasoningBadge || t == render.HoverGitBranch
 }
 
 func (h *ChatHistory) handleHoverMotion(x, y int) {
@@ -93,6 +93,9 @@ func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte
 	switch target {
 	case render.HoverCommandsButton:
 		return true, h.toggleCommandsButton()
+	case render.HoverThemeButton:
+		h.reader.HandleCtrlY()
+		return true, nil
 	case render.HoverAutoBadge:
 		cfg, err := h.a.Configuration()
 		if err != nil || cfg == nil {

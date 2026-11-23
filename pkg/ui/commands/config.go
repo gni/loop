@@ -29,7 +29,6 @@ func handleConfigCommand(
 	kiReader *interceptor.KeyInterceptorReader,
 	calcHistoryTokens func() (int, int, bool),
 ) {
-	rl := terminalFromReader(kiReader)
 	if len(parts) > 1 && cmdName == "/config" && parts[1] == "show" {
 		render.RenderConfig(w, a.Config, *theme)
 		return
@@ -47,12 +46,12 @@ func handleConfigCommand(
 		next, err = isettings.RunInteractiveConfig(a.Config, *theme, input, output)
 		ui.InitStatusBar(os.Stderr)
 		if err != nil {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
+			ui.RestoreAfterModal(w, a, kiReader)
 			fmt.Fprintf(w, "settings menu failed: %v\n", err)
 			return
 		}
 		if next == nil || reflect.DeepEqual(a.Config, next) {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
+			ui.RestoreAfterModal(w, a, kiReader)
 			return
 		}
 	} else {
@@ -76,7 +75,7 @@ func handleConfigCommand(
 	applyErr := a.UpdateConfig(next)
 	if !agent.ConfigApplied(applyErr) {
 		if modal {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
+			ui.RestoreAfterModal(w, a, kiReader)
 		}
 		fmt.Fprintf(w, "settings update failed: %v\n", applyErr)
 		return
@@ -96,7 +95,7 @@ func handleConfigCommand(
 		return
 	}
 	if modal {
-		ui.RestoreAfterModal(w, a, kiReader, rl)
+		ui.RestoreAfterModal(w, a, kiReader)
 	}
 	if applyErr != nil {
 		fmt.Fprintln(w, applyErr)
@@ -111,6 +110,7 @@ func handleConfigCommand(
 // The active renderer is never modified mid-turn; subsequent turns use the new config.
 func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader, notice string, force bool) bool {
 	live := a.LiveSettings()
+	ui.GetUI().SetActiveThemeName(live.Theme)
 	*theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	if kiReader != nil {
 		kiReader.SetTheme(*theme)
@@ -118,11 +118,10 @@ func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.U
 			kiReader.MAM.SetOutput(w, *theme)
 		}
 	}
-	rl := terminalFromReader(kiReader)
-	if kiReader == nil || rl == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
+	if kiReader == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
 		return false
 	}
-	ui.RedrawScreenWithNotice(w, a, kiReader, rl, notice)
+	ui.RedrawScreenWithNotice(w, a, kiReader, notice)
 	return true
 }
 

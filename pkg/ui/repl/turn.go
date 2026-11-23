@@ -38,6 +38,7 @@ func renderTurnPromptHeader(
 	fmt.Fprint(w, render.FormatPromptSeparatorWithAuto(live.ShowThinking, effort, live.ShowAutoBadge, live.AutoApprove, theme, width, branch))
 
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	textStyle := style.NewStyle().Foreground(theme.Text)
 	if fromQueue {
 		remaining := 0
 		if kiReader != nil {
@@ -48,9 +49,9 @@ func renderTurnPromptHeader(
 			queueInfo = fmt.Sprintf(" [from queue - %d remaining]", remaining)
 		}
 		queueBadge := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(queueInfo)
-		fmt.Fprintf(w, "%s%s%s\n", promptStyle.Render(promptPrefix), line, queueBadge)
+		fmt.Fprintf(w, "%s%s%s\n", promptStyle.Render(promptPrefix), textStyle.Render(line), queueBadge)
 	} else {
-		fmt.Fprintf(w, "%s%s\n", promptStyle.Render(promptPrefix), line)
+		fmt.Fprintf(w, "%s%s\n", promptStyle.Render(promptPrefix), textStyle.Render(line))
 	}
 
 	divider := style.ActivityDivider(theme)
@@ -80,9 +81,7 @@ func executeREPLTurn(
 	ui.GetUI().LastStatsText = ""
 	ui.GetUI().StateMu.Unlock()
 	if active := mam.CurrentActiveAgent(); active != nil {
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = active.CancelActiveTurn
-		ui.GetUI().StateMu.Unlock()
+		ui.GetUI().SetActiveCancel(active.CancelActiveTurn)
 
 		restore, restoreErr := ui.SetNonCanonical(fd)
 		if restoreErr == nil && restore != nil {
@@ -102,9 +101,7 @@ func executeREPLTurn(
 			ppWriter.EnsureNewline()
 		}
 
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = nil
-		ui.GetUI().StateMu.Unlock()
+		ui.GetUI().SetActiveCancel(nil)
 		kiReader.Drain()
 		return
 	}
@@ -116,9 +113,7 @@ func executeREPLTurn(
 	if preExpanded {
 		ctx = resources.WithPreExpandedPrompt(ctx, line)
 	}
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().ActiveCancelFunc = cancel
-	ui.GetUI().StateMu.Unlock()
+	ui.GetUI().SetActiveCancel(cancel)
 	if !fromQueue {
 		kiReader.ResetTypeAhead()
 	}

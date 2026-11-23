@@ -151,8 +151,12 @@ func (a *Agent) consumeTurnChunks(ctx context.Context, chunks <-chan StreamChunk
 // Semantic replays preserve incomplete lines; legacy renderers wait for a safe
 // boundary before their terminal-byte snapshot is used.
 func (a *Agent) refreshStreamPresentation(sr StreamRenderer) {
+	live := a.LiveSettings()
 	if view, ok := sr.(LiveCollapsePresenter); ok {
-		view.SetLiveCollapse(a.LiveSettings().CollapseResults)
+		view.SetLiveCollapse(live.CollapseResults)
+	}
+	if view, ok := sr.(LiveThemePresenter); ok {
+		view.SetTheme(style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme))
 	}
 	if view, ok := sr.(ReplaySafety); ok && !view.SafeToReplay() {
 		return
@@ -190,11 +194,14 @@ func (a *Agent) renderFinalAgentTurn(assistantMsg *db.Message, sr StreamRenderer
 		loader.Stop()
 	}
 	live := a.LiveSettings()
-	timeStyled := formatTurnElapsed(startTime, theme, live.ShowMicroseconds)
+	if live.Theme != "" || live.SyntaxTheme != "" {
+		theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	}
+	timeStyled := a.formatTurnElapsedLine(startTime, theme, live.ShowMicroseconds)
 
 	statsText := timeStyled
 	if live.ShowTokens && assistantMsg.CompletionTokens > 0 {
-		statsText = formatCompletionTokensBadge(assistantMsg.CompletionTokens, theme) + timeStyled
+		statsText = a.formatCompletionBadge(assistantMsg.CompletionTokens, theme) + timeStyled
 	}
 
 	_, height := style.GetTerminalSize()

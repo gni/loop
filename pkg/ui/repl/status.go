@@ -3,8 +3,6 @@ package repl
 import (
 	"os"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
@@ -18,7 +16,6 @@ func refreshREPLStatus(
 	allowedTools []string,
 	mam *swarm.MultiAgentManager,
 	kiReader *interceptor.KeyInterceptorReader,
-	rl *term.Terminal,
 	isCancellation bool,
 ) {
 	activeTasks := a.CountActiveTasks()
@@ -35,8 +32,8 @@ func refreshREPLStatus(
 	live := a.LiveSettings()
 	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, false, tps, activeTasks, live.ShowTokens, estimated)
 	if isCancellation {
-		ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, rl)
+		ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader)
 	} else {
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader)
 	}
 }

@@ -54,6 +54,7 @@ type AgentUI interface {
 // Optional renderer capabilities keep terminal-specific replay and preview
 // behavior out of the required execution and headless rendering contracts.
 type LiveCollapsePresenter interface{ SetLiveCollapse(bool) }
+type LiveThemePresenter interface{ SetTheme(style.UITheme) }
 type PendingWritePresenter interface{ MarkPendingWriteResults(string) }
 type WriteResultPresenter interface{ TryCompleteWriteResult(int, string) bool }
 type ReplaySafety interface{ SafeToReplay() bool }

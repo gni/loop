@@ -23,6 +23,7 @@ type (
 const (
 	HoverNone           = chrome.HoverNone
 	HoverCommandsButton = chrome.HoverCommandsButton
+	HoverThemeButton    = chrome.HoverThemeButton
 	HoverAutoBadge      = chrome.HoverAutoBadge
 	HoverReasoningBadge = chrome.HoverReasoningBadge
 	HoverGitBranch      = chrome.HoverGitBranch

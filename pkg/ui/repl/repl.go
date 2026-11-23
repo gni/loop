@@ -1,7 +1,6 @@
 package repl
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -147,49 +145,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	startREPLSystemNotifications(a, kiReader)
 	go startREPLRawInputDispatcher(startREPLInputReader(kiReader), kiReader)
 
-	createTerminal := func() *term.Terminal {
-		t := term.NewTerminal(kiReader, "")
-		kiReader.SetRL(t)
-		t.History = hist
-		if w, h, err := term.GetSize(fd); err == nil {
-			t.SetSize(w, h)
-		}
-		t.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
-			pos = min(max(0, pos), len(line))
-			kiReader.SetPromptDraft(line, utf8.RuneCountInString(line[:pos]))
-			if key == '\t' && chatHistory.SlashMenuActive() {
-				if fill, ok := chatHistory.SlashMenuTabComplete(); ok && fill != line {
-					kiReader.SetPromptDraft(fill, utf8.RuneCountInString(fill))
-					chatHistory.SyncSlashMenu(fill)
-					return fill, len(fill), true
-				}
-			}
-			if newLine, newPos, handled := handlePromptEditKey(line, pos, key, a, hist, kiReader); handled {
-				newPos = min(max(0, newPos), len(newLine))
-				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
-				if newLine != line {
-					if key == interceptor.PromptUpKey || key == interceptor.PromptDownKey || key == interceptor.PromptHistoryUpKey {
-						chatHistory.CloseSlashMenu()
-					} else {
-						chatHistory.SyncSlashMenu(newLine)
-					}
-				}
-				return newLine, newPos, true
-			}
-			newLine, newPos, completed := autoCompleteCallback(line, pos, key, a)
-			if completed {
-				newPos = min(max(0, newPos), len(newLine))
-				kiReader.SetPromptDraft(newLine, utf8.RuneCountInString(newLine[:newPos]))
-				if newLine != line {
-					chatHistory.SyncSlashMenu(newLine)
-				}
-			}
-			return newLine, newPos, completed
-		}
-		return t
-	}
-
-	rl := createTerminal()
+	editor := NewPromptEditor(a, hist, kiReader, chatHistory)
 
 	initialPromptTokens, initialCompletionTokens, initialTokensEstimated := interceptor.CalculateActiveTokenUsage(a, messages, allowedTools, mam)
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(messages)
@@ -216,7 +172,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	ui.DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
 	ui.DrawStatusBar(os.Stderr, theme)
 
-	defer watchREPLResizes(a, kiReader, rl, fd)()
+	defer watchREPLResizes(a, kiReader)()
 
 	for {
 		if ctx.Err() != nil {
@@ -254,9 +210,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 
 			ppWriter.SetPromptCol(1 + style.CellWidth(promptPrefix))
-			rl.SetPrompt("")
 			ui.TerminalMu.Lock()
-			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, true)
+			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, true)
 			ui.TerminalMu.Unlock()
 
 			ppWriter.SetCursorHidden(false)
@@ -268,7 +223,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 
 			kiReader.IsAtMainPrompt.Store(true)
-			line, err = rl.ReadLine()
+			line, err = editor.ReadLine()
 			kiReader.IsAtMainPrompt.Store(false)
 			kiReader.SetPromptDraft("", 0)
 			chatHistory.CloseSlashMenu()
@@ -278,42 +233,10 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			}
 		}
 
-		ui.TerminalMu.Lock()
-		prevOffset := ui.GetUI().GetPasteLinesOffset()
-		ui.GetUI().SetPasteLinesOffset(0)
-
-		if _, curH := ui.GetTerminalSize(); curH > 0 {
-			height = curH
-		}
-
-		if height > 0 {
-			live := a.LiveSettings()
-			var frame bytes.Buffer
-			frame.WriteString(terminal.BeginSyncOutput)
-			wrappedFrame := render.WrapSyncFrame(&frame)
-			if prevOffset > 0 {
-				for r := height - 4 - prevOffset; r <= height-2; r++ {
-					if r >= 1 {
-						fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", r)
-					}
-				}
-				ui.GetUI().StateMu.Lock()
-				savedStats := ui.GetUI().LastStatsText
-				ui.GetUI().StateMu.Unlock()
-				ui.DrawStaticStatsLineLocked(wrappedFrame, theme, "", savedStats)
-				ui.DrawStaticPromptSeparatorLocked(wrappedFrame, live.ShowThinking, live.ReasoningEffort, theme)
-			} else {
-				fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", height-2)
-			}
-
-			promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-			fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
-			ppWriter.SetPromptPositionLocked(height-2, 1+style.CellWidth(promptPrefix))
-			ui.DrawStatusBarLocked(wrappedFrame, theme)
-			frame.WriteString(terminal.EndSyncOutput)
-			_, _ = os.Stderr.Write(frame.Bytes())
-		}
-		ui.TerminalMu.Unlock()
+		// Sync local theme in case the user cycled themes via ◐ click or Ctrl+Y while editing.
+		liveAfterPrompt := a.LiveSettings()
+		theme = style.ResolveConfiguredTheme(liveAfterPrompt.Theme, liveAfterPrompt.SyntaxTheme)
+		_ = ui.ResetPromptAfterSubmit(os.Stderr, a, ppWriter, theme, promptPrefix)
 
 		if !fromQueue {
 			if pasted := kiReader.TakePastedText(); pasted != "" {
@@ -335,7 +258,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				ui.GetUI().StateMu.Unlock()
 				kiReader.ClearQueue()
 				kiReader.Drain()
-				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, true)
+				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, true)
 				continue
 			}
 
@@ -345,9 +268,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 					if ui.GetUI().CheckCtrlDConfirmation(3 * time.Second) {
 						break
 					}
-					rl = createTerminal()
 					ui.GetUI().SetPromptHint("(Press Ctrl+D again to exit)", 3*time.Second, func() {
-						ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader, kiReader.GetRL())
+						ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader)
 					})
 					continue
 				}
@@ -392,11 +314,10 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		if isCmd, _ := parseManualCommand(commandLine, directCommands); isCmd {
 			_, cmdStr := parseManualCommand(line, directCommands)
 			ui.TerminalMu.Lock()
-			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, rl, false)
+			ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, false)
 			ui.TerminalMu.Unlock()
 			shell.execute(cmdStr, line, promptPrefix, a, ppWriter, &messages, currentSessionID, kiReader, theme)
-			rl = createTerminal()
-			refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
+			refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)
 			continue
 		}
 
@@ -404,7 +325,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		prevSessionID := currentSessionID
 		_ = ui.ConsumeSessionReloaded()
 		if attachmentSource == nil || strings.HasPrefix(strings.TrimSpace(commandLine), "/") || commands.IsHelpCommand(commandLine) {
-			line, preExpanded, handled, quit = dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, rl, mam, kiReader)
+			line, preExpanded, handled, quit = dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, hist, mam, kiReader)
 		}
 		if handled {
 			if quit {
@@ -424,7 +345,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
 					fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
 				}
-				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
+				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)
 			} else if currentSessionID != prevSessionID {
 				if a.SyncSessionState != nil {
 					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, true); err != nil {
@@ -444,14 +365,12 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		// Consume redraw requests on the foreground renderer so committed
 		// history and the current inference form one consistent frame.
 		a.OnStreamProgress = func() bool {
-			ui.GetUI().StateMu.Lock()
-			inModal := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
-			ui.GetUI().StateMu.Unlock()
-			if inModal {
+			if ui.GetUI().IsInModal() {
 				return false
 			}
 			collapseReplay := kiReader.ApplyPendingCollapse()
-			if collapseReplay {
+			themeReplay := kiReader.ConsumePendingThemeRefresh()
+			if collapseReplay || themeReplay {
 				chatHistory.RepaintTurns()
 			} else if !chatHistory.RepaintPendingTurn() {
 				return false
@@ -473,14 +392,19 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		a.OnStreamProgress = nil
 		kiReader.ActiveTurn.Store(false)
 		chatHistory.FinishTurn(nil)
-		// Both a deferred Ctrl+O and an unsafe live syntax repaint require
-		// one authoritative replay, after tool calls and text reach history.
+		// Both a deferred Ctrl+O, mid-turn theme switch, and an unsafe live
+		// syntax repaint require one authoritative replay after messages settle.
 		redrawCollapse := kiReader.ApplyPendingCollapse()
+		redrawTheme := kiReader.ConsumePendingThemeRefresh()
 		redrawSyntax := ppWriter.ConsumeSyntaxRefresh()
-		if turnRedrawn || redrawCollapse || redrawSyntax {
+		if redrawTheme {
+			liveAfter := a.LiveSettings()
+			theme = style.ResolveConfiguredTheme(liveAfter.Theme, liveAfter.SyntaxTheme)
+		}
+		if turnRedrawn || redrawCollapse || redrawTheme || redrawSyntax {
 			chatHistory.RepaintTurns()
 		}
-		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, rl, false)
+		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)
 	}
 
 	if !a.Ephemeral {

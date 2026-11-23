@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/config"
@@ -126,11 +124,7 @@ func HandleProviderCommand(
 			fmt.Fprintf(w, "error: provider configuration failed: %v\n", errInteractive)
 		}
 
-		var rl *term.Terminal
-		if kiReader != nil {
-			rl = kiReader.GetRL()
-		}
-		RestoreAfterModal(w, a, kiReader, rl)
+		RestoreAfterModal(w, a, kiReader)
 		return
 	}
 

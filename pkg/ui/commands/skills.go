@@ -43,7 +43,6 @@ func handleSkillsCommand(
 	}
 
 	openSkillPicker := func() {
-		rl := terminalFromReader(kiReader)
 		input, output, cleanup := interactive.GetInteractiveIO(sessionInputReader(kiReader))
 		defer cleanup()
 
@@ -60,7 +59,7 @@ func handleSkillsCommand(
 			output,
 		)
 		ui.InitStatusBar(os.Stderr)
-		ui.RestoreAfterModal(w, a, kiReader, rl)
+		ui.RestoreAfterModal(w, a, kiReader)
 
 		if err != nil {
 			if !errors.Is(err, interactive.ErrSelectionCancelled) {

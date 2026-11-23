@@ -45,10 +45,10 @@ func DrawStaticPromptSeparator(w io.Writer, showThinking bool, reasoningEffort s
 }
 
 func DrawStaticPromptSeparatorWithAuto(w io.Writer, showThinking bool, reasoningEffort string, showAutoBadge, autoApprove bool, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) {
-	_ = DrawStaticPromptSeparatorWithHover(w, showThinking, reasoningEffort, showAutoBadge, autoApprove, false, HoverNone, theme, width, height, pasteLinesOffset, gitBranch...)
+	_ = DrawStaticPromptSeparatorWithHover(w, showThinking, reasoningEffort, showAutoBadge, autoApprove, false, "", HoverNone, theme, width, height, pasteLinesOffset, gitBranch...)
 }
 
-func DrawStaticPromptSeparatorWithHover(w io.Writer, showThinking bool, reasoningEffort string, showAutoBadge, autoApprove, commandsOpen bool, hovered HoverTarget, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) []Hitbox {
+func DrawStaticPromptSeparatorWithHover(w io.Writer, showThinking bool, reasoningEffort string, showAutoBadge, autoApprove, commandsOpen bool, activeThemeName string, hovered HoverTarget, theme style.UITheme, width, height, pasteLinesOffset int, gitBranch ...string) []Hitbox {
 	if w == nil || height < 5 {
 		return nil
 	}
@@ -56,7 +56,7 @@ func DrawStaticPromptSeparatorWithHover(w io.Writer, showThinking bool, reasonin
 	if sepRow < 1 {
 		return nil
 	}
-	line, hitboxes := formatPromptSeparatorLayout(showThinking, reasoningEffort, showAutoBadge, autoApprove, true, commandsOpen, hovered, sepRow, theme, width, gitBranch...)
+	line, hitboxes := formatPromptSeparatorLayout(showThinking, reasoningEffort, showAutoBadge, autoApprove, true, commandsOpen, activeThemeName, hovered, sepRow, theme, width, gitBranch...)
 	var buf bytes.Buffer
 	sync := !terminal.InSyncFrame(w)
 	if sync {

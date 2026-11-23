@@ -47,6 +47,7 @@ func (item SlashCommandItem) TabText() string {
 
 var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/config", Description: "everyday settings and preferences", HasSubs: true},
+	{Name: "/theme", Args: "[name|next|prev|list]", Description: "pick or switch UI color theme", HasSubs: true},
 	{Name: "/skills", Description: "filter and pick a skill, list, or reload", HasSubs: true},
 	{Name: "/provider", Description: "manage AI endpoints, keys, and models", HasSubs: true},
 	{Name: "/model", Args: "[name]", Description: "view or set active AI model"},
@@ -103,6 +104,20 @@ func builtinSubcommands(cmd string) []SlashCommandItem {
 			{Name: "/config show", Description: "print all current configuration settings"},
 			{Name: "/config set", Args: "<key> <val>", Description: "set a configuration key and value", TakesArgs: true, HasSubs: true},
 		}
+	case "/theme", "/themes":
+		items := []SlashCommandItem{
+			{Name: "/theme", Description: "open interactive theme picker with live preview"},
+			{Name: "/theme next", Description: "cycle to the next UI theme"},
+			{Name: "/theme prev", Description: "cycle to the previous UI theme"},
+			{Name: "/theme list", Description: "list all themes with color swatches"},
+		}
+		for _, name := range style.GetThemeNames() {
+			items = append(items, SlashCommandItem{
+				Name:        "/theme " + name,
+				Description: style.ThemeDescription(name),
+			})
+		}
+		return items
 	case "/skills", "/skill":
 		return []SlashCommandItem{
 			{Name: "/skills", Description: "open interactive skill picker"},

@@ -26,7 +26,7 @@ func handleNostopCommand(a *agent.Agent, parts []string, theme *style.UITheme, w
 			return
 		}
 		next, confirmed := interactive.RunNostopSetup(w, *theme)
-		ui.RestoreAfterModal(w, a, reader, terminalFromReader(reader))
+		ui.RestoreAfterModal(w, a, reader)
 		if !confirmed {
 			fmt.Fprintln(w, "nostop setup cancelled.")
 			return

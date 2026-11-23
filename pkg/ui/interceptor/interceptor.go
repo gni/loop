@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
@@ -19,13 +17,19 @@ import (
 	"loop/pkg/ui/style"
 )
 
+// PromptHistory matches ui.CustomHistory without coupling to golang.org/x/term.
+type PromptHistory interface {
+	Add(entry string)
+	At(idx int) string
+	Len() int
+}
+
 type KeyInterceptorReader struct {
 	InputContext          context.Context
 	R                     io.Reader
 	Agent                 *agent.Agent
 	Theme                 style.UITheme
 	W                     io.Writer
-	RL                    *term.Terminal
 	DraftMu               sync.Mutex
 	CurrentInputLine      string
 	CurrentInputPos       int
@@ -48,7 +52,7 @@ type KeyInterceptorReader struct {
 	TypeAheadPastes       []string
 	HistoryIndex          int
 	SavedTypeAhead        []byte
-	Hist                  term.History
+	Hist                  PromptHistory
 	InBracketedPaste      bool
 	BracketedBuffer       []byte
 	bracketedTruncated    bool
@@ -67,6 +71,7 @@ type KeyInterceptorReader struct {
 	OnRedrawPromptSeparator func()
 	OnRedrawStatusBar       func()
 	OnRedrawTypeAhead       func()
+	OnThemeChanged          func(name string, theme style.UITheme)
 	OnClearCancelFunc       func()
 	OnChatHistoryInput      func([]byte) []byte
 	OnQueueChanged          func()
@@ -74,6 +79,16 @@ type KeyInterceptorReader struct {
 
 	ActiveTurn             atomic.Bool   // A foreground turn is still streaming.
 	PendingCollapseToggles atomic.Uint64 // Apply active Ctrl+O presses on the foreground renderer.
+	PendingThemeRefresh    atomic.Bool   // Repaint active turn after mid-turn theme switch.
+}
+
+// ConsumePendingThemeRefresh reports whether a theme switch arrived during an
+// active turn and clears the pending flag atomically.
+func (ki *KeyInterceptorReader) ConsumePendingThemeRefresh() bool {
+	if ki == nil {
+		return false
+	}
+	return ki.PendingThemeRefresh.Swap(false)
 }
 
 func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
@@ -126,24 +141,6 @@ func (ki *KeyInterceptorReader) TakePendingLineReplace() (string, bool) {
 	ki.PendingLineReplace = ""
 	ki.HasPendingLineReplace = false
 	return text, true
-}
-
-func (ki *KeyInterceptorReader) GetRL() *term.Terminal {
-	if ki == nil {
-		return nil
-	}
-	ki.DraftMu.Lock()
-	defer ki.DraftMu.Unlock()
-	return ki.RL
-}
-
-func (ki *KeyInterceptorReader) SetRL(rl *term.Terminal) {
-	if ki == nil {
-		return
-	}
-	ki.DraftMu.Lock()
-	ki.RL = rl
-	ki.DraftMu.Unlock()
 }
 
 func (ki *KeyInterceptorReader) GetPastedText() string {
@@ -373,7 +370,7 @@ func (ki *KeyInterceptorReader) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 
-	if ki.IsAtMainPrompt.Load() && ki.GetRL() != nil {
+	if ki.IsAtMainPrompt.Load() {
 		if ki.OnDrawStaticControls != nil {
 			ki.OnDrawStaticControls(ki.resolveTargetWriter(os.Stderr))
 		}
@@ -623,6 +620,8 @@ readInput:
 			ki.HandleCtrlR()
 		case 20:
 			ki.HandleCtrlT()
+		case 25:
+			ki.HandleCtrlY()
 		case 26:
 			ki.ControlQueue("undo")
 		default:

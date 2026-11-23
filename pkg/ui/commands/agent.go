@@ -50,7 +50,7 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintf(w, "agent menu: %v\n", menuErr)
 		}
 
-		ui.RestoreAfterModal(w, a, kiReader, terminalFromReader(kiReader))
+		ui.RestoreAfterModal(w, a, kiReader)
 		return
 	}
 

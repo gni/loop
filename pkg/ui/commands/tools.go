@@ -52,7 +52,7 @@ func handleToolsCommand(
 			fmt.Fprintf(w, "tools menu: %v\n", menuErr)
 		}
 
-		ui.RestoreAfterModal(w, a, kiReader, terminalFromReader(kiReader))
+		ui.RestoreAfterModal(w, a, kiReader)
 		syncStatus()
 	}
 

@@ -11,6 +11,7 @@ import (
 	"loop/pkg/domain/tool"
 	"loop/pkg/ui"
 	"loop/pkg/ui/commands"
+	"loop/pkg/ui/style"
 )
 
 var baseAutocompleteCandidates = []string{
@@ -19,6 +20,7 @@ var baseAutocompleteCandidates = []string{
 	"/guided", "/guided on", "/guided off", "/guided status", "/guided plan", "/guided approve",
 	"/plan", "/rollback", "/undo",
 	"/config ", "/config show", "/config set ",
+	"/theme", "/theme next", "/theme prev", "/theme list",
 	"/clear", "/skills", "/skills load ",
 	"/resume", "/new", "/sessions",
 	"/session ", "/session list", "/session new", "/session load", "/session branch ", "/session clear",
@@ -137,6 +139,11 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 		case strings.HasPrefix(prefixToPos, "/skills "):
 			matches = matchPrefixWithSpace([]string{"list", "load", "reload"}, strings.TrimPrefix(prefixToPos, "/skills "), map[string]bool{"load": true})
+
+		case strings.HasPrefix(prefixToPos, "/theme ") || strings.HasPrefix(prefixToPos, "/themes "):
+			cmdPrefix, _ := firstMatchingPrefix(prefixToPos, "/theme ", "/themes ")
+			candidates := append([]string{"next", "prev", "list"}, style.GetThemeNames()...)
+			matches = matchPrefixWithSpace(candidates, strings.TrimPrefix(prefixToPos, cmdPrefix), nil)
 
 		default:
 			if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/provider ", "/providers ", "/p "); ok {

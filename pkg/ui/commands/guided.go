@@ -77,8 +77,8 @@ func handleGuidedCommand(
 	live := a.LiveSettings()
 	ui.DrawStaticPromptSeparator(os.Stderr, live.ShowThinking, live.ReasoningEffort, *theme)
 	ui.DrawStatusBar(os.Stderr, *theme)
-	if rl := terminalFromReader(kiReader); rl != nil {
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, rl)
+	if kiReader != nil {
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader)
 	}
 }
 
@@ -167,7 +167,7 @@ func handleUndoCommand(
 	if history := ui.GetUI().GetChatHistory(); history != nil {
 		ui.MarkSessionReloaded()
 	} else if kiReader != nil {
-		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
+		ui.RedrawScreen(w, a, kiReader)
 	}
 
 	fmt.Fprintf(w, "undid last turn: %q (%d message(s) removed, %d remaining).\n", userPreview, removedCount, len(*messages))

@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/db"
@@ -41,13 +39,6 @@ func commandContext(a *agent.Agent, reader *interceptor.KeyInterceptorReader) co
 	return context.Background()
 }
 
-func terminalFromReader(kiReader *interceptor.KeyInterceptorReader) *term.Terminal {
-	if kiReader != nil {
-		return kiReader.GetRL()
-	}
-	return nil
-}
-
 func syncCommandStatus(
 	a *agent.Agent,
 	messages *[]db.Message,
@@ -75,7 +66,7 @@ func syncCommandStatus(
 	live := a.LiveSettings()
 	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
 	if refreshConsole {
-		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader, terminalFromReader(kiReader))
+		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader)
 	}
 	ui.DrawStatusBar(statusWriter, theme)
 }
@@ -88,7 +79,7 @@ func HandleSlashCommand(
 	theme *style.UITheme,
 	w io.Writer,
 	currentSessionID *string,
-	rlHistory term.History,
+	rlHistory interceptor.PromptHistory,
 	mam *swarm.MultiAgentManager,
 	kiReader *interceptor.KeyInterceptorReader,
 ) (bool, bool) {
@@ -225,7 +216,7 @@ func HandleSlashCommand(
 		}
 		saveConfigUpdate(a, w)
 		ui.SetCollapseStatus(a.LiveSettings().CollapseResults)
-		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
+		ui.RedrawScreen(w, a, kiReader)
 		return true, false
 	case "/queue", "/queues":
 		if kiReader == nil {
@@ -279,6 +270,9 @@ func HandleSlashCommand(
 		return true, false
 	case "/config", "/set":
 		handleConfigCommand(a, cmdName, parts, messages, theme, w, kiReader, calcHistoryTokens)
+		return true, false
+	case "/theme", "/themes":
+		handleThemeCommand(a, parts, messages, theme, w, kiReader, calcHistoryTokens)
 		return true, false
 	case "/provider", "/providers", "/p":
 		ui.HandleProviderCommand(a, parts, messages, *theme, w, kiReader)

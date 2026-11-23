@@ -91,6 +91,17 @@ func (r *LiveMarkdownRenderer) SetWriter(w io.Writer) {
 	r.inline.SetWriter(w)
 }
 
+// SetTheme updates the active color palette for subsequent streamed markdown output.
+func (r *LiveMarkdownRenderer) SetTheme(theme style.UITheme) {
+	r.theme = theme
+	if r.inline != nil {
+		r.inline.SetTheme(theme)
+	}
+	if r.table.active != nil {
+		r.table.active.theme = theme
+	}
+}
+
 func (r *LiveMarkdownRenderer) Write(chunk string) {
 	var plain strings.Builder
 	chunk = r.utf8Pending + chunk

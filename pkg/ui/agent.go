@@ -60,6 +60,7 @@ type AgentUIImpl struct {
 	ActivityStatsText    string
 	LastStatusBarText    string
 	PromptHint           string
+	ActiveThemeName      string
 	HoverTarget          render.HoverTarget
 	SlashMenuOpen        bool
 	PromptHitboxes       []render.Hitbox
@@ -72,10 +73,17 @@ type AgentUIImpl struct {
 
 // NewAgentUI initializes a new TUI instance and registers it as the active UI.
 func NewAgentUI(cfg *config.Config, theme style.UITheme) *AgentUIImpl {
+	activeThemeName := "studio"
+	if cfg != nil {
+		if canon := style.CanonicalThemeName(cfg.Theme); canon != "" {
+			activeThemeName = canon
+		}
+	}
 	uiImpl := &AgentUIImpl{
 		Config:          cfg,
 		Theme:           theme,
 		CollapseResults: cfg.CollapseResults,
+		ActiveThemeName: activeThemeName,
 	}
 	ActiveUI = uiImpl
 
@@ -162,6 +170,9 @@ func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	hoverEnabled := true
 	if cfg != nil {
 		ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+		if canon := style.CanonicalThemeName(cfg.Theme); canon != "" {
+			ui.ActiveThemeName = canon
+		}
 		ui.State.ShowTokens = cfg.ShowTokens
 		ui.State.Model = cfg.Model
 		ui.CollapseResults = cfg.CollapseResults
@@ -173,6 +184,24 @@ func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	ui.LastStatusBarText = ""
 	ui.StateMu.Unlock()
 	terminal.Default().SetMouseMotion(hoverEnabled)
+}
+
+// SetActiveThemeName updates the canonical UI theme label displayed by prompt chrome
+// and re-tints cached stats text so the bottom stats line switches colors immediately.
+func (ui *AgentUIImpl) SetActiveThemeName(name string) {
+	canon := style.CanonicalThemeName(name)
+	if canon == "" {
+		return
+	}
+	resolved := style.GetTheme(canon)
+	ui.StateMu.Lock()
+	ui.ActiveThemeName = canon
+	ui.Theme = resolved
+	if ui.LastStatsText != "" {
+		plain := style.StripAnsi(ui.LastStatsText)
+		ui.LastStatsText = style.NewStyle().Foreground(resolved.TextMuted).Render(plain)
+	}
+	ui.StateMu.Unlock()
 }
 
 // HitTestChrome checks 1-based terminal coordinates against active UI chrome hitboxes.
@@ -409,6 +438,61 @@ func (ui *AgentUIImpl) RenderGenerationError(w io.Writer, message string, theme 
 	collapse := ui.CollapseResults
 	ui.StateMu.Unlock()
 	render.RenderFailure(w, message, collapse, theme)
+}
+
+// FormatTurnElapsed implements agent.TurnStatusPresenter.
+func (ui *AgentUIImpl) FormatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
+	now := time.Now()
+	timeStr := fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
+	return style.NewStyle().Foreground(theme.TextMuted).Render(timeStr)
+}
+
+// FormatCompletionTokensBadge implements agent.TurnStatusPresenter.
+func (ui *AgentUIImpl) FormatCompletionTokensBadge(tokens int, theme style.UITheme) string {
+	valStr := fmt.Sprintf("%d", tokens)
+	if tokens >= 1000 {
+		valStr = fmt.Sprintf("%.1fk", float64(tokens)/1000.0)
+	}
+	muted := style.NewStyle().Foreground(theme.TextMuted)
+	val := style.NewStyle().Foreground(theme.Text)
+	dot := style.NewStyle().Foreground(theme.Border).Render(" · ")
+	return muted.Render("↓ ") + val.Render(valStr) + muted.Render(" out") + dot
+}
+
+// FormatSystemNotice implements agent.TurnStatusPresenter.
+func (ui *AgentUIImpl) FormatSystemNotice(text, level string, theme style.UITheme) string {
+	switch level {
+	case "error":
+		return style.NewStyle().Foreground(theme.Error).Bold(true).Render(text)
+	case "info":
+		return style.NewStyle().Foreground(theme.Primary).Italic(true).Render(text)
+	default:
+		return style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render(text)
+	}
+}
+
+// IsInModal reports whether an approval prompt, interactive menu, or alt-screen owns the terminal.
+func (ui *AgentUIImpl) IsInModal() bool {
+	if terminal.Default().InAltScreen() {
+		return true
+	}
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.InApprovalPrompt || ui.InInteractiveMenu
+}
+
+// IsTurnActive reports whether a foreground generation turn is currently active.
+func (ui *AgentUIImpl) IsTurnActive() bool {
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.ActiveCancelFunc != nil || ui.State.IsGenerating
+}
+
+// SetActiveCancel registers or clears the foreground turn cancellation callback.
+func (ui *AgentUIImpl) SetActiveCancel(cancel context.CancelFunc) {
+	ui.StateMu.Lock()
+	ui.ActiveCancelFunc = cancel
+	ui.StateMu.Unlock()
 }
 
 // SetPromptHint sets a transient hint message to be displayed at the prompt,

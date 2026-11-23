@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/term"
-
 	"loop/pkg/agent"
 	"loop/pkg/db"
 	"loop/pkg/ui"
@@ -57,7 +55,7 @@ func handleClearCommand(
 	a *agent.Agent,
 	messages *[]db.Message,
 	currentSessionID *string,
-	rlHistory term.History,
+	rlHistory interceptor.PromptHistory,
 	kiReader *interceptor.KeyInterceptorReader,
 	w io.Writer,
 ) {
@@ -84,7 +82,7 @@ func handleClearCommand(
 		ui.MarkSessionReloaded()
 		return
 	}
-	ui.RedrawScreenWithNotice(w, a, kiReader, terminalFromReader(kiReader), clearNotice)
+	ui.RedrawScreenWithNotice(w, a, kiReader, clearNotice)
 }
 
 func handleSessionCommand(
@@ -116,7 +114,6 @@ func handleSessionCommand(
 		}
 		return
 	}
-	rl := terminalFromReader(kiReader)
 
 	resetToFreshSession := func() error {
 		nextID := db.NewUUID()
@@ -267,7 +264,7 @@ func handleSessionCommand(
 			if ui.GetUI().GetChatHistory() != nil {
 				ui.MarkSessionReloaded()
 			} else {
-				ui.RedrawScreen(w, a, kiReader, rl)
+				ui.RedrawScreen(w, a, kiReader)
 			}
 			return
 		}
@@ -301,10 +298,10 @@ func handleSessionCommand(
 			if ui.GetUI().GetChatHistory() != nil {
 				ui.MarkSessionReloaded()
 			} else {
-				ui.RedrawScreen(w, a, kiReader, rl)
+				ui.RedrawScreen(w, a, kiReader)
 			}
 		} else {
-			ui.RestoreAfterModal(w, a, kiReader, rl)
+			ui.RestoreAfterModal(w, a, kiReader)
 		}
 
 	case "clear":

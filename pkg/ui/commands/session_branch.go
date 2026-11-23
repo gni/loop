@@ -82,7 +82,7 @@ func handleBranchCommand(
 	if history := ui.GetUI().GetChatHistory(); history != nil {
 		ui.MarkSessionReloaded()
 	} else if kiReader != nil {
-		ui.RedrawScreen(w, a, kiReader, terminalFromReader(kiReader))
+		ui.RedrawScreen(w, a, kiReader)
 	}
 
 	fmt.Fprintf(w, "switched active branch to entry %s (%d message(s) in context).\n", shortEntryID(targetID), len(*messages))

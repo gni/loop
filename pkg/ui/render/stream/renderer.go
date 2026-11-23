@@ -89,6 +89,20 @@ func NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, stre
 	return sr
 }
 
+// SetTheme updates the renderer's active theme mid-turn so live theme switches
+// immediately apply to subsequent streamed prose, thinking, and tool previews.
+func (sr *StreamRenderer) SetTheme(theme style.UITheme) {
+	sr.mu.Lock()
+	sr.theme = theme
+	if sr.live != nil {
+		sr.live.SetTheme(theme)
+	}
+	if sr.liveThinking != nil {
+		sr.liveThinking.SetTheme(theme)
+	}
+	sr.mu.Unlock()
+}
+
 // runBeforeWrite invokes the immutable preparation hook outside sr.mu so UI
 // callbacks cannot invert lock ordering with TerminalMu.
 func (sr *StreamRenderer) runBeforeWrite() {
@@ -237,7 +251,13 @@ func (sr *StreamRenderer) Write(chunk string) {
 	sr.appendLiveReplayTextLocked("text", chunk)
 	sr.liveReplayTextFlushed = false
 	if !sr.markdownEnabled {
-		fmt.Fprint(sr.w, chunk)
+		textStyle := style.NewStyle().Foreground(sr.theme.Text)
+		startSeq, resetSeq := textStyle.GetSequence()
+		if startSeq != "" {
+			fmt.Fprint(sr.w, startSeq+chunk+resetSeq)
+		} else {
+			fmt.Fprint(sr.w, chunk)
+		}
 		sr.lastEndedWithNewline = strings.HasSuffix(chunk, "\n")
 		return
 	}

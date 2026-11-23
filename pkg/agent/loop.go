@@ -15,21 +15,45 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
+func (a *Agent) formatTurnElapsedLine(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
+	if a != nil && a.UI != nil {
+		if p, ok := a.UI.(TurnStatusPresenter); ok {
+			return p.FormatTurnElapsed(startTime, theme, showMicroseconds)
+		}
+	}
 	now := time.Now()
-	timeStr := fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
-	return style.NewStyle().Foreground(theme.TextMuted).Render(timeStr)
+	return fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
+}
+
+func (a *Agent) formatCompletionBadge(tokens int, theme style.UITheme) string {
+	if a != nil && a.UI != nil {
+		if p, ok := a.UI.(TurnStatusPresenter); ok {
+			return p.FormatCompletionTokensBadge(tokens, theme)
+		}
+	}
+	if tokens >= 1000 {
+		return fmt.Sprintf("↓ %.1fk out · ", float64(tokens)/1000.0)
+	}
+	return fmt.Sprintf("↓ %d out · ", tokens)
+}
+
+func (a *Agent) formatNotice(text, level string, theme style.UITheme) string {
+	if a != nil && a.UI != nil {
+		if p, ok := a.UI.(TurnStatusPresenter); ok {
+			return p.FormatSystemNotice(text, level, theme)
+		}
+	}
+	return text
+}
+
+func formatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
+	var nilAgent *Agent
+	return nilAgent.formatTurnElapsedLine(startTime, theme, showMicroseconds)
 }
 
 func formatCompletionTokensBadge(tokens int, theme style.UITheme) string {
-	valStr := fmt.Sprintf("%d", tokens)
-	if tokens >= 1000 {
-		valStr = fmt.Sprintf("%.1fk", float64(tokens)/1000.0)
-	}
-	muted := style.NewStyle().Foreground(theme.TextMuted)
-	val := style.NewStyle().Foreground(theme.Text)
-	dot := style.NewStyle().Foreground(theme.Border).Render(" · ")
-	return muted.Render("↓ ") + val.Render(valStr) + muted.Render(" out") + dot
+	var nilAgent *Agent
+	return nilAgent.formatCompletionBadge(tokens, theme)
 }
 
 func (a *Agent) renderTurnError(w io.Writer, ncw io.Writer, sink HistorySink, err error, ctxErr error, isNonInteractive bool, theme style.UITheme) {
@@ -176,17 +200,26 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}()
 	}
 
+	liveTheme := func() style.UITheme {
+		live := a.LiveSettings()
+		if live.Theme == "" && live.SyntaxTheme == "" {
+			return theme
+		}
+		return style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	}
+
 	timePrinted := false
 	defer func() {
 		if !timePrinted {
 			showMicros := a.LiveSettings().ShowMicroseconds
+			curTheme := liveTheme()
 			fmt.Fprintln(writerToUse)
 			if isNonInteractive {
-				fmt.Fprintln(writerToUse, formatTurnElapsed(startTime, theme, showMicros))
+				fmt.Fprintln(writerToUse, a.formatTurnElapsedLine(startTime, curTheme, showMicros))
 			} else {
 				// Keep the elapsed-time text on the last occupied scroll row.
 				// The reserved row beneath it is already the status-bar gap.
-				fmt.Fprint(writerToUse, formatTurnElapsed(startTime, theme, showMicros))
+				fmt.Fprint(writerToUse, a.formatTurnElapsedLine(startTime, curTheme, showMicros))
 			}
 		}
 	}()
@@ -313,7 +346,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			teeWriter := &CustomTeeWriter{screen: writerToUse, buffer: streamCapture}
 			ncw = &NewlineCounterWriter{Writer: teeWriter}
 			a.SetCurrentWriter(ncw)
-			sr = a.NewTurnStreamRenderer(ncw, theme, "loop", prompt)
+			sr = a.NewTurnStreamRenderer(ncw, liveTheme(), "loop", prompt)
 			if replay, ok := sr.(interface {
 				ReplayActiveTurn(io.Writer, bool, style.UITheme)
 			}); ok {
@@ -333,7 +366,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				if a.UI != nil && !isNonInteractive {
 					live := a.LiveSettings()
 					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens)
-					a.UI.DrawStatusBar(rawW, theme)
+					a.UI.DrawStatusBar(rawW, liveTheme())
 				}
 			}
 
@@ -449,7 +482,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				if a.UI != nil && !isNonInteractive {
 					live := a.LiveSettings()
 					a.UI.UpdateStatus(live.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), live.ShowTokens)
-					a.UI.DrawStatusBar(rawW, theme)
+					a.UI.DrawStatusBar(rawW, liveTheme())
 				}
 			}
 
@@ -463,7 +496,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				ncw.EnsureNewline()
 			}
 			timePrinted = true
-			a.renderFinalAgentTurn(assistantMsg, sr, loader, rawW, writerToUse, sessionID, startTime, theme)
+			a.renderFinalAgentTurn(assistantMsg, sr, loader, rawW, writerToUse, sessionID, startTime, liveTheme())
 			syncPostTurnStatus()
 			return nil
 		},
@@ -475,7 +508,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			syncPostTurnStatus()
 
 			timer.Time("tool", "start")
-			halted, aborted := a.runTurnToolCalls(ctx, engine, batch, toolStream, assistantMsg, true, sink, sr, loader, ncw, theme, sessionID, iter)
+			halted, aborted := a.runTurnToolCalls(ctx, engine, batch, toolStream, assistantMsg, true, sink, sr, loader, ncw, liveTheme(), sessionID, iter)
 			timer.Time("tool", "end")
 
 			// Tool execution may run without provider chunks. Handle queued Ctrl+O

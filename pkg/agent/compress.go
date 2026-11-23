@@ -247,9 +247,8 @@ func (a *Agent) CompressHistory(
 	}
 	summaryMsgs := []db.Message{{Role: "user", Content: summaryPrompt}}
 
-	infoStyle := style.NewStyle().Foreground(theme.Primary).Italic(true)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, infoStyle.Render("[system: context usage threshold reached. compressing older conversation history...]"))
+	fmt.Fprintln(w, a.formatNotice("[system: context usage threshold reached. compressing older conversation history...]", "info", theme))
 
 	runSummaryAttempt := func() (*db.Message, error) {
 		dummyChan := make(chan StreamChunk, 100)
@@ -278,8 +277,7 @@ func (a *Agent) CompressHistory(
 	}
 	if err != nil {
 		compressionErr = err
-		warnStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
-		fmt.Fprintf(w, "%s Failed to compress conversation context: %v\n", warnStyle.Render("WARNING:"), err)
+		fmt.Fprintf(w, "%s Failed to compress conversation context: %v\n", a.formatNotice("WARNING:", "error", theme), err)
 		return
 	}
 
@@ -334,7 +332,7 @@ func (a *Agent) CompressHistory(
 	markCompactionBoundary(newMessages, summaryMsg.Usage)
 
 	if afterTokens := requestTokens(newMessages); beforeTokens > 0 && afterTokens >= beforeTokens && len(instructions) == 0 {
-		fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Italic(true).Render("[system: compression summary was not smaller than existing history; keeping current messages]"))
+		fmt.Fprintln(w, a.formatNotice("[system: compression summary was not smaller than existing history; keeping current messages]", "muted", theme))
 		return
 	}
 
@@ -352,9 +350,8 @@ func (a *Agent) CompressHistory(
 		a.MessagesMu.Unlock()
 	}
 
-	compressedStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, compressedStyle.Render("[system: context compression complete]"))
+	fmt.Fprintln(w, a.formatNotice("[system: context compression complete]", "muted", theme))
 	fmt.Fprintf(w, "  %d older messages condensed into 1 summary; %d recent messages retained.\n", len(toCompress), len(keptMessages))
 	fmt.Fprintf(w, "  Saved context summary: %d bytes.\n", len(summaryMsg.Content))
 	fmt.Fprintf(w, "  File references retained: %d read, %d modified.\n", len(readFiles), len(modifiedFiles))

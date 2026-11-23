@@ -17,24 +17,21 @@ import (
 	"loop/pkg/ui/style"
 )
 
-func RedrawScreen(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
-	RedrawScreenWithNotice(w, a, kiReader, rl, "")
+func RedrawScreen(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader) {
+	RedrawScreenWithNotice(w, a, kiReader, "")
 }
 
-func RefreshConsoleAfterTurn(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
+func RefreshConsoleAfterTurn(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
-	getUI().StateMu.Lock()
-	inModal := getUI().InApprovalPrompt || getUI().InInteractiveMenu || terminal.Default().InAltScreen()
-	getUI().StateMu.Unlock()
-	if inModal {
+	if getUI().IsInModal() {
 		return
 	}
-	DrawConsoleStaticControlsLocked(w, a, kiReader, rl, true)
+	DrawConsoleStaticControlsLocked(w, a, kiReader, true)
 }
 
-func RefreshConsoleAfterPromptCancellation(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
-	RefreshConsoleAfterTurn(w, a, kiReader, rl)
+func RefreshConsoleAfterPromptCancellation(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader) {
+	RefreshConsoleAfterTurn(w, a, kiReader)
 }
 
 var modalHadTTY = func() bool {
@@ -51,19 +48,13 @@ var modalHadTTY = func() bool {
 	return term.IsTerminal(int(tty.Fd()))
 }
 
-func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal) {
+func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader) {
 	if a == nil || a.Config == nil || !modalHadTTY() {
-		RedrawScreen(w, a, kiReader, rl)
+		RedrawScreen(w, a, kiReader)
 		return
 	}
 
-	width, height := terminal.RefreshDimensions()
-	if rl == nil && kiReader != nil {
-		rl = kiReader.GetRL()
-	}
-	if rl != nil && width > 0 && height > 0 {
-		_ = rl.SetSize(width, height)
-	}
+	terminal.RefreshDimensions()
 
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -78,10 +69,10 @@ func RestoreAfterModal(w io.Writer, a *agent.Agent, kiReader *keyInterceptorRead
 	if _, isPP := w.(*PromptPreservingWriter); isPP {
 		dest = os.Stderr
 	}
-	DrawConsoleStaticControlsLocked(dest, a, kiReader, rl, true)
+	DrawConsoleStaticControlsLocked(dest, a, kiReader, true)
 }
 
-func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, rl *term.Terminal, notice string) {
+func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyInterceptorReader, notice string) {
 	TerminalMu.Lock()
 	uiImpl := getUI()
 	uiImpl.StateMu.Lock()
@@ -97,7 +88,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		uiImpl.StateMu.Lock()
 		uiImpl.LastStatusBarText = ""
 		uiImpl.StateMu.Unlock()
-		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, rl, true)
+		DrawConsoleStaticControlsLocked(agent.UnwrapWriter(w), a, kiReader, true)
 		TerminalMu.Unlock()
 		if notice != "" {
 			live := a.LiveSettings()
@@ -204,7 +195,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	finalBuf.Write(buf.Bytes())
 
 	UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens, estimated)
-	DrawConsoleStaticControlsLocked(render.WrapSyncFrame(cwFinal), a, kiReader, rl, true)
+	DrawConsoleStaticControlsLocked(render.WrapSyncFrame(cwFinal), a, kiReader, true)
 	if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
 		agentUI.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
 	}

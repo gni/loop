@@ -67,7 +67,7 @@ func DrawStaticStatsLineLocked(w io.Writer, theme UITheme, spinnerFrame string, 
 	ui.StateMu.Lock()
 	if spinnerFrame == "" && statsText != "" {
 		clean := style.StripAnsi(statsText)
-		if !strings.HasPrefix(clean, "(") || strings.Contains(clean, "out •") {
+		if !strings.HasPrefix(clean, "(") || strings.Contains(clean, "out •") || strings.Contains(clean, "out ·") {
 			ui.LastStatsText = statsText
 		}
 	}
@@ -125,6 +125,10 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	showAutoBadge := true
 	autoApprove := false
 	slashMenuOpen := ui.SlashMenuOpen
+	activeThemeName := ui.ActiveThemeName
+	if activeThemeName == "" {
+		activeThemeName = "studio"
+	}
 	hovered := render.HoverNone
 	if ui.Config != nil {
 		showReasoning = ui.Config.ShowReasoningBadge
@@ -154,7 +158,7 @@ func DrawStaticPromptSeparatorWithSpinnerLocked(w io.Writer, showThinking bool, 
 	if !showReasoning {
 		reasoningEffort = "hidden"
 	}
-	hitboxes := render.DrawStaticPromptSeparatorWithHover(agent.UnwrapWriter(w), showThinking, reasoningEffort, showAutoBadge, autoApprove, slashMenuOpen, hovered, theme, width, height, pasteLinesOffset, branch)
+	hitboxes := render.DrawStaticPromptSeparatorWithHover(agent.UnwrapWriter(w), showThinking, reasoningEffort, showAutoBadge, autoApprove, slashMenuOpen, activeThemeName, hovered, theme, width, height, pasteLinesOffset, branch)
 	ui.StateMu.Lock()
 	ui.PromptHitboxes = hitboxes
 	ui.StateMu.Unlock()

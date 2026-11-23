@@ -286,9 +286,19 @@ func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, s
 	}
 }
 
-// RenderRawMarkdownContent prints the original Markdown without interpreting it.
-func RenderRawMarkdownContent(w io.Writer, content string, _ style.UITheme) {
-	fmt.Fprint(w, content)
+// RenderRawMarkdownContent prints the original Markdown without interpreting it,
+// styled with the active theme's primary text color.
+func RenderRawMarkdownContent(w io.Writer, content string, theme style.UITheme) {
+	textStyle := style.NewStyle().Foreground(theme.Text)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if line != "" {
+			fmt.Fprint(w, textStyle.Render(line))
+		}
+		if i < len(lines)-1 {
+			fmt.Fprintln(w)
+		}
+	}
 }
 
 // RenderMarkdownContent renders multiline markdown including code blocks and wrapped lines.

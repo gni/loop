@@ -106,23 +106,19 @@ func (shell *manualShell) execute(
 	}
 
 	ctx, cancel := context.WithCancel(a.Context())
-	ui.GetUI().StateMu.Lock()
-	ui.GetUI().ActiveCancelFunc = cancel
-	ui.GetUI().StateMu.Unlock()
+	ui.GetUI().SetActiveCancel(cancel)
 	if kiReader != nil {
 		kiReader.ActiveTurn.Store(true)
 	}
 	ui.TerminalMu.Lock()
-	ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, nil, true)
+	ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, true)
 	ui.TerminalMu.Unlock()
 	defer func() {
 		if kiReader != nil {
 			kiReader.ActiveTurn.Store(false)
 		}
 		cancel()
-		ui.GetUI().StateMu.Lock()
-		ui.GetUI().ActiveCancelFunc = nil
-		ui.GetUI().StateMu.Unlock()
+		ui.GetUI().SetActiveCancel(nil)
 	}()
 
 	fd := int(os.Stdin.Fd())
