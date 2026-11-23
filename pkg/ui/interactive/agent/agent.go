@@ -69,6 +69,12 @@ func RunInteractiveAgentManager(mam *swarm.MultiAgentManager, theme style.UIThem
 				terminal.RefreshDimensions()
 				continue
 			}
+			if wheel := interactive.MouseWheelDelta(readBuf); wheel != 0 {
+				if len(list) > 0 {
+					selectedIdx = min(len(list)-1, max(0, selectedIdx+wheel))
+				}
+				continue
+			}
 
 			switch string(readBuf) {
 			case "\x03", "\x1b", "\x04":

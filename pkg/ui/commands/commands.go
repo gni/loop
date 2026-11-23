@@ -305,7 +305,7 @@ func HandleSlashCommand(
 		handleAgentCommand(a, line, parts, mam, theme, w, kiReader)
 		return true, false
 	case "/reload":
-		handleReloadCommand(a, w)
+		handleReloadCommand(a, theme, w, kiReader)
 		return true, false
 	case "/plugins", "/plugin":
 		handlePluginsCommand(a, theme, w)

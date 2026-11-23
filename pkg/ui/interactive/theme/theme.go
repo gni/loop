@@ -19,6 +19,23 @@ import (
 	"loop/pkg/ui/style"
 )
 
+// PickerAction indicates whether the user chose an existing theme, or asked to
+// create or edit a custom theme from the picker.
+type PickerAction int
+
+const (
+	PickerSelect PickerAction = iota
+	PickerCreate
+	PickerEdit
+)
+
+// PickerResult describes the outcome of RunThemePicker.
+type PickerResult struct {
+	Action PickerAction
+	Name   string
+	Base   string
+}
+
 // RunThemePicker launches an interactive theme selector with live palette and
 // syntax highlighting preview as the user navigates themes.
 func RunThemePicker(
@@ -27,24 +44,24 @@ func RunThemePicker(
 	syntaxTheme string,
 	rlInput io.Reader,
 	rlOutput io.Writer,
-) (string, error) {
-	var selected string
+) (PickerResult, error) {
+	var result PickerResult
 	err := interactive.RunAltScreenSession(
 		ctx,
 		rlInput,
 		rlOutput,
 		func(sr *interactive.SessionReader, signals chan os.Signal) error {
 			var pickErr error
-			selected, pickErr = runThemePickerTTY(sr, signals, rlOutput, currentTheme, syntaxTheme)
+			result, pickErr = runThemePickerTTY(sr, signals, rlOutput, currentTheme, syntaxTheme)
 			return pickErr
 		},
 		func(sr *interactive.SessionReader) error {
-			var pickErr error
-			selected, pickErr = runThemePickerFallback(sr, rlOutput, currentTheme)
+			picked, pickErr := runThemePickerFallback(sr, rlOutput, currentTheme)
+			result = PickerResult{Action: PickerSelect, Name: picked}
 			return pickErr
 		},
 	)
-	return selected, err
+	return result, err
 }
 
 func runThemePickerTTY(
@@ -53,10 +70,10 @@ func runThemePickerTTY(
 	output io.Writer,
 	currentTheme string,
 	syntaxTheme string,
-) (string, error) {
+) (PickerResult, error) {
 	names := style.GetThemeNames()
 	if len(names) == 0 {
-		return "", interactive.ErrSelectionCancelled
+		return PickerResult{}, interactive.ErrSelectionCancelled
 	}
 
 	activeCanon := style.CanonicalThemeName(currentTheme)
@@ -73,6 +90,7 @@ func runThemePickerTTY(
 	}
 
 	query := ""
+	scrollOffset := 0
 	comp := screen.NewCompositor(80, 24)
 	const maxQueryBytes = 128
 
@@ -81,7 +99,20 @@ func runThemePickerTTY(
 		lowerQ := strings.ToLower(query)
 		for _, name := range names {
 			desc := style.ThemeDescription(name)
-			if lowerQ == "" || strings.Contains(strings.ToLower(name), lowerQ) || strings.Contains(strings.ToLower(desc), lowerQ) {
+			era := style.ThemeEra(name)
+			eraAlias := era
+			if era == "custom" {
+				eraAlias = "custom user"
+			}
+			tone := "dark"
+			if style.IsLightTheme(name) {
+				tone = "light"
+			}
+			if lowerQ == "" ||
+				strings.Contains(strings.ToLower(name), lowerQ) ||
+				strings.Contains(strings.ToLower(desc), lowerQ) ||
+				strings.Contains(eraAlias, lowerQ) ||
+				strings.Contains(tone, lowerQ) {
 				filtered = append(filtered, name)
 			}
 		}
@@ -101,11 +132,11 @@ func runThemePickerTTY(
 		if width < 16 || height < 8 {
 			rows := []string{style.TruncateCells("Resize terminal; Esc exits", max(1, width))}
 			if err := interactive.FlushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
-				return "", err
+				return PickerResult{}, err
 			}
 			key, resized, err := sr.ReadKeyOrResize(signals)
 			if err != nil {
-				return "", err
+				return PickerResult{}, err
 			}
 			if resized {
 				terminal.RefreshDimensions()
@@ -113,7 +144,7 @@ func runThemePickerTTY(
 			}
 			switch string(key) {
 			case "\x1b", "\x03", "\x04":
-				return "", interactive.ErrSelectionCancelled
+				return PickerResult{}, interactive.ErrSelectionCancelled
 			}
 			continue
 		}
@@ -135,7 +166,15 @@ func runThemePickerTTY(
 			chromeRows = 9
 		}
 		visible := max(1, height-chromeRows)
-		start := max(0, selected-visible+1)
+		if selected < scrollOffset {
+			scrollOffset = selected
+		}
+		if selected >= scrollOffset+visible {
+			scrollOffset = selected - visible + 1
+		}
+		maxStart := max(0, len(filtered)-visible)
+		scrollOffset = min(max(0, scrollOffset), maxStart)
+		start := scrollOffset
 		end := min(len(filtered), start+visible)
 
 		counter := fmt.Sprintf("0/%d", len(names))
@@ -153,7 +192,7 @@ func runThemePickerTTY(
 
 		var searchRow string
 		if query == "" {
-			searchRow = mutedStyle.Render(style.TruncateCells("  / type to filter themes", availW))
+			searchRow = mutedStyle.Render(style.TruncateCells("  / filter by name, custom, old-school, new-gen, dark, or light", availW))
 		} else {
 			searchRow = mutedStyle.Render("  / ") + style.NewStyle().Foreground(previewTheme.Text).Render(style.TruncateCells(interactive.MenuDisplayText(query), max(1, availW-4)))
 		}
@@ -171,10 +210,17 @@ func runThemePickerTTY(
 			swatches := formatPaletteDots(rowTheme)
 			nameCol := name
 			if name == activeCanon {
-				nameCol = name + " [active]"
+				nameCol = name + " *"
+			}
+			eraTag := "new"
+			switch style.ThemeEra(name) {
+			case "custom":
+				eraTag = "user"
+			case "old-school":
+				eraTag = "old"
 			}
 			desc := style.ThemeDescription(name)
-			labelPlain := fmt.Sprintf("%-26s %s", nameCol, desc)
+			labelPlain := fmt.Sprintf("%-20s %-4s %s", nameCol, eraTag, desc)
 			maxLabel := max(1, availW-14)
 			if style.CellWidth(labelPlain) > maxLabel && maxLabel > 1 {
 				labelPlain = style.TruncateCells(labelPlain, maxLabel-1) + "…"
@@ -206,30 +252,23 @@ func runThemePickerTTY(
 			if synName == "" {
 				synName = "github-dark"
 			}
-			var codeBuf bytes.Buffer
-			sampleCode := `func main() { fmt.Println("Hello, loop!") }`
-			if formatter := style.ChromaFormatterName(); formatter != "" {
-				_ = quick.Highlight(&codeBuf, sampleCode, "go", formatter, synName)
-			} else {
-				codeBuf.WriteString(sampleCode)
-			}
 			syntaxRow := fmt.Sprintf("  %s %s",
 				mutedStyle.Render("Syntax ("+synName+"):"),
-				strings.TrimSpace(codeBuf.String()),
+				renderSyntaxPreview(synName),
 			)
 			rows = append(rows, paletteRow, syntaxRow, "")
 		} else {
 			rows = append(rows, "")
 		}
 
-		rows = append(rows, mutedStyle.Render(style.TruncateCells("  ↑/↓ preview · Enter apply · Esc cancel · Ctrl+Y cycles in prompt", availW)))
+		rows = append(rows, mutedStyle.Render(style.TruncateCells("  ↑/↓ preview · Enter apply · Ctrl+N new · Ctrl+E edit · Esc cancel", availW)))
 		if err := interactive.FlushMenuScreen(comp, output, width, height, rows, screen.FlushOptions{}); err != nil {
-			return "", err
+			return PickerResult{}, err
 		}
 
 		key, resized, err := sr.ReadKeyOrResize(signals)
 		if err != nil {
-			return "", err
+			return PickerResult{}, err
 		}
 		if resized {
 			terminal.RefreshDimensions()
@@ -237,6 +276,22 @@ func runThemePickerTTY(
 		}
 		if interactive.AppendPastedQuery(key, &query, maxQueryBytes) {
 			selected = 0
+			continue
+		}
+		if wheel := interactive.MouseWheelDelta(key); wheel != 0 {
+			if len(filtered) > 0 {
+				selected = min(len(filtered)-1, max(0, selected+wheel))
+			}
+			continue
+		}
+		if _, clickY, ok := interactive.MouseLeftClick(key); ok {
+			if len(filtered) > 0 && clickY >= 4 && clickY < 4+(end-start) {
+				clicked := start + (clickY - 4)
+				if clicked == selected {
+					return PickerResult{Action: PickerSelect, Name: filtered[selected]}, nil
+				}
+				selected = clicked
+			}
 			continue
 		}
 
@@ -247,11 +302,15 @@ func runThemePickerTTY(
 				selected = 0
 				continue
 			}
-			return "", interactive.ErrSelectionCancelled
+			return PickerResult{}, interactive.ErrSelectionCancelled
 		case "\r", "\n":
 			if len(filtered) > 0 {
-				return filtered[selected], nil
+				return PickerResult{Action: PickerSelect, Name: filtered[selected]}, nil
 			}
+		case "\x0e": // Ctrl+N: create new custom theme based on highlighted
+			return PickerResult{Action: PickerCreate, Base: previewName}, nil
+		case "\x05": // Ctrl+E: edit highlighted theme
+			return PickerResult{Action: PickerEdit, Name: previewName, Base: previewName}, nil
 		case "\x1b[A", "\x1bOA":
 			if len(filtered) > 0 {
 				selected = (selected - 1 + len(filtered)) % len(filtered)
@@ -328,6 +387,17 @@ func runThemePickerFallback(sr *interactive.SessionReader, output io.Writer, cur
 		}
 		fmt.Fprint(output, "invalid choice. please try again.\r\n")
 	}
+}
+
+func renderSyntaxPreview(synName string) string {
+	var codeBuf bytes.Buffer
+	sampleCode := `func main() { fmt.Println("Hello, loop!") }`
+	if formatter := style.ChromaFormatterName(); formatter != "" {
+		_ = quick.Highlight(&codeBuf, sampleCode, "go", formatter, synName)
+	} else {
+		codeBuf.WriteString(sampleCode)
+	}
+	return strings.TrimSpace(codeBuf.String())
 }
 
 func formatPaletteDots(t style.UITheme) string {

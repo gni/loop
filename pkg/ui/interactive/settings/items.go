@@ -117,7 +117,7 @@ func buildConfigSettingItems(cloned *config.Config) []*interactive.SettingItem {
 		boolConfigItem("show_auto_badge", "show auto badge", "Show the bold amber loop indicator (♾︎) on the prompt line when auto approve is active", cloned),
 		boolConfigItem("hover_tooltips", "hover tooltips", "Expand status indicators on mouse hover and allow click-to-toggle badges", cloned),
 		boolConfigItem("show_microseconds", "show microseconds", "Show six fractional digits on elapsed timers", cloned),
-		selectConfigItem("theme", "theme", "Active UI color palette (studio, catppuccin-mocha, tokyo-night, everforest, kanagawa, rose-pine, gruvbox, nord, minimal, zenburn, light)", style.GetThemeNames, &cloned.Theme, "theme"),
+		selectConfigItem("theme", "theme", "Active UI color palette (built-in or custom JSON in ~/.loop/themes; use /theme create)", style.GetThemeNames, &cloned.Theme, "theme"),
 		selectConfigItem("syntax_theme", "syntax theme", "Code syntax highlighting style ('auto' matches the active UI theme)", style.GetSyntaxThemeNames, &cloned.SyntaxTheme, "syntax theme"),
 		intConfigItem("timeout", "timeout", "Client HTTP and upstream completion request timeout threshold in seconds", cloned),
 		intConfigItem("max_subagent_depth", "max subagent depth", "Maximum hierarchical nesting depth for subagent tree delegations", cloned),

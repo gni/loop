@@ -74,6 +74,12 @@ func RunInteractiveMCPConfig(cfg *config.Config, theme style.UITheme, input io.R
 				terminal.RefreshDimensions()
 				continue
 			}
+			if wheel := interactive.MouseWheelDelta(key); wheel != 0 {
+				if len(names) > 0 {
+					manager.selected = min(len(names)-1, max(0, manager.selected+wheel))
+				}
+				continue
+			}
 			value := string(key)
 			switch value {
 			case "\x03", "\x04":

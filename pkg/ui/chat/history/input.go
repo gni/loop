@@ -180,7 +180,10 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	approval := ui.GetUI().InApprovalPrompt
 	modal := ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
 	ui.GetUI().StateMu.Unlock()
-	if modal || (!approval && !h.reader.ActiveTurn.Load() && !h.reader.IsAtMainPrompt.Load()) {
+	if modal {
+		return key
+	}
+	if !approval && !h.reader.ActiveTurn.Load() && !h.reader.IsAtMainPrompt.Load() {
 		if mouse {
 			return nil
 		}

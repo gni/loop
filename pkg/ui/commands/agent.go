@@ -223,7 +223,19 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 	}
 }
 
-func handleReloadCommand(a *agent.Agent, w io.Writer) {
+func handleReloadCommand(a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
+	_, allDirs := themeDirsForAgent(a)
+	_, _ = style.LoadCustomThemes(allDirs...)
+	if a != nil && theme != nil {
+		live := a.LiveSettings()
+		*theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+		if kiReader != nil {
+			kiReader.SetTheme(*theme)
+			if kiReader.MAM != nil {
+				kiReader.MAM.SetOutput(w, *theme)
+			}
+		}
+	}
 	if a.ReloadResources != nil {
 		if err := a.ReloadResources(); err != nil {
 			fmt.Fprintf(w, "reload failed: %v\n", err)

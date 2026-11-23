@@ -20,7 +20,7 @@ var baseAutocompleteCandidates = []string{
 	"/guided", "/guided on", "/guided off", "/guided status", "/guided plan", "/guided approve",
 	"/plan", "/rollback", "/undo",
 	"/config ", "/config show", "/config set ",
-	"/theme", "/theme next", "/theme prev", "/theme list",
+	"/theme", "/theme create ", "/theme edit ", "/theme delete ", "/theme reload", "/theme path", "/theme next", "/theme prev", "/theme list",
 	"/clear", "/skills", "/skills load ",
 	"/resume", "/new", "/sessions",
 	"/session ", "/session list", "/session new", "/session load", "/session branch ", "/session clear",
@@ -142,8 +142,21 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 		case strings.HasPrefix(prefixToPos, "/theme ") || strings.HasPrefix(prefixToPos, "/themes "):
 			cmdPrefix, _ := firstMatchingPrefix(prefixToPos, "/theme ", "/themes ")
-			candidates := append([]string{"next", "prev", "list"}, style.GetThemeNames()...)
-			matches = matchPrefixWithSpace(candidates, strings.TrimPrefix(prefixToPos, cmdPrefix), nil)
+			filterPrefix := strings.TrimPrefix(prefixToPos, cmdPrefix)
+			if subCmd, hasSub := firstMatchingPrefix(filterPrefix, "edit ", "delete ", "rm ", "remove "); hasSub {
+				themePrefix := strings.TrimPrefix(filterPrefix, subCmd)
+				for _, name := range style.GetThemeNames() {
+					if (subCmd == "delete " || subCmd == "rm " || subCmd == "remove ") && !style.IsCustomTheme(name) {
+						continue
+					}
+					if strings.HasPrefix(name, themePrefix) {
+						matches = append(matches, name)
+					}
+				}
+			} else {
+				candidates := append([]string{"create", "edit", "delete", "reload", "path", "next", "prev", "list"}, style.GetThemeNames()...)
+				matches = matchPrefixWithSpace(candidates, filterPrefix, map[string]bool{"create": true, "edit": true, "delete": true})
+			}
 
 		default:
 			if cmdPrefix, ok := firstMatchingPrefix(prefixToPos, "/provider ", "/providers ", "/p "); ok {

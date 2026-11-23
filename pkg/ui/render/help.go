@@ -49,7 +49,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/resume [id]", "filter conversations by typing, then choose with ↑/↓ and Enter"},
 		{"/hotkeys", "display all interactive keyboard shortcuts"},
 		{"/config [show|set <k> <v>]", "everyday settings, with an advanced-settings toggle"},
-		{"/theme [name|next|prev|list]", "pick or cycle UI color theme (click ◐ or press Ctrl+Y)"},
+		{"/theme [name|create|edit|delete|reload|list]", "pick, create, or edit UI color themes (~/.loop/themes/*.json)"},
 		{"/session [list|new|load|tree|branch|rename|clear]", "manage persistent conversation sessions"},
 		{"/provider", "manage ai endpoints, keys, and model profiles"},
 		{"/skills [list|load [name]|reload]", "filter and pick a skill, list skills, or load by name"},

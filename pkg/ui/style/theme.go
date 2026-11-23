@@ -40,11 +40,15 @@ func makeTheme(
 	if borderInactive == "" {
 		borderInactive = border
 	}
+	var textColor color.Color
+	if text != "" {
+		textColor = Color(text)
+	}
 	return UITheme{
 		Primary:        Color(primary),
 		Secondary:      Color(secondary),
 		Highlight:      Color(highlight),
-		Text:           Color(text),
+		Text:           textColor,
 		TextMuted:      Color(textMuted),
 		Background:     Color(bg),
 		Border:         Color(border),
@@ -58,95 +62,199 @@ func makeTheme(
 }
 
 func GetTheme(themeName string) UITheme {
-	switch strings.ToLower(strings.TrimSpace(themeName)) {
-	case "catppuccin", "catppuccin-mocha":
+	norm := NormalizeCustomThemeName(themeName)
+	if norm != "" {
+		customThemesMu.RLock()
+		if item, ok := customThemes[norm]; ok {
+			customThemesMu.RUnlock()
+			return item.theme
+		}
+		customThemesMu.RUnlock()
+	}
+	return builtinTheme(themeName)
+}
+
+func builtinTheme(themeName string) UITheme {
+	switch builtinCanonicalName(themeName) {
+	// --- New Generation: refined modern, editorial, low-fatigue palettes ---
+	case "ashen":
 		return makeTheme(
-			"#89B4FA", "#B4BEFE", "#F9E2AF",
-			"#CDD6F4", "#9399B2", "#1E1E2E",
-			"#45475A", "#89B4FA", "",
-			"#A6E3A1", "#FAB387", "#F38BA8",
-			"catppuccin-mocha",
+			"#C4846C", "#A89C94", "#D4B483",
+			"#D5D2CE", "#847F7B", "#121212",
+			"#32302F", "#C4846C", "",
+			"#8AA382", "#C99D66", "#B85C5C",
+			"ashen",
 		)
-	case "tokyonight", "tokyo-night", "neon":
+	case "graphite":
 		return makeTheme(
-			"#7AA2F7", "#7DCFFF", "#E0AF68",
-			"#C0CAF5", "#7884B0", "#1A1B26",
-			"#3B4261", "#7AA2F7", "",
-			"#9ECE6A", "#E0AF68", "#F7768E",
-			"tokyonight-night",
+			"#B4C0D0", "#8E9AA8", "#D2C39A",
+			"#D4D7DC", "#7C838E", "#141518",
+			"#2E3138", "#B4C0D0", "",
+			"#7CA892", "#C7A36B", "#C7767E",
+			"ashen",
+		)
+	case "kanagawa-dragon":
+		return makeTheme(
+			"#8BA4B0", "#8EA4A2", "#C4B28A",
+			"#C5C9C5", "#7A8382", "#181616",
+			"#393836", "#8BA4B0", "",
+			"#87A987", "#C49A6C", "#C4746E",
+			"kanagawa-dragon",
+		)
+	case "kanagawa":
+		return makeTheme(
+			"#7E9CD8", "#7AA89F", "#D2B886",
+			"#D5D0B6", "#8A897E", "#1F1F28",
+			"#3B3B4C", "#7E9CD8", "",
+			"#93B070", "#D4986A", "#CF6F79",
+			"kanagawa-wave",
 		)
 	case "everforest":
 		return makeTheme(
-			"#83C092", "#7FBBB3", "#DBBC7F",
-			"#D3C6AA", "#9DA9A0", "#272E33",
-			"#495156", "#83C092", "",
-			"#A7C080", "#E69875", "#E67E80",
+			"#83B892", "#7FB0AA", "#D2B682",
+			"#D0C4A8", "#939F95", "#272E33",
+			"#474F54", "#83B892", "",
+			"#9EB87E", "#D49573", "#CF7C7E",
 			"evergarden",
 		)
-	case "gruvbox":
+	case "rose-pine":
 		return makeTheme(
-			"#83A598", "#8EC07C", "#FABD2F",
-			"#EBDBB2", "#A89984", "#282828",
-			"#504945", "#83A598", "",
-			"#B8BB26", "#FE8019", "#FB4934",
-			"gruvbox",
+			"#95C2CC", "#B59ED4", "#DFB780",
+			"#D8D6EC", "#8B87A4", "#232136",
+			"#423F56", "#95C2CC", "",
+			"#84B8A0", "#DFB780", "#D4728C",
+			"rose-pine-moon",
 		)
-	case "mono", "plain", "minimal":
+	case "catppuccin-frappe":
 		return makeTheme(
-			"#E5E7EB", "#B4BAC4", "#F8FAFC",
-			"#D8DCE2", "#8B929E", "#111317",
-			"#3A3F47", "#CBD5E1", "",
-			"#86B89A", "#D9B77A", "#D97B82",
+			"#8CAAEE", "#99B3D6", "#DEC48E",
+			"#C6D0F5", "#8C95B0", "#303446",
+			"#4C5166", "#8CAAEE", "",
+			"#9BC28D", "#DBA682", "#D8818D",
+			"catppuccin-frappe",
+		)
+	case "catppuccin-mocha":
+		return makeTheme(
+			"#89AEEC", "#A6B1E6", "#E3CEA0",
+			"#C9D2EE", "#8D93AB", "#1E1E2E",
+			"#444658", "#89AEEC", "",
+			"#9AC996", "#DFA47E", "#DC839C",
+			"catppuccin-mocha",
+		)
+	case "tokyo-night":
+		return makeTheme(
+			"#7B9CE0", "#7DB4CC", "#CEAC74",
+			"#BCC5E8", "#7681A8", "#1A1B26",
+			"#39405C", "#7B9CE0", "",
+			"#92BA70", "#CEAC74", "#D8768B",
+			"tokyonight-moon",
+		)
+	case "nord":
+		return makeTheme(
+			"#88B8C8", "#819EC0", "#D9BE8A",
+			"#DCE1E8", "#8492A8", "#2E3440",
+			"#4A5466", "#88B8C8", "",
+			"#9BB488", "#C88A72", "#B8666E",
+			"nordic",
+		)
+	case "minimal":
+		return makeTheme(
+			"#D8DCE2", "#A4ACB8", "#E6E8EC",
+			"#CFD4DC", "#7E8590", "#111317",
+			"#343942", "#C4CCD6", "",
+			"#82AE94", "#C9AB78", "#C7787F",
 			"ashen",
 		)
 	case "light":
 		return makeTheme(
-			"#0369A1", "#4F46E5", "#B45309",
-			"#1E293B", "#64748B", "#FFFFFF",
-			"#CBD5E1", "#0369A1", "#E2E8F0",
-			"#15803D", "#B45309", "#BE123C",
+			"#357EA8", "#6B68B8", "#B87A28",
+			"", "#758294", "#FAFAFA",
+			"#8E9AAB", "#357EA8", "",
+			"#2E8A57", "#B87A28", "#C7445C",
 			"catppuccin-latte",
 		)
-	case "kanagawa", "kanagawa-wave":
+
+	// --- Old School: heritage Unix, CRT phosphor, classic Vim/Emacs & paper ---
+	case "zenburn":
 		return makeTheme(
-			"#7E9CD8", "#7FB4CA", "#E6C384",
-			"#DCD7BA", "#8E8D82", "#1F1F28",
-			"#3D3D4E", "#7E9CD8", "",
-			"#98BB6C", "#FFA066", "#E46876",
-			"kanagawa-wave",
-		)
-	case "rose-pine", "rose-pine-moon", "rosepine":
-		return makeTheme(
-			"#9CCFD8", "#C4A7E7", "#F6C177",
-			"#E0DEF4", "#908CAA", "#232136",
-			"#44415A", "#9CCFD8", "",
-			"#87C7A8", "#F6C177", "#EB6F92",
-			"rose-pine-moon",
-		)
-	case "zenburn", "earth-calm", "earth":
-		return makeTheme(
-			"#8CD0D3", "#94BFF3", "#F0DFAF",
-			"#DCDCCC", "#9F9F92", "#2B2B2B",
-			"#4F4F4F", "#8CD0D3", "",
-			"#7F9F7F", "#DFAF8F", "#CC9393",
+			"#88C2C5", "#8FAFD6", "#DFCFA4",
+			"#D4D4C6", "#96968A", "#2B2B2B",
+			"#4B4B4B", "#88C2C5", "",
+			"#7F9F7F", "#D2A78A", "#C28A8A",
 			"evergarden",
 		)
-	case "nord", "nord-calm":
+	case "gruvbox":
 		return makeTheme(
-			"#88C0D0", "#81A1C1", "#EBCB8B",
-			"#E5E9F0", "#8896AE", "#2E3440",
-			"#4C566A", "#88C0D0", "",
-			"#A3BE8C", "#D08770", "#BF616A",
-			"nord",
+			"#83A598", "#8CB57B", "#D7A842",
+			"#E2D3AD", "#9E907C", "#282828",
+			"#4E4743", "#83A598", "",
+			"#A8AE3A", "#D6803A", "#CC5B4E",
+			"gruvbox",
 		)
-	case "studio", "dark", "default", "":
+	case "solarized-dark":
+		return makeTheme(
+			"#5697C4", "#5FA5A0", "#B8933B",
+			"#9AA8A9", "#6C8086", "#002B36",
+			"#204B56", "#5697C4", "",
+			"#859936", "#C46C34", "#C8504E",
+			"solarized-dark",
+		)
+	case "amber-crt":
+		return makeTheme(
+			"#D89E4C", "#B88648", "#E6B86E",
+			"#D8B782", "#8C724E", "#14100A",
+			"#3E3222", "#D89E4C", "",
+			"#A8A458", "#D89E4C", "#C46A52",
+			"gruvbox",
+		)
+	case "green-crt":
+		return makeTheme(
+			"#7EC48B", "#69A37B", "#B4CFA0",
+			"#B5CEB8", "#647D6A", "#0D140F",
+			"#283B2E", "#7EC48B", "",
+			"#7EC48B", "#B8AA66", "#BA736E",
+			"evergarden",
+		)
+	case "darcula":
+		return makeTheme(
+			"#6E9BC8", "#9A82B0", "#C9AE6C",
+			"#C2C7CC", "#7D848B", "#2B2B2B",
+			"#46494D", "#6E9BC8", "",
+			"#7BA46B", "#C9955A", "#C46C6A",
+			"darcula",
+		)
+	case "modus":
+		return makeTheme(
+			"#7CA8D8", "#7DB8B8", "#CFC07A",
+			"#DCDCDC", "#8E9298", "#0F1012",
+			"#3A3D44", "#7CA8D8", "",
+			"#76B882", "#D0A264", "#D47676",
+			"modus-vivendi",
+		)
+	case "paper":
+		return makeTheme(
+			"#457EA0", "#766CA6", "#AE7A30",
+			"", "#807A6E", "#F7F4EC",
+			"#9C9588", "#457EA0", "",
+			"#43885C", "#B57C32", "#C25259",
+			"kanagawa-lotus",
+		)
+	case "solarized-light":
+		return makeTheme(
+			"#268BD2", "#2AA198", "#B58900",
+			"", "#788B91", "#FDF6E3",
+			"#93A1A1", "#268BD2", "",
+			"#859900", "#CB4B16", "#DC322F",
+			"solarized-light",
+		)
+	case "studio":
 		fallthrough
 	default:
 		return makeTheme(
-			"#7DD3FC", "#A5B4FC", "#FCD34D",
-			"#E2E8F0", "#94A3B8", "#0F172A",
-			"#334155", "#7DD3FC", "",
-			"#6EE7B7", "#FBBF24", "#FB7185",
+			"#8BB8D6", "#9AA8C7", "#D8C38E",
+			"#DCE2EA", "#8592A6", "#0F172A",
+			"#333C4A", "#8BB8D6", "",
+			"#7EB89E", "#D6A66C", "#D47A86",
 			"github-dark",
 		)
 	}
@@ -159,11 +267,15 @@ func normalizeChromaStyle(name string) string {
 	case "kanagawa":
 		return "kanagawa-wave"
 	case "tokyo-night", "tokyonight":
-		return "tokyonight-night"
+		return "tokyonight-moon"
 	case "catppuccin":
 		return "catppuccin-mocha"
 	case "rosepine":
 		return "rose-pine-moon"
+	case "modus":
+		return "modus-vivendi"
+	case "paper":
+		return "kanagawa-lotus"
 	default:
 		return strings.TrimSpace(name)
 	}
@@ -179,51 +291,165 @@ func ResolveConfiguredTheme(themeName, syntaxTheme string) UITheme {
 	return theme
 }
 
-// GetThemeNames returns all supported UI theme identifiers.
-func GetThemeNames() []string {
+// BuiltinThemeNames returns all built-in UI theme identifiers ordered cleanly
+// into new-generation and old-school classics.
+func BuiltinThemeNames() []string {
 	return []string{
+		// New generation
 		"studio",
+		"ashen",
+		"graphite",
+		"kanagawa-dragon",
+		"kanagawa",
+		"everforest",
+		"rose-pine",
+		"catppuccin-frappe",
 		"catppuccin-mocha",
 		"tokyo-night",
-		"everforest",
-		"kanagawa",
-		"rose-pine",
-		"gruvbox",
 		"nord",
 		"minimal",
-		"zenburn",
 		"light",
+		// Old school
+		"zenburn",
+		"gruvbox",
+		"solarized-dark",
+		"amber-crt",
+		"green-crt",
+		"darcula",
+		"modus",
+		"paper",
+		"solarized-light",
 	}
 }
 
-// CanonicalThemeName maps any recognized theme name or alias to its canonical
-// identifier in GetThemeNames. Returns "" for unknown names.
+// GetThemeNames returns all supported UI theme identifiers ordered cleanly
+// into custom user themes, new-generation, and old-school classics.
+func GetThemeNames() []string {
+	builtins := BuiltinThemeNames()
+	customThemesMu.RLock()
+	customOrder := append([]string(nil), customThemeOrder...)
+	customThemesMu.RUnlock()
+	if len(customOrder) == 0 {
+		return builtins
+	}
+	seen := make(map[string]bool, len(customOrder)+len(builtins))
+	out := make([]string, 0, len(customOrder)+len(builtins))
+	for _, c := range customOrder {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	for _, b := range builtins {
+		if !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// CanonicalThemeName maps any recognized custom or built-in theme name/alias
+// to its canonical identifier. Returns "" for unknown names.
 func CanonicalThemeName(name string) string {
+	norm := NormalizeCustomThemeName(name)
+	if norm != "" {
+		customThemesMu.RLock()
+		if _, ok := customThemes[norm]; ok {
+			customThemesMu.RUnlock()
+			return norm
+		}
+		customThemesMu.RUnlock()
+	}
+	return builtinCanonicalName(name)
+}
+
+func builtinCanonicalName(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "default", "dark", "studio":
 		return "studio"
-	case "catppuccin", "catppuccin-mocha":
+	case "ashen", "ember":
+		return "ashen"
+	case "graphite", "zinc", "slate":
+		return "graphite"
+	case "kanagawa-dragon", "dragon":
+		return "kanagawa-dragon"
+	case "kanagawa", "kanagawa-wave":
+		return "kanagawa"
+	case "everforest":
+		return "everforest"
+	case "rose-pine", "rose-pine-moon", "rosepine":
+		return "rose-pine"
+	case "catppuccin-frappe", "frappe":
+		return "catppuccin-frappe"
+	case "catppuccin", "catppuccin-mocha", "mocha":
 		return "catppuccin-mocha"
 	case "tokyonight", "tokyo-night", "neon":
 		return "tokyo-night"
-	case "everforest":
-		return "everforest"
-	case "kanagawa", "kanagawa-wave":
-		return "kanagawa"
-	case "rose-pine", "rose-pine-moon", "rosepine":
-		return "rose-pine"
-	case "gruvbox":
-		return "gruvbox"
-	case "nord", "nord-calm":
+	case "nord", "nord-calm", "nordic":
 		return "nord"
 	case "minimal", "mono", "plain":
 		return "minimal"
+	case "light", "alabaster":
+		return "light"
 	case "zenburn", "earth-calm", "earth":
 		return "zenburn"
-	case "light":
-		return "light"
+	case "gruvbox":
+		return "gruvbox"
+	case "solarized", "solarized-dark":
+		return "solarized-dark"
+	case "amber", "amber-crt", "crt-amber":
+		return "amber-crt"
+	case "green", "green-crt", "crt-green", "phosphor", "vt220":
+		return "green-crt"
+	case "darcula", "jetbrains":
+		return "darcula"
+	case "modus", "modus-vivendi", "emacs":
+		return "modus"
+	case "paper", "parchment", "sepia":
+		return "paper"
+	case "solarized-light":
+		return "solarized-light"
 	default:
 		return ""
+	}
+}
+
+// ThemeEra classifies a theme as "custom", "new-gen", or "old-school".
+func ThemeEra(name string) string {
+	norm := NormalizeCustomThemeName(name)
+	customThemesMu.RLock()
+	if _, ok := customThemes[norm]; ok {
+		customThemesMu.RUnlock()
+		return "custom"
+	}
+	customThemesMu.RUnlock()
+	switch builtinCanonicalName(name) {
+	case "zenburn", "gruvbox", "solarized-dark", "amber-crt", "green-crt", "darcula", "modus", "paper", "solarized-light":
+		return "old-school"
+	default:
+		return "new-gen"
+	}
+}
+
+// IsLightTheme reports whether a theme targets a light terminal background.
+func IsLightTheme(name string) bool {
+	norm := NormalizeCustomThemeName(name)
+	customThemesMu.RLock()
+	if item, ok := customThemes[norm]; ok {
+		customThemesMu.RUnlock()
+		return item.light
+	}
+	customThemesMu.RUnlock()
+	return builtinIsLight(name)
+}
+
+func builtinIsLight(name string) bool {
+	switch builtinCanonicalName(name) {
+	case "light", "paper", "solarized-light":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -251,31 +477,60 @@ func NextThemeName(current string, step int) string {
 	return names[next]
 }
 
-// ThemeDescription returns a brief visual description for a built-in theme.
+// ThemeDescription returns a brief visual description for a custom or built-in theme.
 func ThemeDescription(name string) string {
-	switch CanonicalThemeName(name) {
+	norm := NormalizeCustomThemeName(name)
+	customThemesMu.RLock()
+	if item, ok := customThemes[norm]; ok {
+		customThemesMu.RUnlock()
+		return item.description
+	}
+	customThemesMu.RUnlock()
+	switch builtinCanonicalName(name) {
 	case "studio":
-		return "crisp dark slate"
-	case "catppuccin-mocha":
-		return "warm pastel dark"
-	case "tokyo-night":
-		return "indigo twilight dark"
-	case "everforest":
-		return "soft forest sage"
+		return "crisp architectural slate"
+	case "ashen":
+		return "muted ember & charcoal"
+	case "graphite":
+		return "editorial zinc & silver"
+	case "kanagawa-dragon":
+		return "sumi ink & muted jade"
 	case "kanagawa":
-		return "ink & wave indigo"
+		return "ukiyo-e wave & parchment"
+	case "everforest":
+		return "soft moss & cedar bark"
 	case "rose-pine":
-		return "muted plum & pine"
-	case "gruvbox":
-		return "retro warm earth"
+		return "dusky pine & muted plum"
+	case "catppuccin-frappe":
+		return "subdued slate pastel"
+	case "catppuccin-mocha":
+		return "velvety dark pastel"
+	case "tokyo-night":
+		return "muted indigo twilight"
 	case "nord":
-		return "arctic frost slate"
+		return "arctic frost & polar slate"
 	case "minimal":
-		return "monochrome low-chrome"
-	case "zenburn":
-		return "low-contrast warm charcoal"
+		return "quiet monochrome ink"
 	case "light":
-		return "clean daylight canvas"
+		return "crisp alabaster daylight"
+	case "zenburn":
+		return "classic low-contrast vim charcoal"
+	case "gruvbox":
+		return "retro warm ochre & umber"
+	case "solarized-dark":
+		return "classic precision deep teal"
+	case "amber-crt":
+		return "1980s P3 amber phosphor"
+	case "green-crt":
+		return "VT220 sage phosphor"
+	case "darcula":
+		return "classic muted steel IDE"
+	case "modus":
+		return "Emacs high-legibility dark"
+	case "paper":
+		return "warm editorial parchment"
+	case "solarized-light":
+		return "classic warm sand daylight"
 	default:
 		return "custom palette"
 	}
@@ -286,19 +541,27 @@ func GetSyntaxThemeNames() []string {
 	return []string{
 		"auto",
 		"github-dark",
-		"catppuccin-mocha",
-		"tokyonight-night",
-		"evergarden",
-		"kanagawa-wave",
-		"rose-pine-moon",
-		"gruvbox",
-		"nord",
-		"nordic",
-		"onedark",
 		"ashen",
+		"kanagawa-dragon",
+		"kanagawa-wave",
+		"evergarden",
+		"rose-pine-moon",
+		"catppuccin-frappe",
+		"catppuccin-mocha",
+		"tokyonight-moon",
+		"tokyonight-night",
+		"nordic",
+		"nord",
+		"gruvbox",
+		"solarized-dark",
+		"darcula",
+		"modus-vivendi",
+		"onedark",
+		"kanagawa-lotus",
+		"modus-operandi",
 		"catppuccin-latte",
 		"solarized-light",
-		"dracula",
+		"github",
 		"monokai",
 		"bw",
 	}

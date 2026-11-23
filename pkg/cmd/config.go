@@ -26,6 +26,8 @@ var configEditCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Open the interactive TUI configuration editor",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		workspace, _ := config.CanonicalWorkspace(".")
+		loadCustomThemes(workspace)
 		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err

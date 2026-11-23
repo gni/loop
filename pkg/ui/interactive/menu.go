@@ -101,6 +101,10 @@ func WithAltScreenTerminal(rlInput io.Reader, rlOutput io.Writer, fn func() erro
 
 	terminal.Default().EnterAltScreen(rlOutput)
 	defer terminal.Default().ExitAltScreen(rlOutput)
+	// Enable button/wheel-only mouse reporting so terminals send single SGR wheel
+	// ticks instead of Alternate Scroll Mode (3 arrow keys per notch).
+	_, _ = io.WriteString(rlOutput, terminal.EnableMouseTracking)
+	defer func() { _, _ = io.WriteString(rlOutput, terminal.DisableMouseTracking) }()
 	restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
 	defer restorePaste()
 
@@ -141,6 +145,8 @@ func RunAltScreenSession(
 	if isTTY {
 		terminal.Default().EnterAltScreen(rlOutput)
 		defer terminal.Default().ExitAltScreen(rlOutput)
+		_, _ = io.WriteString(rlOutput, terminal.EnableMouseTracking)
+		defer func() { _, _ = io.WriteString(rlOutput, terminal.DisableMouseTracking) }()
 		restorePaste := terminal.Default().BeginBracketedPaste(rlOutput)
 		defer restorePaste()
 		terminal.RefreshDimensions()
@@ -315,6 +321,12 @@ func RunSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 			continue
 		}
 		if len(keyData) == 0 {
+			continue
+		}
+		if wheel := MouseWheelDelta(keyData); wheel != 0 {
+			if len(filtered) > 0 {
+				selectedIdx = min(len(filtered)-1, max(0, selectedIdx+wheel))
+			}
 			continue
 		}
 
@@ -553,6 +565,12 @@ func RunInteractiveSelect(sr *SessionReader, signals chan os.Signal, output io.W
 		}
 		if AppendPastedQuery(key, &query, maxMenuInputBytes) {
 			selected = 0
+			continue
+		}
+		if wheel := MouseWheelDelta(key); wheel != 0 {
+			if len(indexes) > 0 {
+				selected = min(len(indexes)-1, max(0, selected+wheel))
+			}
 			continue
 		}
 		switch string(key) {

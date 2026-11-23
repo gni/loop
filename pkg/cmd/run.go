@@ -38,6 +38,7 @@ func runRoot(cmd *cobra.Command, args []string) (runErr error) {
 	if err != nil {
 		return err
 	}
+	loadCustomThemes(workspace)
 	noninteractive := printOnce || len(args) > 0 || outputMode != "text" || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
 	trusted := config.WorkspaceTrusted(configPath, workspace)
 	if cmd.Flags().Changed("trust") {

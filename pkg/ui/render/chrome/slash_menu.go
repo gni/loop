@@ -47,7 +47,7 @@ func (item SlashCommandItem) TabText() string {
 
 var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/config", Description: "everyday settings and preferences", HasSubs: true},
-	{Name: "/theme", Args: "[name|next|prev|list]", Description: "pick or switch UI color theme", HasSubs: true},
+	{Name: "/theme", Args: "[name|create|edit|list]", Description: "pick, create, or edit UI color themes", HasSubs: true},
 	{Name: "/skills", Description: "filter and pick a skill, list, or reload", HasSubs: true},
 	{Name: "/provider", Description: "manage AI endpoints, keys, and models", HasSubs: true},
 	{Name: "/model", Args: "[name]", Description: "view or set active AI model"},
@@ -100,6 +100,11 @@ func builtinSubcommands(cmd string) []SlashCommandItem {
 	case "/theme", "/themes":
 		items := []SlashCommandItem{
 			{Name: "/theme", Description: "open interactive theme picker with live preview"},
+			{Name: "/theme create", Args: "[name] [base]", Description: "create a custom theme with live editor", TakesArgs: true},
+			{Name: "/theme edit", Args: "[name]", Description: "edit a theme in the live color editor", TakesArgs: true},
+			{Name: "/theme delete", Args: "<name>", Description: "delete a saved custom theme", TakesArgs: true},
+			{Name: "/theme reload", Description: "reload custom JSON themes from disk"},
+			{Name: "/theme path", Description: "show custom themes folder and loaded files"},
 			{Name: "/theme next", Description: "cycle to the next UI theme"},
 			{Name: "/theme prev", Description: "cycle to the previous UI theme"},
 			{Name: "/theme list", Description: "list all themes with color swatches"},

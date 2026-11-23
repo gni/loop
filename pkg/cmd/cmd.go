@@ -11,7 +11,9 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/resources"
 	"loop/pkg/ui"
+	"loop/pkg/ui/style"
 )
 
 var rootCmd = &cobra.Command{
@@ -41,8 +43,19 @@ func applyPromptCatalog(cfg *config.Config) error {
 	return domaintool.LoadPromptCatalog(path)
 }
 
+func loadCustomThemes(workspace string) {
+	userDir := filepath.Join(resources.AgentDirectory(configPath), "themes")
+	dirs := []string{userDir}
+	if workspace != "" {
+		dirs = append(dirs, filepath.Join(workspace, ".loop", "themes"))
+	}
+	_, _ = style.LoadCustomThemes(dirs...)
+}
+
 func runRenderCmd(render func(io.Writer, *config.Config, ui.UITheme)) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		workspace, _ := config.CanonicalWorkspace(".")
+		loadCustomThemes(workspace)
 		cfg, err := config.LoadConfigContext(cmd.Context(), configPath)
 		if err != nil {
 			return err

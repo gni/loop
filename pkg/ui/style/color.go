@@ -1,8 +1,10 @@
 package style
 
 import (
+	"fmt"
 	"image/color"
 	"strconv"
+	"strings"
 )
 
 type colorVal struct {
@@ -15,6 +17,46 @@ func (c colorVal) RGBA() (r, g, b, a uint32) {
 	b = uint32(c.B) * 0x101
 	a = 0xffff
 	return
+}
+
+// Hex formats a colorVal as uppercase #RRGGBB.
+func (c colorVal) Hex() string {
+	return fmt.Sprintf("#%02X%02X%02X", c.R, c.G, c.B)
+}
+
+// ColorHex formats any color.Color as #RRGGBB (or "" if nil).
+func ColorHex(c color.Color) string {
+	if cv := toColorVal(c); cv != nil {
+		return cv.Hex()
+	}
+	return ""
+}
+
+// IsValidHexColor reports whether s is a valid #RGB or #RRGGBB hex color.
+func IsValidHexColor(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) > 0 && s[0] == '#' {
+		s = s[1:]
+	}
+	if len(s) != 3 && len(s) != 6 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+// NormalizeHexColor converts #RGB or #RRGGBB (with or without leading '#') to #RRGGBB.
+func NormalizeHexColor(s string) (string, bool) {
+	if !IsValidHexColor(s) {
+		return "", false
+	}
+	return Color(strings.TrimSpace(s)).Hex(), true
 }
 
 func Color(hex string) colorVal {

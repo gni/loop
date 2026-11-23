@@ -84,7 +84,7 @@ func (h *ChatHistory) decorateChatLocked(rows []string) []string {
 		theme := style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
 		rendered := logo.Render(cols, height, frame, logo.Appearance{
 			Brightness: cfg.LogoBrightness,
-			Light:      cfg.Theme == "light",
+			Light:      style.IsLightTheme(cfg.Theme),
 			Primary:    theme.Primary,
 			Highlight:  theme.Highlight,
 		})
