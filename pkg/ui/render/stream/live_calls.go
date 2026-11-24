@@ -29,6 +29,8 @@ type liveCallView struct {
 	endsWithNewline  bool
 	codeLine         strings.Builder
 	codeLineOverflow bool
+	bashLineIndex    int
+	bashHighlighter  *syntax.BashCommandHighlighter
 	language         string
 	fullContent      strings.Builder // Semantic source, including hidden chunks.
 	result           string
@@ -226,11 +228,14 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	// filtered terminal control characters. Preserve real newlines here.
 	if name == "write" {
 		sr.writeLiveCodeLocked(view, delta)
+		view.endsWithNewline = strings.HasSuffix(delta, "\n")
+	} else if name == "bash" {
+		sr.writeLiveBashLocked(view, delta)
 	} else {
 		fmt.Fprint(sr.w, delta)
+		view.endsWithNewline = strings.HasSuffix(delta, "\n")
 	}
 	view.bytes += len(delta)
-	view.endsWithNewline = strings.HasSuffix(delta, "\n")
 }
 
 // showCollapsedLiveCallLocked updates a single compact progress row instead of
@@ -260,6 +265,128 @@ func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallV
 	}
 	fmt.Fprintln(sr.w, line)
 	view.endsWithNewline = true
+}
+
+// writeLiveBashLocked formats and syntax-highlights streamed bash commands
+// line-by-line (including embedded heredocs like `python3 - <<'PY'`). Because
+// each line is emitted already highlighted upon newline or completion, long
+// wrapped lines keep full syntax colors without relying on single-row repaint.
+func (sr *StreamRenderer) writeLiveBashLocked(view *liveCallView, delta string) {
+	const maxBufferedBashLine = 8192
+	delta = strings.ReplaceAll(delta, "\r\n", "\n")
+	delta = strings.ReplaceAll(delta, "\r", "\n")
+	for delta != "" {
+		end := strings.IndexByte(delta, '\n')
+		fragment := delta
+		if end >= 0 {
+			fragment = delta[:end]
+		}
+		if fragment != "" {
+			if view.codeLineOverflow {
+				cleaned := cleanBashCommandChunk(fragment)
+				if cleaned != "" {
+					fmt.Fprint(sr.w, style.NewStyle().Foreground(sr.theme.Text).Render(cleaned))
+				}
+			} else if view.codeLine.Len()+len(fragment) > maxBufferedBashLine {
+				if view.bashLineIndex > 0 {
+					fmt.Fprint(sr.w, "  ")
+				}
+				cleaned := cleanBashCommandChunk(view.codeLine.String() + fragment)
+				view.codeLine.Reset()
+				view.codeLineOverflow = true
+				if cleaned != "" {
+					fmt.Fprint(sr.w, style.NewStyle().Foreground(sr.theme.Text).Render(cleaned))
+				}
+			} else {
+				view.codeLine.WriteString(fragment)
+			}
+		}
+		if end < 0 {
+			view.endsWithNewline = false
+			return
+		}
+		sr.emitLiveBashLineLocked(view, true)
+		delta = delta[end+1:]
+	}
+}
+
+func (sr *StreamRenderer) emitLiveBashLineLocked(view *liveCallView, withNewline bool) {
+	if view.codeLineOverflow {
+		view.codeLine.Reset()
+		view.codeLineOverflow = false
+		view.bashLineIndex++
+		if withNewline {
+			fmt.Fprint(sr.w, "\n")
+			view.endsWithNewline = true
+		}
+		return
+	}
+	cleaned := cleanBashCommandChunk(view.codeLine.String())
+	view.codeLine.Reset()
+	if view.bashLineIndex > 0 {
+		fmt.Fprint(sr.w, "  ")
+	}
+	var styled string
+	if sr.bashSyntaxColor {
+		if view.bashHighlighter == nil {
+			view.bashHighlighter = syntax.NewBashCommandHighlighter(sr.theme)
+		}
+		styled = view.bashHighlighter.HighlightLine(cleaned)
+	} else {
+		styled = style.NewStyle().Foreground(sr.theme.Text).Render(cleaned)
+	}
+	fmt.Fprint(sr.w, styled)
+	view.bashLineIndex++
+	if withNewline {
+		fmt.Fprint(sr.w, "\n")
+		view.endsWithNewline = true
+	} else {
+		view.endsWithNewline = false
+	}
+}
+
+func (sr *StreamRenderer) resyncLiveBashStateLocked(view *liveCallView) {
+	content := strings.ReplaceAll(strings.ReplaceAll(view.fullContent.String(), "\r\n", "\n"), "\r", "\n")
+	view.bytes = view.receivedBytes
+	view.bashLineIndex = 0
+	view.codeLine.Reset()
+	view.codeLineOverflow = false
+	if sr.bashSyntaxColor {
+		view.bashHighlighter = syntax.NewBashCommandHighlighter(sr.theme)
+	} else {
+		view.bashHighlighter = nil
+	}
+	if content == "" {
+		view.endsWithNewline = false
+		return
+	}
+	hasTrailingNL := strings.HasSuffix(content, "\n")
+	lines := strings.Split(content, "\n")
+	completedLines := lines
+	if hasTrailingNL {
+		completedLines = lines[:len(lines)-1]
+	} else if len(lines) > 0 {
+		completedLines = lines[:len(lines)-1]
+		// The final partial line was already painted by ReplayActiveTurn.
+		view.codeLineOverflow = true
+	}
+	for _, line := range completedLines {
+		cleaned := cleanBashCommandChunk(line)
+		if view.bashHighlighter != nil {
+			_ = view.bashHighlighter.HighlightLine(cleaned)
+		}
+		view.bashLineIndex++
+	}
+	view.endsWithNewline = hasTrailingNL
+}
+
+func cleanBashCommandChunk(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 32 && r != '\t') || r == 127 {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // writeLiveCodeLocked prints every incoming fragment immediately. Once a
@@ -423,7 +550,7 @@ func (sr *StreamRenderer) BeginToolExecution(index int, name, arguments string) 
 	view.titleLine = GetNewlineCount(sr.w)
 	symbol := render.RenderToolSymbol(name, render.ToolStatusPending, sr.theme)
 	if name == "bash" {
-		fmt.Fprintln(sr.w, render.FormatBashCommandLine(symbol, target, sr.theme))
+		fmt.Fprintln(sr.w, render.FormatBashCommandLineStyled(symbol, target, sr.theme, sr.bashSyntaxColor))
 	} else {
 		fmt.Fprintln(sr.w, render.FormatToolTitleForWidth(symbol, name, safeLiveLabel(target), sr.theme, markdown.RenderWidth(sr.w)))
 	}
@@ -458,6 +585,9 @@ func (sr *StreamRenderer) endLiveCallLocked(index int, view *liveCallView) {
 	}
 	if view.name == "write" && view.codeLine.Len() > 0 {
 		sr.flushLiveCodeLineLocked(view)
+	}
+	if view.name == "bash" && (view.codeLine.Len() > 0 || view.codeLineOverflow) {
+		sr.emitLiveBashLineLocked(view, false)
 	}
 	if !view.endsWithNewline {
 		fmt.Fprint(sr.w, "\n")

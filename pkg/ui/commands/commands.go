@@ -29,6 +29,47 @@ func IsHelpCommand(trimmed string) bool {
 	}
 }
 
+var builtinSlashCommandNames = map[string]struct{}{
+	"/doctor": {}, "/changes": {}, "/find": {}, "/latest": {},
+	"/exit": {}, "/quit": {}, "/nostop": {}, "/loop": {},
+	"/guided": {}, "/guide": {}, "/plan": {}, "/rollback": {}, "/undo": {},
+	"/tree": {}, "/branch": {}, "/fork": {}, "/clone": {}, "/rename": {}, "/name": {},
+	"/copy": {}, "/clip": {}, "/export": {}, "/thinking": {}, "/reasoning": {},
+	"/model": {}, "/new": {}, "/resume": {}, "/hotkeys": {}, "/keys": {},
+	"/toggle": {}, "/collapse": {}, "/expand": {}, "/queue": {}, "/queues": {},
+	"/task": {}, "/tasks": {}, "/stop_task": {}, "/task_kill": {}, "/taskkill": {},
+	"/kill": {}, "/stop": {}, "/task_stop": {}, "/taskstop": {},
+	"/get_task_status": {}, "/task_status": {}, "/taskstatus": {},
+	"/task_view": {}, "/taskview": {}, "/status": {}, "/ps": {},
+	"/task_list": {}, "/tasklist": {}, "/task_clear": {}, "/taskclear": {},
+	"/help": {}, "/h": {}, "/commands": {}, "/?": {},
+	"/config": {}, "/set": {}, "/theme": {}, "/themes": {},
+	"/provider": {}, "/providers": {}, "/p": {},
+	"/skills": {}, "/skill": {}, "/rewind": {}, "/clear": {}, "/clean": {}, "/reset": {},
+	"/stats": {}, "/tokens": {}, "/token": {}, "/usage": {},
+	"/session": {}, "/sessions": {}, "/compress": {}, "/compact": {},
+	"/context": {}, "/ctx": {}, "/debug": {}, "/mcp": {}, "/mcps": {},
+	"/agent": {}, "/agents": {}, "/reload": {}, "/plugins": {}, "/plugin": {},
+	"/tools": {}, "/tool": {}, "/extensions": {}, "/extension": {},
+}
+
+// IsBuiltinSlashCommand reports whether trimmed is a single-line invocation of
+// a built-in slash command. Used so pasting a command such as
+// "/config native_scroll true" executes it while keeping pasted file paths or
+// multi-line snippets literal.
+func IsBuiltinSlashCommand(trimmed string) bool {
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, "\r\n") {
+		return false
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return false
+	}
+	_, ok := builtinSlashCommandNames[parts[0]]
+	return ok
+}
+
 func commandContext(a *agent.Agent, reader *interceptor.KeyInterceptorReader) context.Context {
 	if reader != nil && reader.InputContext != nil {
 		return reader.InputContext
@@ -109,6 +150,10 @@ func HandleSlashCommand(
 		return true, false
 
 	case "/find", "/latest":
+		if a != nil && a.LiveSettings().NativeScroll {
+			fmt.Fprintln(w, "native_scroll is active: use your terminal's scrollback and search (or run /config native_scroll false for in-app history search)")
+			return true, false
+		}
 		history := ui.GetUI().GetChatHistory()
 		if history == nil {
 			fmt.Fprintln(w, "chat navigation is only available in an interactive conversation")
@@ -180,14 +225,7 @@ func HandleSlashCommand(
 		handleSessionCommand(a, append([]string{"/session", "rename"}, parts[1:]...), messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
 		return true, false
 	case "/copy", "/clip":
-		handleCopyCommand(messages, w)
-		return true, false
-	case "/select", "/copyview", "/plain":
-		if kiReader != nil && kiReader.OnNativeCopyView != nil {
-			kiReader.HandleCtrlX()
-		} else {
-			fmt.Fprintln(w, "native copy view is only available in an interactive terminal")
-		}
+		handleCopyCommand(parts, messages, w)
 		return true, false
 	case "/export":
 		handleExportCommand(a, parts, messages, currentSessionID, w)

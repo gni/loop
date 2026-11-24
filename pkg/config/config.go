@@ -75,6 +75,7 @@ type Config struct {
 	GuidedMode               bool                       `json:"guided_mode"`
 	ShowThinking             bool                       `json:"show_thinking"`
 	MarkdownRender           bool                       `json:"markdown_render"`
+	BashSyntaxColor          bool                       `json:"bash_syntax_color"`
 	CollapseResults          bool                       `json:"collapse_results"`
 	HistoryPageSize          int                        `json:"history_page_size,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`

@@ -32,31 +32,33 @@ const (
 //   - height-1: ────────────────────────────────────────── (status separator)
 //   - height:   status bar content
 type PromptPreservingWriter struct {
-	inner                 io.Writer
-	raw                   io.Writer
-	height                int
-	printLine             int // current row inside the scroll region
-	printCol              int // current column on printLine (1-based)
-	promptCursorOffset    int
-	promptCol             int // current column on promptLine for cursor restore (1-based)
-	ansiState             int
-	ansiPrevEsc           bool
-	ansiBuf               []byte
-	utf8Pending           []byte
-	writeUTF8Pending      []byte
-	activeSGR             style.SGRState
-	cursorHidden          bool
-	cursorAtPrompt        bool
-	needsReposition       bool
-	scrollCount           int
-	restoreCursorToPrompt bool
-	autoWrapPending       bool
-	autoWrapDetached      bool
-	pendingLineFeed       bool
-	trailingNewlines      int
-	needsSyntaxRefresh    bool // A live code line could not be recolored safely.
-	nativeScroll          bool
-	onRedrawFooterLocked  func(io.Writer)
+	inner                     io.Writer
+	raw                       io.Writer
+	height                    int
+	printLine                 int // current row inside the scroll region
+	printCol                  int // current column on printLine (1-based)
+	promptCursorOffset        int
+	promptCol                 int // current column on promptLine for cursor restore (1-based)
+	ansiState                 int
+	ansiPrevEsc               bool
+	ansiBuf                   []byte
+	utf8Pending               []byte
+	writeUTF8Pending          []byte
+	activeSGR                 style.SGRState
+	cursorHidden              bool
+	cursorAtPrompt            bool
+	needsReposition           bool
+	scrollCount               int
+	restoreCursorToPrompt     bool
+	autoWrapPending           bool
+	autoWrapDetached          bool
+	pendingLineFeed           bool
+	trailingNewlines          int
+	needsSyntaxRefresh        bool // A live code line could not be recolored safely.
+	nativeScroll              bool
+	onRedrawFooterLocked      func(io.Writer)
+	onNativeBeforeWriteLocked func()
+	onNativeOutputLocked      func([]byte)
 }
 
 func (p *PromptPreservingWriter) outputWriterLocked() io.Writer {
@@ -71,6 +73,9 @@ func (p *PromptPreservingWriter) SetNativeScroll(enabled bool) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	p.nativeScroll = enabled
+	if enabled && p.scrollCount == 0 && p.printCol == 1 && !p.pendingLineFeed && p.printLine == p.getScrollBottom() {
+		p.printLine = 1
+	}
 }
 
 // IsNativeScroll reports whether full-screen native scrollback mode is active.
@@ -86,6 +91,13 @@ func (p *PromptPreservingWriter) SetFooterRedrawHook(fn func(io.Writer)) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	p.onRedrawFooterLocked = fn
+}
+
+// SetNativeOutputHooksLocked registers callbacks invoked under TerminalMu around
+// native-scroll writes so overlays clear before output and mirror rows stay synced.
+func (p *PromptPreservingWriter) SetNativeOutputHooksLocked(before func(), after func([]byte)) {
+	p.onNativeBeforeWriteLocked = before
+	p.onNativeOutputLocked = after
 }
 
 func (p *PromptPreservingWriter) blockedByAltOrMenu() bool {
@@ -360,6 +372,9 @@ func (p *PromptPreservingWriter) writeLocked(data []byte) (int, error) {
 }
 
 func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen int) (int, error) {
+	if p.onNativeBeforeWriteLocked != nil {
+		p.onNativeBeforeWriteLocked()
+	}
 	scrollBottom := p.getScrollBottom()
 	termW, _ := GetTerminalSize()
 	if p.printLine > scrollBottom {
@@ -370,6 +385,7 @@ func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen in
 	}
 
 	var buf bytes.Buffer
+	var mirror bytes.Buffer
 	buf.WriteString(terminal.BeginSyncOutput)
 	buf.WriteString(terminal.ResetScrollRegion)
 	fmt.Fprintf(&buf, "\x1b[%d;%dH", p.printLine, p.printCol)
@@ -412,11 +428,13 @@ func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen in
 
 	if p.autoWrapPending && p.autoWrapDetached && !p.pendingLineFeed && p.firstTerminalActionIsGraphic(data) {
 		nativeNewline()
+		mirror.WriteByte('\n')
 	}
 
 	if p.pendingLineFeed {
 		trailing := p.trailingNewlines
 		nativeNewline()
+		mirror.WriteByte('\n')
 		p.trailingNewlines = trailing
 		p.pendingLineFeed = false
 	}
@@ -566,6 +584,7 @@ func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen in
 	if data[len(data)-1] == '\n' {
 		body := data[:len(data)-1]
 		emitBodyNative(body)
+		mirror.Write(body)
 		if p.printLine == scrollBottom {
 			p.pendingLineFeed = true
 			if p.trailingNewlines < style.ActivityGapLines+1 {
@@ -578,9 +597,11 @@ func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen in
 				p.trailingNewlines++
 			}
 			nativeNewline()
+			mirror.WriteByte('\n')
 		}
 	} else {
 		emitBodyNative(data)
+		mirror.Write(data)
 	}
 
 	if footerCleared && p.onRedrawFooterLocked != nil {
@@ -606,6 +627,9 @@ func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen in
 	buf.WriteString(terminal.EndSyncOutput)
 
 	_, err := p.outputWriterLocked().Write(buf.Bytes())
+	if p.onNativeOutputLocked != nil && mirror.Len() > 0 {
+		p.onNativeOutputLocked(mirror.Bytes())
+	}
 	return origLen, err
 }
 
@@ -904,15 +928,25 @@ func (p *PromptPreservingWriter) resetStreamParseState() {
 	p.activeSGR.Reset()
 }
 
-// BeginScrollEntry anchors a new output block to the bottom of the scrolling
-// region. The previous block is completed first so no visible text is overwritten.
+// BeginScrollEntry anchors a new output block to the active output position
+// (or the bottom of the scrolling region in paged mode). The previous block is
+// completed first so no visible text is overwritten.
 func (p *PromptPreservingWriter) BeginScrollEntry() {
 	p.EnsureNewline()
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
 	_, termH := GetTerminalSize()
 	p.ResizeLocked(termH)
-	p.printLine = p.getScrollBottom()
+	scrollBottom := p.getScrollBottom()
+	if p.nativeScroll {
+		if p.printLine < 1 {
+			p.printLine = 1
+		} else if p.printLine > scrollBottom {
+			p.printLine = scrollBottom
+		}
+	} else {
+		p.printLine = scrollBottom
+	}
 	p.printCol = 1
 	p.resetStreamParseState()
 	p.resetAutoWrap()
@@ -1071,6 +1105,11 @@ func (p *PromptPreservingWriter) RepaintActiveScrollLine(content string) bool {
 	buf.WriteString(terminal.BeginSyncOutput + "\x1b7")
 	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s%s\x1b8%s", p.printLine, content, terminal.ResetAttributes, terminal.EndSyncOutput)
 	_, err := p.outputWriterLocked().Write(buf.Bytes())
+	if err == nil && p.nativeScroll && p.onNativeOutputLocked != nil {
+		var mirror bytes.Buffer
+		fmt.Fprintf(&mirror, "\x1b7\x1b[%d;1H\x1b[2K%s%s\x1b8", p.printLine, content, terminal.ResetAttributes)
+		p.onNativeOutputLocked(mirror.Bytes())
+	}
 	return err == nil
 }
 
@@ -1132,5 +1171,14 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 	}
 	buf.WriteString("\x1b8" + terminal.EndSyncOutput)
 	_, err := p.outputWriterLocked().Write(buf.Bytes())
+	if err == nil && p.nativeScroll && p.onNativeOutputLocked != nil {
+		var mirror bytes.Buffer
+		mirror.WriteString("\x1b7")
+		for index, line := range lines {
+			fmt.Fprintf(&mirror, "\x1b[%d;1H\x1b[2K%s%s", startRow+index, line, terminal.ResetAttributes)
+		}
+		mirror.WriteString("\x1b8")
+		p.onNativeOutputLocked(mirror.Bytes())
+	}
 	return err == nil
 }

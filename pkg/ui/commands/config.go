@@ -11,6 +11,7 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/limits"
+	"loop/pkg/terminal"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
 	isettings "loop/pkg/ui/interactive/settings"
@@ -98,6 +99,15 @@ func handleConfigCommand(
 			return
 		}
 	}
+	if a.Config.NativeScroll {
+		// Force-reset mouse tracking and full-screen margins even when native_scroll
+		// was already true, so "/config native_scroll true" always unsticks terminals.
+		if rawW := agent.UnwrapWriter(w); rawW != nil {
+			ui.TerminalMu.Lock()
+			_, _ = io.WriteString(rawW, terminal.DisableMouseTracking+terminal.ResetScrollRegion)
+			ui.TerminalMu.Unlock()
+		}
+	}
 	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, notice, modal) {
 		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, false)
 		return
@@ -135,6 +145,7 @@ func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.U
 
 func configAppearanceChanged(before, after config.Config) bool {
 	return before.Logo != after.Logo || before.ReducedMotion != after.ReducedMotion || before.LogoBrightness != after.LogoBrightness || before.MarkdownRender != after.MarkdownRender ||
+		before.BashSyntaxColor != after.BashSyntaxColor ||
 		before.Theme != after.Theme ||
 		before.SyntaxTheme != after.SyntaxTheme ||
 		before.CollapseResults != after.CollapseResults ||

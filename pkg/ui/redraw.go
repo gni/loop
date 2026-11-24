@@ -193,7 +193,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	var finalBuf bytes.Buffer
 	cwFinal := crnlWriter{W: &finalBuf}
 	if live.NativeScroll {
-		fmt.Fprintf(cwFinal, "%s\x1b[r\x1b[2J\x1b[H", terminal.BeginSyncOutput)
+		fmt.Fprintf(cwFinal, "%s%s\x1b[r\x1b[2J\x1b[H", terminal.BeginSyncOutput, terminal.DisableMouseTracking)
 		finalBuf.Write(buf.Bytes())
 		endRow := 1
 		if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
@@ -229,4 +229,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	}
 	finalBuf.WriteString(terminal.EndSyncOutput)
 	_, _ = dest.Write(finalBuf.Bytes())
+	if live.NativeScroll && history != nil {
+		history.SyncNativeScreenLocked(buf.Bytes())
+	}
 }

@@ -33,23 +33,26 @@ func configuredHistoryPageSize(a *agent.Agent) int {
 func New(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *ui.PromptPreservingWriter, id string, initial []db.Message) (*ChatHistory, error) {
 	width, height := ui.GetTerminalSize()
 	pasteOffset := ui.GetUI().GetPasteLinesOffset()
+	nativeScroll := a != nil && a.LiveSettings().NativeScroll
 	h := &ChatHistory{a: a, reader: reader, writer: writer, captureOnly: true,
 		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, pasteOffset))}
-	paged, pageErr := render.NewPagedScrollback(width, h.buffer.Height)
-	if pageErr == nil {
-		if pageSize := configuredHistoryPageSize(a); pageSize > 0 {
-			paged.SetPageSize(pageSize)
-		}
-		h.buffer = paged
-	}
-	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
-	if turnErr == nil && turnFile != nil {
-		_ = os.Remove(turnFile.Name())
-	}
-	h.turnFile = turnFile
 	var err error
-	h.source, err = h.openHistory(id, initial)
-	err = errors.Join(err, pageErr, turnErr)
+	if !nativeScroll {
+		paged, pageErr := render.NewPagedScrollback(width, h.buffer.Height)
+		if pageErr == nil {
+			if pageSize := configuredHistoryPageSize(a); pageSize > 0 {
+				paged.SetPageSize(pageSize)
+			}
+			h.buffer = paged
+		}
+		turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
+		if turnErr == nil && turnFile != nil {
+			_ = os.Remove(turnFile.Name())
+		}
+		h.turnFile = turnFile
+		h.source, err = h.openHistory(id, initial)
+		err = errors.Join(err, pageErr, turnErr)
+	}
 	h.sessionID = id
 	h.previousSink = a.EventSink
 	a.EventSink = func(event agent.Event) error {
@@ -68,6 +71,7 @@ func New(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *ui.Pr
 	h.appearance = h.appearanceKey()
 	ui.TerminalMu.Lock()
 	writer.SetInnerLocked(&historyOutput{destination: writer.InnerLocked(), history: h})
+	writer.SetNativeOutputHooksLocked(h.onNativeBeforeWriteLocked, h.onNativeOutputLocked)
 	ui.GetUI().SetChatHistory(h)
 	if reader != nil && reader.W != nil {
 		if a != nil {
@@ -88,38 +92,55 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 		return io.ErrClosedPipe
 	}
 	sequence := h.resetSequence.Add(1)
-	source, err := h.openHistory(id, initial)
-	if err != nil {
-		if source != nil {
-			_ = source.Close()
-		}
-		return err
-	}
 	width, height := ui.GetTerminalSize()
-	buffer, pageErr := render.NewPagedScrollback(width, style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset()))
-	if pageErr != nil {
-		if source != nil {
-			_ = source.Close()
+	nativeScroll := h.isNativeScroll()
+	var (
+		source   displayHistorySource
+		buffer   *render.Scrollback
+		turnFile *os.File
+		err      error
+	)
+	if nativeScroll {
+		buffer = render.NewScrollback(width, style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset()))
+	} else {
+		source, err = h.openHistory(id, initial)
+		if err != nil {
+			if source != nil {
+				_ = source.Close()
+			}
+			return err
 		}
-		return errors.Join(err, pageErr)
-	}
-	if pageSize := configuredHistoryPageSize(h.a); pageSize > 0 {
-		buffer.SetPageSize(pageSize)
-	}
-	turnFile, turnErr := os.CreateTemp("", "loop-display-turns-*")
-	if turnErr != nil {
-		_ = buffer.Close()
-		if source != nil {
-			_ = source.Close()
+		var pageErr error
+		buffer, pageErr = render.NewPagedScrollback(width, style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset()))
+		if pageErr != nil {
+			if source != nil {
+				_ = source.Close()
+			}
+			return errors.Join(err, pageErr)
 		}
-		return errors.Join(err, turnErr)
+		if pageSize := configuredHistoryPageSize(h.a); pageSize > 0 {
+			buffer.SetPageSize(pageSize)
+		}
+		var turnErr error
+		turnFile, turnErr = os.CreateTemp("", "loop-display-turns-*")
+		if turnErr != nil {
+			_ = buffer.Close()
+			if source != nil {
+				_ = source.Close()
+			}
+			return errors.Join(err, turnErr)
+		}
+		_ = os.Remove(turnFile.Name())
 	}
-	_ = os.Remove(turnFile.Name())
 	ui.TerminalMu.Lock()
 	if h.closed.Load() || h.resetSequence.Load() != sequence {
 		ui.TerminalMu.Unlock()
-		_ = buffer.Close()
-		_ = turnFile.Close()
+		if buffer != nil {
+			_ = buffer.Close()
+		}
+		if turnFile != nil {
+			_ = turnFile.Close()
+		}
 		if source != nil {
 			_ = source.Close()
 		}
@@ -140,9 +161,10 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	h.slashSelected = 0
 	h.slashScroll = 0
 	h.setSlashMenuOpenLocked(false)
-	h.clearSelectionLocked()
 	h.drawn, h.drawnHint = nil, ""
 	h.logoFrame = 0
+	h.logoVisible = false
+	h.nativeHasOutput = false
 	h.buffer = buffer
 	h.source, h.historyErr = source, nil
 	h.turnMu.Lock()
@@ -206,12 +228,12 @@ func (h *ChatHistory) Close() {
 		h.stopMouse()
 		h.stopMouse = nil
 	}
-	h.clearSelectionLocked()
 	h.closePagesLocked()
 	if h.a != nil {
 		h.a.EventSink = h.previousSink
 	}
 	if h.writer != nil {
+		h.writer.SetNativeOutputHooksLocked(nil, nil)
 		if output, ok := h.writer.InnerLocked().(*historyOutput); ok && output.history == h {
 			h.writer.SetInnerLocked(output.destination)
 		}

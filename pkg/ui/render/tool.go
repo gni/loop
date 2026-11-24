@@ -33,6 +33,10 @@ func RepairArgsJSON(js string) string {
 }
 
 func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSON string) {
+	RenderToolHeaderStyled(w, theme, toolName, argsJSON, true)
+}
+
+func RenderToolHeaderStyled(w io.Writer, theme style.UITheme, toolName string, argsJSON string, bashSyntaxColor bool) {
 	toolName = domaintool.NormalizeName(toolName)
 	symbol := RenderToolSymbol(toolName, ToolStatusPending, theme)
 	pathVal := ExtractToolTarget(toolName, argsJSON)
@@ -40,7 +44,7 @@ func RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, argsJSO
 		pathVal = strings.TrimSpace(argsJSON)
 	}
 	if toolName == "bash" || IsCommandLikeTool(toolName) {
-		fmt.Fprintln(w, FormatBashCommandLine(symbol, pathVal, theme))
+		fmt.Fprintln(w, FormatBashCommandLineStyled(symbol, pathVal, theme, bashSyntaxColor))
 		return
 	}
 	fmt.Fprintln(w, FormatToolTitleForWidth(symbol, toolName, pathVal, theme, markdown.RenderWidth(w)))
@@ -148,6 +152,10 @@ func RenderCollapsedNotice(w io.Writer, lineCount int, theme style.UITheme) {
 }
 
 func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool) {
+	RenderToolOutputWithOptions(w, output, isError, collapse, theme, toolName, argsJSON, bodyWasStreamed, true)
+}
+
+func RenderToolOutputWithOptions(w io.Writer, output string, isError bool, collapse bool, theme style.UITheme, toolName string, argsJSON string, bodyWasStreamed bool, bashSyntaxColor bool) {
 	toolName = domaintool.NormalizeName(toolName)
 	if !isError {
 		if toolName == "task_state" {
@@ -211,38 +219,67 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 		renderFailure(w, output, toolName, collapse, theme)
 		return
 	}
+	isBashTool := toolName == "bash" || IsCommandLikeTool(toolName)
 	body := output
+	exitFooter := ""
+	if isBashTool {
+		body, exitFooter = syntax.SplitBashExitCodeFooter(body)
+	}
 	isJSON := false
 	if !isError {
 		if toolName == "ask_user" {
 			body = askUserSelectionSummary(body)
 		}
-		trimmedBody := strings.TrimSpace(body)
-		if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) || (strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
-			var temp any
-			if json.Unmarshal([]byte(trimmedBody), &temp) == nil {
-				if collapse && toolName != "bash" && !isCodeContentTool(toolName) {
-					renderStructuredSummary(w, temp, theme)
-					return
-				}
-				if pretty, err := json.MarshalIndent(temp, "", "  "); err == nil {
-					body = string(pretty)
-					isJSON = true
+		if !isBashTool || bashSyntaxColor {
+			trimmedBody := strings.TrimSpace(body)
+			if (strings.HasPrefix(trimmedBody, "{") && strings.HasSuffix(trimmedBody, "}")) || (strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]")) {
+				var temp any
+				if json.Unmarshal([]byte(trimmedBody), &temp) == nil {
+					if collapse && !isBashTool && !isCodeContentTool(toolName) {
+						renderStructuredSummary(w, temp, theme)
+						return
+					}
+					if pretty, err := json.MarshalIndent(temp, "", "  "); err == nil {
+						body = string(pretty)
+						isJSON = true
+					}
 				}
 			}
 		}
 		if toolName == "grep" && !strings.Contains(body, "\x1b[") {
 			body = syntax.HighlightGrepBody(body, theme)
-		} else if (isCodeContentTool(toolName) || isJSON || (toolName == "bash" && syntax.ShellOutputLanguage(ExtractToolTarget(toolName, argsJSON), body) != "plaintext")) && !strings.Contains(body, "\x1b[") {
+		} else if isBashTool {
+			if bashSyntaxColor && !strings.Contains(body, "\x1b[") {
+				cmdTarget := ExtractToolTarget(toolName, argsJSON)
+				if isJSON {
+					body = highlightToolBody(body, toolName, argsJSON, true, bodyWasStreamed, theme)
+				} else if syntax.LooksLikeBashGrepOutput(body) {
+					body = syntax.HighlightBashGrepBody(body, theme)
+				} else if syntax.ShellOutputLanguage(cmdTarget, body) != "plaintext" {
+					body = highlightToolBody(body, toolName, argsJSON, false, bodyWasStreamed, theme)
+				}
+			}
+		} else if (isCodeContentTool(toolName) || isJSON) && !strings.Contains(body, "\x1b[") {
 			body = highlightToolBody(body, toolName, argsJSON, isJSON, bodyWasStreamed, theme)
 		}
 	}
 
 	body = strings.TrimRight(body, "\r\n")
-	lines := strings.Split(body, "\n")
+	var lines []string
+	if body != "" {
+		lines = strings.Split(body, "\n")
+	}
+	totalLines := len(lines)
+	if exitFooter != "" {
+		if totalLines > 0 {
+			totalLines += 2
+		} else {
+			totalLines = 1
+		}
+	}
 
-	if collapse && !isError && len(lines) > 0 {
-		RenderCollapsedNotice(w, len(lines), theme)
+	if collapse && !isError && totalLines > 0 {
+		RenderCollapsedNotice(w, totalLines, theme)
 	} else {
 		bodyStyle := style.NewStyle().Foreground(theme.Text)
 		isDiffTool := IsEditLikeTool(toolName)
@@ -258,6 +295,12 @@ func RenderToolOutput(w io.Writer, output string, isError bool, collapse bool, t
 			} else {
 				fmt.Fprintln(w, bodyStyle.Render(line))
 			}
+		}
+		if exitFooter != "" {
+			if len(lines) > 0 {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Render(exitFooter))
 		}
 	}
 	if !isError && IsEditLikeTool(toolName) {

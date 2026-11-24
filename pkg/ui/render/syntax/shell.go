@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -17,6 +18,50 @@ import (
 
 	"loop/pkg/ui/style"
 )
+
+type shellOutputMode uint8
+
+const (
+	shellModeAuto shellOutputMode = iota
+	shellModeRead
+	shellModeGrep
+	shellModeDiff
+)
+
+// SplitBashExitCodeFooter separates the trailing "[Command exit code: N]" line
+// appended by tool finalization from the actual command output so language and
+// JSON detection operate on clean command output.
+func SplitBashExitCodeFooter(output string) (body, footer string) {
+	trimmed := strings.TrimRight(output, "\r\n")
+	if !strings.HasSuffix(trimmed, "]") {
+		return output, ""
+	}
+	lastNL := strings.LastIndexByte(trimmed, '\n')
+	lastLine := trimmed
+	if lastNL >= 0 {
+		lastLine = trimmed[lastNL+1:]
+	}
+	if !isBashExitCodeLine(lastLine) {
+		return output, ""
+	}
+	if lastNL < 0 {
+		return "", lastLine
+	}
+	return strings.TrimRight(trimmed[:lastNL], "\r\n"), lastLine
+}
+
+func isBashExitCodeLine(line string) bool {
+	rest, ok := strings.CutPrefix(line, "[Command exit code: ")
+	if !ok {
+		return false
+	}
+	codeStr, ok := strings.CutSuffix(rest, "]")
+	if !ok || codeStr == "" {
+		return false
+	}
+	_, err := strconv.Atoi(codeStr)
+	return err == nil
+}
 
 // shellSyntaxWords only extracts display hints. It never expands or executes
 // shell expressions, reads files, or changes the command sent to the executor.
@@ -63,12 +108,15 @@ func shellSyntaxWords(command string) []string {
 }
 
 // shellCommandSyntaxHint parses the shell command once to determine any explicit
-// filename-based syntax language and whether a file-reading command is present.
-func shellCommandSyntaxHint(command string) (fileLang string, readCommand bool) {
+// language hint (filename, diff, json, yaml) and output mode (read, grep, diff).
+func shellCommandSyntaxHint(command string) (fileLang string, mode shellOutputMode) {
 	reading, commandNext, redirect := false, true, false
+	currentCmd := ""
+	gitSubcmd := ""
 	for _, word := range shellSyntaxWords(command) {
 		if len(word) == 1 && strings.ContainsAny(word, "\n|&;()") {
 			reading, commandNext, redirect = false, true, false
+			currentCmd, gitSubcmd = "", ""
 			continue
 		}
 		if word == ">" {
@@ -82,16 +130,76 @@ func shellCommandSyntaxHint(command string) (fileLang string, readCommand bool) 
 			continue
 		}
 		if commandNext {
-			if word == "command" || word == "env" || (strings.Contains(word, "=") && !strings.HasPrefix(word, "-")) {
+			if word == "command" || word == "env" || word == "sudo" || (strings.Contains(word, "=") && !strings.HasPrefix(word, "-")) {
 				continue
 			}
 			commandNext = false
-			switch filepath.Base(word) {
-			case "cat", "head", "tail", "sed", "awk", "nl", "bat", "batcat", "grep", "rg":
-				reading, readCommand = true, true
+			currentCmd = filepath.Base(word)
+			switch currentCmd {
+			case "cat", "head", "tail", "sed", "awk", "nl", "bat", "batcat", "less", "more":
+				reading = true
+				if mode == shellModeAuto {
+					mode = shellModeRead
+				}
+			case "grep", "egrep", "fgrep", "rg", "ag", "ack":
+				reading = true
+				mode = shellModeGrep
+			case "diff", "colordiff":
+				mode = shellModeDiff
+				if fileLang == "" {
+					fileLang = "diff"
+				}
+			case "jq":
+				if fileLang == "" {
+					fileLang = "json"
+				}
+			case "yq":
+				if fileLang == "" {
+					fileLang = "yaml"
+				}
 			}
 			continue
 		}
+
+		if currentCmd == "git" {
+			if gitSubcmd == "" {
+				if strings.HasPrefix(word, "-") {
+					continue
+				}
+				gitSubcmd = word
+				switch gitSubcmd {
+				case "diff":
+					mode = shellModeDiff
+					fileLang = "diff"
+				case "show":
+					mode = shellModeDiff
+					fileLang = "diff"
+				case "grep":
+					mode = shellModeGrep
+					reading = true
+				}
+				continue
+			}
+			switch gitSubcmd {
+			case "log":
+				if word == "-p" || word == "--patch" || word == "-u" {
+					mode = shellModeDiff
+					fileLang = "diff"
+				}
+			case "show":
+				// Handle `git show HEAD:path/to/file.go` -> highlight as Go, not diff.
+				if !strings.HasPrefix(word, "-") {
+					if _, pathPart, ok := strings.Cut(word, ":"); ok && pathPart != "" {
+						if candidate := ResolveSyntaxLanguage(pathPart, ""); candidate != "" && candidate != "plaintext" {
+							fileLang = candidate
+							mode = shellModeRead
+						}
+					}
+				}
+			}
+			continue
+		}
+
 		if !reading || strings.HasPrefix(word, "-") || strings.ContainsAny(word, "$`*?") {
 			continue
 		}
@@ -104,25 +212,143 @@ func shellCommandSyntaxHint(command string) (fileLang string, readCommand bool) 
 			continue
 		}
 		if fileLang != "" && fileLang != candidate {
-			return "plaintext", readCommand
+			if mode == shellModeGrep {
+				fileLang = ""
+				continue
+			}
+			return "plaintext", mode
 		}
 		fileLang = candidate
 	}
-	return fileLang, readCommand
+	return fileLang, mode
 }
 
-// ShellOutputLanguage favors the source filenames of common read commands.
-// Unrelated commands retain plain logs, while recognizable JSON is highlighted.
+// IsBashGrepCommand reports whether command invokes a grep-style search tool
+// (grep, rg, git grep, etc.) whose results use path:line:code formatting.
+func IsBashGrepCommand(command string) bool {
+	_, mode := shellCommandSyntaxHint(command)
+	return mode == shellModeGrep
+}
+
+// looksLikeJSONPrefix recognizes both complete JSON documents and streaming
+// JSON prefixes (before the closing brace arrives) without matching log tags
+// such as "[INFO]" or "[Command exit code: 0]".
+func looksLikeJSONPrefix(sample string) bool {
+	trimmed := strings.TrimSpace(sample)
+	if len(trimmed) < 2 {
+		return false
+	}
+	first := trimmed[0]
+	if first != '{' && first != '[' {
+		return false
+	}
+	if json.Valid([]byte(trimmed)) {
+		return true
+	}
+	rest := strings.TrimLeftFunc(trimmed[1:], unicode.IsSpace)
+	if rest == "" {
+		return false
+	}
+	if first == '{' {
+		if rest[0] == '}' {
+			return true
+		}
+		if rest[0] != '"' {
+			return false
+		}
+		// Require a closing quote followed by ':' (or end of chunk inside the key).
+		escaped := false
+		for i := 1; i < len(rest); i++ {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if rest[i] == '\\' {
+				escaped = true
+				continue
+			}
+			if rest[i] == '"' {
+				afterKey := strings.TrimLeftFunc(rest[i+1:], unicode.IsSpace)
+				return afterKey == "" || afterKey[0] == ':'
+			}
+			if rest[i] == '\n' || rest[i] == '\r' {
+				return false
+			}
+		}
+		return true
+	}
+	// Array '[': accept nested object/array, quoted string, or JSON literal/number.
+	switch rest[0] {
+	case '{', '[', ']', '"':
+		return true
+	case 't':
+		return strings.HasPrefix(rest, "true") && (len(rest) == 4 || isJSONDelim(rest[4]))
+	case 'f':
+		return strings.HasPrefix(rest, "false") && (len(rest) == 5 || isJSONDelim(rest[5]))
+	case 'n':
+		return strings.HasPrefix(rest, "null") && (len(rest) == 4 || isJSONDelim(rest[4]))
+	}
+	if rest[0] == '-' || (rest[0] >= '0' && rest[0] <= '9') {
+		i := 0
+		if rest[i] == '-' {
+			i++
+		}
+		digits := 0
+		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+			i++
+			digits++
+		}
+		if digits == 0 {
+			return false
+		}
+		if i < len(rest) && rest[i] == '.' {
+			i++
+			for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+				i++
+			}
+		}
+		return i == len(rest) || isJSONDelim(rest[i])
+	}
+	return false
+}
+
+func isJSONDelim(b byte) bool {
+	return b == ',' || b == ']' || b == '}' || b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+func looksLikeUnifiedDiff(sample string) bool {
+	trimmed := strings.TrimLeft(sample, "\r\n")
+	if strings.HasPrefix(trimmed, "diff --git ") || strings.HasPrefix(trimmed, "@@ -") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "--- ") {
+		if _, rest, ok := strings.Cut(trimmed, "\n"); ok {
+			return strings.HasPrefix(rest, "+++ ")
+		}
+	}
+	return false
+}
+
+// ShellOutputLanguage favors the source filenames and structured formats of
+// common shell commands. Unrelated commands retain plain logs, while JSON and
+// unified diffs are highlighted automatically.
 func ShellOutputLanguage(command, source string) string {
-	language, readCommand := shellCommandSyntaxHint(command)
-	if language != "" {
+	cleanSource, _ := SplitBashExitCodeFooter(source)
+	language, mode := shellCommandSyntaxHint(command)
+	if language != "" && mode != shellModeGrep {
 		return language
 	}
-	if json.Valid([]byte(source)) && (strings.HasPrefix(strings.TrimSpace(source), "{") || strings.HasPrefix(strings.TrimSpace(source), "[")) {
+	if looksLikeJSONPrefix(cleanSource) {
 		return "json"
 	}
-	if readCommand {
-		return ResolveSyntaxLanguage("", source)
+	if looksLikeUnifiedDiff(cleanSource) {
+		return "diff"
+	}
+	if mode == shellModeRead {
+		return ResolveSyntaxLanguage("", cleanSource)
+	}
+	if mode == shellModeGrep && language != "" && !LooksLikeBashGrepOutput(cleanSource) {
+		return language
 	}
 	return "plaintext"
 }
@@ -188,23 +414,33 @@ func highlightSyntaxFragment(prefix, source, language, chromaStyle string) strin
 type shellSyntaxWriter struct {
 	mu                           sync.Mutex
 	writer                       io.Writer
+	theme                        style.UITheme
 	command, chromaStyle, prefix string
 	resolvedLang                 string
-	readCommand                  bool
+	mode                         shellOutputMode
+	grepActive                   bool
 	sampledBytes                 int
 	nativeColor                  bool
 }
 
-// NewShellOutputWriter colors source printed by read commands while preserving
-// partial lines, original program colors, and concurrent stdout/stderr writes.
+// NewShellOutputWriter colors source, diffs, grep matches, and JSON printed by
+// shell commands while preserving partial lines, original program colors, and
+// concurrent stdout/stderr writes.
 func NewShellOutputWriter(w io.Writer, command string, theme style.UITheme) io.Writer {
-	fileLang, readCmd := shellCommandSyntaxHint(command)
+	fileLang, mode := shellCommandSyntaxHint(command)
+	resolved := fileLang
+	if mode == shellModeGrep {
+		// Wait for the first chunk so path:line:code uses grep highlighting
+		// instead of mis-highlighting filenames as source tokens.
+		resolved = ""
+	}
 	return &shellSyntaxWriter{
 		writer:       w,
+		theme:        theme,
 		command:      command,
 		chromaStyle:  theme.ChromaStyle,
-		resolvedLang: fileLang,
-		readCommand:  readCmd,
+		resolvedLang: resolved,
+		mode:         mode,
 	}
 }
 
@@ -245,23 +481,41 @@ func (w *shellSyntaxWriter) resolveStreamLanguage(sample string) string {
 	if trimmed == "" {
 		return "plaintext"
 	}
-	if !w.readCommand {
-		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-			w.resolvedLang = "plaintext"
+	if w.mode == shellModeGrep || LooksLikeBashGrepOutput(sample) {
+		if LooksLikeBashGrepOutput(sample) {
+			w.grepActive = true
+			return ""
+		}
+		if w.mode == shellModeGrep {
+			fileLang, _ := shellCommandSyntaxHint(w.command)
+			if fileLang != "" {
+				w.resolvedLang = fileLang
+				return fileLang
+			}
+			if w.sampledBytes >= 512 {
+				w.resolvedLang = "plaintext"
+			}
 			return "plaintext"
 		}
-		if json.Valid([]byte(sample)) {
-			w.resolvedLang = "json"
-			return "json"
-		}
-		if w.sampledBytes >= 4096 {
-			w.resolvedLang = "plaintext"
-		}
-		return "plaintext"
 	}
-	if json.Valid([]byte(sample)) && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+	if looksLikeUnifiedDiff(sample) {
+		w.resolvedLang = "diff"
+		return "diff"
+	}
+	if looksLikeJSONPrefix(sample) {
 		w.resolvedLang = "json"
 		return "json"
+	}
+	if w.mode != shellModeRead {
+		if w.sampledBytes < 256 {
+			if trimmed == "{" || trimmed == "[" ||
+				((strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && !strings.Contains(sample, "\n")) ||
+				(strings.HasPrefix(trimmed, "--- ") && strings.Count(trimmed, "\n") == 0) {
+				return "plaintext"
+			}
+		}
+		w.resolvedLang = "plaintext"
+		return "plaintext"
 	}
 	lang := ResolveSyntaxLanguage("", sample)
 	if lang != "" && lang != "plaintext" && (w.sampledBytes >= 256 || strings.Contains(sample, "\n")) {
@@ -285,14 +539,23 @@ func (w *shellSyntaxWriter) writeFragment(p []byte) (int, error) {
 		w.prefix = ""
 		return w.writer.Write(p)
 	}
-	if w.resolvedLang == "plaintext" {
+	if w.resolvedLang == "plaintext" && !w.grepActive {
 		return w.writer.Write(p)
 	}
 	source := string(p)
 	w.sampledBytes += len(p)
 	combined := w.prefix + source
-	language := w.resolveStreamLanguage(combined)
-	colored := highlightSyntaxFragment(w.prefix, source, language, w.chromaStyle)
+	var colored string
+	if w.grepActive {
+		colored = HighlightBashGrepBody(source, w.theme)
+	} else {
+		language := w.resolveStreamLanguage(combined)
+		if w.grepActive {
+			colored = HighlightBashGrepBody(source, w.theme)
+		} else {
+			colored = highlightSyntaxFragment(w.prefix, source, language, w.chromaStyle)
+		}
+	}
 	n, err := io.WriteString(w.writer, colored)
 	if err != nil {
 		return 0, err
@@ -300,7 +563,7 @@ func (w *shellSyntaxWriter) writeFragment(p []byte) (int, error) {
 	if n != len(colored) {
 		return 0, io.ErrShortWrite
 	}
-	if w.resolvedLang == "plaintext" {
+	if w.resolvedLang == "plaintext" || w.grepActive {
 		w.prefix = ""
 	} else {
 		w.prefix = syntaxContextTail(combined)

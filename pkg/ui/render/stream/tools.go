@@ -235,7 +235,7 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 	}
 	symbol := render.RenderToolSymbol(toolName, status, sr.theme)
 	if toolName == "bash" || render.IsCommandLikeTool(toolName) {
-		ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], render.FormatBashCommandLine(symbol, target, sr.theme))
+		ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], render.FormatBashCommandLineStyled(symbol, target, sr.theme, sr.bashSyntaxColor))
 		return
 	}
 	ReplaceTrackedStreamLine(sr.w, sr.parser.ToolTitleLineNumbers[index], render.FormatToolTitleForWidth(symbol, toolName, target, sr.theme, width))
@@ -285,7 +285,11 @@ func (sr *StreamRenderer) MarkPendingWriteResults(label string) {
 func (sr *StreamRenderer) NewShellOutputWriter(w io.Writer, arguments string) io.Writer {
 	sr.mu.Lock()
 	theme := sr.theme
+	enabled := sr.bashSyntaxColor
 	sr.mu.Unlock()
+	if !enabled {
+		return w
+	}
 	return syntax.NewShellOutputWriter(w, render.ExtractToolTarget("bash", arguments), theme)
 }
 

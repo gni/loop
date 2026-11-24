@@ -77,9 +77,22 @@ func (shell *manualShell) execute(
 	}
 	target, isPureCd, directoryErr := directoryCommand(cmdStr)
 
+	bashSyntaxColor := a.LiveSettings().BashSyntaxColor
 	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
 	ppWriter.BeginScrollEntry()
-	fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
+	if bashSyntaxColor && strings.HasPrefix(strings.TrimLeft(line, " \t"), "!") {
+		cleaned := strings.ReplaceAll(strings.ReplaceAll(cmdStr, "\r\n", "\n"), "\r", "\n")
+		highlighted := render.HighlightBashCommandLines(strings.Split(cleaned, "\n"), theme)
+		for idx, styled := range highlighted {
+			if idx == 0 {
+				fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix+"!"), styled)
+			} else {
+				fmt.Fprintf(ppWriter, "   %s\n", styled)
+			}
+		}
+	} else {
+		fmt.Fprintf(ppWriter, "%s%s\n", promptStyle.Render(promptPrefix), line)
+	}
 
 	if isPureCd {
 		if directoryErr != nil {
@@ -144,7 +157,10 @@ func (shell *manualShell) execute(
 	stdout := &process.Buffer{Limit: maxManualCommandCaptureBytes, TailBytes: 64 << 10}
 	stderr := &process.Buffer{Limit: maxManualCommandCaptureBytes, TailBytes: 64 << 10}
 	cw := interceptor.CRNLWriter{W: ppWriter}
-	console := render.NewShellOutputWriter(cw, cmdStr, theme)
+	var console io.Writer = cw
+	if bashSyntaxColor {
+		console = render.NewShellOutputWriter(cw, cmdStr, theme)
+	}
 	outWriter := io.MultiWriter(stdout, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
 	errWriter := io.MultiWriter(stderr, process.BestEffortWriter{Writer: interceptor.NewSafeShellOutputWriter(console)})
 	stopIndicator := startManualCommandIndicator(theme, a.LiveSettings().ShowMicroseconds)

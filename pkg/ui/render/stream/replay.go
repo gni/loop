@@ -64,6 +64,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 	inThinking := sr.inThinking
 	textFlushed := sr.liveReplayTextFlushed
 	markdownEnabled := sr.markdownEnabled
+	bashSyntaxColor := sr.bashSyntaxColor
 	activeCall := sr.liveActiveCall
 	showMicroseconds := sr.showMicroseconds
 	sr.mu.Unlock()
@@ -137,7 +138,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 			}
 			if call.name == "task_state" {
 				if call.resultRecorded && (call.failed || task.ShowProgressNotice(call.output, call.arguments)) {
-					render.RenderToolOutput(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false)
+					render.RenderToolOutputWithOptions(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false, bashSyntaxColor)
 				}
 				continue
 			}
@@ -161,7 +162,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				if command == "" && call.arguments != "" {
 					command = render.ExtractToolTarget(call.name, call.arguments)
 				}
-				fmt.Fprint(w, render.FormatBashCommandLine(render.RenderToolSymbol(call.name, status, theme), command, theme))
+				fmt.Fprint(w, render.FormatBashCommandLineStyled(render.RenderToolSymbol(call.name, status, theme), command, theme, bashSyntaxColor))
 				if !last || ev.index != activeCall || call.completed {
 					fmt.Fprintln(w)
 				}
@@ -169,7 +170,7 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				fmt.Fprintln(w, render.FormatToolTitleForWidth(render.RenderToolSymbol(call.name, status, theme), call.name, path, theme, viewportWidth))
 			}
 			if call.resultRecorded {
-				render.RenderToolOutput(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false)
+				render.RenderToolOutputWithOptions(w, call.output, call.failed, collapsed, theme, call.name, call.arguments, false, bashSyntaxColor)
 				continue
 			}
 			if call.name == "bash" {

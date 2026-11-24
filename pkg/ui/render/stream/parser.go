@@ -43,6 +43,7 @@ type JSONStreamParser struct {
 	BodyEndsWithNewline  bool
 	ActiveToolIndex      int
 	StreamWrites         bool
+	BashSyntaxColor      bool
 	IsRawStream          bool
 
 	utf8Pending     [utf8.UTFMax]byte
@@ -55,7 +56,8 @@ type JSONStreamParser struct {
 
 func NewJSONStreamParser(streamWrites bool) *JSONStreamParser {
 	return &JSONStreamParser{
-		StreamWrites: streamWrites,
+		StreamWrites:    streamWrites,
+		BashSyntaxColor: true,
 	}
 }
 
@@ -588,7 +590,7 @@ func (p *JSONStreamParser) Feed(chunk string, w io.Writer, theme style.UITheme) 
 func (p *JSONStreamParser) formatCurrentTitle(w io.Writer, theme style.UITheme) string {
 	symbol := render.RenderToolSymbol(p.ActiveToolName, render.ToolStatusPending, theme)
 	if p.ActiveToolName == "bash" {
-		return render.FormatBashCommandLine(symbol, p.Path, theme)
+		return render.FormatBashCommandLineStyled(symbol, p.Path, theme, p.BashSyntaxColor)
 	}
 	return render.FormatToolTitleForWidth(symbol, p.ActiveToolName, p.Path, theme, markdown.RenderWidth(w))
 }

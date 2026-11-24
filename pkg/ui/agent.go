@@ -29,6 +29,7 @@ type ChatHistoryController interface {
 	SetNoticeLocked(notice string)
 	SetPageSize(size int)
 	RedrawLocked() bool
+	SyncNativeScreenLocked(transcript []byte)
 	ResizeLocked(width, height int)
 	PaintIfNeededLocked()
 	DrawnHintLocked() string
@@ -174,6 +175,15 @@ func (ui *AgentUIImpl) IsNativeScroll() bool {
 	ui.StateMu.Lock()
 	defer ui.StateMu.Unlock()
 	return ui.Config != nil && ui.Config.NativeScroll
+}
+
+func (ui *AgentUIImpl) bashSyntaxColorEnabled() bool {
+	if ui == nil {
+		return true
+	}
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.Config == nil || ui.Config.BashSyntaxColor
 }
 
 func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
@@ -352,10 +362,11 @@ func (ui *AgentUIImpl) DrawPromptSeparator(w io.Writer, showThinking bool, reaso
 
 func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, streamWrites bool, agentName string) agent.StreamRenderer {
 	ui.StateMu.Lock()
-	options := stream.StreamOptions{Markdown: true}
+	options := stream.StreamOptions{Markdown: true, BashSyntaxColor: true}
 	if ui.Config != nil {
 		options.Markdown = ui.Config.MarkdownRender
 		options.ShowMicroseconds = ui.Config.ShowMicroseconds
+		options.BashSyntaxColor = ui.Config.BashSyntaxColor
 	}
 	ui.StateMu.Unlock()
 	options.BeforeWrite = func() {
@@ -442,11 +453,11 @@ func (ui *AgentUIImpl) AskForSubagentCancellation(w io.Writer, theme style.UIThe
 }
 
 func (ui *AgentUIImpl) RenderToolHeader(w io.Writer, theme style.UITheme, toolName string, toolArgs string) {
-	render.RenderToolHeader(w, theme, toolName, toolArgs)
+	render.RenderToolHeaderStyled(w, theme, toolName, toolArgs, ui.bashSyntaxColorEnabled())
 }
 
 func (ui *AgentUIImpl) RenderToolOutput(w io.Writer, output string, isError bool, collapseResults bool, theme style.UITheme, toolName string, toolArgs string, bodyWasStreamed bool) {
-	render.RenderToolOutput(w, output, isError, collapseResults, theme, toolName, toolArgs, bodyWasStreamed)
+	render.RenderToolOutputWithOptions(w, output, isError, collapseResults, theme, toolName, toolArgs, bodyWasStreamed, ui.bashSyntaxColorEnabled())
 }
 
 func (ui *AgentUIImpl) SetCursorHidden(hidden bool) {

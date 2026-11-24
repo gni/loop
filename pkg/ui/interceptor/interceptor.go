@@ -76,7 +76,6 @@ type KeyInterceptorReader struct {
 	OnChatHistoryInput      func([]byte) []byte
 	OnQueueChanged          func()
 	OnUserInput             func()
-	OnNativeCopyView        func()
 
 	ActiveTurn             atomic.Bool   // A foreground turn is still streaming.
 	PendingCollapseToggles atomic.Uint64 // Apply active Ctrl+O presses on the foreground renderer.
@@ -621,8 +620,6 @@ readInput:
 			ki.HandleCtrlR()
 		case 20:
 			ki.HandleCtrlT()
-		case 24:
-			ki.HandleCtrlX()
 		case 25:
 			ki.HandleCtrlY()
 		case 26:

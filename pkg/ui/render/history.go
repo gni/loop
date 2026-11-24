@@ -12,6 +12,7 @@ import (
 	"loop/pkg/domain/message"
 	"loop/pkg/domain/task"
 	"loop/pkg/ui/render/markdown"
+	"loop/pkg/ui/render/syntax"
 	"loop/pkg/ui/style"
 )
 
@@ -54,11 +55,11 @@ func printPromptDivider(w io.Writer, borderStyle style.Style) {
 	fmt.Fprintln(w, borderStyle.Render(prefix+strings.Repeat("─", dashesCount)))
 }
 
-func renderToolTitleLine(w io.Writer, toolName, argsJSON string, status ToolRenderStatus, theme style.UITheme) {
+func renderToolTitleLine(w io.Writer, toolName, argsJSON string, status ToolRenderStatus, theme style.UITheme, bashSyntaxColor bool) {
 	symbol := RenderToolSymbol(toolName, status, theme)
 	path := ExtractToolTarget(toolName, argsJSON)
 	if toolName == "bash" || IsCommandLikeTool(toolName) {
-		fmt.Fprintln(w, FormatBashCommandLine(symbol, path, theme))
+		fmt.Fprintln(w, FormatBashCommandLineStyled(symbol, path, theme, bashSyntaxColor))
 	} else {
 		fmt.Fprintln(w, FormatToolTitleForWidth(symbol, toolName, path, theme, markdown.RenderWidth(w)))
 	}
@@ -100,6 +101,7 @@ func PrintSessionHistory(
 	w = spacing
 
 	collapse := collapseResults || (cfg != nil && cfg.CollapseResults)
+	bashSyntaxColor := cfg == nil || cfg.BashSyntaxColor
 
 	var lastRole, lastUserPrompt string
 	matches := message.MatchToolResults(messages)
@@ -142,9 +144,24 @@ func PrintSessionHistory(
 				if lastRole != "" {
 					fmt.Fprintln(w)
 				}
-				fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), textStyle.Render(cmdStr))
+				if bashSyntaxColor {
+					cmdLines := syntax.HighlightBashCommandLines(strings.Split(strings.ReplaceAll(strings.ReplaceAll(cmdStr, "\r\n", "\n"), "\r", "\n"), "\n"), theme)
+					for idx, styled := range cmdLines {
+						if idx == 0 {
+							fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), styled)
+						} else {
+							fmt.Fprintf(w, "   %s\n", styled)
+						}
+					}
+				} else {
+					fmt.Fprintf(w, "%s%s\n", promptStyle.Render("▹ !"), textStyle.Render(cmdStr))
+				}
 				if output != "" {
-					fmt.Fprint(w, output)
+					if bashSyntaxColor {
+						renderManualShellHistoryOutput(w, cmdStr, output, theme)
+					} else {
+						fmt.Fprint(w, output)
+					}
 				}
 				lastRole = "user"
 				continue
@@ -237,10 +254,10 @@ func PrintSessionHistory(
 				if printedUnrespondedToolCount > 0 {
 					fmt.Fprintln(w)
 				}
-				renderToolTitleLine(w, tc.Function.Name, tc.Function.Arguments, ToolStatusPending, theme)
+				renderToolTitleLine(w, tc.Function.Name, tc.Function.Arguments, ToolStatusPending, theme, bashSyntaxColor)
 
 				if len(tc.Function.Arguments) > 0 && IsWriteLikeTool(tc.Function.Name) {
-					RenderToolOutput(w, "", false, collapse, theme, tc.Function.Name, tc.Function.Arguments, false)
+					RenderToolOutputWithOptions(w, "", false, collapse, theme, tc.Function.Name, tc.Function.Arguments, false, bashSyntaxColor)
 				}
 
 				if i == len(messages)-1 && isGenerating {
@@ -289,9 +306,9 @@ func PrintSessionHistory(
 				}
 			}
 			if toolName != "task_state" {
-				renderToolTitleLine(w, toolName, argsJSON, status, theme)
+				renderToolTitleLine(w, toolName, argsJSON, status, theme, bashSyntaxColor)
 			}
-			RenderToolOutput(w, msg.Content, isError, collapse, theme, toolName, argsJSON, false)
+			RenderToolOutputWithOptions(w, msg.Content, isError, collapse, theme, toolName, argsJSON, false, bashSyntaxColor)
 
 		case "error":
 			if lastRole != "" {
@@ -301,4 +318,15 @@ func PrintSessionHistory(
 		}
 		lastRole = msg.Role
 	}
+}
+
+func renderManualShellHistoryOutput(w io.Writer, cmdStr, output string, theme style.UITheme) {
+	if rest, ok := strings.CutPrefix(output, "stdout:\n"); ok {
+		fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Render("stdout:"))
+		sw := syntax.NewShellOutputWriter(w, cmdStr, theme)
+		_, _ = io.WriteString(sw, rest)
+		return
+	}
+	sw := syntax.NewShellOutputWriter(w, cmdStr, theme)
+	_, _ = io.WriteString(sw, output)
 }

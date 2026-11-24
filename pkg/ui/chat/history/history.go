@@ -1,6 +1,7 @@
 package history
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -80,8 +81,7 @@ type ChatHistory struct {
 	appearance                                      string
 	replayPending, allowActiveReplay                bool
 	notice                                          string
-	sel                                             chatSelection
-	selActiveAtomic                                 atomic.Bool
+	nativeHasOutput                                 bool
 	resetSequence                                   atomic.Uint64
 	closed                                          atomic.Bool
 }
@@ -183,7 +183,7 @@ func (h *ChatHistory) appearanceKey() string {
 	if live.MarkdownRender && h.buffer != nil {
 		width = h.buffer.Width
 	}
-	return fmt.Sprintf("%s/%s/%t/%t/%t/%s/%t/%d", live.Theme, live.SyntaxTheme, live.MarkdownRender, live.ShowThinking, live.CollapseResults, live.ReasoningEffort, live.ShowMicroseconds, width)
+	return fmt.Sprintf("%s/%s/%t/%t/%t/%t/%s/%t/%d", live.Theme, live.SyntaxTheme, live.MarkdownRender, live.BashSyntaxColor, live.ShowThinking, live.CollapseResults, live.ReasoningEffort, live.ShowMicroseconds, width)
 }
 
 // BeginTurn/FinishTurn retain semantic boundaries only for explicit appearance
@@ -205,7 +205,6 @@ func (h *ChatHistory) BeginTurn() {
 	h.slashSelected = 0
 	h.slashScroll = 0
 	h.setSlashMenuOpenLocked(false)
-	h.clearSelectionLocked()
 	defer ui.TerminalMu.Unlock()
 	if h.browsing {
 		h.top = h.buffer.Base()
@@ -247,7 +246,6 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 		return
 	}
 	if width != h.buffer.Width {
-		h.clearSelectionLocked()
 		for _, turn := range h.turns {
 			if turn.alternate != nil {
 				_ = turn.alternate.rows.Close()
@@ -256,9 +254,6 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 		}
 	}
 	anchors := []*int{&h.historyStart}
-	if h.sel.active || h.sel.hasRange {
-		anchors = append(anchors, &h.sel.anchorRow, &h.sel.focusRow)
-	}
 	if h.searchScan != nil {
 		anchors = append(anchors, &h.searchScan.next)
 	}
@@ -279,9 +274,168 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 	h.needsPaint = true
 }
 
+func (h *ChatHistory) ensureNativeBufferLocked(width, bottom int) {
+	width, bottom = max(1, width), max(1, bottom)
+	if h.buffer == nil {
+		h.buffer = render.NewScrollback(width, bottom)
+		h.top = 0
+		h.drawn = nil
+		return
+	}
+	if h.buffer.Width != width || h.buffer.Height != bottom {
+		pLine, pCol := 1, 1
+		if h.writer != nil {
+			pLine = h.writer.PrintLineLocked()
+			pCol = h.writer.PrintColLocked()
+		}
+		h.buffer.Resize(width, bottom, pLine, pCol, h.buffer.Base())
+		h.top = h.buffer.Base()
+		h.drawn = nil
+	}
+}
+
+// SyncNativeScreenLocked synchronizes the native-scroll shadow screen after a
+// full-screen redraw and paints any active startup logo or slash-menu overlay
+// without emitting partial scroll regions.
+func (h *ChatHistory) SyncNativeScreenLocked(transcript []byte) {
+	if h.closed.Load() {
+		return
+	}
+	width, height := ui.GetTerminalSize()
+	bottom := style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset())
+	if h.buffer != nil {
+		_ = h.buffer.Close()
+	}
+	h.buffer = render.NewScrollback(width, bottom)
+	h.browsing = false
+	h.drawn = nil
+	h.drawnHint = ""
+	h.logoVisible = false
+	h.nativeHasOutput = len(bytes.TrimSpace(transcript)) > 0
+	if len(transcript) > 0 {
+		_, _ = h.buffer.Write(transcript)
+		if h.buffer.Base() > 0 {
+			_, _ = h.buffer.Write([]byte("\x1b[3J"))
+		}
+	}
+	h.top = h.buffer.Base()
+	h.paintNativeOverlayLocked()
+}
+
+func (h *ChatHistory) onNativeBeforeWriteLocked() {
+	if h.closed.Load() || !h.isNativeScroll() {
+		return
+	}
+	if h.logoVisible {
+		h.clearChatLogoLocked()
+	}
+	if h.slashMenuOpen {
+		h.slashForced = false
+		h.slashDismissedQuery = ""
+		h.slashItems = nil
+		h.slashQuery = ""
+		h.slashTitle = ""
+		h.slashSelected = 0
+		h.slashScroll = 0
+		h.setSlashMenuOpenLocked(false)
+		if h.buffer != nil && len(h.drawn) > 0 && h.reader != nil && h.reader.W != nil {
+			baseRows := h.buffer.View(h.buffer.Base())
+			render.DrawChatViewportOverlay(h.reader.W, baseRows, h.drawn)
+		}
+		h.drawn = nil
+		if h.drawnHint != "" {
+			h.drawnHint = ""
+			if h.a != nil && h.reader != nil && h.reader.W != nil {
+				live := h.a.LiveSettings()
+				theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+				_, height := ui.GetTerminalSize()
+				state := ui.GetUI()
+				state.StateMu.Lock()
+				saved := state.LastStatsText
+				if state.ActivityStatsText != "" {
+					saved = state.ActivityStatsText
+				}
+				pasteOffset := state.PasteLinesOffset
+				state.StateMu.Unlock()
+				render.DrawStaticStatsLine(h.reader.W, theme, "", saved, height, pasteOffset)
+			}
+		}
+	}
+}
+
+func (h *ChatHistory) onNativeOutputLocked(data []byte) {
+	if h.closed.Load() || !h.isNativeScroll() || len(data) == 0 {
+		return
+	}
+	width, height := ui.GetTerminalSize()
+	bottom := style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset())
+	h.ensureNativeBufferLocked(width, bottom)
+	if strings.TrimSpace(style.StripAnsi(string(data))) != "" {
+		h.nativeHasOutput = true
+	}
+	_, _ = h.buffer.Write(data)
+	if h.buffer.Base() > 64 {
+		_, _ = h.buffer.Write([]byte("\x1b[3J"))
+	}
+	h.top = h.buffer.Base()
+	h.drawn = nil
+}
+
+func (h *ChatHistory) paintNativeOverlayLocked() {
+	h.needsPaint = false
+	if h.closed.Load() || h.captureOnly || h.reader == nil || h.reader.W == nil {
+		return
+	}
+	width, height := ui.GetTerminalSize()
+	pasteOffset := ui.GetUI().GetPasteLinesOffset()
+	bottom := style.ConsoleScrollBottom(height, pasteOffset)
+	h.ensureNativeBufferLocked(width, bottom)
+
+	baseRows := h.buffer.View(h.buffer.Base())
+	rows := append([]string(nil), baseRows...)
+	rows = h.decorateChatLocked(rows)
+
+	live := h.a.LiveSettings()
+	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+	hint := ""
+	if h.shouldRenderSlashMenuLocked() {
+		hint = h.slashMenuHintLocked(width, theme)
+	}
+
+	hasOverlay := h.logoVisible || h.shouldRenderSlashMenuLocked()
+	if hasOverlay || len(h.drawn) > 0 {
+		prev := h.drawn
+		if prev == nil {
+			prev = baseRows
+		}
+		render.DrawChatViewportOverlay(h.reader.W, rows, prev)
+		if hasOverlay {
+			h.drawn = rows
+		} else {
+			h.drawn = nil
+		}
+	}
+
+	if hint != h.drawnHint {
+		h.drawnHint = hint
+		if hint != "" {
+			render.DrawStaticStatsLine(h.reader.W, theme, "", hint, height, pasteOffset)
+		} else {
+			state := ui.GetUI()
+			state.StateMu.Lock()
+			saved := state.LastStatsText
+			if state.ActivityStatsText != "" {
+				saved = state.ActivityStatsText
+			}
+			state.StateMu.Unlock()
+			render.DrawStaticStatsLine(h.reader.W, theme, "", saved, height, pasteOffset)
+		}
+	}
+}
+
 func (h *ChatHistory) paintLocked() {
 	if h.isNativeScroll() {
-		h.needsPaint = false
+		h.paintNativeOverlayLocked()
 		return
 	}
 	width, height := ui.GetTerminalSize()
@@ -296,7 +450,6 @@ func (h *ChatHistory) paintLocked() {
 	rows := h.buffer.View(h.top)
 	rows = h.decorateChatLocked(rows)
 	rows = h.searchRowsLocked(rows)
-	rows = h.selectionRowsLocked(rows)
 	live := h.a.LiveSettings()
 	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	hint := ""
@@ -315,19 +468,9 @@ func (h *ChatHistory) paintLocked() {
 		if approval {
 			text += " · Approval pending · End: choices"
 		} else {
-			text += " · [Back to latest: End] · Drag: select & copy"
+			text += " · [Back to latest: End]"
 		}
 		hint = style.NewStyle().Foreground(theme.TextMuted).Render(style.TruncateCells(text, max(1, width-1)))
-	}
-	if h.sel.active && h.sel.hasRange {
-		linesSel := h.selectionLineCountLocked()
-		text := fmt.Sprintf("Selecting %d lines · drag edge or scroll wheel · release to copy", linesSel)
-		if linesSel == 1 {
-			text = "Selecting 1 line · drag edge or scroll wheel · release to copy"
-		}
-		hint = style.NewStyle().Foreground(theme.Primary).Render(style.TruncateCells(text, max(1, width-1)))
-	} else if h.sel.copiedNotice != "" {
-		hint = style.NewStyle().Foreground(theme.Success).Render(style.TruncateCells(h.sel.copiedNotice, max(1, width-1)))
 	}
 	if h.searchNotice != "" {
 		notice := h.searchNotice
@@ -511,7 +654,6 @@ func (h *ChatHistory) repaintTurnsLocked() {
 			later.end += delta + padding
 		}
 		h.adjustSearchRowsLocked(start, end, turn.end, delta, padding)
-		h.adjustSelectionRowsLocked(start, end, turn.end, delta, padding)
 		if h.top >= end {
 			h.top += delta + padding
 		} else if h.top >= start {

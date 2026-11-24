@@ -8,6 +8,7 @@ import (
 	"time"
 
 	domaintool "loop/pkg/domain/tool"
+	"loop/pkg/ui/render/syntax"
 	"loop/pkg/ui/style"
 )
 
@@ -178,6 +179,10 @@ func RenderToolSymbol(toolName string, status ToolRenderStatus, theme style.UITh
 }
 
 func FormatBashCommandLine(symbol string, command string, theme style.UITheme) string {
+	return FormatBashCommandLineStyled(symbol, command, theme, true)
+}
+
+func FormatBashCommandLineStyled(symbol string, command string, theme style.UITheme, syntaxColor bool) string {
 	prompt := symbol
 	if strings.TrimSpace(prompt) == "" {
 		prompt = style.NewStyle().Foreground(theme.Primary).Render("$")
@@ -192,19 +197,32 @@ func FormatBashCommandLine(symbol string, command string, theme style.UITheme) s
 	}
 
 	lines := strings.Split(command, "\n")
-	formatted := make([]string, len(lines))
+	cleanedLines := make([]string, len(lines))
 	for idx, line := range lines {
-		cleaned := strings.Map(func(r rune) rune {
+		cleanedLines[idx] = strings.Map(func(r rune) rune {
 			if (r < 32 && r != '\t') || r == 127 {
 				return -1
 			}
 			return r
 		}, line)
+	}
 
+	var styledLines []string
+	if syntaxColor {
+		styledLines = syntax.HighlightBashCommandLines(cleanedLines, theme)
+	} else {
+		styledLines = make([]string, len(cleanedLines))
+		for idx, cleaned := range cleanedLines {
+			styledLines[idx] = cmdStyle.Render(cleaned)
+		}
+	}
+
+	formatted := make([]string, len(styledLines))
+	for idx, styled := range styledLines {
 		if idx == 0 {
-			formatted[idx] = fmt.Sprintf("%s %s", prompt, cmdStyle.Render(cleaned))
+			formatted[idx] = fmt.Sprintf("%s %s", prompt, styled)
 		} else {
-			formatted[idx] = fmt.Sprintf("  %s", cmdStyle.Render(cleaned))
+			formatted[idx] = fmt.Sprintf("  %s", styled)
 		}
 	}
 

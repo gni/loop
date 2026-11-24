@@ -280,7 +280,7 @@ func (h *ChatHistory) SlashMenuActive() bool {
 // SyncSlashMenu updates the live slash-command dropdown for the current prompt draft.
 // It marks the viewport dirty so the prompt draw cycle repaints everything atomically.
 func (h *ChatHistory) SyncSlashMenu(draft string) {
-	if h == nil || h.closed.Load() || h.isNativeScroll() {
+	if h == nil || h.closed.Load() {
 		return
 	}
 	isSlashDraft := strings.HasPrefix(draft, "/") && !strings.ContainsAny(draft, "\r\n")
@@ -408,7 +408,7 @@ func (h *ChatHistory) CloseSlashMenu() {
 }
 
 func (h *ChatHistory) shouldRenderSlashMenuLocked() bool {
-	return !h.isNativeScroll() && h.slashMenuOpen && len(h.slashItems) > 0 && !h.browsing && !h.searchEditing && !h.captureOnly
+	return h.slashMenuOpen && len(h.slashItems) > 0 && !h.browsing && !h.searchEditing && !h.captureOnly
 }
 
 func (h *ChatHistory) decorateSlashMenuLocked(rows []string) []string {

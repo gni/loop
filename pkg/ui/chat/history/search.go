@@ -15,6 +15,9 @@ func (h *ChatHistory) Find(query string, direction int) error {
 	if h.closed.Load() {
 		return fmt.Errorf("history is closed")
 	}
+	if h.isNativeScroll() {
+		return fmt.Errorf("native_scroll is active: use your terminal's search")
+	}
 	h.searchPending = false
 	h.searchScan = nil
 	h.initialFilling = false
@@ -48,7 +51,7 @@ func (h *ChatHistory) Find(query string, direction int) error {
 func (h *ChatHistory) Latest() {
 	ui.TerminalMu.Lock()
 	defer ui.TerminalMu.Unlock()
-	if h.closed.Load() {
+	if h.closed.Load() || h.isNativeScroll() {
 		return
 	}
 	h.searchQuery, h.searchNotice = "", ""
@@ -57,7 +60,6 @@ func (h *ChatHistory) Latest() {
 	h.searchPending = false
 	h.searchScan = nil
 	h.searchRow = -1
-	h.clearSelectionLocked()
 	h.pendingUp = 0
 	h.pendingHome = false
 	h.layoutScroll = 0

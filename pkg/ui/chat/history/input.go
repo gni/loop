@@ -166,7 +166,27 @@ func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte
 }
 
 func (h *ChatHistory) FilterInput(key []byte) []byte {
-	if len(key) == 0 || h.closed.Load() || h.isNativeScroll() {
+	if len(key) == 0 || h.closed.Load() {
+		return key
+	}
+	if h.isNativeScroll() {
+		if h.slashMenuOpenAtomic.Load() {
+			ui.GetUI().StateMu.Lock()
+			blocked := ui.GetUI().InApprovalPrompt || ui.GetUI().InInteractiveMenu || terminal.Default().InAltScreen()
+			ui.GetUI().StateMu.Unlock()
+			if !blocked {
+				switch string(key) {
+				case "\r":
+					if handled, emit := h.handleSlashMenuEnter(); handled {
+						return emit
+					}
+				case "\x1b":
+					if handled, emit := h.handleSlashMenuEscape(); handled {
+						return emit
+					}
+				}
+			}
+		}
 		return key
 	}
 	// Fast-path Ctrl+C outside search editing without acquiring ui.TerminalMu so
@@ -189,24 +209,13 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		}
 		return key
 	}
-	// Fast-path SGR/X10 mouse drag/release, motion, chrome clicks, and slash menu interactions.
+	// Fast-path SGR/X10 mouse motion, chrome clicks, and slash menu interactions.
 	if mouse {
 		if btn, mx, my, release, ok := parseSGRMouse(key); ok {
 			if release {
-				// Only left-button release (never wheel release 64m/65m or middle/right release)
-				// finishes an active drag selection so wheel-while-dragging keeps selecting.
-				if btn&64 == 0 && (btn&3 == 0 || btn&3 == 3) && h.selActiveAtomic.Load() {
-					h.finishSelectionMouse(mx, my)
-				}
 				return nil
 			}
-			// Handle pure motion/drag events only when the wheel bit (64) is clear so
-			// terminals that emit wheel+motion (96/97) while dragging still scroll cleanly.
 			if btn&64 == 0 && btn&32 != 0 {
-				if btn&3 == 0 && h.selActiveAtomic.Load() {
-					h.updateSelectionDrag(mx, my)
-					return nil
-				}
 				if !approval {
 					h.handleHoverMotion(mx, my)
 				}
@@ -216,25 +225,19 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 				switch btn & 0xc3 {
 				case 0:
 					if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
-						ui.TerminalMu.Lock()
-						h.clearSelectionLocked()
-						ui.TerminalMu.Unlock()
 						if handled, emit := h.handleChromeClick(hit); handled {
 							return emit
 						}
 					}
 					if handled, emit := h.handleSlashMenuClick(mx, my); handled {
-						ui.TerminalMu.Lock()
-						h.clearSelectionLocked()
-						ui.TerminalMu.Unlock()
 						return emit
 					}
 				case 64:
-					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(-1, mx, my) {
+					if h.handleSlashMenuWheel(-1, mx, my) {
 						return nil
 					}
 				case 65:
-					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(1, mx, my) {
+					if h.handleSlashMenuWheel(1, mx, my) {
 						return nil
 					}
 				}
@@ -244,44 +247,31 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			mx := int(key[4]) - 32
 			my := int(key[5]) - 32
 			if rawBtn&64 == 0 && rawBtn&32 != 0 {
-				if rawBtn&3 == 0 && h.selActiveAtomic.Load() {
-					h.updateSelectionDrag(mx, my)
-					return nil
-				}
 				if !approval {
 					h.handleHoverMotion(mx, my)
 				}
 				return nil
 			}
 			if rawBtn&64 == 0 && rawBtn&3 == 3 {
-				if h.selActiveAtomic.Load() {
-					h.finishSelectionMouse(mx, my)
-				}
 				return nil
 			}
 			if !approval {
 				switch rawBtn & 0xc3 {
 				case 0:
 					if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
-						ui.TerminalMu.Lock()
-						h.clearSelectionLocked()
-						ui.TerminalMu.Unlock()
 						if handled, emit := h.handleChromeClick(hit); handled {
 							return emit
 						}
 					}
 					if handled, emit := h.handleSlashMenuClick(mx, my); handled {
-						ui.TerminalMu.Lock()
-						h.clearSelectionLocked()
-						ui.TerminalMu.Unlock()
 						return emit
 					}
 				case 64:
-					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(-1, mx, my) {
+					if h.handleSlashMenuWheel(-1, mx, my) {
 						return nil
 					}
 				case 65:
-					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(1, mx, my) {
+					if h.handleSlashMenuWheel(1, mx, my) {
 						return nil
 					}
 				}
@@ -343,12 +333,6 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			navigation = false
 		}
 	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~", "\x1b":
-		if action == "\x1b" && !h.browsing && h.searchQuery == "" && !approval && (h.sel.hasRange || h.sel.copiedNotice != "") {
-			h.clearSelectionLocked()
-			h.needsPaint = true
-			h.paintLocked()
-			return nil
-		}
 		if h.browsing || h.searchQuery != "" || approval {
 			action = "latest"
 		} else {
@@ -360,35 +344,20 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			if !release {
 				if button&64 == 0 && button&32 == 0 && button&0xc3 == 0 {
 					if h.browsing && y == h.buffer.Height+style.ActivityGapLines+1 {
-						h.clearSelectionLocked()
 						action = "latest"
 					} else if y == 1 && h.stickyQuestionVisibleLocked() {
-						h.clearSelectionLocked()
 						if x >= max(1, h.buffer.Width-4) {
 							action = "next_question"
 						} else {
 							action = "prev_question"
 						}
-					} else if (button&(4|16) != 0) && h.sel.hasRange && y >= 1 && y <= h.buffer.Height {
-						// Shift+click or Ctrl+click extends the existing selection to (x, y) and copies.
-						h.extendSelectionLocked(x, y)
-						return nil
-					} else {
-						h.beginSelectionLocked(x, y)
-						return nil
 					}
 				}
 				switch button & 0xc3 {
 				case 64:
 					delta = -3
-					if h.sel.active {
-						h.sel.lastX, h.sel.lastY = x, y
-					}
 				case 65:
 					delta = 3
-					if h.sel.active {
-						h.sel.lastX, h.sel.lastY = x, y
-					}
 				}
 			}
 		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {
@@ -398,46 +367,21 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			clickY := int(key[5]) - 32
 			if btn == 0 && rawBtn&32 == 0 {
 				if h.browsing && clickY == h.buffer.Height+style.ActivityGapLines+1 {
-					h.clearSelectionLocked()
 					action = "latest"
 				} else if clickY == 1 && h.stickyQuestionVisibleLocked() {
-					h.clearSelectionLocked()
 					if clickX >= max(1, h.buffer.Width-4) {
 						action = "next_question"
 					} else {
 						action = "prev_question"
 					}
-				} else if (rawBtn&(4|16) != 0) && h.sel.hasRange && clickY >= 1 && clickY <= h.buffer.Height {
-					h.extendSelectionLocked(clickX, clickY)
-					return nil
-				} else {
-					h.beginSelectionLocked(clickX, clickY)
-					return nil
 				}
 			}
 			switch btn {
 			case 64:
 				delta = -3
-				if h.sel.active {
-					h.sel.lastX, h.sel.lastY = clickX, clickY
-				}
 			case 65:
 				delta = 3
-				if h.sel.active {
-					h.sel.lastX, h.sel.lastY = clickX, clickY
-				}
 			}
-		}
-	}
-	// Preserve the current mouse selection when pressing Ctrl+X (0x18) so the
-	// native copy view receives the exact highlighted selection text.
-	if len(key) == 1 && key[0] == 24 {
-		return key
-	}
-	if !navigation && (h.sel.hasRange || h.sel.copiedNotice != "") {
-		if h.clearSelectionLocked() {
-			h.needsPaint = true
-			h.paintLocked()
 		}
 	}
 	if mouse && delta == 0 && action != "latest" && action != "prev_question" && action != "next_question" {
@@ -446,7 +390,6 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	oldTop := h.currentViewTopLocked()
 	switch {
 	case action == "latest":
-		h.clearSelectionLocked()
 		h.searchQuery, h.searchNotice = "", ""
 		h.setSearchEditingLocked(false)
 		h.searchDraft = ""
@@ -480,12 +423,8 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			h.layoutScroll = 0
 		}
 	}
-	if h.sel.active && delta != 0 {
-		h.updateSelectionFocusLocked(h.sel.lastX, h.sel.lastY)
-		h.needsPaint = true
-	}
-	if h.top != oldTop || action == "latest" || action == "prev_question" || action == "next_question" || (h.sel.active && delta != 0) {
-		if !h.browsing || h.sel.active {
+	if h.top != oldTop || action == "latest" || action == "prev_question" || action == "next_question" {
+		if !h.browsing {
 			h.paintLocked()
 		} else {
 			h.queuePaintLocked()
@@ -495,6 +434,16 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		return nil
 	}
 	return key
+}
+
+func (h *ChatHistory) currentViewTopLocked() int {
+	if h.buffer == nil {
+		return 0
+	}
+	if !h.browsing {
+		return h.buffer.Base()
+	}
+	return min(max(0, h.top), h.buffer.Base())
 }
 
 func (h *ChatHistory) minimumTopLocked() int {

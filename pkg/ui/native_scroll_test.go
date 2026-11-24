@@ -125,3 +125,18 @@ func TestRedrawScreenWithNoticeNativeScrollUsesFullScreenMargins(t *testing.T) {
 		t.Fatalf("expected trailing scroll padding at row %d so last lines sit above footer", height)
 	}
 }
+
+func TestBeginScrollEntryNativeScrollStartsAtTop(t *testing.T) {
+	_, height := GetTerminalSize()
+	var out bytes.Buffer
+	pp := NewPromptPreservingWriter(&out, height)
+	pp.SetNativeScroll(true)
+
+	if got := pp.GetPrintLine(); got != 1 {
+		t.Fatalf("fresh native_scroll writer printLine = %d, want 1", got)
+	}
+	pp.BeginScrollEntry()
+	if got := pp.GetPrintLine(); got != 1 {
+		t.Fatalf("BeginScrollEntry on empty native_scroll screen jumped printLine to %d, want 1", got)
+	}
+}

@@ -72,7 +72,9 @@ var (
 
 // Syntax helpers.
 var (
-	ResolveSyntaxLanguage = syntax.ResolveSyntaxLanguage
-	ShellOutputLanguage   = syntax.ShellOutputLanguage
-	NewShellOutputWriter  = syntax.NewShellOutputWriter
+	ResolveSyntaxLanguage     = syntax.ResolveSyntaxLanguage
+	ShellOutputLanguage       = syntax.ShellOutputLanguage
+	NewShellOutputWriter      = syntax.NewShellOutputWriter
+	NewBashCommandHighlighter = syntax.NewBashCommandHighlighter
+	HighlightBashCommandLines = syntax.HighlightBashCommandLines
 )

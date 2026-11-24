@@ -79,6 +79,7 @@ type LiveSettingsSnapshot struct {
 	HoverTooltips      bool
 	NativeScroll       bool
 	MarkdownRender     bool
+	BashSyntaxColor    bool
 	ShowMicroseconds   bool
 	StreamWrites       bool
 	ReasoningEffort    string
@@ -93,12 +94,12 @@ type LiveSettingsSnapshot struct {
 // concurrent readers and nil agents or configurations.
 func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 	if a == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: true, BashSyntaxColor: true}
 	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: true, BashSyntaxColor: true}
 	}
 	cfg := a.Config
 	return LiveSettingsSnapshot{
@@ -116,6 +117,7 @@ func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 		HoverTooltips:      cfg.HoverTooltips,
 		NativeScroll:       cfg.NativeScroll,
 		MarkdownRender:     cfg.MarkdownRender,
+		BashSyntaxColor:    cfg.BashSyntaxColor,
 		ShowMicroseconds:   cfg.ShowMicroseconds,
 		StreamWrites:       cfg.StreamWrites,
 		ReasoningEffort:    cfg.ReasoningEffort,

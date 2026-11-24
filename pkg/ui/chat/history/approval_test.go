@@ -32,8 +32,10 @@ func approvalHistory(t *testing.T) (*ChatHistory, *bytes.Buffer) {
 	var output bytes.Buffer
 	width, height := ui.GetTerminalSize()
 	reader := &interceptor.KeyInterceptorReader{W: &output}
+	cfg := config.DefaultConfig()
+	cfg.NativeScroll = false
 	h := &ChatHistory{
-		a: &agent.Agent{Config: config.DefaultConfig()}, reader: reader,
+		a: &agent.Agent{Config: cfg}, reader: reader,
 		writer: ui.NewPromptPreservingWriter(&output, height), searchRow: -1,
 		buffer: render.NewScrollback(width, style.ConsoleScrollBottom(height, 0)),
 	}

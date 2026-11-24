@@ -66,6 +66,12 @@ func desktopClipboardCandidates() [][]string {
 		if os.Getenv("DISPLAY") != "" {
 			candidates = append(candidates, []string{"xclip", "-selection", "clipboard"}, []string{"xsel", "-b", "-i"})
 		}
+		if os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "" {
+			candidates = append(candidates, []string{"clip.exe"})
+		}
+		if os.Getenv("TMUX") != "" {
+			candidates = append(candidates, []string{"tmux", "load-buffer", "-w", "-"})
+		}
 		return candidates
 	}
 }

@@ -74,8 +74,7 @@ var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/rename", Args: "<name>", Description: "rename current conversation session", TakesArgs: true},
 	{Name: "/find", Args: "<text>", Description: "search conversation including older history", TakesArgs: true, HasSubs: true},
 	{Name: "/latest", Description: "return to the latest output"},
-	{Name: "/copy", Description: "copy last assistant response to clipboard"},
-	{Name: "/select", Description: "open native copy/scroll view for terminal selection (Ctrl+X)"},
+	{Name: "/copy", Args: "[code|list|<n>]", Description: "copy last reply or code block to clipboard", HasSubs: true},
 	{Name: "/export", Args: "[path]", Description: "export conversation to Markdown or JSONL"},
 	{Name: "/tokens", Description: "display token utilization and cost stats"},
 	{Name: "/queue", Args: "[list|undo|clear]", Description: "view, undo, or clear queued prompts", HasSubs: true},
@@ -215,6 +214,12 @@ func builtinSubcommands(cmd string) []SlashCommandItem {
 		return []SlashCommandItem{
 			{Name: "/doctor", Description: "run full environment and provider diagnostics"},
 			{Name: "/doctor offline", Description: "run local diagnostics without network calls"},
+		}
+	case "/copy", "/clip":
+		return []SlashCommandItem{
+			{Name: "/copy", Description: "copy last assistant response to clipboard"},
+			{Name: "/copy code", Description: "copy last fenced code block to clipboard"},
+			{Name: "/copy list", Description: "list fenced code blocks in last assistant reply"},
 		}
 	case "/queue", "/queues":
 		return []SlashCommandItem{

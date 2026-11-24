@@ -136,9 +136,6 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	}
 	defer chatHistory.Close()
 	kiReader.OnChatHistoryInput = chatHistory.FilterInput
-	kiReader.OnNativeCopyView = func() {
-		runNativeCopyView(os.Stderr, a, kiReader, chatHistory)
-	}
 
 	ui.GetUI().SetActiveInputReader(kiReader)
 	defer ui.GetUI().SetActiveInputReader(nil)
@@ -327,7 +324,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		preExpanded, handled, quit := false, false, false
 		prevSessionID := currentSessionID
 		_ = ui.ConsumeSessionReloaded()
-		if attachmentSource == nil || strings.HasPrefix(strings.TrimSpace(commandLine), "/") || commands.IsHelpCommand(commandLine) {
+		if attachmentSource == nil || strings.HasPrefix(strings.TrimSpace(commandLine), "/") || commands.IsHelpCommand(commandLine) || commands.IsBuiltinSlashCommand(trimmedLine) {
 			line, preExpanded, handled, quit = dispatchREPLSlashCommand(a, line, &messages, allowedTools, &theme, ppWriter, &currentSessionID, hist, mam, kiReader)
 		}
 		if handled {

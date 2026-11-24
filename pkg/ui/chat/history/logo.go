@@ -93,7 +93,7 @@ func (h *ChatHistory) startChatLogo() {
 }
 
 func (h *ChatHistory) canAnimateLogoLocked() bool {
-	if h.closed.Load() || h.captureOnly || h.isNativeScroll() || !h.reader.IsAtMainPrompt.Load() ||
+	if h.closed.Load() || h.captureOnly || !h.reader.IsAtMainPrompt.Load() ||
 		h.reader.ActiveTurn.Load() || h.reader.HasPromptDraft() || h.slashMenuOpen {
 		return false
 	}
@@ -139,7 +139,7 @@ func applyLogoRows(rows, rendered []string, bufWidth, cols, height int) {
 }
 
 func (h *ChatHistory) canShowLogoLocked(rows []string) bool {
-	if !h.logoEnabled || h.isNativeScroll() || !h.logoConfig().Logo || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
+	if !h.logoEnabled || h.nativeHasOutput || !h.logoConfig().Logo || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
 		return false
 	}
 	for _, row := range rows {
@@ -188,6 +188,13 @@ func (h *ChatHistory) activeQuestionIndexLocked(anchors []render.QuestionAnchor)
 		}
 	}
 	return idx
+}
+
+func (h *ChatHistory) stickyQuestionVisibleLocked() bool {
+	if !h.browsing || h.buffer == nil || h.a == nil || !h.a.LiveSettings().ShowStickyQuestion {
+		return false
+	}
+	return h.activeQuestionIndexLocked(h.buffer.QuestionAnchors()) >= 0
 }
 
 func (h *ChatHistory) decorateStickyQuestionLocked(rows []string) []string {
@@ -277,6 +284,13 @@ func (h *ChatHistory) logoConfig() config.Config {
 // Clear the decoration before foreground output reaches the chat writer.
 func (h *ChatHistory) clearChatLogoLocked() {
 	if !h.logoVisible {
+		return
+	}
+	if h.isNativeScroll() {
+		rows := h.buffer.View(h.buffer.Base())
+		render.DrawChatViewportOverlay(h.reader.W, rows, h.drawn)
+		h.drawn = nil
+		h.logoVisible = false
 		return
 	}
 	rows := h.buffer.View(h.top)

@@ -74,6 +74,7 @@ func (m *mockHistorySource) HasMore() bool {
 
 func TestChatHistoryPageSizeEnforcement(t *testing.T) {
 	cfg := config.DefaultConfig()
+	cfg.NativeScroll = false
 	cfg.HistoryPageSize = 10
 
 	// Create a turn with multiple tool calls
@@ -168,6 +169,7 @@ func TestChatHistoryPageSizeEnforcement(t *testing.T) {
 
 func TestChatHistoryPrefetchPaging(t *testing.T) {
 	cfg := config.DefaultConfig()
+	cfg.NativeScroll = false
 	cfg.HistoryPageSize = 10
 
 	turn1 := []db.Message{
@@ -272,6 +274,7 @@ func TestChatHistoryPrefetchPaging(t *testing.T) {
 }
 func TestChatHistoryCollapseToggle(t *testing.T) {
 	cfg := config.DefaultConfig()
+	cfg.NativeScroll = false
 	cfg.CollapseResults = false
 
 	turn1 := []db.Message{

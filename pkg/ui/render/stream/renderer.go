@@ -17,6 +17,7 @@ import (
 type StreamOptions struct {
 	Markdown         bool
 	ShowMicroseconds bool
+	BashSyntaxColor  bool
 	BeforeWrite      func()
 }
 
@@ -44,6 +45,7 @@ type StreamRenderer struct {
 
 	lastEndedWithNewline bool
 	markdownEnabled      bool
+	bashSyntaxColor      bool
 	hasWrittenText       bool
 	hasWrittenThoughts   bool
 	parser               *JSONStreamParser
@@ -73,6 +75,7 @@ func NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, stre
 		theme:                theme,
 		showThinking:         showThinking,
 		markdownEnabled:      options.Markdown,
+		bashSyntaxColor:      options.BashSyntaxColor,
 		showMicroseconds:     options.ShowMicroseconds,
 		beforeWrite:          options.BeforeWrite,
 		lastEndedWithNewline: true,
@@ -86,6 +89,7 @@ func NewStreamRenderer(w io.Writer, theme style.UITheme, showThinking bool, stre
 		reasoningSummaryLine: -1,
 	}
 	sr.parser = NewJSONStreamParser(streamWrites)
+	sr.parser.BashSyntaxColor = options.BashSyntaxColor
 	return sr
 }
 
@@ -99,6 +103,11 @@ func (sr *StreamRenderer) SetTheme(theme style.UITheme) {
 	}
 	if sr.liveThinking != nil {
 		sr.liveThinking.SetTheme(theme)
+	}
+	for _, view := range sr.liveCallViews {
+		if view != nil && view.bashHighlighter != nil {
+			view.bashHighlighter.SetTheme(theme)
+		}
 	}
 	sr.mu.Unlock()
 }
@@ -172,7 +181,9 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 		view.codeLine.Reset()
 		view.codeLineOverflow = false
 		view.endsWithNewline = true
-		if !sr.liveCollapse {
+		if view.name == "bash" {
+			sr.resyncLiveBashStateLocked(view)
+		} else if !sr.liveCollapse {
 			content := view.fullContent.String()
 			view.bytes = view.receivedBytes
 			view.endsWithNewline = content == "" || strings.HasSuffix(content, "\n")
