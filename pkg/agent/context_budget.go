@@ -7,6 +7,7 @@ import (
 	"loop/pkg/agent/tool"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/db"
+	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/message"
 )
 
@@ -33,8 +34,20 @@ type contextUnit struct {
 	required           bool
 }
 
+func isInterruptedToolMessage(msg db.Message) bool {
+	if msg.ToolOutcome == evidence.Unknown || msg.ToolOutcome == evidence.NotExecuted {
+		return true
+	}
+	if msg.Evidence != nil && (msg.Evidence.Outcome == evidence.Unknown || msg.Evidence.Outcome == evidence.NotExecuted) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(msg.Content))
+	return strings.HasPrefix(lower, "error: tool execution interrupted") ||
+		strings.HasPrefix(lower, "[tool result unavailable after interruption")
+}
+
 func contextUnits(messages []db.Message) []contextUnit {
-	latestInput, latestStep := -1, -1
+	latestInput, latestAssistant, latestStep := -1, -1, -1
 	matches := message.MatchToolResults(messages)
 	latestFiles := make(map[string]int)
 	for index, msg := range messages {
@@ -50,9 +63,16 @@ func contextUnits(messages []db.Message) []contextUnit {
 		if msg.IsUserInput() {
 			latestInput = index
 		}
+		if msg.Role == "assistant" {
+			latestAssistant = index
+		}
 		if msg.Role == "assistant" || msg.Role == "tool" || msg.IsUserInput() {
 			latestStep = index
 		}
+	}
+	latestAssistantInput := -1
+	if latestAssistant > 0 && messages[latestAssistant-1].IsUserInput() {
+		latestAssistantInput = latestAssistant - 1
 	}
 	var units []contextUnit
 	for start := 0; start < len(messages); {
@@ -63,24 +83,42 @@ func contextUnits(messages []db.Message) []contextUnit {
 			}
 		}
 		unit := contextUnit{start: start, end: end}
+		hasTool := false
+		allSuperseded := true
 		for index := start; index < end; index++ {
 			msg := messages[index]
 			unit.tokens += EstimateMessageTokens(msg)
 			if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
 				unit.priority = max(unit.priority, 1)
-				if path := filetool.ExtractFilePath(matches[index].Call.Function.Arguments); path != "" && latestFiles[path] == index {
-					unit.priority = max(unit.priority, 2)
+				if msg.Role == "tool" {
+					hasTool = true
+					if msg.ContextKind != "superseded" && !strings.HasPrefix(msg.Content, "[Historical read") {
+						allSuperseded = false
+					}
+					if path := filetool.ExtractFilePath(matches[index].Call.Function.Arguments); path != "" && latestFiles[path] == index {
+						unit.priority = max(unit.priority, 2)
+					}
 				}
-			}
-			if msg.ContextKind == "superseded" || strings.HasPrefix(msg.Content, "[Historical read") {
-				unit.priority = -1
 			}
 			if msg.Role == "system" || isPinnedRequestContext(msg) || index == latestInput || index == latestStep || index == len(messages)-1 {
 				unit.required = true
 			}
 			if msg.Role == "tool" && msg.ContextKind != "resolved_error" && historicalToolFailed(msg) {
-				unit.required = true
+				if index > latestInput {
+					unit.required = true
+				} else if !isInterruptedToolMessage(msg) {
+					unit.priority = max(unit.priority, 2)
+				}
 			}
+			if index == latestAssistantInput {
+				unit.priority = max(unit.priority, 3)
+			}
+			if index == latestAssistant {
+				unit.priority = max(unit.priority, 4)
+			}
+		}
+		if hasTool && allSuperseded && unit.priority <= 1 {
+			unit.priority = -1
 		}
 		units = append(units, unit)
 		start = end
@@ -88,8 +126,9 @@ func contextUnits(messages []db.Message) []contextUnit {
 	return units
 }
 
-// allocateContext removes older narrative before execution evidence. Required
-// instructions, unresolved failures and the current step remain indivisible.
+// allocateContext removes older narrative before execution evidence while
+// preserving the latest assistant turn ahead of older tool calls and keeping
+// active-task failures indivisible.
 func allocateContext(messages []db.Message, limit int) []db.Message {
 	units := contextUnits(messages)
 	total := 0
