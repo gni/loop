@@ -21,6 +21,7 @@ const (
 )
 
 // Split before inline parsing: an escaped pipe is cell content, including in code.
+// Pipes inside inline code (`...`) or inline math ($...$, $$...$$, \(...\), \[...\]) stay inside the cell.
 func markdownTableCells(line string) ([]string, bool) {
 	if len(line) > maxMarkdownTableLineBytes {
 		return nil, false
@@ -29,19 +30,72 @@ func markdownTableCells(line string) ([]string, bool) {
 	var cells []string
 	var cell strings.Builder
 	pipes := 0
+	inCode := false
+	inParenMath := false
+	inBracketMath := false
+	inDollarMath := false
+	inDoubleDollarMath := false
 	for i := 0; i < len(line); i++ {
 		if line[i] == '\\' && i+1 < len(line) {
-			if line[i+1] == '|' {
+			next := line[i+1]
+			if next == '|' && !inCode && !inParenMath && !inBracketMath && !inDollarMath && !inDoubleDollarMath {
 				cell.WriteByte('|')
 				i++
 				continue
+			}
+			if !inCode && !inDollarMath && !inDoubleDollarMath {
+				if next == '(' && !inBracketMath {
+					inParenMath = true
+				} else if next == ')' && inParenMath {
+					inParenMath = false
+				} else if next == '[' && !inParenMath {
+					inBracketMath = true
+				} else if next == ']' && inBracketMath {
+					inBracketMath = false
+				}
 			}
 			cell.WriteByte(line[i])
 			i++
 			cell.WriteByte(line[i])
 			continue
 		}
-		if line[i] == '|' {
+		if line[i] == '`' && !inParenMath && !inBracketMath && !inDollarMath && !inDoubleDollarMath {
+			inCode = !inCode
+			cell.WriteByte('`')
+			continue
+		}
+		if line[i] == '$' && !inCode && !inParenMath && !inBracketMath {
+			if inDoubleDollarMath {
+				if i+1 < len(line) && line[i+1] == '$' {
+					inDoubleDollarMath = false
+					cell.WriteString("$$")
+					i++
+					continue
+				}
+				cell.WriteByte('$')
+				continue
+			}
+			if !inDollarMath && i+1 < len(line) && line[i+1] == '$' {
+				if findClosingDollarPair(line[i+2:]) >= 0 {
+					inDoubleDollarMath = true
+				}
+				cell.WriteString("$$")
+				i++
+				continue
+			}
+			if !inDollarMath {
+				// Only enter math protection if a valid closing '$' appears before EOL
+				// and the opening '$' is not followed by space (guards currency like "$5 | $10").
+				if i+1 < len(line) && line[i+1] != ' ' && hasClosingInlineDollar(line[i+1:]) {
+					inDollarMath = true
+				}
+			} else if i > 0 && line[i-1] != ' ' {
+				inDollarMath = false
+			}
+			cell.WriteByte('$')
+			continue
+		}
+		if line[i] == '|' && !inCode && !inParenMath && !inBracketMath && !inDollarMath && !inDoubleDollarMath {
 			cells = append(cells, strings.TrimSpace(cell.String()))
 			cell.Reset()
 			pipes++
@@ -57,6 +111,21 @@ func markdownTableCells(line string) ([]string, bool) {
 		cells = cells[:len(cells)-1]
 	}
 	return cells, pipes > 0 && len(cells) > 0 && len(cells) <= maxMarkdownTableColumns
+}
+
+func hasClosingInlineDollar(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == '$' && i > 0 && s[i-1] != ' ' {
+			if i+1 >= len(s) || (s[i+1] < '0' || s[i+1] > '9') {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func markdownTableHeader(header, delimiter string) ([]string, []tableAlignment, bool) {
@@ -89,7 +158,8 @@ func markdownTableBreak(line string) bool {
 	if trimmed == "" || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
 		return true
 	}
-	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") || strings.HasPrefix(trimmed, ">") {
+	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") || strings.HasPrefix(trimmed, ">") ||
+		strings.HasPrefix(trimmed, "$$") || strings.HasPrefix(trimmed, `\[`) || strings.HasPrefix(trimmed, `\begin{`) {
 		return true
 	}
 	if _, _, bullet := extractBulletPrefix(trimmed); bullet {

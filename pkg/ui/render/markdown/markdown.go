@@ -231,19 +231,71 @@ func printMarkdownLine(w io.Writer, line string, theme style.UITheme, thinking b
 	fmt.Fprint(w, RenderInlineMarkdown(line, thinking, theme))
 }
 
-func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, string), onTextLine func(string), onTable func([]string, []tableAlignment, []string)) {
+func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, string), onTextLine func(string), onTable func([]string, []tableAlignment, []string), onMathBlock func(string)) {
 	lines := strings.Split(content, "\n")
 	inCodeBlock := false
 	fenceLen := 0
 	language := "plaintext"
+	inMathBlock := false
+	var mathKind mathBlockKind
+	mathEnv := ""
+	var mathBuf strings.Builder
+
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
+		if inMathBlock {
+			if prefix, closed := isClosingMathBlock(line, mathKind, mathEnv); closed {
+				if prefix != "" {
+					if mathBuf.Len() > 0 {
+						mathBuf.WriteByte('\n')
+					}
+					mathBuf.WriteString(prefix)
+				}
+				if onMathBlock != nil {
+					onMathBlock(mathBuf.String())
+				}
+				inMathBlock = false
+				mathKind = mathBlockNone
+				mathEnv = ""
+				mathBuf.Reset()
+				if i < len(lines)-1 {
+					fmt.Fprintln(w)
+				}
+				continue
+			}
+			if mathBuf.Len() > 0 {
+				mathBuf.WriteByte('\n')
+			}
+			if mathBuf.Len()+len(line) <= maxDisplayMathBytes {
+				mathBuf.WriteString(line)
+			}
+			continue
+		}
 		if !inCodeBlock {
 			if ticks, lang, ok := parseOpeningCodeFence(line); ok {
 				inCodeBlock = true
 				fenceLen = ticks
 				language = lang
 				continue
+			}
+			if onMathBlock != nil {
+				if mk, env, body, closed, ok := parseOpeningMathBlock(line); ok {
+					if closed {
+						onMathBlock(body)
+						if i < len(lines)-1 {
+							fmt.Fprintln(w)
+						}
+						continue
+					}
+					inMathBlock = true
+					mathKind = mk
+					mathEnv = env
+					mathBuf.Reset()
+					if body != "" {
+						mathBuf.WriteString(body)
+					}
+					continue
+				}
 			}
 		} else if isClosingCodeFence(line, fenceLen) {
 			inCodeBlock = false
@@ -279,6 +331,9 @@ func renderMarkdownBlocks(w io.Writer, content string, onCodeLine func(string, s
 			fmt.Fprintln(w)
 		}
 	}
+	if inMathBlock && mathBuf.Len() > 0 && onMathBlock != nil {
+		onMathBlock(mathBuf.String())
+	}
 }
 
 // RenderRawMarkdownContent prints the original Markdown without interpreting it,
@@ -296,7 +351,7 @@ func RenderRawMarkdownContent(w io.Writer, content string, theme style.UITheme) 
 	}
 }
 
-// RenderMarkdownContent renders multiline markdown including code blocks and wrapped lines.
+// RenderMarkdownContent renders multiline markdown including code blocks, display math, and wrapped lines.
 func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
 	renderMarkdownBlocks(
 		w,
@@ -309,6 +364,9 @@ func RenderMarkdownContent(w io.Writer, content string, theme style.UITheme) {
 		func(line string) { printMarkdownLine(w, line, theme, false) },
 		func(header []string, align []tableAlignment, rows []string) {
 			renderBatchMarkdownTable(w, header, align, rows, theme, false)
+		},
+		func(body string) {
+			renderDisplayMathBlock(w, body, theme, false)
 		},
 	)
 }
@@ -338,6 +396,9 @@ func RenderReasoningMarkdownContent(w io.Writer, content string, theme style.UIT
 		func(line string) { printMarkdownLine(w, line, theme, true) },
 		func(header []string, align []tableAlignment, rows []string) {
 			renderBatchMarkdownTable(w, header, align, rows, theme, true)
+		},
+		func(body string) {
+			renderDisplayMathBlock(w, body, theme, true)
 		},
 	)
 }

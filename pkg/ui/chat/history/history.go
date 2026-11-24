@@ -80,6 +80,8 @@ type ChatHistory struct {
 	appearance                                      string
 	replayPending, allowActiveReplay                bool
 	notice                                          string
+	sel                                             chatSelection
+	selActiveAtomic                                 atomic.Bool
 	resetSequence                                   atomic.Uint64
 	closed                                          atomic.Bool
 }
@@ -102,9 +104,37 @@ type displayTurn struct {
 	failedLayout               string
 }
 
+func (h *ChatHistory) isNativeScroll() bool {
+	if h == nil || h.a == nil {
+		return false
+	}
+	return h.a.LiveSettings().NativeScroll
+}
+
+// HasOlder reports whether unloaded older session turns still remain on disk.
+func (h *ChatHistory) HasOlder() bool {
+	if h == nil || h.closed.Load() {
+		return false
+	}
+	ui.TerminalMu.Lock()
+	defer ui.TerminalMu.Unlock()
+	return h.hasOlderLocked()
+}
+
 // PrintInitialHistory schedules the newest display block without blocking input.
 // Earlier blocks remain on disk until prefetch or navigation needs them.
 func (h *ChatHistory) PrintInitialHistory() {
+	if h.isNativeScroll() {
+		ui.TerminalMu.Lock()
+		h.captureOnly = false
+		h.initialLoading = false
+		h.initialFilling = false
+		ui.TerminalMu.Unlock()
+		if h.reader != nil && h.reader.W != nil {
+			ui.RedrawScreen(h.reader.W, h.a, h.reader)
+		}
+		return
+	}
 	ui.TerminalMu.Lock()
 	defer ui.TerminalMu.Unlock()
 	h.printInitialHistoryLocked()
@@ -175,6 +205,7 @@ func (h *ChatHistory) BeginTurn() {
 	h.slashSelected = 0
 	h.slashScroll = 0
 	h.setSlashMenuOpenLocked(false)
+	h.clearSelectionLocked()
 	defer ui.TerminalMu.Unlock()
 	if h.browsing {
 		h.top = h.buffer.Base()
@@ -216,6 +247,7 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 		return
 	}
 	if width != h.buffer.Width {
+		h.clearSelectionLocked()
 		for _, turn := range h.turns {
 			if turn.alternate != nil {
 				_ = turn.alternate.rows.Close()
@@ -224,6 +256,9 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 		}
 	}
 	anchors := []*int{&h.historyStart}
+	if h.sel.active || h.sel.hasRange {
+		anchors = append(anchors, &h.sel.anchorRow, &h.sel.focusRow)
+	}
 	if h.searchScan != nil {
 		anchors = append(anchors, &h.searchScan.next)
 	}
@@ -245,6 +280,10 @@ func (h *ChatHistory) resizeLocked(width, height int) {
 }
 
 func (h *ChatHistory) paintLocked() {
+	if h.isNativeScroll() {
+		h.needsPaint = false
+		return
+	}
 	width, height := ui.GetTerminalSize()
 	h.resizeLocked(width, height)
 	h.repaintTurnsLocked()
@@ -257,6 +296,7 @@ func (h *ChatHistory) paintLocked() {
 	rows := h.buffer.View(h.top)
 	rows = h.decorateChatLocked(rows)
 	rows = h.searchRowsLocked(rows)
+	rows = h.selectionRowsLocked(rows)
 	live := h.a.LiveSettings()
 	theme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	hint := ""
@@ -275,9 +315,19 @@ func (h *ChatHistory) paintLocked() {
 		if approval {
 			text += " · Approval pending · End: choices"
 		} else {
-			text += " · [Back to latest: End] · Shift+drag: select"
+			text += " · [Back to latest: End] · Drag: select & copy"
 		}
 		hint = style.NewStyle().Foreground(theme.TextMuted).Render(style.TruncateCells(text, max(1, width-1)))
+	}
+	if h.sel.active && h.sel.hasRange {
+		linesSel := h.selectionLineCountLocked()
+		text := fmt.Sprintf("Selecting %d lines · drag edge or scroll wheel · release to copy", linesSel)
+		if linesSel == 1 {
+			text = "Selecting 1 line · drag edge or scroll wheel · release to copy"
+		}
+		hint = style.NewStyle().Foreground(theme.Primary).Render(style.TruncateCells(text, max(1, width-1)))
+	} else if h.sel.copiedNotice != "" {
+		hint = style.NewStyle().Foreground(theme.Success).Render(style.TruncateCells(h.sel.copiedNotice, max(1, width-1)))
 	}
 	if h.searchNotice != "" {
 		notice := h.searchNotice
@@ -461,6 +511,7 @@ func (h *ChatHistory) repaintTurnsLocked() {
 			later.end += delta + padding
 		}
 		h.adjustSearchRowsLocked(start, end, turn.end, delta, padding)
+		h.adjustSelectionRowsLocked(start, end, turn.end, delta, padding)
 		if h.top >= end {
 			h.top += delta + padding
 		} else if h.top >= start {
@@ -494,13 +545,14 @@ func (h *ChatHistory) repaintTurnsLocked() {
 
 // RedrawLocked repaints the existing document rather than reconstructing it.
 func (h *ChatHistory) RedrawLocked() bool {
-	if h.closed.Load() {
+	if h.closed.Load() || h.isNativeScroll() {
 		return false
 	}
 	if h.appearance != h.appearanceKey() {
 		h.repaintTurnsLocked()
 	}
 	h.drawn = nil
+	h.drawnHint = ""
 	h.paintLocked()
 	return true
 }

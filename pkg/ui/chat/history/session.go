@@ -71,7 +71,9 @@ func New(a *agent.Agent, reader *interceptor.KeyInterceptorReader, writer *ui.Pr
 	ui.GetUI().SetChatHistory(h)
 	if reader != nil && reader.W != nil {
 		if a != nil {
-			terminal.Default().SetMouseMotion(a.LiveSettings().HoverTooltips)
+			live := a.LiveSettings()
+			terminal.Default().SetMouseEnabled(!live.NativeScroll)
+			terminal.Default().SetMouseMotion(live.HoverTooltips)
 		}
 		h.stopMouse = terminal.Default().BeginMouseTracking(reader.W)
 	}
@@ -138,6 +140,7 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	h.slashSelected = 0
 	h.slashScroll = 0
 	h.setSlashMenuOpenLocked(false)
+	h.clearSelectionLocked()
 	h.drawn, h.drawnHint = nil, ""
 	h.logoFrame = 0
 	h.buffer = buffer
@@ -155,6 +158,17 @@ func (h *ChatHistory) ResetSession(id string, initial []db.Message) error {
 	h.appearance = h.appearanceKey()
 	notice := h.notice
 	h.notice = ""
+	if h.isNativeScroll() {
+		h.captureOnly = false
+		h.initialLoading = false
+		h.initialFilling = false
+		h.setSessionContext(id)
+		ui.TerminalMu.Unlock()
+		if h.reader != nil && h.reader.W != nil {
+			ui.RedrawScreenWithNotice(h.reader.W, h.a, h.reader, notice)
+		}
+		return nil
+	}
 	if notice != "" {
 		live := h.a.LiveSettings()
 		noticeStyle := style.NewStyle().Foreground(style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme).Success).Italic(true)
@@ -192,6 +206,7 @@ func (h *ChatHistory) Close() {
 		h.stopMouse()
 		h.stopMouse = nil
 	}
+	h.clearSelectionLocked()
 	h.closePagesLocked()
 	if h.a != nil {
 		h.a.EventSink = h.previousSink

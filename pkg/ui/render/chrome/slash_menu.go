@@ -75,6 +75,7 @@ var builtinSlashCommands = []SlashCommandItem{
 	{Name: "/find", Args: "<text>", Description: "search conversation including older history", TakesArgs: true, HasSubs: true},
 	{Name: "/latest", Description: "return to the latest output"},
 	{Name: "/copy", Description: "copy last assistant response to clipboard"},
+	{Name: "/select", Description: "open native copy/scroll view for terminal selection (Ctrl+X)"},
 	{Name: "/export", Args: "[path]", Description: "export conversation to Markdown or JSONL"},
 	{Name: "/tokens", Description: "display token utilization and cost stats"},
 	{Name: "/queue", Args: "[list|undo|clear]", Description: "view, undo, or clear queued prompts", HasSubs: true},

@@ -27,30 +27,63 @@ func (h *ChatHistory) startChatLogo() {
 	h.logoDone = make(chan struct{})
 	go func() {
 		defer close(h.logoDone)
-		ticker := time.NewTicker(60 * time.Millisecond)
+		ticker := time.NewTicker(logo.FrameInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-h.logoStop:
 				return
 			case <-ticker.C:
+				var (
+					ready    bool
+					cols     int
+					height   int
+					bufWidth int
+					numRows  int
+					next     int
+					resetSeq uint64
+					app      logo.Appearance
+				)
 				ui.TerminalMu.Lock()
-				if !h.closed.Load() && !h.captureOnly && h.reader.IsAtMainPrompt.Load() && !h.reader.ActiveTurn.Load() && !h.reader.HasPromptDraft() && !h.slashMenuOpen {
-					state := ui.GetUI()
-					state.StateMu.Lock()
-					modal := state.InApprovalPrompt || state.InInteractiveMenu || terminal.Default().InAltScreen()
-					state.StateMu.Unlock()
-					if !modal {
-						rows := h.buffer.View(h.top)
-						if h.canShowLogoLocked(rows) && !h.logoConfig().ReducedMotion {
-							h.logoFrame++
-							if h.logoFrame >= logo.CycleFrames {
-								h.logoFrame = logo.EntranceFrames
-							}
-							rows = h.decorateChatLocked(rows)
-							render.DrawChatViewport(h.reader.W, rows, h.drawn, h.drawnHint, h.drawnHint)
-							h.drawn = rows
+				if h.canAnimateLogoLocked() {
+					rows := h.buffer.View(h.top)
+					cfg := h.logoConfig()
+					if h.canShowLogoLocked(rows) && !cfg.ReducedMotion {
+						bufWidth = h.buffer.Width
+						numRows = len(rows)
+						cols, height = logoViewportBounds(bufWidth, numRows)
+						next = h.logoFrame + 1
+						if next >= logo.CycleFrames {
+							next = logo.EntranceFrames
 						}
+						resetSeq = h.resetSequence.Load()
+						app = logoAppearance(cfg)
+						ready = true
+					}
+				}
+				ui.TerminalMu.Unlock()
+
+				if !ready {
+					continue
+				}
+
+				// Raymarch the 3D frame outside ui.TerminalMu so keyboard input stays instant.
+				rendered := logo.Render(cols, height, next, app)
+
+				ui.TerminalMu.Lock()
+				if h.resetSequence.Load() == resetSeq && h.canAnimateLogoLocked() {
+					rows := h.buffer.View(h.top)
+					cfg := h.logoConfig()
+					if h.canShowLogoLocked(rows) && !cfg.ReducedMotion &&
+						h.buffer.Width == bufWidth && len(rows) == numRows {
+						h.logoFrame = next
+						h.logoVisible = true
+						applyLogoRows(rows, rendered, bufWidth, cols, height)
+						if h.shouldRenderSlashMenuLocked() {
+							rows = h.decorateSlashMenuLocked(rows)
+						}
+						render.DrawChatViewportOverlay(h.reader.W, rows, h.drawn)
+						h.drawn = rows
 					}
 				}
 				ui.TerminalMu.Unlock()
@@ -59,8 +92,54 @@ func (h *ChatHistory) startChatLogo() {
 	}()
 }
 
+func (h *ChatHistory) canAnimateLogoLocked() bool {
+	if h.closed.Load() || h.captureOnly || h.isNativeScroll() || !h.reader.IsAtMainPrompt.Load() ||
+		h.reader.ActiveTurn.Load() || h.reader.HasPromptDraft() || h.slashMenuOpen {
+		return false
+	}
+	state := ui.GetUI()
+	state.StateMu.Lock()
+	modal := state.InApprovalPrompt || state.InInteractiveMenu || terminal.Default().InAltScreen()
+	state.StateMu.Unlock()
+	return !modal
+}
+
+func logoViewportBounds(bufWidth, numRows int) (cols, height int) {
+	cols = min(72, max(1, bufWidth-4))
+	maxRows := numRows
+	if maxRows > 6 {
+		maxRows -= 2
+	}
+	height = min(19, max(1, maxRows))
+	return cols, height
+}
+
+func logoAppearance(cfg config.Config) logo.Appearance {
+	theme := style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+	return logo.Appearance{
+		Brightness: cfg.LogoBrightness,
+		Light:      style.IsLightTheme(cfg.Theme),
+		Primary:    theme.Primary,
+		Secondary:  theme.Secondary,
+		Highlight:  theme.Highlight,
+		TextMuted:  theme.TextMuted,
+		Background: theme.Background,
+	}
+}
+
+func applyLogoRows(rows, rendered []string, bufWidth, cols, height int) {
+	top := (len(rows) - height) / 2
+	left := max(0, (bufWidth-cols)/2)
+	pad := strings.Repeat(" ", left)
+	for row, line := range rendered {
+		if top+row >= 0 && top+row < len(rows) {
+			rows[top+row] = pad + line
+		}
+	}
+}
+
 func (h *ChatHistory) canShowLogoLocked(rows []string) bool {
-	if !h.logoEnabled || !h.logoConfig().Logo || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
+	if !h.logoEnabled || h.isNativeScroll() || !h.logoConfig().Logo || h.captureOnly || h.browsing || h.buffer.Base() != 0 || h.reader.ActiveTurn.Load() || h.hasOlderLocked() {
 		return false
 	}
 	for _, row := range rows {
@@ -74,24 +153,14 @@ func (h *ChatHistory) canShowLogoLocked(rows []string) bool {
 func (h *ChatHistory) decorateChatLocked(rows []string) []string {
 	h.logoVisible = h.canShowLogoLocked(rows)
 	if h.logoVisible {
-		cols := min(74, max(1, h.buffer.Width-2))
-		height := min(19, len(rows))
+		cols, height := logoViewportBounds(h.buffer.Width, len(rows))
 		cfg := h.logoConfig()
 		frame := h.logoFrame
 		if cfg.ReducedMotion {
 			frame = logo.ReducedFrame
 		}
-		theme := style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
-		rendered := logo.Render(cols, height, frame, logo.Appearance{
-			Brightness: cfg.LogoBrightness,
-			Light:      style.IsLightTheme(cfg.Theme),
-			Primary:    theme.Primary,
-			Highlight:  theme.Highlight,
-		})
-		top, left := (len(rows)-height)/2, max(0, (h.buffer.Width-cols)/2)
-		for row, line := range rendered {
-			rows[top+row] = strings.Repeat(" ", left) + line
-		}
+		rendered := logo.Render(cols, height, frame, logoAppearance(cfg))
+		applyLogoRows(rows, rendered, h.buffer.Width, cols, height)
 	} else if h.browsing && len(rows) > 0 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
 		rows = h.decorateStickyQuestionLocked(rows)
 	}

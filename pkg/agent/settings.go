@@ -77,6 +77,7 @@ type LiveSettingsSnapshot struct {
 	ShowStickyQuestion bool
 	ShowAutoBadge      bool
 	HoverTooltips      bool
+	NativeScroll       bool
 	MarkdownRender     bool
 	ShowMicroseconds   bool
 	StreamWrites       bool
@@ -113,6 +114,7 @@ func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 		ShowStickyQuestion: cfg.ShowStickyQuestion,
 		ShowAutoBadge:      cfg.ShowAutoBadge,
 		HoverTooltips:      cfg.HoverTooltips,
+		NativeScroll:       cfg.NativeScroll,
 		MarkdownRender:     cfg.MarkdownRender,
 		ShowMicroseconds:   cfg.ShowMicroseconds,
 		StreamWrites:       cfg.StreamWrites,

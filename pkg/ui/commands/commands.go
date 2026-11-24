@@ -182,6 +182,13 @@ func HandleSlashCommand(
 	case "/copy", "/clip":
 		handleCopyCommand(messages, w)
 		return true, false
+	case "/select", "/copyview", "/plain":
+		if kiReader != nil && kiReader.OnNativeCopyView != nil {
+			kiReader.HandleCtrlX()
+		} else {
+			fmt.Fprintln(w, "native copy view is only available in an interactive terminal")
+		}
+		return true, false
 	case "/export":
 		handleExportCommand(a, parts, messages, currentSessionID, w)
 		return true, false

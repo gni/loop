@@ -54,11 +54,12 @@ type (
 const HistoryPageSize = scrollback.HistoryPageSize
 
 var (
-	NewScrollback          = scrollback.NewScrollback
-	NewPagedScrollback     = scrollback.NewPagedScrollback
-	ChatHistoryRows        = scrollback.ChatHistoryRows
-	DrawChatViewport       = scrollback.DrawChatViewport
-	DrawChatViewportAtomic = scrollback.DrawChatViewportAtomic
+	NewScrollback           = scrollback.NewScrollback
+	NewPagedScrollback      = scrollback.NewPagedScrollback
+	ChatHistoryRows         = scrollback.ChatHistoryRows
+	DrawChatViewport        = scrollback.DrawChatViewport
+	DrawChatViewportOverlay = scrollback.DrawChatViewportOverlay
+	DrawChatViewportAtomic  = scrollback.DrawChatViewportAtomic
 )
 
 // Markdown helpers.

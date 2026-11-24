@@ -14,6 +14,9 @@ type historyOutput struct {
 
 func (w *historyOutput) Write(data []byte) (int, error) {
 	h := w.history
+	if h.isNativeScroll() {
+		return w.destination.Write(data)
+	}
 	if !h.captureOnly && (h.initialLoading || h.initialFilling) && strings.TrimSpace(style.StripAnsi(string(data))) != "" {
 		h.initialOutput = true
 		h.initialFilling = false
@@ -35,6 +38,7 @@ func (w *historyOutput) Write(data []byte) (int, error) {
 		if h.searchScan != nil {
 			h.searchScan.next = max(0, h.searchScan.next-delta)
 		}
+		h.shiftSelectionRowsLocked(-delta)
 		for _, turn := range h.turns {
 			turn.start = max(0, turn.start-delta)
 			turn.end = max(0, turn.end-delta)
@@ -46,9 +50,13 @@ func (w *historyOutput) Write(data []byte) (int, error) {
 	if h.captureOnly {
 		return len(data), nil
 	}
-	if h.browsing {
+	if h.browsing || h.sel.active {
+		h.needsPaint = true
 		h.queuePaintLocked()
 		return len(data), nil
+	}
+	if h.sel.hasRange {
+		h.clearSelectionLocked()
 	}
 	h.drawn = nil
 	return w.destination.Write(data)

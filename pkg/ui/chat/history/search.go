@@ -57,6 +57,7 @@ func (h *ChatHistory) Latest() {
 	h.searchPending = false
 	h.searchScan = nil
 	h.searchRow = -1
+	h.clearSelectionLocked()
 	h.pendingUp = 0
 	h.pendingHome = false
 	h.layoutScroll = 0

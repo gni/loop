@@ -166,7 +166,7 @@ func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte
 }
 
 func (h *ChatHistory) FilterInput(key []byte) []byte {
-	if len(key) == 0 || h.closed.Load() {
+	if len(key) == 0 || h.closed.Load() || h.isNativeScroll() {
 		return key
 	}
 	// Fast-path Ctrl+C outside search editing without acquiring ui.TerminalMu so
@@ -189,56 +189,101 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		}
 		return key
 	}
-	// Fast-path SGR/X10 mouse motion, chrome clicks, and slash menu interactions without acquiring ui.TerminalMu on ordinary moves.
-	if mouse && !approval {
+	// Fast-path SGR/X10 mouse drag/release, motion, chrome clicks, and slash menu interactions.
+	if mouse {
 		if btn, mx, my, release, ok := parseSGRMouse(key); ok {
 			if release {
+				// Only left-button release (never wheel release 64m/65m or middle/right release)
+				// finishes an active drag selection so wheel-while-dragging keeps selecting.
+				if btn&64 == 0 && (btn&3 == 0 || btn&3 == 3) && h.selActiveAtomic.Load() {
+					h.finishSelectionMouse(mx, my)
+				}
 				return nil
 			}
-			if btn&32 != 0 {
-				h.handleHoverMotion(mx, my)
+			// Handle pure motion/drag events only when the wheel bit (64) is clear so
+			// terminals that emit wheel+motion (96/97) while dragging still scroll cleanly.
+			if btn&64 == 0 && btn&32 != 0 {
+				if btn&3 == 0 && h.selActiveAtomic.Load() {
+					h.updateSelectionDrag(mx, my)
+					return nil
+				}
+				if !approval {
+					h.handleHoverMotion(mx, my)
+				}
 				return nil
 			}
-			switch btn & 0xc3 {
-			case 0:
-				if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
-					if handled, emit := h.handleChromeClick(hit); handled {
+			if !approval {
+				switch btn & 0xc3 {
+				case 0:
+					if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
+						ui.TerminalMu.Lock()
+						h.clearSelectionLocked()
+						ui.TerminalMu.Unlock()
+						if handled, emit := h.handleChromeClick(hit); handled {
+							return emit
+						}
+					}
+					if handled, emit := h.handleSlashMenuClick(mx, my); handled {
+						ui.TerminalMu.Lock()
+						h.clearSelectionLocked()
+						ui.TerminalMu.Unlock()
 						return emit
 					}
-				}
-				if handled, emit := h.handleSlashMenuClick(mx, my); handled {
-					return emit
-				}
-			case 64:
-				if h.handleSlashMenuWheel(-1, mx, my) {
-					return nil
-				}
-			case 65:
-				if h.handleSlashMenuWheel(1, mx, my) {
-					return nil
+				case 64:
+					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(-1, mx, my) {
+						return nil
+					}
+				case 65:
+					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(1, mx, my) {
+						return nil
+					}
 				}
 			}
 		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {
-			btn := (key[3] - 32) & 0xc3
+			rawBtn := int(key[3]) - 32
 			mx := int(key[4]) - 32
 			my := int(key[5]) - 32
-			switch btn {
-			case 0:
-				if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
-					if handled, emit := h.handleChromeClick(hit); handled {
+			if rawBtn&64 == 0 && rawBtn&32 != 0 {
+				if rawBtn&3 == 0 && h.selActiveAtomic.Load() {
+					h.updateSelectionDrag(mx, my)
+					return nil
+				}
+				if !approval {
+					h.handleHoverMotion(mx, my)
+				}
+				return nil
+			}
+			if rawBtn&64 == 0 && rawBtn&3 == 3 {
+				if h.selActiveAtomic.Load() {
+					h.finishSelectionMouse(mx, my)
+				}
+				return nil
+			}
+			if !approval {
+				switch rawBtn & 0xc3 {
+				case 0:
+					if hit := ui.GetUI().HitTestChrome(mx, my); hit != render.HoverNone {
+						ui.TerminalMu.Lock()
+						h.clearSelectionLocked()
+						ui.TerminalMu.Unlock()
+						if handled, emit := h.handleChromeClick(hit); handled {
+							return emit
+						}
+					}
+					if handled, emit := h.handleSlashMenuClick(mx, my); handled {
+						ui.TerminalMu.Lock()
+						h.clearSelectionLocked()
+						ui.TerminalMu.Unlock()
 						return emit
 					}
-				}
-				if handled, emit := h.handleSlashMenuClick(mx, my); handled {
-					return emit
-				}
-			case 64:
-				if h.handleSlashMenuWheel(-1, mx, my) {
-					return nil
-				}
-			case 65:
-				if h.handleSlashMenuWheel(1, mx, my) {
-					return nil
+				case 64:
+					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(-1, mx, my) {
+						return nil
+					}
+				case 65:
+					if !h.selActiveAtomic.Load() && h.handleSlashMenuWheel(1, mx, my) {
+						return nil
+					}
 				}
 			}
 		}
@@ -298,6 +343,12 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			navigation = false
 		}
 	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~", "\x1b":
+		if action == "\x1b" && !h.browsing && h.searchQuery == "" && !approval && (h.sel.hasRange || h.sel.copiedNotice != "") {
+			h.clearSelectionLocked()
+			h.needsPaint = true
+			h.paintLocked()
+			return nil
+		}
 		if h.browsing || h.searchQuery != "" || approval {
 			action = "latest"
 		} else {
@@ -306,127 +357,135 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 	default:
 		navigation = mouse
 		if button, x, y, release, ok := parseSGRMouse(key); ok {
-			if !release && button&32 == 0 {
-				if button&0xc3 == 0 && h.browsing {
-					if y == h.buffer.Height+style.ActivityGapLines+1 {
+			if !release {
+				if button&64 == 0 && button&32 == 0 && button&0xc3 == 0 {
+					if h.browsing && y == h.buffer.Height+style.ActivityGapLines+1 {
+						h.clearSelectionLocked()
 						action = "latest"
-					} else if y == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+					} else if y == 1 && h.stickyQuestionVisibleLocked() {
+						h.clearSelectionLocked()
 						if x >= max(1, h.buffer.Width-4) {
 							action = "next_question"
 						} else {
 							action = "prev_question"
 						}
+					} else if (button&(4|16) != 0) && h.sel.hasRange && y >= 1 && y <= h.buffer.Height {
+						// Shift+click or Ctrl+click extends the existing selection to (x, y) and copies.
+						h.extendSelectionLocked(x, y)
+						return nil
+					} else {
+						h.beginSelectionLocked(x, y)
+						return nil
 					}
 				}
 				switch button & 0xc3 {
 				case 64:
 					delta = -3
+					if h.sel.active {
+						h.sel.lastX, h.sel.lastY = x, y
+					}
 				case 65:
 					delta = 3
+					if h.sel.active {
+						h.sel.lastX, h.sel.lastY = x, y
+					}
 				}
 			}
 		} else if len(key) == 6 && strings.HasPrefix(action, "\x1b[M") && key[3] >= 32 {
-			btn := (key[3] - 32) & 0xc3
-			if btn == 0 && h.browsing {
-				clickX := int(key[4]) - 32
-				clickY := int(key[5]) - 32
-				if clickY == h.buffer.Height+style.ActivityGapLines+1 {
+			rawBtn := int(key[3]) - 32
+			btn := rawBtn & 0xc3
+			clickX := int(key[4]) - 32
+			clickY := int(key[5]) - 32
+			if btn == 0 && rawBtn&32 == 0 {
+				if h.browsing && clickY == h.buffer.Height+style.ActivityGapLines+1 {
+					h.clearSelectionLocked()
 					action = "latest"
-				} else if clickY == 1 && h.a != nil && h.a.LiveSettings().ShowStickyQuestion {
+				} else if clickY == 1 && h.stickyQuestionVisibleLocked() {
+					h.clearSelectionLocked()
 					if clickX >= max(1, h.buffer.Width-4) {
 						action = "next_question"
 					} else {
 						action = "prev_question"
 					}
+				} else if (rawBtn&(4|16) != 0) && h.sel.hasRange && clickY >= 1 && clickY <= h.buffer.Height {
+					h.extendSelectionLocked(clickX, clickY)
+					return nil
+				} else {
+					h.beginSelectionLocked(clickX, clickY)
+					return nil
 				}
 			}
 			switch btn {
 			case 64:
 				delta = -3
+				if h.sel.active {
+					h.sel.lastX, h.sel.lastY = clickX, clickY
+				}
 			case 65:
 				delta = 3
+				if h.sel.active {
+					h.sel.lastX, h.sel.lastY = clickX, clickY
+				}
 			}
+		}
+	}
+	// Preserve the current mouse selection when pressing Ctrl+X (0x18) so the
+	// native copy view receives the exact highlighted selection text.
+	if len(key) == 1 && key[0] == 24 {
+		return key
+	}
+	if !navigation && (h.sel.hasRange || h.sel.copiedNotice != "") {
+		if h.clearSelectionLocked() {
+			h.needsPaint = true
+			h.paintLocked()
 		}
 	}
 	if mouse && delta == 0 && action != "latest" && action != "prev_question" && action != "next_question" {
 		return nil
 	}
-	if !h.browsing {
-		h.top = h.buffer.Base()
-	}
-	if delta < 0 {
-		h.scrollDirection = -1
-	} else if delta > 0 {
-		h.scrollDirection = 1
-	} else if action == "top" || action == "latest" || !navigation {
-		h.scrollDirection = 0
-	}
-	if (delta > 0 && h.layoutScroll < 0) || (delta < 0 && h.layoutScroll > 0) {
-		h.layoutScroll = 0
-	}
-	oldTop := h.top
-	advanced := false
-	if delta > 0 || action == "latest" || !navigation {
-		h.pendingUp = 0
-		h.pendingHome = false
-	}
-	if action == "top" || delta < 0 {
-		if h.readyPage != nil && (action == "top" || h.top+delta <= h.historyStart+h.prefetchMarginLocked()) {
-			added := h.applyOlderPageLocked()
-			oldTop += added
-			advanced = added > 0
-		}
-		if h.hasOlderLocked() && (action == "top" || h.top+delta <= h.historyStart+h.prefetchMarginLocked()) {
-			h.prefetchOlderLocked()
-		}
-	}
-	minimum := h.buffer.FirstContentRow()
-	if h.hasOlderLocked() {
-		minimum = max(minimum, h.historyStart)
-	}
+	oldTop := h.currentViewTopLocked()
 	switch {
 	case action == "latest":
+		h.clearSelectionLocked()
 		h.searchQuery, h.searchNotice = "", ""
 		h.setSearchEditingLocked(false)
 		h.searchDraft = ""
-		h.top = h.buffer.Base()
-	case action == "prev_question":
-		h.stepQuestionLocked(-1, &oldTop)
-	case action == "next_question":
-		h.stepQuestionLocked(1, &oldTop)
-	case action == "top":
-		h.top = minimum
+		h.scrollDirection = 0
 		h.pendingUp = 0
-		h.pendingHome = h.hasOlderLocked() && !advanced
-	case delta != 0:
-		if delta < 0 && h.hasOlderLocked() {
-			h.pendingUp += max(0, minimum-(h.top+delta))
-		}
-		h.top = min(h.buffer.Base(), max(minimum, h.top+delta))
-	}
-	if delta != 0 {
-		h.top = h.limitLayoutScrollLocked(oldTop, h.top)
-	} else if action == "top" || action == "latest" || action == "prev_question" || action == "next_question" || !navigation {
+		h.pendingHome = false
 		h.layoutScroll = 0
-	}
-	if delta != 0 {
-		h.buffer.Prefetch(h.top, delta)
-	} else if action == "top" || action == "prev_question" {
+		h.top = h.buffer.Base()
+		h.browsing = false
+	case action == "prev_question":
+		h.scrollDirection = 0
+		h.layoutScroll = 0
+		h.stepQuestionLocked(-1, &oldTop)
 		h.buffer.Prefetch(h.top, -1)
-	} else if action == "next_question" {
+		h.browsing = h.top < h.buffer.Base()
+	case action == "next_question":
+		h.scrollDirection = 0
+		h.layoutScroll = 0
+		h.stepQuestionLocked(1, &oldTop)
 		h.buffer.Prefetch(h.top, 1)
+		h.browsing = h.top < h.buffer.Base()
+	case action == "top":
+		h.scrollToTopLocked(&oldTop)
+	case delta != 0:
+		oldTop = h.scrollByLocked(delta)
+	default:
+		if !navigation {
+			h.scrollDirection = 0
+			h.pendingUp = 0
+			h.pendingHome = false
+			h.layoutScroll = 0
+		}
 	}
-	h.browsing = h.top < h.buffer.Base()
-	// Start the refresh even when a stale turn holds the viewport in place.
-	if h.layoutScroll != 0 {
-		h.scheduleLayoutsLocked()
-	}
-	if (h.pendingUp > 0 || h.pendingHome) && h.pageJob != nil {
+	if h.sel.active && delta != 0 {
+		h.updateSelectionFocusLocked(h.sel.lastX, h.sel.lastY)
 		h.needsPaint = true
-		h.queuePaintLocked()
 	}
-	if h.top != oldTop || action == "latest" || action == "prev_question" || action == "next_question" {
-		if !h.browsing {
+	if h.top != oldTop || action == "latest" || action == "prev_question" || action == "next_question" || (h.sel.active && delta != 0) {
+		if !h.browsing || h.sel.active {
 			h.paintLocked()
 		} else {
 			h.queuePaintLocked()
@@ -436,6 +495,89 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 		return nil
 	}
 	return key
+}
+
+func (h *ChatHistory) minimumTopLocked() int {
+	minimum := h.buffer.FirstContentRow()
+	if h.hasOlderLocked() {
+		minimum = max(minimum, h.historyStart)
+	}
+	return minimum
+}
+
+func (h *ChatHistory) scrollToTopLocked(oldTop *int) {
+	if !h.browsing {
+		h.top = h.buffer.Base()
+	}
+	h.scrollDirection = 0
+	h.layoutScroll = 0
+	advanced := false
+	if h.readyPage != nil {
+		added := h.applyOlderPageLocked()
+		if oldTop != nil {
+			*oldTop += added
+		}
+		advanced = added > 0
+	}
+	if h.hasOlderLocked() {
+		h.prefetchOlderLocked()
+	}
+	minimum := h.minimumTopLocked()
+	h.top = minimum
+	h.pendingUp = 0
+	h.pendingHome = h.hasOlderLocked() && !advanced
+	h.buffer.Prefetch(h.top, -1)
+	h.browsing = h.top < h.buffer.Base()
+	if (h.pendingUp > 0 || h.pendingHome) && h.pageJob != nil {
+		h.needsPaint = true
+		h.queuePaintLocked()
+	}
+}
+
+func (h *ChatHistory) scrollByLocked(delta int) (oldTop int) {
+	if delta == 0 || h.buffer == nil {
+		return h.currentViewTopLocked()
+	}
+	if !h.browsing {
+		h.top = h.buffer.Base()
+	}
+	if delta < 0 {
+		h.scrollDirection = -1
+	} else {
+		h.scrollDirection = 1
+	}
+	if (delta > 0 && h.layoutScroll < 0) || (delta < 0 && h.layoutScroll > 0) {
+		h.layoutScroll = 0
+	}
+	oldTop = h.top
+	if delta > 0 {
+		h.pendingUp = 0
+		h.pendingHome = false
+	} else {
+		if h.readyPage != nil && h.top+delta <= h.historyStart+h.prefetchMarginLocked() {
+			added := h.applyOlderPageLocked()
+			oldTop += added
+		}
+		if h.hasOlderLocked() && h.top+delta <= h.historyStart+h.prefetchMarginLocked() {
+			h.prefetchOlderLocked()
+		}
+	}
+	minimum := h.minimumTopLocked()
+	if delta < 0 && h.hasOlderLocked() {
+		h.pendingUp += max(0, minimum-(h.top+delta))
+	}
+	h.top = min(h.buffer.Base(), max(minimum, h.top+delta))
+	h.top = h.limitLayoutScrollLocked(oldTop, h.top)
+	h.buffer.Prefetch(h.top, delta)
+	h.browsing = h.top < h.buffer.Base()
+	if h.layoutScroll != 0 {
+		h.scheduleLayoutsLocked()
+	}
+	if (h.pendingUp > 0 || h.pendingHome) && h.pageJob != nil {
+		h.needsPaint = true
+		h.queuePaintLocked()
+	}
+	return oldTop
 }
 
 func (h *ChatHistory) stepQuestionLocked(dir int, oldTop *int) {

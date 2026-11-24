@@ -5,8 +5,10 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -198,6 +200,35 @@ func FormatRGBForeground(r, g, b uint8) (start, reset string) {
 	return start, "\x1b[0m"
 }
 
+// AppendRGBForeground appends the ANSI foreground escape sequence matching the
+// active terminal color profile directly into dst without heap allocations.
+// Reports false when color output is disabled (NO_COLOR or TERM=dumb).
+func AppendRGBForeground(dst []byte, r, g, b uint8) ([]byte, bool) {
+	switch detectColorProfile() {
+	case profileNone:
+		return dst, false
+	case profileANSI16:
+		dst = append(dst, "\x1b["...)
+		dst = strconv.AppendInt(dst, int64(rgbToANSI16(r, g, b, false)), 10)
+		dst = append(dst, 'm')
+		return dst, true
+	case profile256:
+		dst = append(dst, "\x1b[38;5;"...)
+		dst = strconv.AppendInt(dst, int64(rgbToANSI256(r, g, b)), 10)
+		dst = append(dst, 'm')
+		return dst, true
+	default:
+		dst = append(dst, "\x1b[38;2;"...)
+		dst = strconv.AppendInt(dst, int64(r), 10)
+		dst = append(dst, ';')
+		dst = strconv.AppendInt(dst, int64(g), 10)
+		dst = append(dst, ';')
+		dst = strconv.AppendInt(dst, int64(b), 10)
+		dst = append(dst, 'm')
+		return dst, true
+	}
+}
+
 type Style struct {
 	fg            *colorVal
 	bg            *colorVal
@@ -226,45 +257,104 @@ func ActivityDivider(theme UITheme) string {
 	return NewStyle().Foreground(theme.Border).Render(strings.Repeat("· ", 19) + "·")
 }
 
+// ActivitySpinnerInterval paces the 4-cell continuous Braille silk-wave loader
+// smoothly (~10.5 FPS, one exact subpixel shift per tick with zero stutter).
+const ActivitySpinnerInterval = 95 * time.Millisecond
+
+// ActivitySpinnerIdle returns the 4-cell calm flat horizon state of the loader
+// so elapsed timers never shift horizontally when paused or complete.
+func ActivitySpinnerIdle(theme UITheme) string {
+	return NewStyle().Foreground(theme.Border).Render("⠤⠤⠤⠤")
+}
+
+// ActivitySpinnerFrame renders one frame of a fixed 4-cell (8x4 Braille)
+// continuous traveling silk wave. Every frame advances by exactly one subpixel
+// column with one dot per column (zero repeated frames, zero clumping, zero
+// emojis) while per-cell TrueColor highlights the gliding wave crest.
 func ActivitySpinnerFrame(theme UITheme, frameIndex int) string {
-	frames := [...]string{
-		"🕛\uFE0E",
-		"🕐\uFE0E",
-		"🕑\uFE0E",
-		"🕒\uFE0E",
-		"🕓\uFE0E",
-		"🕔\uFE0E",
-		"🕕\uFE0E",
-		"🕖\uFE0E",
-		"🕗\uFE0E",
-		"🕘\uFE0E",
-		"🕙\uFE0E",
-		"🕚\uFE0E",
-	}
 	if frameIndex < 0 {
 		frameIndex = 0
 	}
 
-	// Calm human breathing / resting pulse gradient (28 ticks * 150ms = 4.2s full inhale/exhale cycle)
-	// smoothly interpolating RGB from muted grey (TextMuted) to soft white (Text) without bold snapping.
-	const breathSteps = 28
-	phase := (2.0 * math.Pi * float64(frameIndex%breathSteps)) / float64(breathSteps)
-	t := (1.0 - math.Cos(phase)) * 0.5
+	// Symmetric 8-subpixel sine wave heights in Braille rows [0=top .. 3=bottom].
+	// Adjacent columns differ by at most 1 dot vertically for silky visual flow.
+	wave := [8]int{2, 1, 0, 0, 1, 2, 3, 3}
+	bits := [4][2]rune{
+		{0x01, 0x08},
+		{0x02, 0x10},
+		{0x04, 0x20},
+		{0x40, 0x80},
+	}
 
-	low := toColorVal(theme.TextMuted)
-	if low == nil {
-		low = &colorVal{R: 102, G: 102, B: 102}
+	// Calm ~4.6s breathing luminance envelope (48 ticks * 95ms).
+	const breathSteps = 48
+	breathPhase := (2.0 * math.Pi * float64(frameIndex%breathSteps)) / float64(breathSteps)
+	breath := (1.0 - math.Cos(breathPhase)) * 0.5
+
+	troughCol := toColorVal(theme.TextMuted)
+	if troughCol == nil {
+		troughCol = &colorVal{R: 110, G: 118, B: 132}
 	}
-	high := toColorVal(theme.Text)
-	if high == nil {
-		high = &colorVal{R: 224, G: 224, B: 224}
+	slopeCol := toColorVal(theme.Primary)
+	if slopeCol == nil {
+		slopeCol = &colorVal{R: 139, G: 184, B: 214}
 	}
-	c := colorVal{
-		R: uint8(float64(low.R) + t*(float64(high.R)-float64(low.R)) + 0.5),
-		G: uint8(float64(low.G) + t*(float64(high.G)-float64(low.G)) + 0.5),
-		B: uint8(float64(low.B) + t*(float64(high.B)-float64(low.B)) + 0.5),
+	crestCol := toColorVal(theme.Highlight)
+	if crestCol == nil {
+		crestCol = toColorVal(theme.Text)
 	}
-	return NewStyle().Foreground(c).Render(frames[frameIndex%len(frames)])
+	if crestCol == nil {
+		crestCol = &colorVal{R: 216, G: 195, B: 142}
+	}
+
+	lerp := func(a, b *colorVal, t float64) colorVal {
+		if t < 0 {
+			t = 0
+		} else if t > 1 {
+			t = 1
+		}
+		return colorVal{
+			R: uint8(float64(a.R) + t*(float64(b.R)-float64(a.R)) + 0.5),
+			G: uint8(float64(a.G) + t*(float64(b.G)-float64(a.G)) + 0.5),
+			B: uint8(float64(a.B) + t*(float64(b.B)-float64(a.B)) + 0.5),
+		}
+	}
+
+	shift := frameIndex % 8
+	var out strings.Builder
+	out.Grow(112)
+	var ansiBuf [32]byte
+	colored := false
+
+	for cell := range 4 {
+		i0 := (cell*2 - shift + 8) & 7
+		i1 := (cell*2 + 1 - shift + 8) & 7
+		y0 := wave[i0]
+		y1 := wave[i1]
+		mask := bits[y0][0] | bits[y1][1]
+
+		// Crest height in [0=trough .. 1=peak] drives smooth per-cell glow.
+		crest := 1.0 - float64(y0+y1)/6.0
+		level := crest*0.86 + 0.14*breath
+
+		var c colorVal
+		if level < 0.62 {
+			c = lerp(troughCol, slopeCol, level/0.62)
+		} else {
+			c = lerp(slopeCol, crestCol, (level-0.62)/0.38)
+		}
+
+		seq, ok := AppendRGBForeground(ansiBuf[:0], c.R, c.G, c.B)
+		if ok {
+			out.Write(seq)
+			colored = true
+		}
+		out.WriteRune(0x2800 + mask)
+	}
+	if colored {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
 }
 
 func (s Style) MaxWidth(v int) Style {

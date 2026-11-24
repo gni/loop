@@ -27,8 +27,8 @@ const (
 	// ExitAlternateScreen restores the primary screen buffer and shows the cursor.
 	ExitAlternateScreen = "\x1b[?1049l\x1b[?25h"
 
-	// EnableMouseTracking enables X10 and SGR extended mouse reporting.
-	EnableMouseTracking = "\x1b[?1000h\x1b[?1006h"
+	// EnableMouseTracking enables X10, button-event drag (?1002h), and SGR extended mouse reporting.
+	EnableMouseTracking = "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
 	// EnableMouseMotionTracking additionally enables DEC any-event motion reporting (?1003h) for hover tooltips.
 	EnableMouseMotionTracking = "\x1b[?1000h\x1b[?1003h\x1b[?1006h"
 	// DisableMouseTracking disables all standard and extended mouse reporting modes.
@@ -80,6 +80,7 @@ type Terminal struct {
 	mouseSuspended  int
 	mouseGeneration uint64
 	mouseMotion     bool
+	mouseDisabled   bool
 
 	keysWriter     io.Writer
 	keysDepth      int
@@ -181,6 +182,33 @@ func (t *Terminal) enableMouseSequenceLocked() string {
 	return EnableMouseTracking
 }
 
+// SetMouseEnabled globally permits or suppresses terminal mouse tracking
+// (used by native_scroll mode). While disabled, mouse enable requests are
+// suppressed so the terminal emulator retains native selection and scrollback.
+func (t *Terminal) SetMouseEnabled(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	disabled := !enabled
+	if t.mouseDisabled == disabled {
+		return
+	}
+	t.mouseDisabled = disabled
+	if t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
+		if disabled {
+			_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
+		} else {
+			_, _ = io.WriteString(t.mouseWriter, t.enableMouseSequenceLocked())
+		}
+	}
+}
+
+// MouseEnabled reports whether terminal mouse tracking is globally permitted.
+func (t *Terminal) MouseEnabled() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.mouseDisabled
+}
+
 // SetMouseMotion toggles DEC any-event mouse motion reporting (?1003h) for hover tooltips.
 func (t *Terminal) SetMouseMotion(enabled bool) {
 	t.mu.Lock()
@@ -189,7 +217,7 @@ func (t *Terminal) SetMouseMotion(enabled bool) {
 		return
 	}
 	t.mouseMotion = enabled
-	if t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
+	if !t.mouseDisabled && t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
 		if enabled {
 			_, _ = io.WriteString(t.mouseWriter, EnableMouseMotionTracking)
 		} else {
@@ -204,7 +232,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 	if t.mouseDepth == 0 {
 		dest := t.resolveWriter(w)
 		t.mouseWriter = dest
-		if t.mouseSuspended == 0 {
+		if !t.mouseDisabled && t.mouseSuspended == 0 {
 			_, _ = io.WriteString(dest, t.enableMouseSequenceLocked())
 		}
 	}
@@ -221,7 +249,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 			}
 			t.mouseDepth--
 			if t.mouseDepth == 0 {
-				if t.mouseWriter != nil && t.mouseSuspended == 0 {
+				if !t.mouseDisabled && t.mouseWriter != nil && t.mouseSuspended == 0 {
 					_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 				}
 				t.mouseWriter = nil
@@ -235,7 +263,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 // and re-enables it when the returned resume function runs.
 func (t *Terminal) SuspendMouseTracking() func() {
 	t.mu.Lock()
-	if t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
+	if !t.mouseDisabled && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 		_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 	}
 	t.mouseSuspended++
@@ -250,7 +278,7 @@ func (t *Terminal) SuspendMouseTracking() func() {
 				return
 			}
 			t.mouseSuspended--
-			if generation == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
+			if !t.mouseDisabled && generation == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 				_, _ = io.WriteString(t.mouseWriter, t.enableMouseSequenceLocked())
 			}
 		})
@@ -294,7 +322,7 @@ func (t *Terminal) EnterAltScreen(w io.Writer) {
 	dest := t.resolveWriter(w)
 	wasEmpty := len(t.altStack) == 0
 	var resumeMouse func()
-	if t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
+	if !t.mouseDisabled && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 		_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 	}
 	t.mouseSuspended++
@@ -302,7 +330,7 @@ func (t *Terminal) EnterAltScreen(w io.Writer) {
 	resumeMouse = func() {
 		if t.mouseSuspended > 0 {
 			t.mouseSuspended--
-			if mouseGen == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
+			if !t.mouseDisabled && mouseGen == t.mouseGeneration && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 				_, _ = io.WriteString(t.mouseWriter, t.enableMouseSequenceLocked())
 			}
 		}

@@ -28,6 +28,7 @@ const (
 	livePrefixNumbered
 	livePrefixTable
 	livePrefixRule
+	livePrefixMathLine
 )
 
 type livePrefixDecision struct {
@@ -54,6 +55,14 @@ type LiveMarkdownRenderer struct {
 	codeLanguage  string
 	codeLine      strings.Builder
 	codeOverflow  bool
+
+	inMathHeader bool
+	mathHeader   strings.Builder
+	inMathBlock  bool
+	mathKind     mathBlockKind
+	mathEnv      string
+	mathLine     strings.Builder
+	mathBuf      strings.Builder
 
 	inline           *InlineMarkdownWriter
 	table            liveMarkdownTable
@@ -127,6 +136,14 @@ func (r *LiveMarkdownRenderer) writeRune(current rune, plain *strings.Builder) {
 }
 
 func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Builder) {
+	if r.inMathHeader {
+		r.writeMathHeaderRune(current, plain)
+		return
+	}
+	if r.inMathBlock {
+		r.writeMathBlockRune(current, plain)
+		return
+	}
 	if r.inFenceHeader {
 		r.writeFenceHeaderRune(current, plain)
 		return
@@ -218,6 +235,21 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 			r.prefix.Reset()
 			r.atLineStart = false
 			return
+		case livePrefixMathLine:
+			r.flushPlain(plain)
+			r.inline.EndLine()
+			r.mathHeader.Reset()
+			r.mathHeader.WriteString(r.prefix.String())
+			r.prefix.Reset()
+			r.inMathHeader = true
+			r.atLineStart = false
+			if strings.HasSuffix(r.mathHeader.String(), "\n") {
+				line := strings.TrimSuffix(r.mathHeader.String(), "\n")
+				r.mathHeader.Reset()
+				r.inMathHeader = false
+				r.finishMathHeaderLine(line, true, plain)
+			}
+			return
 		case livePrefixPlain:
 			prefix := r.prefix.String()
 			r.prefix.Reset()
@@ -230,6 +262,94 @@ func (r *LiveMarkdownRenderer) writeMarkdownRune(current rune, plain *strings.Bu
 	}
 
 	r.writeInlineRune(current, plain)
+}
+
+func (r *LiveMarkdownRenderer) writeMathHeaderRune(current rune, plain *strings.Builder) {
+	if current == '\n' {
+		line := r.mathHeader.String()
+		r.mathHeader.Reset()
+		r.inMathHeader = false
+		r.finishMathHeaderLine(line, true, plain)
+		return
+	}
+	r.mathHeader.WriteRune(current)
+	if r.mathHeader.Len() > maxDisplayMathBytes {
+		line := r.mathHeader.String()
+		r.mathHeader.Reset()
+		r.inMathHeader = false
+		r.replayInlineLine(line, false, plain)
+	}
+}
+
+func (r *LiveMarkdownRenderer) finishMathHeaderLine(line string, hasNewline bool, plain *strings.Builder) {
+	if kind, env, body, closed, ok := parseOpeningMathBlock(line); ok {
+		if closed {
+			r.flushPlain(plain)
+			renderDisplayMathBlock(r.w, body, r.theme, r.thinking)
+			r.endedWithNewline = false
+			if hasNewline {
+				r.emitVisible("\n")
+			}
+			r.atLineStart = hasNewline
+			return
+		}
+		r.inMathBlock = true
+		r.mathKind = kind
+		r.mathEnv = env
+		r.mathLine.Reset()
+		r.mathBuf.Reset()
+		if body != "" {
+			r.mathBuf.WriteString(body)
+		}
+		r.atLineStart = true
+		return
+	}
+	r.replayInlineLine(line, hasNewline, plain)
+}
+
+func (r *LiveMarkdownRenderer) replayInlineLine(line string, hasNewline bool, plain *strings.Builder) {
+	for _, ch := range line {
+		r.writeInlineRune(ch, plain)
+	}
+	if hasNewline {
+		r.writeInlineRune('\n', plain)
+	}
+}
+
+func (r *LiveMarkdownRenderer) writeMathBlockRune(current rune, plain *strings.Builder) {
+	if current == '\n' {
+		line := r.mathLine.String()
+		r.mathLine.Reset()
+		if prefix, closed := isClosingMathBlock(line, r.mathKind, r.mathEnv); closed {
+			if prefix != "" {
+				if r.mathBuf.Len() > 0 {
+					r.mathBuf.WriteByte('\n')
+				}
+				r.mathBuf.WriteString(prefix)
+			}
+			r.flushPlain(plain)
+			renderDisplayMathBlock(r.w, r.mathBuf.String(), r.theme, r.thinking)
+			r.endedWithNewline = false
+			r.emitVisible("\n")
+			r.inMathBlock = false
+			r.mathKind = mathBlockNone
+			r.mathEnv = ""
+			r.mathBuf.Reset()
+			r.atLineStart = true
+			return
+		}
+		if r.mathBuf.Len() > 0 {
+			r.mathBuf.WriteByte('\n')
+		}
+		if r.mathBuf.Len()+len(line) <= maxDisplayMathBytes {
+			r.mathBuf.WriteString(line)
+		}
+		r.atLineStart = true
+		return
+	}
+	if r.mathLine.Len() < maxDisplayMathBytes {
+		r.mathLine.WriteRune(current)
+	}
 }
 
 func (r *LiveMarkdownRenderer) writeFenceHeaderRune(current rune, plain *strings.Builder) {
@@ -395,6 +515,40 @@ func (r *LiveMarkdownRenderer) Flush() {
 	r.utf8Pending = ""
 	r.flushTable(&plain)
 
+	if r.inMathHeader {
+		line := r.mathHeader.String()
+		r.mathHeader.Reset()
+		r.inMathHeader = false
+		r.finishMathHeaderLine(line, false, &plain)
+	}
+
+	if r.inMathBlock {
+		line := r.mathLine.String()
+		r.mathLine.Reset()
+		if prefix, closed := isClosingMathBlock(line, r.mathKind, r.mathEnv); closed {
+			if prefix != "" {
+				if r.mathBuf.Len() > 0 {
+					r.mathBuf.WriteByte('\n')
+				}
+				r.mathBuf.WriteString(prefix)
+			}
+		} else if line != "" {
+			if r.mathBuf.Len() > 0 {
+				r.mathBuf.WriteByte('\n')
+			}
+			r.mathBuf.WriteString(line)
+		}
+		if r.mathBuf.Len() > 0 {
+			r.flushPlain(&plain)
+			renderDisplayMathBlock(r.w, r.mathBuf.String(), r.theme, r.thinking)
+			r.endedWithNewline = false
+		}
+		r.inMathBlock = false
+		r.mathKind = mathBlockNone
+		r.mathEnv = ""
+		r.mathBuf.Reset()
+	}
+
 	if r.inFenceHeader {
 		r.inline.EndLine()
 		plain.WriteString(r.prefix.String())
@@ -470,6 +624,13 @@ func (r *LiveMarkdownRenderer) ResetAtLineStart() {
 	r.inCodeBlock = false
 	r.codeOverflow = false
 	r.codeLanguage = ""
+	r.inMathHeader = false
+	r.mathHeader.Reset()
+	r.inMathBlock = false
+	r.mathKind = mathBlockNone
+	r.mathEnv = ""
+	r.mathLine.Reset()
+	r.mathBuf.Reset()
 	r.inline.Reset()
 	r.atLineStart = true
 	r.endedWithNewline = true
@@ -525,6 +686,30 @@ func classifyLivePrefix(prefix string) livePrefixDecision {
 		}
 		// Align with replay markdown: both ">foo" (without space) and ">\n" are blockquotes.
 		return livePrefixDecision{kind: livePrefixQuote, remainder: body[1:]}
+
+	case '$':
+		if body == "$" {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if strings.HasPrefix(body, "$$") {
+			return livePrefixDecision{kind: livePrefixMathLine}
+		}
+		return livePrefixDecision{kind: livePrefixPlain}
+
+	case '\\':
+		if body == `\` {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if strings.HasPrefix(body, `\[`) {
+			return livePrefixDecision{kind: livePrefixMathLine}
+		}
+		if strings.HasPrefix(`\begin{`, body) {
+			return livePrefixDecision{kind: livePrefixPending}
+		}
+		if strings.HasPrefix(body, `\begin{`) {
+			return livePrefixDecision{kind: livePrefixMathLine}
+		}
+		return livePrefixDecision{kind: livePrefixPlain}
 
 	case '-':
 		if len(body) == 1 {

@@ -226,6 +226,134 @@ func (b *Scrollback) View(top int) []string {
 	return lines
 }
 
+// RowPlainText returns the ANSI-stripped text of document row n and whether it
+// soft-wraps into row n+1. Returns ("", false) when n is out of bounds.
+func (b *Scrollback) RowPlainText(n int) (text string, soft bool) {
+	if b == nil || n < 0 || n >= len(b.rows) {
+		return "", false
+	}
+	b.loadPage(n)
+	return style.StripAnsi(b.rows[n].String()), b.rows[n].soft
+}
+
+// LogicalLineBounds returns the inclusive [startRow, endRow] span of rows
+// belonging to the same logical (soft-wrapped) line as row n.
+func (b *Scrollback) LogicalLineBounds(n int) (startRow, endRow int) {
+	if b == nil || len(b.rows) == 0 {
+		return 0, 0
+	}
+	n = min(max(0, n), len(b.rows)-1)
+	startRow, endRow = n, n
+	for startRow > 0 && b.rows[startRow-1].soft {
+		startRow--
+	}
+	for endRow+1 < len(b.rows) && b.rows[endRow].soft {
+		endRow++
+	}
+	return startRow, endRow
+}
+
+// ExtractPlainText extracts plain (ANSI-stripped) text across the inclusive
+// document coordinate range (startRow, startCol) .. (endRow, endCol).
+// Soft-wrapped rows are joined without synthetic newlines, and trailing space
+// padding on hard-broken lines is trimmed.
+func (b *Scrollback) ExtractPlainText(startRow, startCol, endRow, endCol int) string {
+	if b == nil || len(b.rows) == 0 {
+		return ""
+	}
+	if startRow > endRow || (startRow == endRow && startCol > endCol) {
+		startRow, endRow = endRow, startRow
+		startCol, endCol = endCol, startCol
+	}
+	startRow = min(max(0, startRow), len(b.rows)-1)
+	endRow = min(max(0, endRow), len(b.rows)-1)
+
+	var out strings.Builder
+	for row := startRow; row <= endRow; row++ {
+		plain, soft := b.RowPlainText(row)
+		c0 := 0
+		if row == startRow {
+			c0 = max(0, startCol)
+		}
+		c1 := b.Width
+		fullToRight := true
+		if row == endRow {
+			c1 = max(0, endCol+1)
+			fullToRight = c1 >= b.Width || c1 >= style.CellWidth(plain)
+		}
+
+		var segment strings.Builder
+		col := 0
+		for i := 0; i < len(plain); {
+			cluster, gw, sz := style.NextGrapheme(plain[i:])
+			i += sz
+			nextCol := col + gw
+			if nextCol > c0 && col < c1 {
+				segment.WriteString(cluster)
+			}
+			col = nextCol
+			if col >= c1 {
+				break
+			}
+		}
+
+		chunk := segment.String()
+		if row < endRow {
+			if soft {
+				out.WriteString(chunk)
+			} else {
+				out.WriteString(strings.TrimRight(chunk, " "))
+				out.WriteByte('\n')
+			}
+		} else {
+			if fullToRight {
+				chunk = strings.TrimRight(chunk, " ")
+			}
+			out.WriteString(chunk)
+		}
+	}
+	return out.String()
+}
+
+// ExtractStyledTranscript returns all loaded content rows starting from the
+// first non-blank row through the last non-blank row, joining soft-wrapped rows
+// so terminals copy unwrapped logical lines while preserving ANSI styling.
+func (b *Scrollback) ExtractStyledTranscript() string {
+	if b == nil || len(b.rows) == 0 {
+		return ""
+	}
+	first := b.FirstContentRow()
+	last := len(b.rows) - 1
+	for last >= first {
+		b.loadPage(last)
+		if strings.TrimSpace(style.StripAnsi(b.rows[last].String())) != "" {
+			break
+		}
+		last--
+	}
+	if last < first {
+		return ""
+	}
+	var out strings.Builder
+	for row := first; row <= last; row++ {
+		b.loadPage(row)
+		r := b.rows[row]
+		line := r.String()
+		if row < last {
+			if r.soft {
+				out.WriteString(line)
+			} else {
+				out.WriteString(line)
+				out.WriteString("\x1b[0m\n")
+			}
+		} else {
+			out.WriteString(line)
+			out.WriteString("\x1b[0m")
+		}
+	}
+	return out.String()
+}
+
 func (b *Scrollback) up() {
 	if len(b.rows) == 0 {
 		b.rows = append(b.rows, &scrollRow{})

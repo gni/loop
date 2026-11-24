@@ -87,6 +87,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 
 	_, height := ui.GetTerminalSize()
 	ppWriter := ui.NewPromptPreservingWriter(os.Stderr, height)
+	ppWriter.SetNativeScroll(a.LiveSettings().NativeScroll)
 	if uiImpl, ok := a.UI.(*ui.AgentUIImpl); ok {
 		uiImpl.PPWriter = ppWriter
 	}
@@ -122,12 +123,22 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		HistoryIndex: -1,
 	}
 	configureREPLCallbacks(kiReader, &theme)
+	ppWriter.SetFooterRedrawHook(func(dest io.Writer) {
+		state := ui.GetUI()
+		state.StateMu.Lock()
+		state.LastStatusBarText = ""
+		state.StateMu.Unlock()
+		ui.DrawConsoleStaticControlsLocked(dest, a, kiReader, true)
+	})
 	chatHistory, historyErr := chathistory.New(a, kiReader, ppWriter, currentSessionID, messages)
 	if historyErr != nil {
 		fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", historyErr)
 	}
 	defer chatHistory.Close()
 	kiReader.OnChatHistoryInput = chatHistory.FilterInput
+	kiReader.OnNativeCopyView = func() {
+		runNativeCopyView(os.Stderr, a, kiReader, chatHistory)
+	}
 
 	ui.GetUI().SetActiveInputReader(kiReader)
 	defer ui.GetUI().SetActiveInputReader(nil)
@@ -357,7 +368,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		// Consume redraw requests on the foreground renderer so committed
 		// history and the current inference form one consistent frame.
 		a.OnStreamProgress = func() bool {
-			if ui.GetUI().IsInModal() {
+			if ui.GetUI().IsInModal() || a.LiveSettings().NativeScroll {
 				return false
 			}
 			collapseReplay := kiReader.ApplyPendingCollapse()
@@ -393,7 +404,11 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			liveAfter := a.LiveSettings()
 			theme = style.ResolveConfiguredTheme(liveAfter.Theme, liveAfter.SyntaxTheme)
 		}
-		if turnRedrawn || redrawCollapse || redrawTheme || redrawSyntax {
+		if a.LiveSettings().NativeScroll {
+			if redrawCollapse || redrawTheme {
+				ui.RedrawScreen(os.Stderr, a, kiReader)
+			}
+		} else if turnRedrawn || redrawCollapse || redrawTheme || redrawSyntax {
 			chatHistory.RepaintTurns()
 		}
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)

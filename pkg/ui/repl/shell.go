@@ -196,7 +196,7 @@ func startManualCommandIndicator(theme style.UITheme, showMicroseconds bool) fun
 	}
 	go func() {
 		defer close(stopped)
-		ticker := time.NewTicker(150 * time.Millisecond)
+		ticker := time.NewTicker(style.ActivitySpinnerInterval)
 		defer ticker.Stop()
 		frame := 0
 		for {
@@ -212,7 +212,7 @@ func startManualCommandIndicator(theme style.UITheme, showMicroseconds bool) fun
 	return func() {
 		close(stop)
 		<-stopped
-		doneClock := style.NewStyle().Foreground(theme.Border).Render("🕛\uFE0E ")
-		ui.DrawStaticStatsLine(os.Stderr, theme, "", doneClock+elapsedText())
+		doneMark := style.ActivitySpinnerIdle(theme) + " "
+		ui.DrawStaticStatsLine(os.Stderr, theme, "", doneMark+elapsedText())
 	}
 }

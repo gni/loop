@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -191,13 +192,31 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 	scrollBottom := style.ConsoleScrollBottom(height, pasteOffset)
 	var finalBuf bytes.Buffer
 	cwFinal := crnlWriter{W: &finalBuf}
-	fmt.Fprintf(cwFinal, "%s\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", terminal.BeginSyncOutput, scrollBottom)
-	finalBuf.Write(buf.Bytes())
+	if live.NativeScroll {
+		fmt.Fprintf(cwFinal, "%s\x1b[r\x1b[2J\x1b[H", terminal.BeginSyncOutput)
+		finalBuf.Write(buf.Bytes())
+		endRow := 1
+		if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
+			endRow = agentUI.PPWriter.ResetAfterNativeReplayLocked(height, buf.Bytes())
+		} else {
+			probe := NewPromptPreservingWriter(io.Discard, height)
+			endRow = probe.ResetAfterNativeReplayLocked(height, buf.Bytes())
+		}
+		if overflow := endRow - scrollBottom; overflow > 0 && height > 0 {
+			finalBuf.WriteString(terminal.ResetAttributes)
+			fmt.Fprintf(&finalBuf, "\x1b[%d;1H%s", height, strings.Repeat("\r\n", overflow))
+		}
+	} else {
+		fmt.Fprintf(cwFinal, "%s\x1b[r\x1b[H\x1b[J\x1b[1;%dr\x1b[1;1H", terminal.BeginSyncOutput, scrollBottom)
+		finalBuf.Write(buf.Bytes())
+	}
 
 	UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens, estimated)
 	DrawConsoleStaticControlsLocked(render.WrapSyncFrame(cwFinal), a, kiReader, true)
-	if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
-		agentUI.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
+	if !live.NativeScroll {
+		if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {
+			agentUI.PPWriter.ResetAfterReplayLocked(height, buf.Bytes())
+		}
 	}
 
 	if counter, ok := a.CurrentWriter().(interface{ ResetAfterReplay([]byte) }); ok {

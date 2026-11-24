@@ -310,6 +310,7 @@ func (h *ChatHistory) applyOlderPageLocked() int {
 	if h.searchScan != nil && h.searchScan.next >= at {
 		h.searchScan.next += added
 	}
+	h.insertSelectionRowsLocked(at, added)
 	if h.pendingHome {
 		h.top = 0
 		if h.hasOlderLocked() {

@@ -90,6 +90,14 @@ func handleConfigCommand(
 	if applyErr != nil {
 		notice += "\n" + applyErr.Error()
 	}
+	if previous.NativeScroll && !a.Config.NativeScroll {
+		if history := ui.GetUI().GetChatHistory(); history != nil && messages != nil {
+			history.SetNotice(notice)
+			_ = history.ResetSession(a.ActiveSessionID(), *messages)
+			syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, true)
+			return
+		}
+	}
 	if redrawConfigIfNeeded(previous, a, theme, w, kiReader, notice, modal) {
 		syncCommandStatus(a, messages, *theme, os.Stderr, kiReader, calcHistoryTokens, false)
 		return
@@ -140,6 +148,7 @@ func configAppearanceChanged(before, after config.Config) bool {
 		before.ShowStickyQuestion != after.ShowStickyQuestion ||
 		before.ShowAutoBadge != after.ShowAutoBadge ||
 		before.HoverTooltips != after.HoverTooltips ||
+		before.NativeScroll != after.NativeScroll ||
 		before.ShowMicroseconds != after.ShowMicroseconds
 }
 

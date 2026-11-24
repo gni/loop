@@ -22,7 +22,7 @@ func (a *Agent) formatTurnElapsedLine(startTime time.Time, theme style.UITheme, 
 		}
 	}
 	now := time.Now()
-	return fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
+	return fmt.Sprintf("%s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
 }
 
 func (a *Agent) formatCompletionBadge(tokens int, theme style.UITheme) string {

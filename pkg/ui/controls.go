@@ -110,15 +110,17 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 				impl.PPWriter.SetPromptPositionLocked(row, col)
 			}
 		},
-		DrawPrompt: drawPrompt, InApproval: inApproval,
+		DrawPrompt: drawPrompt, InApproval: inApproval, NativeScroll: live.NativeScroll,
 		OldPasteOffset: oldOffset, Hint: hint,
 		SetPasteOffset: func(offset int) {
 			state.SetPasteLinesOffset(offset)
 		},
 		OnScroll: func(delta int) {
-			if history := state.GetChatHistory(); history != nil {
-				history.ResizeLocked(termW, height)
-				return
+			if !live.NativeScroll {
+				if history := state.GetChatHistory(); history != nil {
+					history.ResizeLocked(termW, height)
+					return
+				}
 			}
 			if uiImpl, ok := a.UI.(*AgentUIImpl); ok && uiImpl.PPWriter != nil {
 				uiImpl.PPWriter.AdjustPrintLineLocked(delta)

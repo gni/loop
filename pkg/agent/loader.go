@@ -61,7 +61,7 @@ func (tl *turnLoader) renderFrame(frame string) {
 	default:
 	}
 	if frame == "" {
-		frame = style.NewStyle().Foreground(tl.theme.Border).Render("🕛\uFE0E")
+		frame = style.ActivitySpinnerIdle(tl.theme)
 	}
 	timeStr := fmt.Sprintf("(%s)", style.FormatElapsedDuration(time.Since(tl.startTime), tl.showMicroseconds))
 	timeStyled := style.NewStyle().Foreground(tl.theme.Border).Render(timeStr)
@@ -69,7 +69,7 @@ func (tl *turnLoader) renderFrame(frame string) {
 }
 
 func (tl *turnLoader) run(ctx context.Context) {
-	ticker := time.NewTicker(150 * time.Millisecond)
+	ticker := time.NewTicker(style.ActivitySpinnerInterval)
 	defer ticker.Stop()
 
 	tl.mu.Lock()

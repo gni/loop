@@ -154,6 +154,7 @@ func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displ
 			if h.searchRow >= 0 {
 				h.searchRow -= dropped
 			}
+			h.shiftSelectionRowsLocked(-dropped)
 			for _, turn := range h.turns {
 				turn.start -= dropped
 				turn.end -= dropped

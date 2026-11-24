@@ -22,6 +22,7 @@ type ConsoleControls struct {
 	MaxInputRows   int
 	DrawPrompt     bool
 	InApproval     bool
+	NativeScroll   bool
 	OldPasteOffset int
 	Hint           string
 	SetPasteOffset func(int)
@@ -77,7 +78,11 @@ func DrawConsoleControls(w io.Writer, options ConsoleControls) {
 	if options.InApproval {
 		// Preserve the active approval/overlay area and cursor instead of clearing it.
 		frame.WriteString("\x1b7")
-		fmt.Fprintf(&frame, "\x1b[1;%dr", bottom)
+		if options.NativeScroll {
+			frame.WriteString(terminal.ResetScrollRegion)
+		} else {
+			fmt.Fprintf(&frame, "\x1b[1;%dr", bottom)
+		}
 		if options.DrawFooter != nil && height >= 6 {
 			options.DrawFooter(terminal.WrapSyncFrame(&frame))
 		}
@@ -91,7 +96,15 @@ func DrawConsoleControls(w io.Writer, options ConsoleControls) {
 
 	frame.WriteString(terminal.HideCursor)
 	if delta > 0 && oldBottom > delta {
-		fmt.Fprintf(&frame, "\x1b[1;%dr\x1b[%d;1H\x1b[%dS", oldBottom, oldBottom, delta)
+		if options.NativeScroll {
+			frame.WriteString(terminal.ResetScrollRegion)
+			if height > oldBottom {
+				fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[J", oldBottom+1)
+			}
+			fmt.Fprintf(&frame, "\x1b[%d;1H%s", height, strings.Repeat("\r\n", delta))
+		} else {
+			fmt.Fprintf(&frame, "\x1b[1;%dr\x1b[%d;1H\x1b[%dS", oldBottom, oldBottom, delta)
+		}
 		if options.OnScroll != nil {
 			options.OnScroll(-delta)
 		}
@@ -104,12 +117,18 @@ func DrawConsoleControls(w io.Writer, options ConsoleControls) {
 		}
 	}
 	if delta < 0 {
-		fmt.Fprintf(&frame, "\x1b[1;%dr\x1b[1;1H\x1b[%dT", bottom, -delta)
+		if !options.NativeScroll {
+			fmt.Fprintf(&frame, "\x1b[1;%dr\x1b[1;1H\x1b[%dT", bottom, -delta)
+		}
 		if options.OnScroll != nil {
 			options.OnScroll(-delta)
 		}
 	}
-	fmt.Fprintf(&frame, "\x1b[1;%dr", bottom)
+	if options.NativeScroll {
+		frame.WriteString(terminal.ResetScrollRegion)
+	} else {
+		fmt.Fprintf(&frame, "\x1b[1;%dr", bottom)
+	}
 	if options.DrawFooter != nil && height >= 4 {
 		options.DrawFooter(terminal.WrapSyncFrame(&frame))
 	}

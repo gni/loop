@@ -85,6 +85,7 @@ type Config struct {
 	ShowStickyQuestion       bool                       `json:"show_sticky_question"`
 	ShowAutoBadge            bool                       `json:"show_auto_badge"`
 	HoverTooltips            bool                       `json:"hover_tooltips"`
+	NativeScroll             bool                       `json:"native_scroll"`
 	Theme                    string                     `json:"theme"`
 	DirectCommands           bool                       `json:"direct_commands"`
 	CertFile                 string                     `json:"cert_file,omitempty"`

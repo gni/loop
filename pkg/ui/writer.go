@@ -55,6 +55,37 @@ type PromptPreservingWriter struct {
 	pendingLineFeed       bool
 	trailingNewlines      int
 	needsSyntaxRefresh    bool // A live code line could not be recolored safely.
+	nativeScroll          bool
+	onRedrawFooterLocked  func(io.Writer)
+}
+
+func (p *PromptPreservingWriter) outputWriterLocked() io.Writer {
+	if p.nativeScroll && p.raw != nil {
+		return p.raw
+	}
+	return p.inner
+}
+
+// SetNativeScroll toggles full-screen native terminal scrollback mode.
+func (p *PromptPreservingWriter) SetNativeScroll(enabled bool) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.nativeScroll = enabled
+}
+
+// IsNativeScroll reports whether full-screen native scrollback mode is active.
+func (p *PromptPreservingWriter) IsNativeScroll() bool {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	return p.nativeScroll
+}
+
+// SetFooterRedrawHook registers a callback invoked under TerminalMu inside an
+// active Mode 2026 sync frame to repaint the bottom controls after a native scroll.
+func (p *PromptPreservingWriter) SetFooterRedrawHook(fn func(io.Writer)) {
+	TerminalMu.Lock()
+	defer TerminalMu.Unlock()
+	p.onRedrawFooterLocked = fn
 }
 
 func (p *PromptPreservingWriter) blockedByAltOrMenu() bool {
@@ -103,7 +134,7 @@ func (p *PromptPreservingWriter) moveCursorToPromptLocked(suffix string) {
 	if p.blockedByAltOrMenu() {
 		return
 	}
-	fmt.Fprintf(p.inner, "\x1b[%d;%dH%s", p.getPromptRow(), p.promptCol, suffix)
+	fmt.Fprintf(p.outputWriterLocked(), "\x1b[%d;%dH%s", p.getPromptRow(), p.promptCol, suffix)
 	p.cursorAtPrompt = true
 	if p.autoWrapPending {
 		p.autoWrapDetached = true
@@ -118,7 +149,7 @@ func (p *PromptPreservingWriter) SetCursorHidden(hidden bool) {
 		return
 	}
 	if hidden {
-		fmt.Fprint(p.inner, "\x1b[?25l")
+		fmt.Fprint(p.outputWriterLocked(), "\x1b[?25l")
 	} else {
 		p.moveCursorToPromptLocked("\x1b[?25h")
 	}
@@ -146,11 +177,13 @@ func (p *PromptPreservingWriter) SetPromptPositionLocked(row, col int) {
 
 // ResizeLocked synchronizes cursor bookkeeping before drawing a resized input.
 func (p *PromptPreservingWriter) ResizeLocked(height int) {
-	if h := getUI().GetChatHistory(); h != nil && h.Writer() == p && height > 0 {
-		width, _ := GetTerminalSize()
-		h.ResizeLocked(width, height)
-		p.height = height
-		return
+	if !p.nativeScroll {
+		if h := getUI().GetChatHistory(); h != nil && h.Writer() == p && height > 0 {
+			width, _ := GetTerminalSize()
+			h.ResizeLocked(width, height)
+			p.height = height
+			return
+		}
 	}
 	if height <= 0 || height == p.height {
 		return
@@ -190,7 +223,7 @@ func (p *PromptPreservingWriter) ForceRepositionLocked() {
 	if p.blockedByAltOrMenu() {
 		return
 	}
-	fmt.Fprintf(p.inner, "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
+	fmt.Fprintf(p.outputWriterLocked(), "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
 }
 
 func (p *PromptPreservingWriter) ForceReposition() {
@@ -232,6 +265,10 @@ func (p *PromptPreservingWriter) writeLocked(data []byte) (int, error) {
 
 	_, termH := GetTerminalSize()
 	p.ResizeLocked(termH)
+
+	if p.nativeScroll {
+		return p.writeNativeScrollLocked(data, origLen)
+	}
 
 	var buf bytes.Buffer
 	buf.WriteString(terminal.BeginSyncOutput)
@@ -322,6 +359,256 @@ func (p *PromptPreservingWriter) writeLocked(data []byte) (int, error) {
 	return origLen, err
 }
 
+func (p *PromptPreservingWriter) writeNativeScrollLocked(data []byte, origLen int) (int, error) {
+	scrollBottom := p.getScrollBottom()
+	termW, _ := GetTerminalSize()
+	if p.printLine > scrollBottom {
+		p.printLine = scrollBottom
+	}
+	if p.printLine < 1 {
+		p.printLine = 1
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(terminal.BeginSyncOutput)
+	buf.WriteString(terminal.ResetScrollRegion)
+	fmt.Fprintf(&buf, "\x1b[%d;%dH", p.printLine, p.printCol)
+	p.cursorAtPrompt = false
+	p.needsReposition = false
+	if p.autoWrapPending {
+		p.autoWrapDetached = true
+	}
+
+	footerCleared := false
+	nativeNewline := func() {
+		if p.printLine < scrollBottom {
+			buf.WriteString("\r\n")
+			p.printLine++
+			p.printCol = 1
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+			return
+		}
+		if !footerCleared && p.height > scrollBottom {
+			buf.WriteString(terminal.ResetAttributes)
+			fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[J", scrollBottom+1)
+			footerCleared = true
+		}
+		if p.height > 0 {
+			fmt.Fprintf(&buf, "\x1b[%d;1H\r\n", p.height)
+		} else {
+			buf.WriteString("\r\n")
+		}
+		fmt.Fprintf(&buf, "\x1b[%d;1H", scrollBottom)
+		if p.ansiState == ansiNormal && !p.activeSGR.IsZero() {
+			buf.WriteString(p.activeSGR.Sequence())
+		}
+		p.scrollCount++
+		p.printLine = scrollBottom
+		p.printCol = 1
+		p.autoWrapPending = false
+		p.autoWrapDetached = false
+	}
+
+	if p.autoWrapPending && p.autoWrapDetached && !p.pendingLineFeed && p.firstTerminalActionIsGraphic(data) {
+		nativeNewline()
+	}
+
+	if p.pendingLineFeed {
+		trailing := p.trailingNewlines
+		nativeNewline()
+		p.trailingNewlines = trailing
+		p.pendingLineFeed = false
+	}
+
+	emitBodyNative := func(body []byte) {
+		if len(body) == 0 {
+			return
+		}
+		if len(p.utf8Pending) > 0 {
+			combined := make([]byte, 0, len(p.utf8Pending)+len(body))
+			combined = append(combined, p.utf8Pending...)
+			combined = append(combined, body...)
+			p.utf8Pending = p.utf8Pending[:0]
+			body = combined
+		}
+		complete, pending := splitIncompleteUTF8(body)
+		if len(pending) > 0 {
+			p.utf8Pending = append(p.utf8Pending[:0], pending...)
+		}
+		if len(complete) == 0 {
+			return
+		}
+		if p.ansiState == ansiNormal && !p.activeSGR.IsZero() {
+			buf.WriteString(p.activeSGR.Sequence())
+		}
+
+		var text string
+		for i := 0; i < len(complete); {
+			b := complete[i]
+			if p.ansiState != ansiNormal {
+				p.stepANSIByte(b)
+				buf.WriteByte(b)
+				i++
+				continue
+			}
+			if b == '\x1b' {
+				p.ansiState = ansiEsc
+				p.ansiPrevEsc = false
+				buf.WriteByte(b)
+				i++
+				continue
+			}
+			if b < utf8.RuneSelf {
+				switch b {
+				case '\n':
+					if p.trailingNewlines < style.ActivityGapLines+1 {
+						p.trailingNewlines++
+					}
+					nativeNewline()
+				case '\r':
+					buf.WriteByte('\r')
+					p.printCol = 1
+					p.autoWrapPending = false
+					p.autoWrapDetached = false
+				case '\b':
+					buf.WriteByte('\b')
+					p.autoWrapPending = false
+					p.autoWrapDetached = false
+					if p.printCol > 1 {
+						p.printCol--
+					}
+				case '\t':
+					buf.WriteByte('\t')
+					p.autoWrapPending = false
+					p.autoWrapDetached = false
+					nextCol := p.printCol + style.TabAdvance(p.printCol-1, style.DefaultTabWidth)
+					if termW > 0 && nextCol > termW {
+						nextCol = termW
+					}
+					p.printCol = nextCol
+				default:
+					if b >= 0x20 && b != 0x7f {
+						if i+1 < len(complete) && complete[i+1] >= utf8.RuneSelf {
+							goto grapheme
+						}
+						if p.autoWrapPending {
+							if p.printLine >= scrollBottom {
+								nativeNewline()
+							} else {
+								if p.autoWrapDetached {
+									buf.WriteString("\r\n")
+								}
+								p.printLine++
+								p.printCol = 1
+								p.autoWrapPending = false
+								p.autoWrapDetached = false
+							}
+						}
+						buf.WriteByte(b)
+						p.trailingNewlines = 0
+						p.printCol++
+						if termW > 0 && p.printCol > termW {
+							p.printCol = termW
+							p.autoWrapPending = true
+							p.autoWrapDetached = false
+						}
+					} else {
+						buf.WriteByte(b)
+					}
+				}
+				i++
+				continue
+			}
+		grapheme:
+			if text == "" {
+				text = string(complete)
+			}
+			cluster, cells, size := style.NextGrapheme(text[i:])
+			if size <= 0 {
+				i++
+				continue
+			}
+			if cells > 0 {
+				needWrap := p.autoWrapPending || (termW > 0 && cells > 1 && p.printCol > 1 && p.printCol+cells-1 > termW)
+				if needWrap {
+					if p.printLine >= scrollBottom {
+						nativeNewline()
+					} else {
+						if p.autoWrapDetached {
+							buf.WriteString("\r\n")
+						}
+						p.printLine++
+						p.printCol = 1
+						p.autoWrapPending = false
+						p.autoWrapDetached = false
+					}
+				}
+				buf.WriteString(cluster)
+				p.trailingNewlines = 0
+				p.printCol += cells
+				if termW > 0 && p.printCol > termW {
+					p.printCol = termW
+					p.autoWrapPending = true
+					p.autoWrapDetached = false
+				}
+			} else {
+				buf.WriteString(cluster)
+			}
+			i += size
+		}
+
+		if p.restoreCursorToPrompt && p.ansiState == ansiNormal && !p.activeSGR.IsZero() {
+			buf.WriteString(terminal.ResetAttributes)
+		}
+	}
+
+	if data[len(data)-1] == '\n' {
+		body := data[:len(data)-1]
+		emitBodyNative(body)
+		if p.printLine == scrollBottom {
+			p.pendingLineFeed = true
+			if p.trailingNewlines < style.ActivityGapLines+1 {
+				p.trailingNewlines++
+			}
+			p.autoWrapPending = false
+			p.autoWrapDetached = false
+		} else {
+			if p.trailingNewlines < style.ActivityGapLines+1 {
+				p.trailingNewlines++
+			}
+			nativeNewline()
+		}
+	} else {
+		emitBodyNative(data)
+	}
+
+	if footerCleared && p.onRedrawFooterLocked != nil {
+		buf.WriteString(terminal.ResetAttributes)
+		p.onRedrawFooterLocked(terminal.WrapSyncFrame(&buf))
+	}
+
+	if p.restoreCursorToPrompt {
+		fmt.Fprintf(&buf, "\x1b[%d;%dH", p.getPromptRow(), p.promptCol)
+		if p.cursorHidden {
+			buf.WriteString(terminal.HideCursor)
+		} else {
+			buf.WriteString(terminal.ShowCursor)
+		}
+		p.cursorAtPrompt = true
+	} else {
+		fmt.Fprintf(&buf, "\x1b[%d;%dH", p.printLine, p.printCol)
+		p.cursorAtPrompt = false
+	}
+	if p.autoWrapPending {
+		p.autoWrapDetached = true
+	}
+	buf.WriteString(terminal.EndSyncOutput)
+
+	_, err := p.outputWriterLocked().Write(buf.Bytes())
+	return origLen, err
+}
+
 func stepANSIStateByte(state int, prevEsc bool, b byte) (int, bool) {
 	switch state {
 	case ansiEsc:
@@ -397,15 +684,15 @@ func splitIncompleteUTF8(b []byte) (complete, pending []byte) {
 	return b, nil
 }
 
-func (p *PromptPreservingWriter) advanceGraphicCell(cells, termW int) {
+func (p *PromptPreservingWriter) advanceGraphicCell(cells, termW, bottom int) {
 	p.trailingNewlines = 0
 	if p.autoWrapPending {
-		p.advancePrintLine()
+		p.advancePrintLineWithBottom(bottom)
 		p.printCol = 1
 		p.autoWrapPending = false
 		p.autoWrapDetached = false
 	} else if termW > 0 && cells > 1 && p.printCol > 1 && p.printCol+cells-1 > termW {
-		p.advancePrintLine()
+		p.advancePrintLineWithBottom(bottom)
 		p.printCol = 1
 		p.autoWrapPending = false
 		p.autoWrapDetached = false
@@ -422,6 +709,10 @@ func (p *PromptPreservingWriter) advanceGraphicCell(cells, termW int) {
 // It uses cached terminal dimensions, grapheme cluster widths, 8-column tab stops,
 // cross-chunk UTF-8 reassembly, and full ANSI escape tracking.
 func (p *PromptPreservingWriter) trackPosition(data []byte) {
+	p.trackPositionWithBottom(data, p.getScrollBottom())
+}
+
+func (p *PromptPreservingWriter) trackPositionWithBottom(data []byte, bottom int) {
 	if len(data) == 0 {
 		return
 	}
@@ -463,7 +754,7 @@ func (p *PromptPreservingWriter) trackPosition(data []byte) {
 				p.printCol = 1
 				p.autoWrapPending = false
 				p.autoWrapDetached = false
-				p.advancePrintLine()
+				p.advancePrintLineWithBottom(bottom)
 			case '\r':
 				p.printCol = 1
 				p.autoWrapPending = false
@@ -487,7 +778,7 @@ func (p *PromptPreservingWriter) trackPosition(data []byte) {
 					if i+1 < len(complete) && complete[i+1] >= utf8.RuneSelf {
 						goto grapheme
 					}
-					p.advanceGraphicCell(1, termW)
+					p.advanceGraphicCell(1, termW, bottom)
 				}
 			}
 			i++
@@ -503,15 +794,18 @@ func (p *PromptPreservingWriter) trackPosition(data []byte) {
 			continue
 		}
 		if cells > 0 {
-			p.advanceGraphicCell(cells, termW)
+			p.advanceGraphicCell(cells, termW, bottom)
 		}
 		i += size
 	}
 }
 
 func (p *PromptPreservingWriter) advancePrintLine() {
-	scrollBottom := p.getScrollBottom()
-	if p.printLine < scrollBottom {
+	p.advancePrintLineWithBottom(p.getScrollBottom())
+}
+
+func (p *PromptPreservingWriter) advancePrintLineWithBottom(bottom int) {
+	if p.printLine < bottom {
 		p.printLine++
 		return
 	}
@@ -652,6 +946,25 @@ func (p *PromptPreservingWriter) ResetAfterReplayLocked(height int, transcript [
 	}
 }
 
+// ResetAfterNativeReplayLocked tracks transcript written from (1, 1) with
+// full-screen scrolling (\x1b[r]), returns the final 1-based screen row (1..height),
+// and clamps printLine to scrollBottom so callers can emit trailing scroll padding.
+func (p *PromptPreservingWriter) ResetAfterNativeReplayLocked(height int, transcript []byte) int {
+	p.ResetAfterRedrawLocked(height)
+	p.printLine = 1
+	p.trackPositionWithBottom(transcript, max(1, height))
+	endRow := p.printLine
+	scrollBottom := p.getScrollBottom()
+	if p.printLine > scrollBottom {
+		p.printLine = scrollBottom
+	}
+	p.cursorAtPrompt = true
+	if p.autoWrapPending {
+		p.autoWrapDetached = true
+	}
+	return endRow
+}
+
 func (p *PromptPreservingWriter) GetScrollCount() int {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -757,7 +1070,7 @@ func (p *PromptPreservingWriter) RepaintActiveScrollLine(content string) bool {
 	var buf bytes.Buffer
 	buf.WriteString(terminal.BeginSyncOutput + "\x1b7")
 	fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s%s\x1b8%s", p.printLine, content, terminal.ResetAttributes, terminal.EndSyncOutput)
-	_, err := p.inner.Write(buf.Bytes())
+	_, err := p.outputWriterLocked().Write(buf.Bytes())
 	return err == nil
 }
 
@@ -818,6 +1131,6 @@ func (p *PromptPreservingWriter) ReplaceScrollBlockBack(linesBack int, lines []s
 		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K%s%s", startRow+index, line, terminal.ResetAttributes)
 	}
 	buf.WriteString("\x1b8" + terminal.EndSyncOutput)
-	_, err := p.inner.Write(buf.Bytes())
+	_, err := p.outputWriterLocked().Write(buf.Bytes())
 	return err == nil
 }

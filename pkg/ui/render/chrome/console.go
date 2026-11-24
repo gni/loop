@@ -76,7 +76,11 @@ func DrawStatusBarWithHover(w io.Writer, theme style.UITheme, width, height, scr
 		buf.WriteString(terminal.BeginSyncOutput)
 	}
 	buf.WriteString("\x1b7")
-	fmt.Fprintf(&buf, "\x1b[1;%dr", max(1, scrollBottom))
+	if scrollBottom <= 0 {
+		buf.WriteString(terminal.ResetScrollRegion)
+	} else {
+		fmt.Fprintf(&buf, "\x1b[1;%dr", scrollBottom)
+	}
 	fmt.Fprintf(&buf, "\x1b[%d;1H%s%s\x1b[K", height-1, sepLine, terminal.ResetAttributes)
 	fmt.Fprintf(&buf, "\x1b[%d;1H%s%s\x1b[K", height, newStatusBarText, terminal.ResetAttributes)
 	buf.WriteString("\x1b8")

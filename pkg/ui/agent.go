@@ -11,6 +11,7 @@ import (
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
+	"loop/pkg/db"
 	"loop/pkg/lifecycle"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/render"
@@ -32,6 +33,7 @@ type ChatHistoryController interface {
 	PaintIfNeededLocked()
 	DrawnHintLocked() string
 	Writer() *PromptPreservingWriter
+	ResetSession(id string, initial []db.Message) error
 	SlashMenuActive() bool
 	StepSlashMenu(delta int) bool
 }
@@ -164,10 +166,22 @@ func (ui *AgentUIImpl) SetCollapseStatus(collapsed bool) {
 	ui.StateMu.Unlock()
 }
 
+// IsNativeScroll reports whether native terminal scrollback mode is enabled.
+func (ui *AgentUIImpl) IsNativeScroll() bool {
+	if ui == nil {
+		return false
+	}
+	ui.StateMu.Lock()
+	defer ui.StateMu.Unlock()
+	return ui.Config != nil && ui.Config.NativeScroll
+}
+
 func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	ui.StateMu.Lock()
 	ui.Config = cfg
 	hoverEnabled := true
+	nativeScroll := false
+	pp := ui.PPWriter
 	if cfg != nil {
 		ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
 		if canon := style.CanonicalThemeName(cfg.Theme); canon != "" {
@@ -177,13 +191,18 @@ func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 		ui.State.Model = cfg.Model
 		ui.CollapseResults = cfg.CollapseResults
 		hoverEnabled = cfg.HoverTooltips
-		if !hoverEnabled {
+		nativeScroll = cfg.NativeScroll
+		if !hoverEnabled || nativeScroll {
 			ui.HoverTarget = render.HoverNone
 		}
 	}
 	ui.LastStatusBarText = ""
 	ui.StateMu.Unlock()
+	terminal.Default().SetMouseEnabled(!nativeScroll)
 	terminal.Default().SetMouseMotion(hoverEnabled)
+	if pp != nil {
+		pp.SetNativeScroll(nativeScroll)
+	}
 }
 
 // SetActiveThemeName updates the canonical UI theme label displayed by prompt chrome
@@ -264,6 +283,7 @@ func (ui *AgentUIImpl) InitStatusBar(w io.Writer) {
 	// painted when returning from a full-screen menu.
 	ui.LastStatusBarText = ""
 	ui.LastH = height
+	nativeScroll := ui.Config != nil && ui.Config.NativeScroll
 	ui.StateMu.Unlock()
 
 	if height > 3 && w != nil {
@@ -273,7 +293,11 @@ func (ui *AgentUIImpl) InitStatusBar(w io.Writer) {
 		// Print newline and cursor up to ensure we scroll if we are near the bottom
 		buf.WriteString("\n\n\x1b[2A")
 		// Save cursor, set scroll region, restore cursor to prevent jumping to top
-		fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+		if nativeScroll {
+			buf.WriteString("\x1b7\x1b[r\x1b8")
+		} else {
+			fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+		}
 		buf.WriteString(terminal.EndSyncOutput)
 		_, _ = w.Write(buf.Bytes())
 	}
@@ -353,10 +377,11 @@ func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showT
 		history := ui.ChatHistory
 		pp := ui.PPWriter
 		inMenu := ui.InInteractiveMenu
+		nativeScroll := ui.Config != nil && ui.Config.NativeScroll
 		ui.StateMu.Unlock()
 
 		width, height := GetTerminalSize()
-		if history != nil {
+		if history != nil && !nativeScroll {
 			history.ResizeLocked(width, height)
 		} else if pp != nil {
 			pp.ResizeLocked(height)
@@ -365,7 +390,11 @@ func (ui *AgentUIImpl) NewStreamRenderer(w io.Writer, theme style.UITheme, showT
 			scrollBottom := style.ConsoleScrollBottom(height, 0)
 			var buf bytes.Buffer
 			buf.WriteString(terminal.BeginSyncOutput)
-			fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+			if nativeScroll {
+				buf.WriteString("\x1b7\x1b[r\x1b8")
+			} else {
+				fmt.Fprintf(&buf, "\x1b7\x1b[1;%dr\x1b8", scrollBottom)
+			}
 			buf.WriteString(terminal.EndSyncOutput)
 			_, _ = os.Stderr.Write(buf.Bytes())
 		}
@@ -443,7 +472,7 @@ func (ui *AgentUIImpl) RenderGenerationError(w io.Writer, message string, theme 
 // FormatTurnElapsed implements agent.TurnStatusPresenter.
 func (ui *AgentUIImpl) FormatTurnElapsed(startTime time.Time, theme style.UITheme, showMicroseconds bool) string {
 	now := time.Now()
-	timeStr := fmt.Sprintf("🕛\uFE0E %s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
+	timeStr := fmt.Sprintf("%s (%s)", style.FormatElapsedDuration(now.Sub(startTime), showMicroseconds), now.Format("15:04:05"))
 	return style.NewStyle().Foreground(theme.TextMuted).Render(timeStr)
 }
 

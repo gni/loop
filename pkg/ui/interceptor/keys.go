@@ -213,6 +213,14 @@ func (ki *KeyInterceptorReader) HandleCtrlY() {
 	_, _, _ = ki.CycleTheme(1)
 }
 
+// HandleCtrlX opens the native copy/scroll view when available.
+func (ki *KeyInterceptorReader) HandleCtrlX() {
+	if ki == nil || ki.OnNativeCopyView == nil {
+		return
+	}
+	ki.OnNativeCopyView()
+}
+
 func (ki *KeyInterceptorReader) updateLiveSettings(change func(*agent.LiveSettings)) bool {
 	if ki.Agent == nil {
 		return false
