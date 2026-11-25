@@ -28,6 +28,15 @@ func recordRenderedToolResult(sr StreamRenderer, index int, call db.ToolCall, ou
 	}
 }
 
+func isBatchNonBlockingTool(name string) bool {
+	switch tool.NormalizeName(name) {
+	case "todo", "task_state":
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *TurnEngine) emitRejectedToolCall(
 	idx int,
 	tc db.ToolCall,
@@ -44,7 +53,7 @@ func (e *TurnEngine) emitRejectedToolCall(
 	if !dependencySkipped {
 		e.guard.RecordPostExecution(tc.Function.Name, tc.Function.Arguments, output, fmt.Errorf("tool rejected: %s", output))
 		e.recordRejectedState(output)
-		if e.batchFailure == "" {
+		if e.batchFailure == "" && !isBatchNonBlockingTool(tc.Function.Name) {
 			e.batchFailure = tc.Function.Name
 		}
 	}
@@ -87,7 +96,7 @@ func (e *TurnEngine) finalizeToolCall(
 	rich tool.ToolResult,
 ) {
 	a := e.agent
-	if e.batchFailure == "" && (toolErr != nil || rich.Evidence.HasErrors()) {
+	if e.batchFailure == "" && !isBatchNonBlockingTool(tc.Function.Name) && (toolErr != nil || rich.Evidence.HasErrors()) {
 		e.batchFailure = tc.Function.Name
 	}
 	if rich.Evidence == nil {

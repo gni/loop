@@ -34,7 +34,9 @@ var compactParameterHints = map[string]map[string]string{
 		"recommended": "Exact label of the recommended option from options (UI tags it as Recommended).",
 	},
 	"todo": {
-		"markdown": "Checklist lines: '- [ ] id: task' ([>] active, [x] done).",
+		"markdown": "Checklist lines: '- [ ] id: task' ([>] active, [x] done). Omit action when sending markdown.",
+		"action":   "Single-item op: update, add, remove, or list.",
+		"task_id":  "Task ID for update or remove (e.g. 'task-1').",
 	},
 	"task_state": {
 		"remaining": "Replace remaining items ([] clears).",

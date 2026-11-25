@@ -101,6 +101,24 @@ func extractTodoTargetFromMap(argsMap map[string]any) string {
 	if argsMap == nil {
 		return ""
 	}
+	if md, ok := argsMap["markdown"].(string); ok && strings.TrimSpace(md) != "" {
+		items := domaintool.ParseMarkdownTodoLines(md, "task-")
+		var firstPending string
+		for _, item := range items {
+			if item.Status == "in_progress" && item.Task != "" {
+				return item.Task
+			}
+			if firstPending == "" && item.Status != "completed" && item.Task != "" {
+				firstPending = item.Task
+			}
+		}
+		if firstPending != "" {
+			return firstPending
+		}
+		if len(items) > 0 {
+			return items[0].Task
+		}
+	}
 	for _, key := range todoListKeys {
 		taskList, ok := argsMap[key].([]any)
 		if !ok {
@@ -134,7 +152,21 @@ func extractTodoTargetFromMap(argsMap map[string]any) string {
 			return firstPendingTask
 		}
 	}
-	return ""
+	action := strings.ToLower(domaintool.ExtractMapString(argsMap, "action", "op", "operation", "command"))
+	id, desc, status := domaintool.ExtractTodoFields(argsMap)
+	if desc != "" {
+		return desc
+	}
+	if id != "" {
+		if status != "" {
+			return fmt.Sprintf("%s -> %s", id, status)
+		}
+		if action != "" {
+			return fmt.Sprintf("%s %s", action, id)
+		}
+		return id
+	}
+	return action
 }
 
 func ExtractToolTarget(toolName string, argsJSON string) string {

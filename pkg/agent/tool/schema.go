@@ -119,6 +119,9 @@ func validateArgumentNumbers(value any) error {
 
 func normalizeToolArguments(name, arguments string, value any) (any, error) {
 	name = NormalizeName(name)
+	if name == "todo" {
+		return normalizeTodoArguments(value), nil
+	}
 	object, ok := value.(map[string]any)
 	if !ok {
 		return value, nil
@@ -170,23 +173,6 @@ func normalizeToolArguments(name, arguments string, value any) (any, error) {
 	case "bash":
 		copyAlias("command", "cmd", "arguments")
 		copyAlias("dir", "cwd")
-	case "todo":
-		if _, canonical := object["tasks"]; !canonical {
-			copyAlias("tasks", "actions")
-			delete(object, "actions")
-		}
-		_, hasMarkdown := object["markdown"]
-		_, hasTasks := object["tasks"]
-		_, hasTaskID := object["task_id"]
-		_, hasID := object["id"]
-		if (hasMarkdown || hasTasks) && !hasTaskID && !hasID {
-			if action, ok := object["action"].(string); ok {
-				switch strings.ToLower(strings.TrimSpace(action)) {
-				case "update", "replace", "set", "create", "init", "write", "save", "sync", "plan", "modify", "edit":
-					delete(object, "action")
-				}
-			}
-		}
 	case "get_task_status", "stop_task":
 		copyAlias("task_id", "id", "task", "taskId")
 	case "load_skill":
@@ -198,6 +184,295 @@ func normalizeToolArguments(name, arguments string, value any) (any, error) {
 		}
 	}
 	return object, nil
+}
+
+func looksLikeMarkdownChecklist(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "\n") {
+		return true
+	}
+	for _, prefix := range []string{"- [", "* [", "+ [", "[ ]", "[x]", "[X]", "[>]", "[~]", "[/]"} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringifyScalar(v any) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val), true
+	case json.Number:
+		return strings.TrimSpace(val.String()), true
+	case float64, int, int64, uint64:
+		return strings.TrimSpace(fmt.Sprintf("%v", val)), true
+	default:
+		return "", false
+	}
+}
+
+func normalizeTodoTaskArray(list []any) []any {
+	normalized := make([]any, 0, len(list))
+	for i, elem := range list {
+		switch item := elem.(type) {
+		case string:
+			parsed := domaintool.ParseMarkdownTodoLines(item, "task-")
+			for _, p := range parsed {
+				normalized = append(normalized, map[string]any{
+					"id":     p.ID,
+					"task":   p.Task,
+					"status": p.Status,
+				})
+			}
+		case map[string]any:
+			id, desc, rawStatus := domaintool.ExtractTodoFields(item)
+			if id == "" {
+				id = fmt.Sprintf("task-%d", i+1)
+			}
+			status := rawStatus
+			if norm, ok := domaintool.NormalizeTodoStatus(rawStatus); ok {
+				status = norm
+			}
+			normalized = append(normalized, map[string]any{
+				"id":     id,
+				"task":   desc,
+				"status": status,
+			})
+		default:
+			normalized = append(normalized, elem)
+		}
+	}
+	return normalized
+}
+
+// normalizeTodoArguments canonicalizes common LLM variations for todo calls
+// (action/status synonyms, numeric IDs, alias keys, empty optional fields,
+// stringified checklists, and loosely typed task items) before JSON Schema
+// validation so minor formatting quirks do not abort execution.
+func normalizeTodoArguments(value any) any {
+	if arr, ok := value.([]any); ok {
+		return map[string]any{"tasks": normalizeTodoTaskArray(arr)}
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+
+	// Drop null values and empty optional strings that strict-output models
+	// frequently populate alongside the active fields.
+	for k, v := range object {
+		if v == nil {
+			delete(object, k)
+			continue
+		}
+		if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+			delete(object, k)
+		}
+	}
+
+	// Normalize action aliases.
+	if _, exists := object["action"]; !exists {
+		for _, alias := range []string{"op", "operation", "command", "type"} {
+			if v, ok := object[alias]; ok {
+				object["action"] = v
+				delete(object, alias)
+				break
+			}
+		}
+	}
+
+	// Normalize task_id aliases and coerce numeric IDs to strings.
+	if _, exists := object["task_id"]; !exists {
+		for _, alias := range []string{"id", "taskId", "number", "index", "key"} {
+			if v, ok := object[alias]; ok {
+				object["task_id"] = v
+				delete(object, alias)
+				break
+			}
+		}
+	}
+	if v, exists := object["task_id"]; exists {
+		if s, ok := stringifyScalar(v); ok && s != "" {
+			object["task_id"] = s
+		} else if s == "" {
+			delete(object, "task_id")
+		}
+	}
+
+	// Normalize list aliases and string-valued plan fields to tasks/markdown.
+	for _, alias := range []string{"todos", "items", "plan", "data", "list", "todo_list", "actions", "md"} {
+		v, exists := object[alias]
+		if !exists {
+			continue
+		}
+		switch typed := v.(type) {
+		case []any:
+			if _, hasTasks := object["tasks"]; !hasTasks {
+				object["tasks"] = typed
+			}
+			delete(object, alias)
+		case string:
+			if _, hasMD := object["markdown"]; !hasMD && strings.TrimSpace(typed) != "" {
+				object["markdown"] = typed
+			}
+			delete(object, alias)
+		}
+	}
+	if rawTasks, exists := object["tasks"]; exists {
+		if s, ok := rawTasks.(string); ok {
+			if _, hasMD := object["markdown"]; !hasMD && strings.TrimSpace(s) != "" {
+				object["markdown"] = s
+			}
+			delete(object, "tasks")
+		}
+	}
+	if rawContent, exists := object["content"]; exists {
+		switch typed := rawContent.(type) {
+		case []any:
+			if _, hasTasks := object["tasks"]; !hasTasks {
+				object["tasks"] = typed
+			}
+			delete(object, "content")
+		case string:
+			if _, hasMD := object["markdown"]; !hasMD && looksLikeMarkdownChecklist(typed) {
+				object["markdown"] = typed
+				delete(object, "content")
+			} else if _, hasTask := object["task"]; !hasTask {
+				object["task"] = strings.TrimSpace(typed)
+				delete(object, "content")
+			}
+		}
+	}
+
+	// Normalize task description aliases.
+	if _, exists := object["task"]; !exists {
+		for _, alias := range []string{"description", "title", "text", "desc", "summary", "item", "body", "label"} {
+			if s, ok := object[alias].(string); ok && strings.TrimSpace(s) != "" {
+				object["task"] = strings.TrimSpace(s)
+				delete(object, alias)
+				break
+			}
+		}
+	}
+
+	// Normalize status aliases, booleans, and synonym values.
+	if _, exists := object["status"]; !exists {
+		if v, ok := object["state"]; ok {
+			object["status"] = v
+			delete(object, "state")
+		} else if done, ok := object["done"].(bool); ok {
+			if done {
+				object["status"] = "completed"
+			} else {
+				object["status"] = "pending"
+			}
+			delete(object, "done")
+		} else if completed, ok := object["completed"].(bool); ok {
+			if completed {
+				object["status"] = "completed"
+			} else {
+				object["status"] = "pending"
+			}
+			delete(object, "completed")
+		} else if inProgress, ok := object["in_progress"].(bool); ok {
+			if inProgress {
+				object["status"] = "in_progress"
+			} else {
+				object["status"] = "pending"
+			}
+			delete(object, "in_progress")
+		}
+	}
+	if rawStatus, ok := object["status"].(string); ok {
+		if norm, valid := domaintool.NormalizeTodoStatus(rawStatus); valid {
+			object["status"] = norm
+		}
+	}
+
+	// Drop empty tasks array when markdown or a non-clearing action is present.
+	if rawTasks, ok := object["tasks"].([]any); ok {
+		_, hasMD := object["markdown"]
+		_, hasAction := object["action"]
+		if len(rawTasks) == 0 && (hasMD || hasAction) {
+			delete(object, "tasks")
+		} else {
+			object["tasks"] = normalizeTodoTaskArray(rawTasks)
+		}
+	}
+
+	// Normalize action verbs into the canonical schema enum.
+	_, hasMarkdown := object["markdown"]
+	_, hasTasks := object["tasks"]
+	_, hasTaskID := object["task_id"]
+	if rawAction, ok := object["action"].(string); ok {
+		act := strings.ToLower(strings.TrimSpace(rawAction))
+		if hasMarkdown || hasTasks {
+			switch act {
+			case "update", "replace", "set", "create", "init", "write", "save", "sync", "plan", "modify", "edit", "upsert", "overwrite", "put":
+				if !hasTaskID {
+					delete(object, "action")
+				} else {
+					object["action"] = "update"
+				}
+			case "add", "append", "insert", "push", "new":
+				object["action"] = "add"
+			case "clear", "empty", "wipe", "delete_all", "remove_all":
+				delete(object, "action")
+				delete(object, "markdown")
+				object["tasks"] = []any{}
+			}
+		} else {
+			switch act {
+			case "complete", "completed", "finish", "finished", "done", "check":
+				object["action"] = "update"
+				if _, hasStatus := object["status"]; !hasStatus {
+					object["status"] = "completed"
+				}
+			case "start", "begin", "in_progress", "in-progress", "inprogress", "active", "working":
+				object["action"] = "update"
+				if _, hasStatus := object["status"]; !hasStatus {
+					object["status"] = "in_progress"
+				}
+			case "pending", "reopen", "uncheck", "todo":
+				object["action"] = "update"
+				if _, hasStatus := object["status"]; !hasStatus {
+					object["status"] = "pending"
+				}
+			case "reset":
+				if hasTaskID {
+					object["action"] = "update"
+					if _, hasStatus := object["status"]; !hasStatus {
+						object["status"] = "pending"
+					}
+				} else {
+					delete(object, "action")
+					object["tasks"] = []any{}
+				}
+			case "clear", "empty", "wipe", "delete_all", "remove_all":
+				delete(object, "action")
+				object["tasks"] = []any{}
+			case "delete", "del", "rm", "drop":
+				object["action"] = "remove"
+			case "create", "insert", "append", "new", "push":
+				object["action"] = "add"
+			case "modify", "edit", "change", "set", "mark", "set_status", "upsert":
+				object["action"] = "update"
+			case "list", "get", "show", "view", "read", "status", "inspect":
+				object["action"] = "list"
+			case "update", "add", "remove":
+				object["action"] = act
+			}
+		}
+	}
+
+	return object
 }
 
 // CanonicalArguments normalizes model arguments and guard fingerprints. Direct

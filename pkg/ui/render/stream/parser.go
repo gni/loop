@@ -123,7 +123,7 @@ func IsToolContentKey(key string, toolName string) bool {
 	}
 	lower := strings.ToLower(key)
 	if toolName == "todo" {
-		return lower == "task" || lower == "title" || lower == "description" || lower == "content"
+		return lower == "markdown" || lower == "task" || lower == "title" || lower == "description" || lower == "content"
 	}
 	switch lower {
 	case "description", "summary", "explanation", "instructions", "instruction", "overwrite", "encoding", "background":

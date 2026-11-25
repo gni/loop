@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // SchemaProp defines the JSON schema property descriptor for tool parameters.
@@ -260,51 +261,162 @@ func boolTodoStatus(flag bool, trueStatus string) string {
 	return "pending"
 }
 
-func stripAnyTodoPrefix(s string, prefixes ...string) (string, bool) {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return strings.TrimSpace(s[len(p):]), true
+// NormalizeTodoStatus canonicalizes common status synonyms and casing.
+func NormalizeTodoStatus(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "in_progress", "in-progress", "inprogress", "in progress", "active", "doing", "working", "started", "running":
+		return "in_progress", true
+	case "completed", "complete", "done", "finished", "success", "closed", "resolved":
+		return "completed", true
+	case "pending", "todo", "to_do", "to-do", "waiting", "planned", "open", "not_started", "not-started", "":
+		return "pending", true
+	default:
+		return "", false
+	}
+}
+
+// SplitTodoIDAndTask extracts an optional leading task identifier before ':'
+// (for example "task-1: Describe work" or "**step-2**: Fix bug").
+// Descriptions without a valid single-token ID prefix return hasID=false so
+// colons inside prose (e.g. "Fix pkg/foo.go: nil check") are preserved verbatim.
+func SplitTodoIDAndTask(line string) (id, task string, hasID bool) {
+	trimmed := strings.TrimSpace(line)
+	left, right, ok := strings.Cut(trimmed, ":")
+	if !ok {
+		return "", trimmed, false
+	}
+	right = strings.TrimSpace(right)
+	if right == "" {
+		return "", trimmed, false
+	}
+	candidate := strings.TrimSpace(left)
+	for _, pair := range [][2]string{{"**", "**"}, {"__", "__"}, {"`", "`"}, {"[", "]"}, {"(", ")"}} {
+		if strings.HasPrefix(candidate, pair[0]) && strings.HasSuffix(candidate, pair[1]) && len(candidate) > len(pair[0])+len(pair[1]) {
+			candidate = strings.TrimSpace(candidate[len(pair[0]) : len(candidate)-len(pair[1])])
 		}
 	}
-	return s, false
+	if candidate == "" || len(candidate) > 48 {
+		return "", trimmed, false
+	}
+	for _, r := range candidate {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != '.' {
+			return "", trimmed, false
+		}
+	}
+	return candidate, right, true
+}
+
+func stripTodoBulletOrNumber(s string) string {
+	s = strings.TrimSpace(s)
+	for _, p := range []string{"- ", "* ", "+ ", "• ", "◦ ", "▪ "} {
+		if after, ok := strings.CutPrefix(s, p); ok {
+			return strings.TrimSpace(after)
+		}
+	}
+	idx := 0
+	for idx < len(s) && s[idx] >= '0' && s[idx] <= '9' {
+		idx++
+	}
+	if idx > 0 && idx < len(s) && (s[idx] == '.' || s[idx] == ')') {
+		if idx+1 == len(s) || s[idx+1] == ' ' || s[idx+1] == '\t' {
+			return strings.TrimSpace(s[idx+1:])
+		}
+	}
+	return s
+}
+
+func stripTodoCheckbox(s string) (status string, rest string, matched bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") {
+		return "pending", s, false
+	}
+	closeIdx := strings.IndexByte(s, ']')
+	if closeIdx <= 0 || closeIdx > 16 {
+		return "pending", s, false
+	}
+	token := strings.ToLower(strings.TrimSpace(s[1:closeIdx]))
+	tail := strings.TrimSpace(s[closeIdx+1:])
+	switch token {
+	case "x", "✓", "✔", "done", "completed", "complete":
+		return "completed", tail, true
+	case ">", "~", "/", "-", "*", "•", "in_progress", "in-progress", "inprogress", "active", "doing", "working":
+		return "in_progress", tail, true
+	case "", "pending", "todo", "open":
+		return "pending", tail, true
+	default:
+		return "pending", s, false
+	}
+}
+
+func isMarkdownHeadingOrRule(line string) bool {
+	if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+		return true
+	}
+	if strings.HasPrefix(line, "#") {
+		rest := strings.TrimLeft(line, "#")
+		if rest == "" || rest[0] == ' ' || rest[0] == '\t' {
+			return true
+		}
+	}
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) >= 3 && (strings.Trim(trimmed, "-") == "" || strings.Trim(trimmed, "*") == "" || strings.Trim(trimmed, "_") == "") {
+		return true
+	}
+	return false
 }
 
 // ParseMarkdownTodoLines parses plain or markdown checklist lines into TodoItems.
+// Supports bullets (-, *, +, •), numbered lists (1., 2)), checkboxes ([ ], [x], [>], [/], [-], [~]),
+// optional explicit IDs ("task-1: description"), and ignores markdown fences and headings.
 func ParseMarkdownTodoLines(raw string, idPrefix string) []TodoItem {
 	if idPrefix == "" {
 		idPrefix = "task-"
 	}
 	var parsed []TodoItem
+	usedIDs := make(map[string]bool)
+	nextAutoID := func() string {
+		for n := len(parsed) + 1; ; n++ {
+			id := fmt.Sprintf("%s%d", idPrefix, n)
+			key := strings.ToLower(id)
+			if !usedIDs[key] {
+				return id
+			}
+		}
+	}
+
 	for line := range strings.SplitSeq(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isMarkdownHeadingOrRule(line) {
+			continue
+		}
+		line = stripTodoBulletOrNumber(line)
+		if line == "" {
+			continue
+		}
+		status, rest, hasBox := stripTodoCheckbox(line)
+		if hasBox {
+			line = rest
+		} else {
+			// Also handle rare bullet-after-number or checkbox-before-bullet forms.
+			status = "pending"
+		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		status := "pending"
-		if rest, ok := stripAnyTodoPrefix(line, "- [x]", "[x]", "- [X]", "[X]"); ok {
-			status = "completed"
-			line = rest
-		} else if rest, ok := stripAnyTodoPrefix(line, "- [>]", "[>]", "- [~]", "[~]", "- [in_progress]", "[in_progress]"); ok {
-			status = "in_progress"
-			line = rest
-		} else if rest, ok := stripAnyTodoPrefix(line, "- [ ]", "[ ]", "• ", "- ", "* "); ok {
-			line = rest
+		id, desc, hasID := SplitTodoIDAndTask(line)
+		if !hasID {
+			id = nextAutoID()
+			desc = line
+		} else if usedIDs[strings.ToLower(id)] {
+			id = nextAutoID()
 		}
-
-		idx := 0
-		for idx < len(line) && line[idx] >= '0' && line[idx] <= '9' {
-			idx++
-		}
-		if idx > 0 && idx < len(line) && (line[idx] == '.' || line[idx] == ')') {
-			line = strings.TrimSpace(line[idx+1:])
-		}
-		if line != "" {
-			parsed = append(parsed, TodoItem{
-				ID:     fmt.Sprintf("%s%d", idPrefix, len(parsed)+1),
-				Task:   line,
-				Status: status,
-			})
-		}
+		usedIDs[strings.ToLower(id)] = true
+		parsed = append(parsed, TodoItem{
+			ID:     id,
+			Task:   desc,
+			Status: status,
+		})
 	}
 	return parsed
 }
