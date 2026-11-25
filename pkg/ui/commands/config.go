@@ -152,6 +152,8 @@ func configAppearanceChanged(before, after config.Config) bool {
 		before.ShowThinking != after.ShowThinking ||
 		before.ReasoningEffort != after.ReasoningEffort ||
 		before.ShowTokens != after.ShowTokens ||
+		before.ShowWorkspace != after.ShowWorkspace ||
+		before.ShowSession != after.ShowSession ||
 		before.AutoApprove != after.AutoApprove ||
 		before.ShowReasoningBadge != after.ShowReasoningBadge ||
 		before.ShowCollapseBadge != after.ShowCollapseBadge ||

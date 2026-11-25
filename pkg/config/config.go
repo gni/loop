@@ -79,6 +79,8 @@ type Config struct {
 	CollapseResults          bool                       `json:"collapse_results"`
 	HistoryPageSize          int                        `json:"history_page_size,omitempty"`
 	ShowTokens               bool                       `json:"show_tokens"`
+	ShowWorkspace            bool                       `json:"show_workspace"`
+	ShowSession              bool                       `json:"show_session"`
 	ShowMicroseconds         bool                       `json:"show_microseconds"`
 	ShowReasoningBadge       bool                       `json:"show_reasoning_badge"`
 	ShowCollapseBadge        bool                       `json:"show_collapse_badge"`

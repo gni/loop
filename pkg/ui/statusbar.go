@@ -100,6 +100,8 @@ func DrawStatusBarLocked(w io.Writer, theme UITheme) {
 	showCollapse := true
 	hoverCollapse := false
 	if ui.Config != nil {
+		stateSnapshot.HideWorkspace = !ui.Config.ShowWorkspace
+		stateSnapshot.HideSession = !ui.Config.ShowSession
 		showCollapse = ui.Config.ShowCollapseBadge
 		hoverCollapse = ui.Config.HoverTooltips && ui.HoverTarget == render.HoverCollapseBadge
 	}

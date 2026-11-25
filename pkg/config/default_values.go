@@ -55,6 +55,8 @@ func DefaultConfig() *Config {
 		Temperature:              0.2,
 		FrequencyPenalty:         .2,
 		ShowTokens:               true,
+		ShowWorkspace:            true,
+		ShowSession:              true,
 		ShowReasoningBadge:       true,
 		ShowCollapseBadge:        true,
 		ShowGitBranch:            true,

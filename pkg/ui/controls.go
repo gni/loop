@@ -53,6 +53,8 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	activeTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	state.StateMu.Lock()
 	state.State.ShowTokens = live.ShowTokens
+	state.State.HideWorkspace = !live.ShowWorkspace
+	state.State.HideSession = !live.ShowSession
 	if canon := style.CanonicalThemeName(live.Theme); canon != "" {
 		state.ActiveThemeName = canon
 	}

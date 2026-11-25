@@ -43,6 +43,7 @@ func RenderHelp(w io.Writer, theme style.UITheme) {
 		{"/rename <name>", "rename current conversation session"},
 		{"/copy [code|<n>|list]", "copy last assistant reply or fenced code block to clipboard"},
 		{"/config native_scroll true", "use native terminal scrollback without mouse capture (default: false)"},
+		{"/config show_workspace false", "hide workspace (⌂) from status bar; also show_session false"},
 		{"/config bash_syntax_color false", "disable syntax highlighting on bash commands and results (default: true)"},
 		{"/export [path]", "export conversation to Markdown or JSONL file"},
 		{"/thinking [level]", "view or set reasoning effort (off/low/medium/high/max)"},

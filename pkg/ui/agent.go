@@ -85,8 +85,14 @@ func NewAgentUI(cfg *config.Config, theme style.UITheme) *AgentUIImpl {
 	uiImpl := &AgentUIImpl{
 		Config:          cfg,
 		Theme:           theme,
-		CollapseResults: cfg.CollapseResults,
+		CollapseResults: cfg != nil && cfg.CollapseResults,
 		ActiveThemeName: activeThemeName,
+	}
+	if cfg != nil {
+		uiImpl.State.ShowTokens = cfg.ShowTokens
+		uiImpl.State.HideWorkspace = !cfg.ShowWorkspace
+		uiImpl.State.HideSession = !cfg.ShowSession
+		uiImpl.State.Model = cfg.Model
 	}
 	ActiveUI = uiImpl
 
@@ -198,6 +204,8 @@ func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 			ui.ActiveThemeName = canon
 		}
 		ui.State.ShowTokens = cfg.ShowTokens
+		ui.State.HideWorkspace = !cfg.ShowWorkspace
+		ui.State.HideSession = !cfg.ShowSession
 		ui.State.Model = cfg.Model
 		ui.CollapseResults = cfg.CollapseResults
 		hoverEnabled = cfg.HoverTooltips

@@ -71,6 +71,8 @@ type LiveSettingsSnapshot struct {
 	AutoApprove        bool
 	ParallelToolCalls  bool
 	ShowTokens         bool
+	ShowWorkspace      bool
+	ShowSession        bool
 	ShowReasoningBadge bool
 	ShowCollapseBadge  bool
 	ShowGitBranch      bool
@@ -94,12 +96,12 @@ type LiveSettingsSnapshot struct {
 // concurrent readers and nil agents or configurations.
 func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 	if a == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: false, BashSyntaxColor: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowWorkspace: true, ShowSession: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: false, BashSyntaxColor: true}
 	}
 	a.LLMProviderMu.RLock()
 	defer a.LLMProviderMu.RUnlock()
 	if a.Config == nil {
-		return LiveSettingsSnapshot{StreamWrites: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: false, BashSyntaxColor: true}
+		return LiveSettingsSnapshot{StreamWrites: true, ShowWorkspace: true, ShowSession: true, ShowReasoningBadge: true, ShowCollapseBadge: true, ShowGitBranch: true, ShowStickyQuestion: true, ShowAutoBadge: true, HoverTooltips: true, NativeScroll: false, BashSyntaxColor: true}
 	}
 	cfg := a.Config
 	return LiveSettingsSnapshot{
@@ -109,6 +111,8 @@ func (a *Agent) LiveSettings() LiveSettingsSnapshot {
 		AutoApprove:        cfg.AutoApprove,
 		ParallelToolCalls:  cfg.ParallelToolCalls,
 		ShowTokens:         cfg.ShowTokens,
+		ShowWorkspace:      cfg.ShowWorkspace,
+		ShowSession:        cfg.ShowSession,
 		ShowReasoningBadge: cfg.ShowReasoningBadge,
 		ShowCollapseBadge:  cfg.ShowCollapseBadge,
 		ShowGitBranch:      cfg.ShowGitBranch,
