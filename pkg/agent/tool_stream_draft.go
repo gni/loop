@@ -111,7 +111,11 @@ func (d *streamedDraft) appendJSON(fragment string) {
 					d.appendDecoded('\t')
 				case 'r':
 					d.appendDecoded('\r')
+				case 'b', 'f':
 				case '"', '\\', '/':
+					d.appendDecoded(r)
+				default:
+					d.appendDecoded('\\')
 					d.appendDecoded(r)
 				}
 

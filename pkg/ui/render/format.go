@@ -191,12 +191,23 @@ func FormatBashCommandLineStyled(symbol string, command string, theme style.UITh
 
 	command = strings.ReplaceAll(command, "\r\n", "\n")
 	command = strings.ReplaceAll(command, "\r", "\n")
-	command = strings.TrimRight(command, "\n")
 	if strings.TrimSpace(command) == "" {
 		return prompt
 	}
 
 	lines := strings.Split(command, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return prompt
+	}
+	if len(lines) == 1 {
+		lines[0] = strings.TrimSpace(lines[0])
+	}
 	cleanedLines := make([]string, len(lines))
 	for idx, line := range lines {
 		cleanedLines[idx] = strings.Map(func(r rune) rune {

@@ -281,6 +281,17 @@ func (sr *StreamRenderer) writeLiveBashLocked(view *liveCallView, delta string) 
 		if end >= 0 {
 			fragment = delta[:end]
 		}
+		if view.bashLineIndex == 0 && !view.codeLineOverflow &&
+			strings.TrimSpace(view.codeLine.String()) == "" && strings.TrimSpace(fragment) == "" {
+			if end >= 0 {
+				view.codeLine.Reset()
+				delta = delta[end+1:]
+				continue
+			}
+			view.codeLine.WriteString(fragment)
+			view.endsWithNewline = false
+			return
+		}
 		if fragment != "" {
 			if view.codeLineOverflow {
 				cleaned := cleanBashCommandChunk(fragment)
@@ -362,6 +373,13 @@ func (sr *StreamRenderer) resyncLiveBashStateLocked(view *liveCallView) {
 	}
 	hasTrailingNL := strings.HasSuffix(content, "\n")
 	lines := strings.Split(content, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	if len(lines) == 0 {
+		view.endsWithNewline = false
+		return
+	}
 	completedLines := lines
 	if hasTrailingNL {
 		completedLines = lines[:len(lines)-1]

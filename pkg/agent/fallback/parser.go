@@ -266,6 +266,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, rawBody string) db.T
 
 	case "bash":
 		cmd := tool.FirstNonEmpty(attrs["command"], trimTagBoundaryNewlines(rawBody))
+		cmd = strings.Trim(cmd, "\r\n")
 		if !strings.Contains(cmd, "\n") {
 			cmd = strings.TrimSpace(cmd)
 		}

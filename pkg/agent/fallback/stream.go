@@ -61,6 +61,8 @@ var (
 type ToolTextFilter struct {
 	pending                  string
 	closingTag               string
+	trimLeadingTagNewline    bool
+	pendingTagCR             bool
 	discardLeadingWhitespace bool
 	consumeClosingFence      bool
 	emit                     func(string)
@@ -207,6 +209,43 @@ func extractOpeningTarget(toolName, opening string) string {
 func (f *ToolTextFilter) process(final bool) {
 	for {
 		if f.closingTag != "" {
+			if f.trimLeadingTagNewline {
+				if f.pending == "" {
+					if final {
+						f.trimLeadingTagNewline = false
+						f.pendingTagCR = false
+					} else {
+						return
+					}
+				} else if f.pendingTagCR {
+					f.trimLeadingTagNewline = false
+					f.pendingTagCR = false
+					if f.pending[0] == '\n' {
+						f.pending = f.pending[1:]
+					} else {
+						f.pending = "\r" + f.pending
+					}
+				} else if f.pending[0] == '\n' {
+					f.pending = f.pending[1:]
+					f.trimLeadingTagNewline = false
+				} else if f.pending[0] == '\r' {
+					if len(f.pending) >= 2 {
+						if f.pending[1] == '\n' {
+							f.pending = f.pending[2:]
+						}
+						f.trimLeadingTagNewline = false
+					} else if !final {
+						f.pendingTagCR = true
+						f.pending = ""
+						return
+					} else {
+						f.trimLeadingTagNewline = false
+					}
+				} else {
+					f.trimLeadingTagNewline = false
+				}
+			}
+
 			if f.activeToolName == "" {
 				if name := extractHermesFunctionName(f.pending); name != "" {
 					f.activeToolName = name
@@ -218,12 +257,14 @@ func (f *ToolTextFilter) process(final bool) {
 
 			closeIndex := closingBoundaryIndex(f.pending, f.closingTag)
 			if closeIndex >= 0 {
-				body := f.pending[:closeIndex]
+				body := trimSingleTrailingNewline(f.pending[:closeIndex])
 				if f.emitToolCall != nil && body != "" {
 					f.emitToolCall(body, f.toolCallIndex)
 				}
 				f.pending = strings.TrimPrefix(f.pending[closeIndex+len(f.closingTag):], ">")
 				f.closingTag = ""
+				f.trimLeadingTagNewline = false
+				f.pendingTagCR = false
 				f.activeToolName = ""
 				f.toolCallIndex++
 				f.discardLeadingWhitespace = true
@@ -236,6 +277,8 @@ func (f *ToolTextFilter) process(final bool) {
 				}
 				f.pending = ""
 				f.closingTag = ""
+				f.trimLeadingTagNewline = false
+				f.pendingTagCR = false
 				f.activeToolName = ""
 				f.toolCallIndex++
 				return
@@ -351,6 +394,8 @@ func (f *ToolTextFilter) process(final bool) {
 			f.consumeClosingFence = true
 		}
 		f.closingTag = closingTag
+		f.trimLeadingTagNewline = closingTag != ""
+		f.pendingTagCR = false
 		if toolName := extractFallbackToolName(opening); toolName != "" {
 			f.activeToolName = toolName
 			if f.emitToolName != nil {
@@ -373,6 +418,16 @@ func (f *ToolTextFilter) emitText(text string) {
 	if text != "" && f.emit != nil {
 		f.emit(text)
 	}
+}
+
+func trimSingleTrailingNewline(s string) string {
+	if strings.HasSuffix(s, "\r\n") {
+		return s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "\n") {
+		return s[:len(s)-1]
+	}
+	return s
 }
 
 func fallbackClosingTag(opening string) (string, bool) {
