@@ -41,6 +41,7 @@ type ToolTextFilter struct {
 	pending                  string
 	closingTag               string
 	discardLeadingWhitespace bool
+	consumeClosingFence      bool
 	emit                     func(string)
 	flushed                  bool
 	plain                    bool
@@ -227,6 +228,22 @@ func (f *ToolTextFilter) process(final bool) {
 			f.discardLeadingWhitespace = false
 		}
 
+		if f.consumeClosingFence {
+			consumed, wait := tryConsumeClosingFence(f.pending, final)
+			if wait {
+				return
+			}
+			if consumed > 0 {
+				f.pending = f.pending[consumed:]
+				f.consumeClosingFence = false
+				f.discardLeadingWhitespace = true
+				continue
+			}
+			if !strings.HasPrefix(f.pending, "<") {
+				f.consumeClosingFence = false
+			}
+		}
+
 		openIndex := earliestFallbackOpening(f.pending)
 		if openIndex < 0 {
 			if final {
@@ -236,6 +253,11 @@ func (f *ToolTextFilter) process(final bool) {
 			}
 
 			keep := longestFallbackOpeningSuffix(f.pending)
+			if fenceStart := trailingFenceHoldStart(f.pending); fenceStart >= 0 {
+				if fenceKeep := len(f.pending) - fenceStart; fenceKeep > keep {
+					keep = fenceKeep
+				}
+			}
 			f.emitText(f.pending[:len(f.pending)-keep])
 			if keep == 0 {
 				f.pending = ""
@@ -245,34 +267,48 @@ func (f *ToolTextFilter) process(final bool) {
 			return
 		}
 
+		hadFence := false
 		if openIndex > 0 {
-			f.emitText(f.pending[:openIndex])
-			f.pending = f.pending[openIndex:]
+			if fenceStart := trailingOpeningFenceStart(f.pending[:openIndex]); fenceStart >= 0 {
+				if fenceStart > 0 {
+					f.emitText(f.pending[:fenceStart])
+					f.pending = f.pending[fenceStart:]
+					openIndex -= fenceStart
+				}
+				hadFence = true
+			} else {
+				f.emitText(f.pending[:openIndex])
+				f.pending = f.pending[openIndex:]
+				openIndex = 0
+			}
 		}
 
-		openEnd := openingEndIndex(f.pending)
+		openEnd := openingEndIndex(f.pending[openIndex:])
 		if openEnd < 0 {
 			if final {
 				f.pending = ""
 				return
 			}
-			if len(f.pending) > maxFallbackOpeningBytes {
-				f.emitText(f.pending[:1])
-				f.pending = f.pending[1:]
+			if len(f.pending)-openIndex > maxFallbackOpeningBytes {
+				f.emitText(f.pending[:openIndex+1])
+				f.pending = f.pending[openIndex+1:]
 				continue
 			}
 			return
 		}
 
-		opening := f.pending[:openEnd+1]
+		opening := f.pending[openIndex : openIndex+openEnd+1]
 		closingTag, valid := fallbackClosingTag(opening)
 		if !valid {
-			f.emitText(f.pending[:1])
-			f.pending = f.pending[1:]
+			f.emitText(f.pending[:openIndex+1])
+			f.pending = f.pending[openIndex+1:]
 			continue
 		}
 
-		f.pending = f.pending[openEnd+1:]
+		f.pending = f.pending[openIndex+openEnd+1:]
+		if hadFence {
+			f.consumeClosingFence = true
+		}
 		f.closingTag = closingTag
 		if toolName := extractFallbackToolName(opening); toolName != "" {
 			f.activeToolName = toolName
@@ -431,6 +467,147 @@ func isValidXMLTagIdent(name string) bool {
 
 func isFallbackWhitespace(current byte) bool {
 	return current == ' ' || current == '\t' || current == '\r' || current == '\n'
+}
+
+func isFenceLangByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
+// isOpeningFenceLine reports whether line is a markdown code fence opener
+// such as "```" or "```xml".
+func isOpeningFenceLine(line string) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	if len(line)-len(trimmed) > 3 {
+		return false
+	}
+	ticks := 0
+	for ticks < len(trimmed) && trimmed[ticks] == '`' {
+		ticks++
+	}
+	if ticks < 3 {
+		return false
+	}
+	rest := strings.TrimRight(trimmed[ticks:], " \t\r")
+	if len(rest) > 24 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		if !isFenceLangByte(rest[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// trailingOpeningFenceStart returns the start index of a markdown code fence
+// opener line at the end of prefix (followed only by whitespace including a
+// newline), or -1 if prefix does not end with one.
+func trailingOpeningFenceStart(prefix string) int {
+	end := len(prefix)
+	hasNewline := false
+	for end > 0 && isFallbackWhitespace(prefix[end-1]) {
+		if prefix[end-1] == '\n' {
+			hasNewline = true
+		}
+		end--
+	}
+	if !hasNewline || end == 0 {
+		return -1
+	}
+	lineStart := strings.LastIndexByte(prefix[:end], '\n') + 1
+	if !isOpeningFenceLine(prefix[lineStart:end]) {
+		return -1
+	}
+	return lineStart
+}
+
+// trailingFenceHoldStart returns the start index of a potential opening fence
+// at the tail of text that might precede a fallback tool opening tag in a later
+// stream chunk, or -1 if no fence needs to be buffered.
+func trailingFenceHoldStart(text string) int {
+	// Case 1: incomplete fence opener on the final line (e.g. "`", "``", "```xml").
+	lastNL := strings.LastIndexByte(text, '\n')
+	tail := text[lastNL+1:]
+	if tail != "" && len(tail) <= 32 {
+		trimmed := strings.TrimLeft(tail, " \t")
+		if len(tail)-len(trimmed) <= 3 && strings.HasPrefix(trimmed, "`") {
+			ticks := 0
+			for ticks < len(trimmed) && trimmed[ticks] == '`' {
+				ticks++
+			}
+			if ticks < 3 && ticks == len(trimmed) {
+				return lastNL + 1
+			}
+			if ticks >= 3 && isOpeningFenceLine(tail) {
+				return lastNL + 1
+			}
+		}
+	}
+
+	// Case 2: complete opening fence line followed only by whitespace and an
+	// optional prefix of a fallback opening marker (e.g. "```xml\n<tool_").
+	trimTail := strings.TrimLeft(tail, " \t\r")
+	if trimTail != "" && !isPrefixOfAnyFallbackMarker(trimTail) {
+		return -1
+	}
+	beforeTail := text[:lastNL+1]
+	if fenceStart := trailingOpeningFenceStart(beforeTail); fenceStart >= 0 && len(text)-fenceStart <= 64 {
+		return fenceStart
+	}
+	return -1
+}
+
+func isPrefixOfAnyFallbackMarker(s string) bool {
+	for _, marker := range fallbackOpeningMarkers {
+		if strings.HasPrefix(marker, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// tryConsumeClosingFence checks whether text starts with a closing markdown
+// code fence line ("```" followed by optional horizontal whitespace and a
+// newline or EOF).
+func tryConsumeClosingFence(text string, final bool) (consumed int, wait bool) {
+	if text == "" {
+		return 0, false
+	}
+	if text[0] != '`' {
+		return 0, false
+	}
+	i := 0
+	for i < len(text) && text[i] == '`' {
+		i++
+	}
+	if i < 3 {
+		if !final && i == len(text) {
+			return 0, true
+		}
+		return 0, false
+	}
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	if i == len(text) {
+		if !final {
+			return 0, true
+		}
+		return i, false
+	}
+	if text[i] == '\r' {
+		i++
+		if i == len(text) {
+			if !final {
+				return 0, true
+			}
+			return i, false
+		}
+	}
+	if text[i] == '\n' {
+		return i + 1, false
+	}
+	return 0, false
 }
 
 // StripFallbackToolMarkup removes fallback tool protocol syntax from content.

@@ -421,7 +421,23 @@ func (ui *AgentUIImpl) UpdateStatus(model string, promptTokens, completionTokens
 }
 
 func (ui *AgentUIImpl) UpdatePlanStatus(completed, total int) {
-	UpdatePlanStatus(completed, total)
+	ui.StateMu.Lock()
+	changed := ui.State.PlanCompleted != completed || ui.State.PlanTotal != total
+	ui.State.PlanCompleted = completed
+	ui.State.PlanTotal = total
+	canDraw := changed && ui.Enabled && !ui.InApprovalPrompt && !ui.InInteractiveMenu
+	themeName := ui.ActiveThemeName
+	syntaxTheme := ""
+	if ui.Config != nil {
+		if themeName == "" {
+			themeName = ui.Config.Theme
+		}
+		syntaxTheme = ui.Config.SyntaxTheme
+	}
+	ui.StateMu.Unlock()
+	if canDraw {
+		DrawStatusBar(os.Stderr, style.ResolveConfiguredTheme(themeName, syntaxTheme))
+	}
 }
 
 func (ui *AgentUIImpl) DrawStatsLine(w io.Writer, theme style.UITheme, spinnerFrame string, statsText string) {

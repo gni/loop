@@ -370,6 +370,15 @@ func ReplayPlan(current []domaintool.TodoItem, arguments string) ([]domaintool.T
 	return updated, nil
 }
 
+func isTodoFullPlanAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "update", "replace", "set", "create", "init", "write", "save", "sync", "plan", "modify", "edit":
+		return true
+	default:
+		return false
+	}
+}
+
 func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments string) ([]domaintool.TodoItem, string, error) {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" || trimmed == "{}" {
@@ -393,6 +402,8 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 		var container struct {
 			Markdown *string               `json:"markdown"`
 			Action   string                `json:"action"`
+			TaskID   string                `json:"task_id"`
+			ID       string                `json:"id"`
 			Tasks    []domaintool.TodoItem `json:"tasks"`
 			Todos    []domaintool.TodoItem `json:"todos"`
 			Items    []domaintool.TodoItem `json:"items"`
@@ -431,7 +442,9 @@ func (t *todoTool) preparePlan(currentTasks []domaintool.TodoItem, arguments str
 			}
 		}
 		if container.Markdown != nil {
-			if items != nil || container.Action != "" {
+			hasTargetID := strings.TrimSpace(container.TaskID) != "" || strings.TrimSpace(container.ID) != ""
+			conflictingAction := strings.TrimSpace(container.Action) != "" && !isTodoFullPlanAction(container.Action)
+			if items != nil || hasTargetID || conflictingAction {
 				return nil, "", invalidArguments(errors.New("provide markdown, tasks, or an action separately"))
 			}
 			parsed, err := parseMarkdownPlan(*container.Markdown)

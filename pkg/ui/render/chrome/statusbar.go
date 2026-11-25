@@ -130,6 +130,10 @@ func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
 
 // FormatStatusBarLeft renders token metrics, TPS, and context usage in fixed-width tabular columns.
 func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) string {
+	return formatStatusBarLeftForBudget(state, theme, width, width)
+}
+
+func formatStatusBarLeftForBudget(state StatusBarState, theme style.UITheme, width, maxCells int) string {
 	if !state.ShowTokens {
 		return ""
 	}
@@ -142,17 +146,24 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 	inVal := formatTabularTokens(state.PromptTokens, state.TokenEstimate)
 	outVal := formatTabularTokens(state.CompletionTokens, false)
 
-	if width < 44 {
+	compactPair := func() string {
 		pCompact := labelStyle.Render("↑") + valStyle.Render(strings.TrimSpace(inVal))
 		cCompact := labelStyle.Render("↓") + valStyle.Render(strings.TrimSpace(outVal))
 		return fmt.Sprintf(" %s %s", pCompact, cCompact)
 	}
+	if width < 44 {
+		return compactPair()
+	}
 
 	inSeg := labelStyle.Render("↑ in ") + valStyle.Render(inVal)
 	outSeg := labelStyle.Render("↓ out ") + valStyle.Render(outVal)
+	ioLine := " " + inSeg + div + outSeg
 
 	if width < 64 {
-		return " " + inSeg + div + outSeg
+		if maxCells > 0 && style.CellWidth(ioLine) > maxCells {
+			return compactPair()
+		}
+		return ioLine
 	}
 
 	// CompletionTokens is cumulative session usage and must not be treated
@@ -169,23 +180,97 @@ func FormatStatusBarLeft(state StatusBarState, theme style.UITheme, width int) s
 	pctVal := formatTabularPercent(pct, ctxEst)
 	bar, ctxStyle := contextGaugeBar(pct, theme)
 
-	var ctxSeg string
-	if width < 92 {
-		ctxSeg = labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s/%s", usedVal, strings.TrimRight(limitVal, " ")))
-	} else if width < 106 {
-		ctxSeg = labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s %s/%s", pctVal, usedVal, limitVal))
-	} else {
-		ctxSeg = labelStyle.Render("ctx ") + bar + ctxStyle.Render(fmt.Sprintf(" %s %s/%s", pctVal, usedVal, limitVal))
-	}
+	ctxShort := labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s/%s", usedVal, strings.TrimRight(limitVal, " ")))
+	ctxPct := labelStyle.Render("ctx ") + ctxStyle.Render(fmt.Sprintf("%s %s/%s", pctVal, usedVal, limitVal))
+	ctxBar := labelStyle.Render("ctx ") + bar + ctxStyle.Render(fmt.Sprintf(" %s %s/%s", pctVal, usedVal, limitVal))
 
-	line := " " + inSeg + div + outSeg + div + ctxSeg
-
+	var candidates []string
 	if (state.IsGenerating || state.HasLastTps) && state.LastTps > 0 && width >= 116 {
 		tpsVal := fmt.Sprintf("%5.1f", min(999.9, state.LastTps))
-		line += div + speedStyle.Render("» ") + valStyle.Render(tpsVal) + speedStyle.Render(" t/s")
+		tpsSeg := div + speedStyle.Render("» ") + valStyle.Render(tpsVal) + speedStyle.Render(" t/s")
+		candidates = append(candidates, ioLine+div+ctxBar+tpsSeg)
+	}
+	if width >= 106 {
+		candidates = append(candidates, ioLine+div+ctxBar)
+	}
+	if width >= 92 {
+		candidates = append(candidates, ioLine+div+ctxPct)
+	}
+	candidates = append(candidates, ioLine+div+ctxShort, ioLine, compactPair())
+
+	if maxCells <= 0 {
+		return candidates[0]
+	}
+	for _, candidate := range candidates {
+		if style.CellWidth(candidate) <= maxCells {
+			return candidate
+		}
+	}
+	return candidates[len(candidates)-1]
+}
+
+func buildStatusBarBadges(state StatusBarState, theme style.UITheme, compact bool) []string {
+	var badges []string
+	if state.QueuedPromptsCount > 0 {
+		tag := fmt.Sprintf("[☰ queue:%d]", state.QueuedPromptsCount)
+		if compact {
+			tag = fmt.Sprintf("[☰ %d]", state.QueuedPromptsCount)
+		}
+		badges = append(badges, style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(tag))
 	}
 
-	return line
+	if state.PlanTotal > 0 && state.PlanCompleted < state.PlanTotal {
+		tag := fmt.Sprintf("[✓ plan:%d/%d]", state.PlanCompleted, state.PlanTotal)
+		if compact {
+			tag = fmt.Sprintf("[✓ %d/%d]", state.PlanCompleted, state.PlanTotal)
+		}
+		badges = append(badges, style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(tag))
+	}
+
+	if state.ActiveTasksCount > 0 {
+		tag := fmt.Sprintf("[◫ tasks:%d]", state.ActiveTasksCount)
+		if compact {
+			tag = fmt.Sprintf("[◫ %d]", state.ActiveTasksCount)
+		}
+		badges = append(badges, style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(tag))
+	}
+	return badges
+}
+
+func fitStatusBarBadges(state StatusBarState, theme style.UITheme, width, maxCells int) string {
+	if maxCells <= 0 {
+		return ""
+	}
+	if width >= 60 {
+		if full := buildStatusBarBadges(state, theme, false); len(full) > 0 {
+			part := strings.Join(full, " ") + " "
+			if style.CellWidth(part) <= maxCells {
+				return part
+			}
+		}
+	}
+	compact := buildStatusBarBadges(state, theme, true)
+	if len(compact) == 0 {
+		return ""
+	}
+	part := strings.Join(compact, " ") + " "
+	if style.CellWidth(part) <= maxCells {
+		return part
+	}
+	var fitted []string
+	used := 0
+	for _, b := range compact {
+		add := style.CellWidth(b) + 1
+		if used+add > maxCells {
+			continue
+		}
+		fitted = append(fitted, b)
+		used += add
+	}
+	if len(fitted) == 0 {
+		return ""
+	}
+	return strings.Join(fitted, " ") + " "
 }
 
 func formatStatusBarRightWithBudget(state StatusBarState, theme style.UITheme, width, maxCells int) string {
@@ -194,39 +279,8 @@ func formatStatusBarRightWithBudget(state StatusBarState, theme style.UITheme, w
 	}
 	modelStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
 
-	var badges []string
-	if state.QueuedPromptsCount > 0 {
-		tag := fmt.Sprintf("[☰ queue:%d]", state.QueuedPromptsCount)
-		if width < 60 {
-			tag = fmt.Sprintf("[☰ %d]", state.QueuedPromptsCount)
-		}
-		badges = append(badges, style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(tag))
-	}
-
-	if state.PlanTotal > 0 && state.PlanCompleted < state.PlanTotal {
-		tag := fmt.Sprintf("[✓ plan:%d/%d]", state.PlanCompleted, state.PlanTotal)
-		if width < 60 {
-			tag = fmt.Sprintf("[✓ %d/%d]", state.PlanCompleted, state.PlanTotal)
-		}
-		badges = append(badges, style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(tag))
-	}
-
-	if state.ActiveTasksCount > 0 {
-		tag := fmt.Sprintf("[◫ tasks:%d]", state.ActiveTasksCount)
-		if width < 60 {
-			tag = fmt.Sprintf("[◫ %d]", state.ActiveTasksCount)
-		}
-		badges = append(badges, style.NewStyle().Foreground(theme.Secondary).Bold(true).Render(tag))
-	}
-
-	badgePart := ""
-	if len(badges) > 0 {
-		badgePart = strings.Join(badges, " ") + " "
-	}
+	badgePart := fitStatusBarBadges(state, theme, width, maxCells)
 	badgeWidth := style.CellWidth(badgePart)
-	if badgeWidth > maxCells {
-		return ""
-	}
 
 	cleanModel := strings.TrimSpace(style.SanitizeTerminalText(state.Model))
 	if width < 48 || cleanModel == "" {
@@ -289,8 +343,31 @@ func FormatStatusBarLine(state StatusBarState, theme style.UITheme, width int) s
 		return ""
 	}
 	available := width - 1
-	metricsPart := FormatStatusBarLeft(state, theme, width)
-	prefixPart := formatWorkspaceSessionPrefix(state, theme, width, metricsPart != "")
+	prefixPart := formatWorkspaceSessionPrefix(state, theme, width, state.ShowTokens)
+	prefixLen := style.CellWidth(prefixPart)
+
+	reserveRight := 0
+	if width >= 60 {
+		if full := buildStatusBarBadges(state, theme, false); len(full) > 0 {
+			reserveRight = style.CellWidth(strings.Join(full, " ")+" ") + 1
+		}
+	}
+	if reserveRight == 0 {
+		if compact := buildStatusBarBadges(state, theme, true); len(compact) > 0 {
+			reserveRight = style.CellWidth(strings.Join(compact, " ")+" ") + 1
+		}
+	}
+	metricsBudget := available - prefixLen - reserveRight
+	if metricsBudget < 16 {
+		if compact := buildStatusBarBadges(state, theme, true); len(compact) > 0 {
+			reserveRight = style.CellWidth(strings.Join(compact, " ")+" ") + 1
+			metricsBudget = available - prefixLen - reserveRight
+		}
+	}
+	metricsPart := ""
+	if state.ShowTokens {
+		metricsPart = formatStatusBarLeftForBudget(state, theme, width, max(1, metricsBudget))
+	}
 	leftPart := prefixPart + metricsPart
 
 	leftLen := style.CellWidth(leftPart)

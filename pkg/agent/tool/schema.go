@@ -175,6 +175,18 @@ func normalizeToolArguments(name, arguments string, value any) (any, error) {
 			copyAlias("tasks", "actions")
 			delete(object, "actions")
 		}
+		_, hasMarkdown := object["markdown"]
+		_, hasTasks := object["tasks"]
+		_, hasTaskID := object["task_id"]
+		_, hasID := object["id"]
+		if (hasMarkdown || hasTasks) && !hasTaskID && !hasID {
+			if action, ok := object["action"].(string); ok {
+				switch strings.ToLower(strings.TrimSpace(action)) {
+				case "update", "replace", "set", "create", "init", "write", "save", "sync", "plan", "modify", "edit":
+					delete(object, "action")
+				}
+			}
+		}
 	case "get_task_status", "stop_task":
 		copyAlias("task_id", "id", "task", "taskId")
 	case "load_skill":
