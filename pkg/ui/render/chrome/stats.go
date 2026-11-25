@@ -2,10 +2,21 @@ package chrome
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
 	"loop/pkg/ui/style"
 )
+
+func hoverButtonStyle(theme style.UITheme, accent color.Color) style.Style {
+	if accent == nil {
+		accent = theme.Primary
+	}
+	if theme.Background != nil {
+		return style.NewStyle().Foreground(theme.Background).Background(accent).Bold(true)
+	}
+	return style.NewStyle().Foreground(accent).Bold(true).Underline(true)
+}
 
 func formatPromptSeparatorLine(showThinking bool, reasoningEffort string, showAutoBadge, autoApprove bool, theme style.UITheme, width int, gitBranch ...string) string {
 	line, _ := formatPromptSeparatorLayout(showThinking, reasoningEffort, showAutoBadge, autoApprove, false, false, "", HoverNone, 0, theme, width, gitBranch...)
@@ -22,7 +33,6 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	branchStyle := style.NewStyle().Foreground(theme.TextMuted)
 	autoOnStyle := style.NewStyle().Foreground(theme.Warning)
 	autoOffStyle := style.NewStyle().Foreground(theme.Border)
-	autoOffHoverStyle := style.NewStyle().Foreground(theme.TextMuted)
 
 	// Optional right-hand badges: slash commands button ("/"), theme switcher ("◐"),
 	// loop icon ("♾︎", bold amber when auto_approve is on, dim grey when off so it
@@ -33,74 +43,78 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	showBadge := effort != "hidden"
 
 	type rightPart struct {
-		target HoverTarget
-		raw    string
-		styled string
-		padHit int
+		target   HoverTarget
+		raw      string
+		styled   string
+		padLeft  int
+		padRight int
 	}
 	var rightParts []rightPart
 	if showCommandsBtn {
 		raw := "/"
-		padHit := 1
+		padL, padR := 1, 1
 		st := style.NewStyle().Foreground(theme.TextMuted)
 		if commandsOpen {
 			st = style.NewStyle().Foreground(theme.Primary).Bold(true)
 		}
 		if hovered == HoverCommandsButton {
-			raw = "/ commands"
-			padHit = 0
-			st = style.NewStyle().Foreground(theme.Primary).Bold(true)
+			raw = " / commands "
+			padL, padR = 0, 1
+			st = hoverButtonStyle(theme, theme.Primary)
 		}
 		rightParts = append(rightParts, rightPart{
-			target: HoverCommandsButton,
-			raw:    raw,
-			styled: st.Render(raw),
-			padHit: padHit,
+			target:   HoverCommandsButton,
+			raw:      raw,
+			styled:   st.Render(raw),
+			padLeft:  padL,
+			padRight: padR,
 		})
 
-		themeLabel := strings.TrimSpace(activeThemeName)
+		themeLabel := style.TruncateCells(strings.TrimSpace(activeThemeName), 20)
 		if themeLabel == "" {
 			themeLabel = "studio"
 		}
 		themeRaw := "◐"
-		themePad := 1
+		themePadL, themePadR := 1, 1
 		themeSt := style.NewStyle().Foreground(theme.Primary)
 		if hovered == HoverThemeButton {
-			themeRaw = "◐ theme: " + themeLabel
-			themePad = 0
-			themeSt = style.NewStyle().Foreground(theme.Primary).Bold(true)
+			themeRaw = " ◐ theme: " + themeLabel + " "
+			themePadL, themePadR = 0, 1
+			themeSt = hoverButtonStyle(theme, theme.Primary)
 		}
 		rightParts = append(rightParts, rightPart{
-			target: HoverThemeButton,
-			raw:    themeRaw,
-			styled: themeSt.Render(themeRaw),
-			padHit: themePad,
+			target:   HoverThemeButton,
+			raw:      themeRaw,
+			styled:   themeSt.Render(themeRaw),
+			padLeft:  themePadL,
+			padRight: themePadR,
 		})
 	}
 	if showAutoBadge {
 		raw := "♾\uFE0E"
-		padHit := 1
+		padL, padR := 1, 1
 		var st style.Style
 		if autoApprove {
 			st = autoOnStyle
 			if hovered == HoverAutoBadge {
-				raw = "♾\uFE0E auto mode on"
-				st = style.NewStyle().Foreground(theme.Warning).Bold(true)
-				padHit = 0
+				raw = " ♾\uFE0E auto: on "
+				st = hoverButtonStyle(theme, theme.Warning)
+				padL, padR = 0, 1
 			}
 		} else {
 			st = autoOffStyle
 			if hovered == HoverAutoBadge {
-				raw = "♾\uFE0E auto mode off"
-				st = autoOffHoverStyle
-				padHit = 0
+				raw = " ♾\uFE0E auto: off "
+				st = hoverButtonStyle(theme, theme.TextMuted)
+				padL, padR = 0, 1
 			}
 		}
 		rightParts = append(rightParts, rightPart{
-			target: HoverAutoBadge,
-			raw:    raw,
-			styled: st.Render(raw),
-			padHit: padHit,
+			target:   HoverAutoBadge,
+			raw:      raw,
+			styled:   st.Render(raw),
+			padLeft:  padL,
+			padRight: padR,
 		})
 	}
 	if showBadge {
@@ -128,16 +142,17 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 				labelStyle = style.NewStyle().Foreground(theme.TextMuted)
 			}
 		}
+		raw := "∴ " + label
+		styled := iconStyle.Render("∴") + " " + labelStyle.Render(label)
 		if hovered == HoverReasoningBadge {
-			iconStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
-			labelStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
-			label = "reasoning: " + label
+			raw = " ∴ reasoning: " + label + " "
+			styled = hoverButtonStyle(theme, theme.Primary).Render(raw)
 		}
 
 		rightParts = append(rightParts, rightPart{
 			target: HoverReasoningBadge,
-			raw:    "∴ " + label,
-			styled: iconStyle.Render("∴") + " " + labelStyle.Render(label),
+			raw:    raw,
+			styled: styled,
 		})
 	}
 
@@ -212,8 +227,8 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 				col += 3 // " · "
 			}
 			w := max(1, style.CellWidth(part.raw))
-			startCol := max(1, col-part.padHit)
-			endCol := min(available, col+w-1+part.padHit)
+			startCol := max(1, col-part.padLeft)
+			endCol := min(available, col+w-1+part.padRight)
 			hitboxes = append(hitboxes, Hitbox{
 				Target:   part.target,
 				Row:      sepRow,

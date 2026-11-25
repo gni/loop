@@ -82,6 +82,8 @@ func executeREPLTurn(
 	ui.GetUI().LastStatsText = ""
 	ui.GetUI().StateMu.Unlock()
 	if active := mam.CurrentActiveAgent(); active != nil {
+		stopTabTitle := ui.StartRunningTabTitle(os.Stderr, a, currentSessionID, active.Name, line)
+		defer stopTabTitle()
 		ui.GetUI().SetActiveCancel(active.CancelActiveTurn)
 
 		restore, restoreErr := ui.SetNonCanonical(fd)
@@ -115,6 +117,8 @@ func executeREPLTurn(
 		return
 	}
 
+	stopTabTitle := ui.StartRunningTabTitle(os.Stderr, a, currentSessionID, "", line)
+	defer stopTabTitle()
 	ctx, cancel := context.WithCancel(parent)
 	if attachmentSource != nil {
 		ctx = resources.WithAttachmentSource(ctx, line, *attachmentSource)
@@ -175,6 +179,7 @@ func executeREPLTurn(
 				msg.ContentBlocks = attachBlocks
 			}
 			kiReader.NotifyQueueChanged()
+			ui.UpdateRunningTabTitlePrompt(expanded)
 			live := a.LiveSettings()
 			liveTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 			renderTurnPromptHeader(ppWriter, a, liveTheme, ui.GetPromptSymbol(nil), expanded, true, kiReader)

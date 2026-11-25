@@ -397,7 +397,7 @@ func FormatStatusBarSeparatorLayout(width, row int, indicator string, collapsed,
 	borderStyle := style.NewStyle().Foreground(theme.Border)
 	collapseStyle := style.NewStyle().Foreground(theme.TextMuted)
 	if hovered {
-		collapseStyle = style.NewStyle().Foreground(theme.Primary).Bold(true)
+		collapseStyle = hoverButtonStyle(theme, theme.Primary)
 	}
 
 	if indicator == "" {
@@ -410,9 +410,9 @@ func FormatStatusBarSeparatorLayout(width, row int, indicator string, collapsed,
 	padHit := 2
 	if hovered {
 		if collapsed || indicator == "▸" {
-			display = "▸ output: folded"
+			display = " ▸ output: folded "
 		} else {
-			display = "▾ output: open"
+			display = " ▾ output: open "
 		}
 		padHit = 0
 	}

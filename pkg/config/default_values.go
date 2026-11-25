@@ -61,7 +61,7 @@ func DefaultConfig() *Config {
 		ShowStickyQuestion:       true,
 		ShowAutoBadge:            true,
 		HoverTooltips:            true,
-		NativeScroll:             true,
+		NativeScroll:             false,
 		ToolProtocol:             "json",
 		SystemInstruction:        DefaultSystemInstruction,
 		ShowThinking:             false,

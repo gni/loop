@@ -31,6 +31,9 @@ func (h *ChatHistory) setSlashMenuOpenLocked(open bool) bool {
 		h.slashMenuStartRow = 0
 		h.slashMenuEndRow = 0
 		h.slashVisibleStart = 0
+		if changed && h.reader != nil && h.reader.W != nil {
+			h.setHoverPointer(false)
+		}
 	}
 	return changed
 }
@@ -542,26 +545,29 @@ func (h *ChatHistory) handleSlashMenuEscape() (bool, []byte) {
 	return true, nil
 }
 
-func (h *ChatHistory) handleSlashMenuHover(x, y int) bool {
+func (h *ChatHistory) handleSlashMenuHover(x, y int) (inside, clickable bool) {
 	if !h.slashMenuOpenAtomic.Load() {
-		return false
+		return false, false
 	}
 	ui.TerminalMu.Lock()
 	defer ui.TerminalMu.Unlock()
 	if !h.shouldRenderSlashMenuLocked() || h.slashMenuStartRow <= 0 {
-		return false
+		return false, false
 	}
 	if y < h.slashMenuHeaderRow || y > h.slashMenuEndRow {
-		return false
+		return false, false
 	}
 	if y >= h.slashMenuStartRow && y <= h.slashMenuEndRow {
 		idx := h.slashVisibleStart + (y - h.slashMenuStartRow)
-		if idx >= 0 && idx < len(h.slashItems) && idx != h.slashSelected {
-			h.slashSelected = idx
-			h.paintLocked()
+		if idx >= 0 && idx < len(h.slashItems) {
+			if idx != h.slashSelected {
+				h.slashSelected = idx
+				h.paintLocked()
+			}
+			return true, true
 		}
 	}
-	return true
+	return true, false
 }
 
 func (h *ChatHistory) handleSlashMenuClick(x, y int) (handled bool, emit []byte) {

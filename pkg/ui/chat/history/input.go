@@ -45,8 +45,28 @@ func isPromptHoverTarget(t render.HoverTarget) bool {
 	return t == render.HoverCommandsButton || t == render.HoverThemeButton || t == render.HoverAutoBadge || t == render.HoverReasoningBadge || t == render.HoverGitBranch
 }
 
+func isClickableChromeTarget(t render.HoverTarget) bool {
+	switch t {
+	case render.HoverCommandsButton, render.HoverThemeButton, render.HoverAutoBadge, render.HoverReasoningBadge, render.HoverCollapseBadge:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *ChatHistory) setHoverPointer(clickable bool) {
+	if h.reader == nil || h.reader.W == nil {
+		return
+	}
+	shape := ""
+	if clickable {
+		shape = "pointer"
+	}
+	terminal.Default().SetPointerShape(h.reader.W, shape)
+}
+
 func (h *ChatHistory) handleHoverMotion(x, y int) {
-	if h.handleSlashMenuHover(x, y) {
+	if inside, clickable := h.handleSlashMenuHover(x, y); inside {
 		state := ui.GetUI()
 		if changed, prev := state.SetHoverTarget(render.HoverNone); changed && h.a != nil && h.reader != nil && h.reader.W != nil {
 			live := h.a.LiveSettings()
@@ -60,13 +80,16 @@ func (h *ChatHistory) handleHoverMotion(x, y int) {
 			}
 			ui.TerminalMu.Unlock()
 		}
+		h.setHoverPointer(clickable)
 		return
 	}
 	if h.a != nil && !h.a.LiveSettings().HoverTooltips {
+		h.setHoverPointer(false)
 		return
 	}
 	state := ui.GetUI()
 	next := state.HitTestChrome(x, y)
+	h.setHoverPointer(isClickableChromeTarget(next))
 	changed, prev := state.SetHoverTarget(next)
 	if !changed {
 		return
@@ -218,6 +241,8 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			if btn&64 == 0 && btn&32 != 0 {
 				if !approval {
 					h.handleHoverMotion(mx, my)
+				} else {
+					h.setHoverPointer(false)
 				}
 				return nil
 			}
@@ -249,6 +274,8 @@ func (h *ChatHistory) FilterInput(key []byte) []byte {
 			if rawBtn&64 == 0 && rawBtn&32 != 0 {
 				if !approval {
 					h.handleHoverMotion(mx, my)
+				} else {
+					h.setHoverPointer(false)
 				}
 				return nil
 			}

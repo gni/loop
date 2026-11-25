@@ -284,6 +284,7 @@ func (h *ChatHistory) setSessionContext(id string) {
 			state.State.SessionLabel = session.Name
 			state.StateMu.Unlock()
 			ui.DrawStatusBarLocked(h.reader.W, theme)
+			ui.RefreshTabTitleLocked(h.reader.W, h.a)
 			return
 		}
 	}()

@@ -18,6 +18,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/resources"
 	"loop/pkg/runtime"
+	"loop/pkg/terminal"
 	"loop/pkg/ui"
 	"loop/pkg/ui/repl"
 )
@@ -144,6 +145,12 @@ func runRoot(cmd *cobra.Command, args []string) (runErr error) {
 	runCtx := cmd.Context()
 	if hasPipedStdin {
 		runCtx = resources.WithAttachmentSource(runCtx, input, explicitArgs)
+	}
+	if outputMode == "text" && term.IsTerminal(int(os.Stderr.Fd())) {
+		terminal.Default().PushTitle(os.Stderr)
+		defer terminal.Default().RestoreTitle(os.Stderr)
+		stopTabTitle := ui.StartRunningTabTitle(os.Stderr, s.Agent, s.ID, "", input)
+		defer stopTabTitle()
 	}
 	result, err := s.Run(runCtx, input)
 	if err != nil {

@@ -5,8 +5,10 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"golang.org/x/term"
 )
@@ -49,9 +51,21 @@ const (
 	// ResetAttributes clears all SGR styling.
 	ResetAttributes = "\x1b[0m"
 
+	// PointerShapePointer sets the OS mouse pointer to a pointing hand via OSC 22
+	// (supported by Kitty, Ghostty, WezTerm, Foot, and compatible terminals).
+	PointerShapePointer = "\x1b]22;pointer\x1b\\"
+	// PointerShapeReset restores the terminal's default mouse pointer via OSC 22.
+	PointerShapeReset = "\x1b]22;\x1b\\"
+
+	// PushWindowTitle saves the terminal's current window/tab title onto the title stack.
+	PushWindowTitle = "\x1b[22;0t"
+	// PopWindowTitle restores the previously saved terminal window/tab title.
+	PopWindowTitle = "\x1b[23;0t"
+
 	// FullCleanupSequence restores every terminal mode Loop may enable without leaving
 	// the parent shell stuck in Kitty, modifyOtherKeys, mouse, sync, or alt-screen states.
 	FullCleanupSequence = EndSyncOutput +
+		PointerShapeReset +
 		DisableMouseTracking +
 		DisableEnhancedKeys +
 		DisableBracketedPaste +
@@ -81,10 +95,15 @@ type Terminal struct {
 	mouseGeneration uint64
 	mouseMotion     bool
 	mouseDisabled   bool
+	pointerShape    string
 
 	keysWriter     io.Writer
 	keysDepth      int
 	keysGeneration uint64
+
+	titleWriter io.Writer
+	titlePushed bool
+	lastTitle   string
 
 	mu sync.Mutex
 }
@@ -182,6 +201,171 @@ func (t *Terminal) enableMouseSequenceLocked() string {
 	return EnableMouseTracking
 }
 
+func (t *Terminal) resetPointerShapeLocked(w io.Writer) {
+	if t.pointerShape == "" {
+		return
+	}
+	t.pointerShape = ""
+	if dest := t.resolveWriter(w); dest != nil {
+		_, _ = io.WriteString(dest, PointerShapeReset)
+	}
+}
+
+// SetPointerShape updates the terminal mouse pointer shape via OSC 22
+// (for example "pointer" for a hand cursor over clickable buttons, or "" to
+// restore the default pointer). Repeated calls with the same shape are no-ops.
+func (t *Terminal) SetPointerShape(w io.Writer, shape string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if shape != "" && (t.mouseDisabled || t.mouseSuspended > 0) {
+		shape = ""
+	}
+	if t.pointerShape == shape {
+		return
+	}
+	dest := t.resolveWriter(w)
+	if dest == nil {
+		return
+	}
+	t.pointerShape = shape
+	if shape == "" {
+		_, _ = io.WriteString(dest, PointerShapeReset)
+		return
+	}
+	_, _ = io.WriteString(dest, "\x1b]22;"+shape+"\x1b\\")
+}
+
+func sanitizeWindowTitle(title string) string {
+	var b strings.Builder
+	b.Grow(len(title))
+	inEsc := false
+	inCSI := false
+	inOSC := false
+	prevSpace := false
+	runes := 0
+	const maxTitleRunes = 80
+
+	for _, r := range title {
+		if inOSC {
+			if r == '\a' {
+				inOSC = false
+				inEsc = false
+			} else if r == '\\' && inEsc {
+				inOSC = false
+				inEsc = false
+			} else {
+				inEsc = r == '\x1b'
+			}
+			continue
+		}
+		if inCSI {
+			if r == '\x1b' {
+				inCSI = false
+				inEsc = true
+			} else if r >= '@' && r <= '~' {
+				inCSI = false
+			}
+			continue
+		}
+		if inEsc {
+			switch r {
+			case '[':
+				inCSI = true
+				inEsc = false
+			case ']', 'P', 'X', '^', '_':
+				inOSC = true
+				inEsc = false
+			default:
+				if r < 0x20 || r > 0x2f {
+					inEsc = false
+				}
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if r == '\r' || r == '\n' || r == '\t' || r == ' ' {
+			if b.Len() > 0 && !prevSpace && runes < maxTitleRunes {
+				b.WriteByte(' ')
+				prevSpace = true
+				runes++
+			}
+			continue
+		}
+		if r < 0x20 || r == 0x7f || unicode.IsControl(r) {
+			continue
+		}
+		if runes >= maxTitleRunes {
+			break
+		}
+		b.WriteRune(r)
+		prevSpace = false
+		runes++
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// PushTitle saves the terminal's existing tab/window title onto the xterm title stack.
+func (t *Terminal) PushTitle(w io.Writer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dest := t.resolveWriter(w)
+	if dest == nil || isRedirectedFile(dest) || t.titlePushed {
+		return
+	}
+	t.titleWriter = dest
+	t.titlePushed = true
+	_, _ = io.WriteString(dest, PushWindowTitle)
+}
+
+// SetTitle sets the terminal window and tab title via OSC 0.
+// Control bytes are stripped and repeated identical titles are skipped.
+func (t *Terminal) SetTitle(w io.Writer, title string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dest := t.resolveWriter(w)
+	if dest == nil || isRedirectedFile(dest) {
+		return
+	}
+	clean := sanitizeWindowTitle(title)
+	if clean == t.lastTitle {
+		return
+	}
+	t.titleWriter = dest
+	t.lastTitle = clean
+	_, _ = io.WriteString(dest, "\x1b]0;"+clean+"\x07")
+}
+
+// RestoreTitle restores the previously pushed terminal title (or clears OSC 0).
+func (t *Terminal) RestoreTitle(w io.Writer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.titlePushed && t.lastTitle == "" {
+		return
+	}
+	dest := unwrapDestination(w)
+	if dest == nil {
+		dest = t.titleWriter
+	}
+	if dest == nil {
+		dest = t.writer
+	}
+	pushed := t.titlePushed
+	t.titlePushed = false
+	t.lastTitle = ""
+	t.titleWriter = nil
+	if dest == nil || isRedirectedFile(dest) {
+		return
+	}
+	if pushed {
+		_, _ = io.WriteString(dest, PopWindowTitle)
+	} else {
+		_, _ = io.WriteString(dest, "\x1b]0;\x07")
+	}
+}
+
 // SetMouseEnabled globally permits or suppresses terminal mouse tracking
 // (used by native_scroll mode). While disabled, mouse enable requests are
 // suppressed so the terminal emulator retains native selection and scrollback.
@@ -193,6 +377,9 @@ func (t *Terminal) SetMouseEnabled(enabled bool) {
 		return
 	}
 	t.mouseDisabled = disabled
+	if disabled {
+		t.resetPointerShapeLocked(t.mouseWriter)
+	}
 	if t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
 		if disabled {
 			_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
@@ -217,6 +404,9 @@ func (t *Terminal) SetMouseMotion(enabled bool) {
 		return
 	}
 	t.mouseMotion = enabled
+	if !enabled {
+		t.resetPointerShapeLocked(t.mouseWriter)
+	}
 	if !t.mouseDisabled && t.mouseDepth > 0 && t.mouseSuspended == 0 && t.mouseWriter != nil {
 		if enabled {
 			_, _ = io.WriteString(t.mouseWriter, EnableMouseMotionTracking)
@@ -249,6 +439,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 			}
 			t.mouseDepth--
 			if t.mouseDepth == 0 {
+				t.resetPointerShapeLocked(t.mouseWriter)
 				if !t.mouseDisabled && t.mouseWriter != nil && t.mouseSuspended == 0 {
 					_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 				}
@@ -263,6 +454,7 @@ func (t *Terminal) BeginMouseTracking(w io.Writer) func() {
 // and re-enables it when the returned resume function runs.
 func (t *Terminal) SuspendMouseTracking() func() {
 	t.mu.Lock()
+	t.resetPointerShapeLocked(t.mouseWriter)
 	if !t.mouseDisabled && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 		_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 	}
@@ -322,6 +514,7 @@ func (t *Terminal) EnterAltScreen(w io.Writer) {
 	dest := t.resolveWriter(w)
 	wasEmpty := len(t.altStack) == 0
 	var resumeMouse func()
+	t.resetPointerShapeLocked(t.mouseWriter)
 	if !t.mouseDisabled && t.mouseSuspended == 0 && t.mouseDepth > 0 && t.mouseWriter != nil {
 		_, _ = io.WriteString(t.mouseWriter, DisableMouseTracking)
 	}
@@ -423,6 +616,9 @@ func (t *Terminal) restoreModes(extra string) {
 	if t.keysDepth > 0 {
 		addTarget(t.keysWriter)
 	}
+	if t.titlePushed || t.lastTitle != "" {
+		addTarget(t.titleWriter)
+	}
 	for _, scope := range t.altStack {
 		addTarget(scope.writer)
 	}
@@ -438,14 +634,25 @@ func (t *Terminal) restoreModes(extra string) {
 	t.mouseSuspended = 0
 	t.mouseWriter = nil
 	t.mouseGeneration++
+	t.pointerShape = ""
 
 	t.keysDepth = 0
 	t.keysWriter = nil
 	t.keysGeneration++
 
+	restoreTitleSeq := ""
+	if t.titlePushed {
+		restoreTitleSeq = PopWindowTitle
+	} else if t.lastTitle != "" {
+		restoreTitleSeq = "\x1b]0;\x07"
+	}
+	t.titlePushed = false
+	t.lastTitle = ""
+	t.titleWriter = nil
+
 	t.altStack = nil
 
-	seq := FullCleanupSequence + extra
+	seq := FullCleanupSequence + restoreTitleSeq + extra
 	for _, dest := range targets {
 		_, _ = io.WriteString(dest, seq)
 	}

@@ -36,6 +36,7 @@ func resetConversationState(a *agent.Agent, reader *interceptor.KeyInterceptorRe
 		reader.ClearQueue()
 	}
 	a.ClearTasks()
+	ui.ResetTabTitleTopic()
 	a.CurrentStreamMu.Lock()
 	a.CurrentStreamBuffer = nil
 	a.CurrentStreamReplay = nil
@@ -252,6 +253,7 @@ func handleSessionCommand(
 		ui.GetUI().StateMu.Lock()
 		ui.GetUI().State.SessionLabel = newName
 		ui.GetUI().StateMu.Unlock()
+		ui.RefreshTabTitle(os.Stderr, a)
 		fmt.Fprintf(w, "session named %q.\n", newName)
 
 	case "load":

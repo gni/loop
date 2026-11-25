@@ -61,6 +61,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	activeTasks := a.CountActiveTasks()
 
 	render.ClearTerminalForStartup(os.Stderr)
+	terminal.Default().PushTitle(os.Stderr)
+	ui.SetIdleTabTitle(os.Stderr, a, currentSessionID, "")
 	ui.SetScrollRegionOffset(style.ConsoleScrollRegionOffset())
 	ui.InitStatusBar(os.Stderr)
 	a.RefreshPlanStatus()
@@ -76,6 +78,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		} else {
 			fmt.Fprint(os.Stderr, terminal.FullCleanupSequence+"\x1b[?7h\x1b[2J\x1b[H")
 		}
+		terminal.Default().RestoreTitle(os.Stderr)
 		if !a.Ephemeral {
 			fmt.Fprintf(os.Stderr, "goodbye! to resume this session, run: loop --session %s (or loop --resume)\r\n", render.SanitizeTerminalText(currentSessionID))
 		}
@@ -171,6 +174,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 	ui.GetUI().StateMu.Unlock()
 	ui.DrawStaticStatsLine(os.Stderr, theme, "", savedStats)
 	ui.DrawStatusBar(os.Stderr, theme)
+	ui.SetIdleTabTitle(os.Stderr, a, currentSessionID, mam.ActiveAgentName())
 
 	defer watchREPLResizes(a, kiReader)()
 
@@ -178,6 +182,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		if ctx.Err() != nil {
 			break
 		}
+		ui.SetIdleTabTitle(os.Stderr, a, currentSessionID, mam.ActiveAgentName())
 		promptPrefix := ui.GetPromptSymbol(nil)
 		if name := mam.ActiveAgentName(); name != "" {
 			promptPrefix = fmt.Sprintf("[%s]%s", name, promptPrefix)
@@ -341,7 +346,9 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				if err := chatHistory.ResetSession(currentSessionID, messages); err != nil {
 					fmt.Fprintf(os.Stderr, "Could not load older display history: %v\n", err)
 				}
+				ui.ResetTabTitleTopic()
 				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)
+				ui.SetIdleTabTitle(os.Stderr, a, currentSessionID, mam.ActiveAgentName())
 			} else if currentSessionID != prevSessionID {
 				if a.SyncSessionState != nil {
 					if err := a.SyncSessionState(messages, allowedTools, currentSessionID, true); err != nil {
@@ -352,6 +359,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 					kiReader.SetTheme(theme)
 				}
 				chatHistory.SetSessionID(currentSessionID)
+				ui.ResetTabTitleTopic()
+				ui.SetIdleTabTitle(os.Stderr, a, currentSessionID, mam.ActiveAgentName())
 			}
 			continue
 		}
