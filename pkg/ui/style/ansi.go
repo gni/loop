@@ -157,6 +157,57 @@ func WrapAnsiLine(line string, limit int) []string {
 	return wrapSingleAnsiLine(line, limit)
 }
 
+// HardWrapAnsiLine splits a single ANSI-styled line at exact terminal display
+// column boundaries (matching terminal auto-wrap 1:1) while preserving active
+// SGR attributes across wrapped rows and never splitting grapheme clusters.
+func HardWrapAnsiLine(line string, limit int) []string {
+	if limit <= 0 {
+		return []string{line}
+	}
+	var rows []string
+	var cur strings.Builder
+	var activeSGR SGRState
+	col := 0
+
+	flushRow := func() {
+		if !activeSGR.IsZero() {
+			cur.WriteString("\x1b[0m")
+		}
+		rows = append(rows, cur.String())
+		cur.Reset()
+		if !activeSGR.IsZero() {
+			cur.WriteString(activeSGR.Sequence())
+		}
+		col = 0
+	}
+
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			end := SkipAnsiEscape(line, i)
+			seq := line[i:end]
+			cur.WriteString(seq)
+			activeSGR.Apply(seq)
+			i = end
+			continue
+		}
+		cluster, cw, sz := NextGrapheme(line[i:])
+		if cw > 0 && col > 0 && col+cw > limit {
+			flushRow()
+		}
+		cur.WriteString(cluster)
+		col += cw
+		i += sz
+	}
+
+	if cur.Len() > 0 || len(rows) == 0 {
+		if !activeSGR.IsZero() {
+			cur.WriteString("\x1b[0m")
+		}
+		rows = append(rows, cur.String())
+	}
+	return rows
+}
+
 func wrapSingleAnsiLine(line string, limit int) []string {
 	if limit <= 0 {
 		return []string{line}
