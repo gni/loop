@@ -35,9 +35,9 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 	autoOffStyle := style.NewStyle().Foreground(theme.Border)
 
 	// Optional right-hand badges: slash commands button ("/"), theme switcher ("◐"),
-	// loop icon ("∞", soft theme secondary accent when auto_approve is on, dim border
-	// color when off so it remains clickable/tappable on desktop and mobile), and
-	// reasoning badge ("∴ low", "∴ med", "∴ high", "∴ max", "∴ off") unless hidden.
+	// auto-approve icon ("↯", soft theme secondary accent when auto_approve is on,
+	// dim border color when off so it remains clickable/tappable on desktop and mobile),
+	// and reasoning badge ("∴ low", "∴ med", "∴ high", "∴ max", "∴ off") unless hidden.
 	// When hovered, each badge expands inline like a tooltip.
 	effort := strings.ToLower(strings.TrimSpace(reasoningEffort))
 	showBadge := effort != "hidden"
@@ -91,20 +91,20 @@ func formatPromptSeparatorLayout(showThinking bool, reasoningEffort string, show
 		})
 	}
 	if showAutoBadge {
-		raw := "∞"
+		raw := "↯"
 		padL, padR := 1, 1
 		var st style.Style
 		if autoApprove {
 			st = autoOnStyle
 			if hovered == HoverAutoBadge {
-				raw = " ∞ auto: on "
+				raw = " ↯ auto: on "
 				st = hoverButtonStyle(theme, theme.Secondary)
 				padL, padR = 0, 1
 			}
 		} else {
 			st = autoOffStyle
 			if hovered == HoverAutoBadge {
-				raw = " ∞ auto: off "
+				raw = " ↯ auto: off "
 				st = hoverButtonStyle(theme, theme.TextMuted)
 				padL, padR = 0, 1
 			}

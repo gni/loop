@@ -116,7 +116,7 @@ func buildConfigSettingItems(cloned *config.Config) []*interactive.SettingItem {
 		boolConfigItem("show_collapse_badge", "show collapse badge", "Show the tool output fold indicator on the status separator line", cloned),
 		boolConfigItem("show_git_branch", "show git branch", "Show the active Git branch on the prompt separator line", cloned),
 		boolConfigItem("show_sticky_question", "show sticky question", "Pin the active user question at the top of the viewport while scrolling history", cloned),
-		boolConfigItem("show_auto_badge", "show auto badge", "Show the auto-approve loop indicator (∞) on the prompt line", cloned),
+		boolConfigItem("show_auto_badge", "show auto badge", "Show the auto-approve indicator (↯) on the prompt line", cloned),
 		boolConfigItem("hover_tooltips", "hover tooltips", "Expand status indicators on mouse hover and allow click-to-toggle badges", cloned),
 		boolConfigItem("native_scroll", "native scroll", "Use native terminal scrollback and selection without mouse capture (turn off for in-app paged history)", cloned),
 		boolConfigItem("show_microseconds", "show microseconds", "Show six fractional digits on elapsed timers", cloned),
