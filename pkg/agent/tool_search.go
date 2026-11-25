@@ -88,7 +88,7 @@ func (t *toolSearch) Execute(ctx tool.AgentContext, arguments string) (string, e
 	if len(definitions) == 0 && len(deferred) > 0 {
 		return fmt.Sprintf("no matching connected tools; deferred MCP servers: %s (connect explicitly with load_mcp)", strings.Join(deferred, ", ")), nil
 	}
-	if cfg := t.agent.Config; cfg != nil && cfg.CompactPrompt && !strings.EqualFold(cfg.ToolProtocol, "xml") {
+	if cfg := t.agent.Config; cfg != nil && cfg.CompactPrompt && toolProtocolForConfig(cfg).CompactToolSearchResult() {
 		names := make([]string, 0, len(definitions))
 		for _, definition := range definitions {
 			names = append(names, definition.Function.Name)

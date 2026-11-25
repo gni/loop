@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/buildinfo"
@@ -143,23 +142,18 @@ func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chun
 		dest.WriteString(text)
 		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: chunkType, Content: text}, observer)
 	}
-	if p.Config == nil || !strings.EqualFold(p.Config.ToolProtocol, "xml") {
-		return fallback.NewPlainTextFilter(emit)
-	}
-	filter := NewFallbackToolTextFilter(emit)
-	filter.SetToolCallbacks(
+	return toolProtocolForConfig(p.Config).NewStreamTextFilter(
+		emit,
 		func(toolName string, idx int) {
-			normName := tool.NormalizeName(toolName)
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: idx}, observer)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: toolName, ToolCallIndex: idx}, observer)
+		},
+		func(target string, idx int) {
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, observer)
 		},
 		func(chunk string, idx int) {
 			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, observer)
 		},
 	)
-	filter.SetToolTargetCallback(func(target string, idx int) {
-		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, observer)
-	})
-	return filter
 }
 
 func (p *OpenAICompatibleProvider) StreamChatCompletions(
@@ -298,14 +292,15 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	var textBuilder, rawTextBuilder, cleanReasoningBuilder strings.Builder
 	toolCallsMap := make(map[int]*db.ToolCall)
 	argumentBuffers := make(toolArgumentBuffers)
-	xmlTools := strings.EqualFold(p.Config.ToolProtocol, "xml")
+	toolProto := toolProtocolForConfig(p.Config)
+	captureRawText := !toolProto.UsesNativeSchemas()
 
 	textFilter := p.newStreamTextFilter(ctx, chunkChan, "text", &textBuilder)
 	reasoningFilter := p.newStreamTextFilter(ctx, chunkChan, "reasoning", &cleanReasoningBuilder)
 
 	emitText := func(text string) {
 		if text != "" {
-			if xmlTools {
+			if captureRawText {
 				rawTextBuilder.WriteString(text)
 			}
 			textFilter.Write(text)
@@ -475,18 +470,25 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	}
 
 	assistantMsg := buildMessage()
+	var nativeCalls []db.ToolCall
 	if len(toolCallsMap) > 0 {
 		argumentBuffers.flush(toolCallsMap)
 		if err := validateProviderCalls(toolCallsMap); err != nil {
 			return assistantMsg, err
 		}
-		assistantMsg.ToolCalls = orderedToolCalls(toolCallsMap)
-	} else if xmlTools {
-		calls, err := fallback.ParseFallbackToolCallsStrict(rawTextBuilder.String())
-		if err != nil {
-			return assistantMsg, err
-		}
-		assistantMsg.ToolCalls = calls
+		nativeCalls = orderedToolCalls(toolCallsMap)
+	}
+	rawSource := assistantMsg.Content
+	if captureRawText {
+		rawSource = rawTextBuilder.String()
+	}
+	parsedCalls, cleanContent, err := toolProto.ParseAssistantToolCalls(rawSource, nativeCalls)
+	if err != nil {
+		return assistantMsg, err
+	}
+	assistantMsg.ToolCalls = parsedCalls
+	if len(parsedCalls) > 0 && captureRawText {
+		assistantMsg.Content = cleanContent
 	}
 	if !hasUsableAssistantResponse(assistantMsg) {
 		return assistantMsg, fmt.Errorf("model server closed the stream after %s without a usable answer or tool call (HTTP %d, finish reason %q): %w", time.Since(requestStarted).Round(time.Second), resp.StatusCode, finishReason, ErrEmptyResponse)

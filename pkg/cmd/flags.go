@@ -27,6 +27,7 @@ var (
 	directCommandsFlag      bool
 	maxCompletionTokensFlag int
 	compactPrompt           bool
+	toolProtocolFlag        string
 	debugFileFlag           string
 	maxSubagentDepthFlag    int
 	timeoutFlag             int
@@ -87,6 +88,9 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if cmd.Flags().Changed("compact") {
 		cfg.CompactPrompt = compactPrompt
 	}
+	if cmd.Flags().Changed("tool-protocol") {
+		cfg.ToolProtocol = strings.ToLower(strings.TrimSpace(toolProtocolFlag))
+	}
 	if cmd.Flags().Changed("debug-file") {
 		cfg.DebugLogFile = debugFileFlag
 	}
@@ -136,6 +140,7 @@ func initRootFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().IntVar(&maxCompletionTokensFlag, "max-completion-tokens", 0, fmt.Sprintf("Override maximum completion/output tokens limit (default: %d)", config.DefaultMaxCompletionTokens))
 	cmd.PersistentFlags().BoolVar(&directCommandsFlag, "direct", false, "Enable direct execution of local shell commands (default: true in config)")
 	cmd.PersistentFlags().BoolVar(&compactPrompt, "compact", false, "Enable highly compressed system instructions for smaller models")
+	cmd.PersistentFlags().StringVar(&toolProtocolFlag, "tool-protocol", "", "Tool calling wire protocol: json or xml")
 	cmd.PersistentFlags().StringVar(&debugFileFlag, "debug-file", "", "Path to debug execution log file (default: loop_debug.log in workspace)")
 	cmd.PersistentFlags().IntVar(&maxSubagentDepthFlag, "max-subagent-depth", 0, "Maximum subagent nesting depth (default: 0, leaf subagents cannot spawn further subagents)")
 	cmd.PersistentFlags().IntVar(&timeoutFlag, "timeout", 0, "Override LLM request timeout in seconds (default: 120)")

@@ -19,6 +19,7 @@ type SystemPromptConfig struct {
 	WorkspaceRoot     string
 	SkillsDir         string
 	CompactPrompt     bool
+	ToolProtocol      string
 	NativeToolSchemas bool
 	GuidedMode        bool
 	SkipObservation   bool
@@ -41,6 +42,7 @@ type ToolEntry struct {
 	Name       string
 	Snippet    string
 	Guidelines []string
+	Parameters tool.JSONSchema
 }
 
 var noBashReplacer = strings.NewReplacer(
@@ -121,30 +123,18 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 	}
 	sb.WriteString(fmt.Sprintf(t.CwdSection, workspaceRoot))
 
-	var toolLines strings.Builder
-	// Native tool schemas already carry names, descriptions, and arguments.
-	// Keep the text listing for XML protocol only.
-	if !cfg.NativeToolSchemas {
-		for _, entry := range tools {
-			toolLines.WriteString(fmt.Sprintf(t.ToolLine, entry.Name, entry.Snippet))
-		}
+	proto := toolProtocolFor(cfg.ToolProtocol)
+	if cfg.ToolProtocol == "" && !cfg.NativeToolSchemas {
+		proto = defaultXMLToolProtocol
 	}
-	agentTpl := domaintool.AgentTemplatesSnapshot()
 	hasActiveAgents := false
 	for _, name := range cfg.ActiveAgents {
-		toolName := "subagent__" + name
-		if !tool.IsAllowedTool(toolName, cfg.Allowlist) {
-			continue
+		if tool.IsAllowedTool("subagent__"+name, cfg.Allowlist) {
+			hasActiveAgents = true
+			break
 		}
-		hasActiveAgents = true
-		if cfg.NativeToolSchemas && toolNames[toolName] {
-			continue
-		}
-		toolLines.WriteString(fmt.Sprintf(t.SubagentLine, name, fmt.Sprintf(agentTpl.SubagentPrompt, name)))
 	}
-	if toolLines.Len() > 0 {
-		sb.WriteString(fmt.Sprintf(t.ToolsSection, toolLines.String()))
-	}
+	proto.FormatPromptTools(&sb, tools, toolNames, cfg)
 
 	var ruleLines strings.Builder
 	seenRules := make(map[string]bool)
@@ -325,7 +315,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 	compact := false
 	instruction := ""
 	contextFiles := true
-	nativeSchemas := true
+	protocolName := "json"
 	skipObservation := false
 	sequentialTools := true
 	a.LLMProviderMu.RLock()
@@ -334,11 +324,12 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		compact = a.Config.CompactPrompt
 		instruction = a.Config.SystemInstruction
 		contextFiles = a.Config.ContextFiles
-		nativeSchemas = !strings.EqualFold(strings.TrimSpace(a.Config.ToolProtocol), "xml")
+		protocolName = toolProtocolForConfig(a.Config).Name()
 		skipObservation = !a.Config.FileObservationGuard
 		sequentialTools = !a.Config.ParallelToolCalls
 	}
 	a.LLMProviderMu.RUnlock()
+	nativeSchemas := toolProtocolFor(protocolName).UsesNativeSchemas()
 
 	projectCtx := ""
 	if contextFiles {
@@ -352,6 +343,7 @@ func (a *Agent) BaseSystemPromptConfig(allowlist []string, includeSubagentTools 
 		WorkspaceRoot:     tool.FirstNonEmpty(a.WorkspaceRoot, "."),
 		SkillsDir:         skillsDir,
 		CompactPrompt:     compact,
+		ToolProtocol:      protocolName,
 		NativeToolSchemas: nativeSchemas,
 		GuidedMode:        a.IsGuidedMode(),
 		SkipObservation:   skipObservation,
@@ -418,6 +410,7 @@ func PromptToolEntries(registry *tool.ToolRegistry, includeSubagentTools bool) [
 			Name:       name,
 			Snippet:    tool.GetPromptSnippet(executor),
 			Guidelines: tool.GetPromptGuidelines(executor),
+			Parameters: executor.Definition().Function.Parameters,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })

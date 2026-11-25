@@ -123,11 +123,10 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx conte
 
 	validMessages, _ := sanitizeRequestMessages(inputMsgs)
 
-	finalTools := prepareToolDefinitions(tools, p.Config != nil && p.Config.CompactPrompt)
-	if p.Config != nil && strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
-		finalTools = nil
-	}
-	cleanMessages, maxCompTokens, err := p.budgetRequestContext(ctx, validMessages, finalTools)
+	proto := toolProtocolForConfig(p.Config)
+	finalTools := proto.PrepareWireTools(tools, p.Config != nil && p.Config.CompactPrompt)
+	wireMessages := proto.PrepareWireMessages(validMessages)
+	cleanMessages, maxCompTokens, err := p.budgetRequestContext(ctx, wireMessages, finalTools)
 	if err != nil {
 		return ChatCompletionRequest{}, nil, nil, err
 	}

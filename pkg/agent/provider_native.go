@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"loop/pkg/agent/fallback"
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/buildinfo"
@@ -97,11 +96,9 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 		messages = CompactHistoricalToolOutputs(messages)
 	}
 	messages, _ = sanitizeRequestMessages(messages)
-	if strings.EqualFold(strings.TrimSpace(p.Config.ToolProtocol), "xml") {
-		tools = nil
-	} else {
-		tools = prepareToolDefinitions(tools, p.Config.CompactPrompt)
-	}
+	toolProto := toolProtocolForConfig(p.Config)
+	tools = toolProto.PrepareWireTools(tools, p.Config.CompactPrompt)
+	messages = toolProto.PrepareWireMessages(messages)
 	clean, maxTokens, err := p.budgetRequestContext(ctx, messages, tools)
 	if err != nil {
 		return "", nil, err
@@ -147,7 +144,11 @@ type nativeStreamState struct {
 	observer           ChunkDropObserver
 	result             *db.Message
 	text               strings.Builder
+	rawText            strings.Builder
 	reasoning          strings.Builder
+	textFilter         *FallbackToolTextFilter
+	reasoningFilter    *FallbackToolTextFilter
+	captureRawText     bool
 	calls              map[int]*db.ToolCall
 	argumentBuffers    toolArgumentBuffers
 	itemIndexes        map[string]int
@@ -186,8 +187,19 @@ func (s *nativeStreamState) emit(kind, delta string) {
 		s.generationStart = time.Now()
 	}
 	if kind == "reasoning" {
+		if s.reasoningFilter != nil {
+			s.reasoningFilter.Write(delta)
+			return
+		}
 		s.reasoning.WriteString(delta)
 	} else {
+		if s.captureRawText {
+			s.rawText.WriteString(delta)
+		}
+		if s.textFilter != nil {
+			s.textFilter.Write(delta)
+			return
+		}
 		s.text.WriteString(delta)
 	}
 	emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: kind, Content: delta}, s.observer)
@@ -309,12 +321,14 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	result := &db.Message{Role: "assistant", Provider: p.Config.ActiveProvider, Model: p.Config.Model}
 	defer func() { p.requestCounter().observe(result.PromptTokens, estimatedInput) }()
 
+	toolProto := toolProtocolForConfig(p.Config)
 	state := &nativeStreamState{
 		streamCtx:          streamCtx,
 		api:                api,
 		chunks:             chunks,
 		observer:           p.chunkDropObserver(ctx),
 		result:             result,
+		captureRawText:     !toolProto.UsesNativeSchemas(),
 		calls:              make(map[int]*db.ToolCall),
 		argumentBuffers:    make(toolArgumentBuffers),
 		itemIndexes:        make(map[string]int),
@@ -322,12 +336,16 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		thinkingText:       make(map[int]*strings.Builder),
 		thinkingSignatures: make(map[int]*strings.Builder),
 	}
+	state.textFilter = p.newStreamTextFilter(streamCtx, chunks, "text", &state.text)
+	state.reasoningFilter = p.newStreamTextFilter(streamCtx, chunks, "reasoning", &state.reasoning)
 
 	finalized := false
 	defer func() {
 		if !finalized {
+			state.textFilter.Flush()
+			state.reasoningFilter.Flush()
 			result.Content = state.text.String()
-			result.ReasoningContent = state.reasoning.String()
+			result.ReasoningContent = StripFallbackToolMarkup(state.reasoning.String())
 		}
 	}()
 
@@ -363,9 +381,10 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		}
 	}
 
-	rawText := state.text.String()
-	result.Content = rawText
-	result.ReasoningContent = state.reasoning.String()
+	state.textFilter.Flush()
+	state.reasoningFilter.Flush()
+	result.Content = state.text.String()
+	result.ReasoningContent = StripFallbackToolMarkup(state.reasoning.String())
 	result.StopReason = state.finish
 	finalized = true
 
@@ -383,15 +402,21 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	if err := validateProviderCalls(state.calls); err != nil {
 		return result, err
 	}
+	var nativeCalls []db.ToolCall
 	if len(state.calls) > 0 {
-		result.ToolCalls = orderedToolCalls(state.calls)
-	} else if p.Config != nil && strings.EqualFold(p.Config.ToolProtocol, "xml") {
-		var err error
-		result.ToolCalls, err = fallback.ParseFallbackToolCallsStrict(rawText)
-		if err != nil {
-			return result, err
-		}
-		result.Content = StripFallbackToolMarkup(rawText)
+		nativeCalls = orderedToolCalls(state.calls)
+	}
+	rawSource := result.Content
+	if state.captureRawText {
+		rawSource = state.rawText.String()
+	}
+	parsedCalls, cleanContent, err := toolProto.ParseAssistantToolCalls(rawSource, nativeCalls)
+	if err != nil {
+		return result, err
+	}
+	result.ToolCalls = parsedCalls
+	if len(parsedCalls) > 0 && state.captureRawText {
+		result.Content = cleanContent
 	}
 
 	indexes := make([]int, 0, len(state.thinking))

@@ -351,19 +351,34 @@ func fallbackClosingTag(opening string) (string, bool) {
 		if !validFallbackOpeningBoundary(opening, len("<tool_call")) {
 			return "", false
 		}
+		if strings.HasSuffix(strings.TrimSpace(opening), "/>") {
+			return "", true
+		}
 		return "</tool_call>", true
 	case strings.HasPrefix(opening, "<execute"):
 		if !validFallbackOpeningBoundary(opening, len("<execute")) {
 			return "", false
 		}
+		if strings.HasSuffix(strings.TrimSpace(opening), "/>") {
+			return "", true
+		}
 		return "</execute>", true
 	case strings.HasPrefix(opening, "<tool:"):
-		name := opening[len("<tool:") : len(opening)-1]
+		trimmedOpen := strings.TrimSpace(opening)
+		selfClosing := strings.HasSuffix(trimmedOpen, "/>")
+		endTrim := len(trimmedOpen) - 1
+		if selfClosing {
+			endTrim = len(trimmedOpen) - 2
+		}
+		name := trimmedOpen[len("<tool:"):endTrim]
 		if idx := strings.IndexAny(name, " \t\r\n"); idx >= 0 {
 			name = name[:idx]
 		}
 		if !isValidXMLTagIdent(name) {
 			return "", false
+		}
+		if selfClosing {
+			return "", true
 		}
 		return "</tool:" + name + ">", true
 	case strings.HasPrefix(opening, "<function"):

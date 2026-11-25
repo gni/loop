@@ -77,6 +77,7 @@ func buildConfigSettingItems(cloned *config.Config) []*interactive.SettingItem {
 		intConfigItem("context_window_limit", "context window limit", "Maximum prompt context size allocated before compression (tokens)", cloned),
 		optionConfigItem("context_profile", "context profile", "Local presets group existing efficiency settings; numeric fields remain editable", []string{"custom", "local-8k", "local-16k", "local-32k", "8k", "16k", "32k", "64k", "128k", "256k", "512k", "1m"}, cloned),
 		optionConfigItem("tool_exposure", "tool exposure", "Core tools with discovery, automatic sizing, or the full catalog", []string{"auto", "core", "full"}, cloned),
+		optionConfigItem("tool_protocol", "tool protocol", "Tool calling wire protocol: json (native schemas) or xml (text tags)", []string{"json", "xml"}, cloned),
 		optionConfigItem("history_compression", "history compression", "Safely shorten redundant history independently of adaptive context", []string{"safe", "off"}, cloned),
 		boolConfigItem("auto_adapt_context", "auto adapt context", "Automatically scale context window dynamically according to prompt size", cloned),
 		intConfigItem("min_context_window", "min context window", "Smallest token window allowed during dynamic context scaling (tokens)", cloned),

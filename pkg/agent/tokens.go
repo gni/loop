@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"math"
-	"strings"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -250,10 +249,7 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	if a != nil && a.Registry != nil {
 		tools := a.inferenceTools(a.Context(), allowedTools)
 		if cfg != nil {
-			tools = prepareToolDefinitions(tools, cfg.CompactPrompt)
-			if strings.EqualFold(strings.TrimSpace(cfg.ToolProtocol), "xml") {
-				tools = nil
-			}
+			tools = toolProtocolForConfig(cfg).PrepareWireTools(tools, cfg.CompactPrompt)
 		}
 		toolTokens = estimateDisplayToolSchemaTokens(tools)
 	}

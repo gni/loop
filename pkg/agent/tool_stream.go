@@ -396,7 +396,11 @@ func (s *toolStreamSequencer) Reconcile(calls []db.ToolCall) {
 	for index, source := range sources {
 		old := s.sourceIndexes[source]
 		state := s.calls[old]
-		if index >= len(calls) || state == nil || state.name != calls[index].Function.Name || CanonicalizeToolArguments(state.name, state.arguments.String()) != CanonicalizeToolArguments(calls[index].Function.Name, calls[index].Function.Arguments) {
+		if index >= len(calls) || state == nil || state.name != calls[index].Function.Name {
+			identity = false
+			continue
+		}
+		if !state.rawTarget && CanonicalizeToolArguments(state.name, state.arguments.String()) != CanonicalizeToolArguments(calls[index].Function.Name, calls[index].Function.Arguments) {
 			identity = false
 			continue
 		}

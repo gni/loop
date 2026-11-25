@@ -3,6 +3,7 @@ package fallback
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"math"
 	"regexp"
 	"sort"
@@ -13,7 +14,6 @@ import (
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
-	domaintool "loop/pkg/domain/tool"
 )
 
 type directToolMatchers struct {
@@ -23,18 +23,23 @@ type directToolMatchers struct {
 }
 
 var (
-	reAttr           = regexp.MustCompile(`([a-zA-Z0-9_\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
-	rePathTag        = regexp.MustCompile(`(?s)<path>(.*?)<\/path>`)
-	reContentTag     = regexp.MustCompile(`(?s)<content>(.*?)<\/content>`)
-	reInstructionTag = regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`)
-	reOldNewTag      = regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`)
-	reConflictBlock  = regexp.MustCompile(`(?s)<<<<<<< SEARCH\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>> REPLACE`)
-	reTaskTag        = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+([^>]*))?>\s*(.*?)\s*<\/(?:task|item)>`)
-	reToolCallBlock  = regexp.MustCompile(`(?s)<tool_call\b(` + xmlAttrsPattern + `)>(.*?)<\/tool_call>`)
-	reToolColonAttrs = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)>(.*?)<\/tool:([a-zA-Z0-9_\-]+)>`)
-	reExecuteAttrs   = regexp.MustCompile(`(?s)<execute\b(` + xmlAttrsPattern + `)>(.*?)<\/execute>`)
-	reFunc           = regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)\s*>(.*?)<\/function\s*>`)
-	reParam          = regexp.MustCompile(`(?s)<parameter[=\s]+([a-zA-Z0-9_\-]+)\s*>(.*?)<\/parameter\s*>`)
+	reAttr              = regexp.MustCompile(`([a-zA-Z0-9_\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>/]+))`)
+	rePathTag           = regexp.MustCompile(`(?s)<path>(.*?)<\/path>`)
+	reContentTag        = regexp.MustCompile(`(?s)<content>(.*?)<\/content>`)
+	reInstructionTag    = regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`)
+	reOldNewTag         = regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`)
+	reConflictBlock     = regexp.MustCompile(`(?s)<<<<<<< SEARCH\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>> REPLACE`)
+	reTaskTag           = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+([^>]*))?>\s*(.*?)\s*<\/(?:task|item)>`)
+	reQuestionTag       = regexp.MustCompile(`(?s)<question>(.*?)<\/question>`)
+	reOptionTag         = regexp.MustCompile(`(?s)<option(?:\s+([^>]*))?>(.*?)<\/option>`)
+	reToolCallSelfClose = regexp.MustCompile(`(?s)<tool_call\b(` + xmlAttrsPattern + `)\/>`)
+	reToolCallBlock     = regexp.MustCompile(`(?s)<tool_call\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/tool_call>`)
+	reToolColonSelf     = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)\/>`)
+	reToolColonAttrs    = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/tool:([a-zA-Z0-9_\-]+)>`)
+	reExecuteSelf       = regexp.MustCompile(`(?s)<execute\b(` + xmlAttrsPattern + `)\/>`)
+	reExecuteAttrs      = regexp.MustCompile(`(?s)<execute\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/execute>`)
+	reFunc              = regexp.MustCompile(`(?s)<function=([a-zA-Z0-9_\-]+)\s*>(.*?)<\/function\s*>`)
+	reParam             = regexp.MustCompile(`(?s)<parameter(?:\s+name\s*=\s*(?:"([a-zA-Z0-9_\-]+)"|'([a-zA-Z0-9_\-]+)'|([a-zA-Z0-9_\-]+))|[=\s]+([a-zA-Z0-9_\-]+))\s*>(.*?)<\/parameter\s*>`)
 
 	compiledDirectTools = func() []directToolMatchers {
 		out := make([]directToolMatchers, len(directToolNames))
@@ -99,22 +104,65 @@ func xmlArgumentValue(name, key, value string) any {
 	return value
 }
 
+// trimTagBoundaryNewlines removes at most one leading and one trailing newline
+// immediately adjacent to XML tags while preserving indentation and blank lines.
+func trimTagBoundaryNewlines(s string) string {
+	s = strings.TrimPrefix(s, "\r\n")
+	if !strings.HasPrefix(s, "\r\n") {
+		s = strings.TrimPrefix(s, "\n")
+	}
+	s = strings.TrimSuffix(s, "\r\n")
+	if !strings.HasSuffix(s, "\r\n") {
+		s = strings.TrimSuffix(s, "\n")
+	}
+	return s
+}
+
+func extractParameterTags(body string) (map[string]string, bool) {
+	matches := reParam.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil, false
+	}
+	params := make(map[string]string, len(matches))
+	for _, m := range matches {
+		key := tool.FirstNonEmpty(m[1], m[2], m[3], m[4])
+		if key != "" {
+			params[key] = trimTagBoundaryNewlines(m[5])
+		}
+	}
+	return params, len(params) > 0
+}
+
+func stripWrapperNameAttr(attrs map[string]string) map[string]string {
+	if _, ok := attrs["name"]; !ok {
+		return attrs
+	}
+	cleaned := make(map[string]string, len(attrs)-1)
+	for k, v := range attrs {
+		if k != "name" {
+			cleaned[k] = v
+		}
+	}
+	return cleaned
+}
+
 // ParseXMLAttrs extracts key="val", key='val', or key=val attribute pairs from XML tag string.
 func ParseXMLAttrs(s string) map[string]string {
 	attrs := make(map[string]string)
 	for _, m := range reAttr.FindAllStringSubmatch(s, -1) {
-		attrs[m[1]] = tool.FirstNonEmpty(m[2], m[3], m[4])
+		raw := tool.FirstNonEmpty(m[2], m[3], m[4])
+		attrs[m[1]] = html.UnescapeString(raw)
 	}
 	return attrs
 }
 
 // BuildXMLToolCall constructs a structured db.ToolCall from an XML tag and its body.
-func BuildXMLToolCall(name string, attrs map[string]string, body string) db.ToolCall {
+func BuildXMLToolCall(name string, attrs map[string]string, rawBody string) db.ToolCall {
 	name = tool.NormalizeName(name)
-	body = strings.TrimSpace(body)
+	trimmedBody := strings.TrimSpace(rawBody)
 
-	// If body is already valid JSON, merge tag attributes into it if not present
-	decoded, decodeErr := jsonschema.UnmarshalJSON(strings.NewReader(body))
+	// If body is already valid JSON object, merge tag attributes into it if not present.
+	decoded, decodeErr := jsonschema.UnmarshalJSON(strings.NewReader(trimmedBody))
 	temp, isObject := decoded.(map[string]any)
 	if decodeErr == nil && (isObject || decoded == nil) {
 		if temp == nil {
@@ -128,7 +176,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 		if merged, err := json.Marshal(temp); err == nil {
 			return BuildToolCall(name, string(merged))
 		}
-		return BuildToolCall(name, body)
+		return BuildToolCall(name, trimmedBody)
 	}
 
 	argsMap := make(map[string]any)
@@ -136,17 +184,28 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 		argsMap[k] = xmlArgumentValue(name, k, v)
 	}
 
+	// Support <parameter name="key">value</parameter> or <parameter=key>value</parameter>
+	// inside any tool tag (including custom, plugin, and MCP tools).
+	if params, hasParams := extractParameterTags(rawBody); hasParams {
+		for k, v := range params {
+			argsMap[k] = xmlArgumentValue(name, k, v)
+		}
+		if jsonBytes, err := json.Marshal(argsMap); err == nil {
+			return BuildToolCall(name, string(jsonBytes))
+		}
+	}
+
 	switch name {
 	case "write":
 		path := tool.FirstNonEmpty(attrs["path"], attrs["file"], attrs["target"])
 		if path == "" {
-			if reP := rePathTag.FindStringSubmatch(body); len(reP) >= 2 {
+			if reP := rePathTag.FindStringSubmatch(rawBody); len(reP) >= 2 {
 				path = strings.TrimSpace(reP[1])
 			}
 		}
-		content := body
-		if reC := reContentTag.FindStringSubmatch(body); len(reC) >= 2 {
-			content = reC[1]
+		content := trimTagBoundaryNewlines(rawBody)
+		if reC := reContentTag.FindStringSubmatch(rawBody); len(reC) >= 2 {
+			content = trimTagBoundaryNewlines(reC[1])
 		}
 		argsMap["path"] = path
 		argsMap["content"] = content
@@ -154,7 +213,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 	case "edit":
 		path := tool.FirstNonEmpty(attrs["path"], attrs["file"])
 		if path == "" {
-			if reP := rePathTag.FindStringSubmatch(body); len(reP) >= 2 {
+			if reP := rePathTag.FindStringSubmatch(rawBody); len(reP) >= 2 {
 				path = strings.TrimSpace(reP[1])
 			}
 		}
@@ -162,7 +221,7 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 
 		instructions := tool.FirstNonEmpty(attrs["instructions"], attrs["instruction"], attrs["description"])
 		if instructions == "" {
-			if reI := reInstructionTag.FindStringSubmatch(body); len(reI) >= 2 {
+			if reI := reInstructionTag.FindStringSubmatch(rawBody); len(reI) >= 2 {
 				instructions = strings.TrimSpace(reI[1])
 			}
 		}
@@ -170,48 +229,109 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 			argsMap["instructions"] = instructions
 		}
 
-		oldNewMatches := reOldNewTag.FindAllStringSubmatch(body, -1)
-		if len(oldNewMatches) == 0 {
-			oldNewMatches = reConflictBlock.FindAllStringSubmatch(body, -1)
+		oldNewMatches := reOldNewTag.FindAllStringSubmatch(rawBody, -1)
+		fromOldNewTags := len(oldNewMatches) > 0
+		if !fromOldNewTags {
+			oldNewMatches = reConflictBlock.FindAllStringSubmatch(rawBody, -1)
 		}
 		if len(oldNewMatches) > 0 {
 			updates := make([]map[string]string, 0, len(oldNewMatches))
 			for _, m := range oldNewMatches {
+				oldText, newText := m[1], m[2]
+				if fromOldNewTags {
+					oldText = trimTagBoundaryNewlines(oldText)
+					newText = trimTagBoundaryNewlines(newText)
+				}
 				updates = append(updates, map[string]string{
-					"oldText": m[1],
-					"newText": m[2],
+					"oldText": oldText,
+					"newText": newText,
 				})
 			}
 			argsMap["updates"] = updates
-		} else if body != "" {
-			argsMap["content"] = body
+		} else if trimmedBody != "" {
+			argsMap["content"] = trimTagBoundaryNewlines(rawBody)
 		}
 
 	case "bash":
-		argsMap["command"] = tool.FirstNonEmpty(attrs["command"], body)
+		cmd := tool.FirstNonEmpty(attrs["command"], trimTagBoundaryNewlines(rawBody))
+		if !strings.Contains(cmd, "\n") {
+			cmd = strings.TrimSpace(cmd)
+		}
+		argsMap["command"] = cmd
 		if b := attrs["background"]; b == "true" || b == "1" {
 			argsMap["background"] = true
 		}
 
 	case "read":
-		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], body)
+		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], trimmedBody)
 
 	case "grep", "find_files":
-		argsMap["pattern"] = tool.FirstNonEmpty(attrs["pattern"], body)
+		argsMap["pattern"] = tool.FirstNonEmpty(attrs["pattern"], trimmedBody)
 
 	case "list_directory":
-		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], body, ".")
+		argsMap["path"] = tool.FirstNonEmpty(attrs["path"], trimmedBody, ".")
+
+	case "search_tools":
+		argsMap["query"] = tool.FirstNonEmpty(attrs["query"], trimmedBody)
+
+	case "search_symbols":
+		argsMap["query"] = tool.FirstNonEmpty(attrs["query"], attrs["name"], trimmedBody)
 
 	case "get_task_status", "stop_task":
-		argsMap["task_id"] = tool.FirstNonEmpty(attrs["task_id"], attrs["id"], body)
+		argsMap["task_id"] = tool.FirstNonEmpty(attrs["task_id"], attrs["id"], trimmedBody)
+
 	case "inspect_subagent", "remove_subagent", "load_skill", "load_mcp":
-		argsMap["name"] = tool.FirstNonEmpty(attrs["name"], body)
+		argsMap["name"] = tool.FirstNonEmpty(attrs["name"], trimmedBody)
+
+	case "create_subagent":
+		if _, ok := argsMap["prompt"]; !ok && trimmedBody != "" {
+			argsMap["prompt"] = trimmedBody
+		}
+
+	case "ask_user":
+		if q := reQuestionTag.FindStringSubmatch(rawBody); len(q) >= 2 {
+			argsMap["question"] = strings.TrimSpace(q[1])
+		} else if _, ok := argsMap["question"]; !ok && trimmedBody != "" && !strings.Contains(rawBody, "<option") {
+			argsMap["question"] = trimmedBody
+		}
+		if optMatches := reOptionTag.FindAllStringSubmatch(rawBody, -1); len(optMatches) > 0 {
+			options := make([]map[string]any, 0, len(optMatches))
+			for _, om := range optMatches {
+				oAttrs := ParseXMLAttrs(om[1])
+				label := tool.FirstNonEmpty(oAttrs["label"], strings.TrimSpace(om[2]))
+				if label == "" {
+					continue
+				}
+				entry := map[string]any{"label": label}
+				if desc := strings.TrimSpace(oAttrs["description"]); desc != "" {
+					entry["description"] = desc
+				} else if oAttrs["label"] != "" && strings.TrimSpace(om[2]) != "" {
+					entry["description"] = strings.TrimSpace(om[2])
+				}
+				if rec := strings.ToLower(strings.TrimSpace(oAttrs["recommended"])); rec == "true" || rec == "1" {
+					entry["recommended"] = true
+					if _, hasRec := argsMap["recommended"]; !hasRec {
+						argsMap["recommended"] = label
+					}
+				}
+				options = append(options, entry)
+			}
+			if len(options) > 0 {
+				argsMap["options"] = options
+			}
+		}
+
+	case "task_state":
+		if _, ok := argsMap["summary"]; !ok && trimmedBody != "" {
+			argsMap["summary"] = trimmedBody
+		}
+
 	case "todo":
-		if taskMatches := reTaskTag.FindAllStringSubmatch(body, -1); len(taskMatches) > 0 {
+		if taskMatches := reTaskTag.FindAllStringSubmatch(rawBody, -1); len(taskMatches) > 0 {
 			var tasks []map[string]string
 			for idx, tm := range taskMatches {
 				tAttrs := ParseXMLAttrs(tm[1])
-				id := tool.FirstNonEmpty(tAttrs["id"], fmt.Sprintf("task_%d", idx+1))
+				id := tool.FirstNonEmpty(tAttrs["id"], fmt.Sprintf("task-%d", idx+1))
 				status := tool.FirstNonEmpty(tAttrs["status"], "pending")
 				taskDesc := tool.FirstNonEmpty(strings.TrimSpace(tm[2]), tAttrs["task"], tAttrs["content"], tAttrs["description"])
 				if taskDesc != "" {
@@ -225,19 +345,23 @@ func BuildXMLToolCall(name string, attrs map[string]string, body string) db.Tool
 			if len(tasks) > 0 {
 				argsMap["tasks"] = tasks
 			}
-		} else if tasks := domaintool.ParseMarkdownTodoLines(body, "task_"); len(tasks) > 0 {
-			argsMap["tasks"] = tasks
+		} else if trimmedBody != "" {
+			argsMap["markdown"] = trimTagBoundaryNewlines(rawBody)
 		}
 
 	default:
-		if len(argsMap) == 0 && body != "" {
-			return BuildToolCall(name, body)
+		if strings.HasPrefix(name, "subagent__") {
+			if _, ok := argsMap["prompt"]; !ok && trimmedBody != "" {
+				argsMap["prompt"] = trimmedBody
+			}
+		} else if len(argsMap) == 0 && trimmedBody != "" {
+			return BuildToolCall(name, trimmedBody)
 		}
 	}
 
 	jsonBytes, err := json.Marshal(argsMap)
 	if err != nil {
-		return BuildToolCall(name, body)
+		return BuildToolCall(name, trimmedBody)
 	}
 	return BuildToolCall(name, string(jsonBytes))
 }
@@ -252,7 +376,11 @@ func parseHermesFunctionCalls(body string) []db.ToolCall {
 		rawBody := strings.TrimSpace(funcMatch[2])
 		params := make(map[string]any)
 		for _, p := range reParam.FindAllStringSubmatch(funcMatch[2], -1) {
-			params[p[1]] = xmlArgumentValue(tool.NormalizeName(name), p[1], strings.TrimSpace(p[2]))
+			key := tool.FirstNonEmpty(p[1], p[2], p[3], p[4])
+			val := trimTagBoundaryNewlines(p[5])
+			if key != "" {
+				params[key] = xmlArgumentValue(tool.NormalizeName(name), key, val)
+			}
 		}
 		if strings.Contains(rawBody, "<parameter") && strings.TrimSpace(reParam.ReplaceAllString(rawBody, "")) != "" {
 			continue
@@ -312,24 +440,39 @@ func ParseFallbackToolCallsStrict(content string) ([]db.ToolCall, error) {
 			add(match, BuildXMLToolCall(direct.name, ParseXMLAttrs(capture(match, 1)), capture(match, 2)))
 		}
 	}
+	for _, match := range reToolCallSelfClose.FindAllStringSubmatchIndex(content, -1) {
+		attrs := ParseXMLAttrs(capture(match, 1))
+		if name := attrs["name"]; name != "" {
+			add(match, BuildXMLToolCall(name, stripWrapperNameAttr(attrs), ""))
+		}
+	}
 	for _, match := range reToolCallBlock.FindAllStringSubmatchIndex(content, -1) {
 		attrs := ParseXMLAttrs(capture(match, 1))
 		body := capture(match, 2)
 		if name := attrs["name"]; name != "" {
-			add(match, BuildXMLToolCall(name, attrs, body))
+			add(match, BuildXMLToolCall(name, stripWrapperNameAttr(attrs), body))
 		} else {
 			add(match, parseHermesFunctionCalls(body)...)
 		}
+	}
+	for _, match := range reToolColonSelf.FindAllStringSubmatchIndex(content, -1) {
+		add(match, BuildXMLToolCall(capture(match, 1), ParseXMLAttrs(capture(match, 2)), ""))
 	}
 	for _, match := range reToolColonAttrs.FindAllStringSubmatchIndex(content, -1) {
 		if capture(match, 1) == capture(match, 4) {
 			add(match, BuildXMLToolCall(capture(match, 1), ParseXMLAttrs(capture(match, 2)), capture(match, 3)))
 		}
 	}
+	for _, match := range reExecuteSelf.FindAllStringSubmatchIndex(content, -1) {
+		attrs := ParseXMLAttrs(capture(match, 1))
+		if name := attrs["name"]; name != "" {
+			add(match, BuildXMLToolCall(name, stripWrapperNameAttr(attrs), ""))
+		}
+	}
 	for _, match := range reExecuteAttrs.FindAllStringSubmatchIndex(content, -1) {
 		attrs := ParseXMLAttrs(capture(match, 1))
 		if name := attrs["name"]; name != "" {
-			add(match, BuildXMLToolCall(name, attrs, capture(match, 2)))
+			add(match, BuildXMLToolCall(name, stripWrapperNameAttr(attrs), capture(match, 2)))
 		}
 	}
 	for _, match := range reFunc.FindAllStringSubmatchIndex(content, -1) {
