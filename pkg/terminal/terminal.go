@@ -27,8 +27,8 @@ const (
 	// ExitAlternateScreen restores the primary screen buffer and shows the cursor.
 	ExitAlternateScreen = "\x1b[?1049l\x1b[?25h"
 
-	// EnableMouseTracking enables X10, button-event drag (?1002h), and SGR extended mouse reporting.
-	EnableMouseTracking = "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+	// EnableMouseTracking enables X10 and SGR extended mouse reporting.
+	EnableMouseTracking = "\x1b[?1000h\x1b[?1006h"
 	// EnableMouseMotionTracking additionally enables DEC any-event motion reporting (?1003h) for hover tooltips.
 	EnableMouseMotionTracking = "\x1b[?1000h\x1b[?1003h\x1b[?1006h"
 	// DisableMouseTracking disables all standard and extended mouse reporting modes.
