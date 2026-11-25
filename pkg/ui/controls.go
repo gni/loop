@@ -23,7 +23,7 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 	state.StateMu.Lock()
 	inApproval := state.InApprovalPrompt
 	inMenu := state.InInteractiveMenu || inAlt
-	activeOp := state.ActiveCancelFunc != nil
+	activeOp := state.ActiveCancelFunc != nil || (kiReader != nil && kiReader.ActiveTurn.Load())
 	state.StateMu.Unlock()
 	if inMenu {
 		return
@@ -89,6 +89,9 @@ func DrawConsoleStaticControlsLocked(w io.Writer, a *agent.Agent, kiReader *keyI
 			inputLine, posOffset = kiReader.GetTypeAheadDraft()
 		} else {
 			inputLine, posOffset = kiReader.GetPromptDraft()
+			if inputLine == "" && !kiReader.IsAtMainPrompt.Load() {
+				inputLine, posOffset = kiReader.GetTypeAheadDraft()
+			}
 		}
 		if pasted := kiReader.GetPastedText(); pasted != "" {
 			inputLine += pasted
@@ -173,10 +176,13 @@ func ResetPromptAfterSubmit(w io.Writer, a *agent.Agent, ppWriter *PromptPreserv
 		fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K", height-2)
 	}
 
-	promptStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
-	fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s", height-2, promptStyle.Render(promptPrefix))
+	state.StateMu.Lock()
+	qLen := state.State.QueuedPromptsCount
+	state.StateMu.Unlock()
+	promptStr, fullPrefix := style.FormatPromptWithQueue(theme, promptPrefix, qLen)
+	fmt.Fprintf(&frame, "\x1b[%d;1H\x1b[2K%s", height-2, promptStr)
 	if ppWriter != nil {
-		ppWriter.SetPromptPositionLocked(height-2, 1+style.CellWidth(promptPrefix))
+		ppWriter.SetPromptPositionLocked(height-2, 1+style.CellWidth(fullPrefix))
 	}
 	DrawStatusBarLocked(wrappedFrame, theme)
 	frame.WriteString(terminal.EndSyncOutput)

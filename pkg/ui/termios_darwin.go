@@ -21,7 +21,9 @@ func SetNonCanonical(fd int) (func(), error) {
 	// Preserve CR for Enter and LF for Ctrl+J while a reply streams.
 	termios.Iflag &^= unix.IXON | unix.IXOFF | unix.ICRNL | unix.INLCR | unix.IGNCR
 	// Ctrl+Z undoes a queued prompt instead of suspending Loop mid-turn.
-	termios.Cc[unix.VSUSP] = 0
+	// On Darwin/BSD, _POSIX_VDISABLE is 0xff (not 0).
+	termios.Cc[unix.VSUSP] = 0xff
+	termios.Cc[unix.VDSUSP] = 0xff
 	termios.Cc[unix.VMIN] = 1
 	termios.Cc[unix.VTIME] = 0
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -25,45 +26,48 @@ type PromptHistory interface {
 }
 
 type KeyInterceptorReader struct {
-	InputContext          context.Context
-	R                     io.Reader
-	Agent                 *agent.Agent
-	Theme                 style.UITheme
-	W                     io.Writer
-	DraftMu               sync.Mutex
-	CurrentInputLine      string
-	CurrentInputPos       int
-	PendingLineReplace    string
-	HasPendingLineReplace bool
-	Messages              *[]db.Message
-	PasteRemaining        []byte
-	InputRemaining        []byte // Unprocessed input after a completed paste frame.
-	PasteStartPending     []byte
-	PastedText            string
-	CtrlCInterrupted      bool
-	MAM                   *swarm.MultiAgentManager
-	AllowedTools          []string
-	InputChan             chan byte
-	ApprovalChan          chan byte
-	ApprovalReader        *ApprovalByteReader
-	approvalCancel        func()
-	InjectChan            chan byte
-	TypeAheadBuffer       []byte
-	TypeAheadPastes       []string
-	HistoryIndex          int
-	SavedTypeAhead        []byte
-	Hist                  PromptHistory
-	InBracketedPaste      bool
-	BracketedBuffer       []byte
-	bracketedTruncated    bool
-	bracketedTail         []byte
-	IsAtMainPrompt        atomic.Bool
-	PastedCodeBlocks      map[string]string
-	PendingPastes         []string // Bulk edits consumed by the foreground prompt editor.
-	PastedLiterals        []string // Clipboard text or previews in the current prompt.
-	PromptQueue           []PromptInput
-	PromptQueueMu         sync.Mutex
-	PasteCounter          int
+	InputContext             context.Context
+	R                        io.Reader
+	Agent                    *agent.Agent
+	Theme                    style.UITheme
+	W                        io.Writer
+	DraftMu                  sync.Mutex
+	CurrentInputLine         string
+	CurrentInputPos          int
+	PendingLineReplace       string
+	HasPendingLineReplace    bool
+	Messages                 *[]db.Message
+	PasteRemaining           []byte
+	InputRemaining           []byte // Unprocessed input after a completed paste frame.
+	PasteStartPending        []byte
+	PastedText               string
+	CtrlCInterrupted         bool
+	MAM                      *swarm.MultiAgentManager
+	AllowedTools             []string
+	InputChan                chan byte
+	ApprovalChan             chan byte
+	ApprovalReader           *ApprovalByteReader
+	approvalCancel           func()
+	InjectChan               chan byte
+	TypeAheadBuffer          []byte
+	TypeAheadPastes          []string
+	TypeAheadCodeBlocks      map[string]string
+	HistoryIndex             int
+	SavedTypeAhead           []byte
+	SavedTypeAheadPastes     []string
+	SavedTypeAheadCodeBlocks map[string]string
+	Hist                     PromptHistory
+	InBracketedPaste         bool
+	BracketedBuffer          []byte
+	bracketedTruncated       bool
+	bracketedTail            []byte
+	IsAtMainPrompt           atomic.Bool
+	PastedCodeBlocks         map[string]string
+	PendingPastes            []string // Bulk edits consumed by the foreground prompt editor.
+	PastedLiterals           []string // Clipboard text or previews in the current prompt.
+	PromptQueue              []PromptInput
+	PromptQueueMu            sync.Mutex
+	PasteCounter             int
 
 	OnClearPromptHint       func()
 	OnRedrawScreen          func()
@@ -230,8 +234,11 @@ func (ki *KeyInterceptorReader) ResetTypeAhead() {
 func (ki *KeyInterceptorReader) resetTypeAheadLocked() {
 	ki.TypeAheadBuffer = nil
 	ki.TypeAheadPastes = nil
+	ki.TypeAheadCodeBlocks = nil
 	ki.HistoryIndex = -1
 	ki.SavedTypeAhead = nil
+	ki.SavedTypeAheadPastes = nil
+	ki.SavedTypeAheadCodeBlocks = nil
 }
 
 func (ki *KeyInterceptorReader) GetTypeAheadDraft() (string, int) {
@@ -245,15 +252,48 @@ func (ki *KeyInterceptorReader) GetTypeAheadDraft() (string, int) {
 }
 
 func (ki *KeyInterceptorReader) TakeTypeAhead() ([]byte, []string) {
+	buf, pastes, _ := ki.TakeTypeAheadWithBlocks()
+	return buf, pastes
+}
+
+func (ki *KeyInterceptorReader) TakeTypeAheadWithBlocks() ([]byte, []string, map[string]string) {
 	if ki == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ki.DraftMu.Lock()
 	buf := append([]byte(nil), ki.TypeAheadBuffer...)
 	pastes := append([]string(nil), ki.TypeAheadPastes...)
+	var blocks map[string]string
+	if len(ki.TypeAheadCodeBlocks) > 0 {
+		blocks = make(map[string]string, len(ki.TypeAheadCodeBlocks))
+		maps.Copy(blocks, ki.TypeAheadCodeBlocks)
+	}
 	ki.resetTypeAheadLocked()
 	ki.DraftMu.Unlock()
-	return buf, pastes
+	return buf, pastes, blocks
+}
+
+func (ki *KeyInterceptorReader) MergePastedCodeBlocks(blocks map[string]string) {
+	if ki == nil || len(blocks) == 0 {
+		return
+	}
+	ki.DraftMu.Lock()
+	if ki.PastedCodeBlocks == nil {
+		ki.PastedCodeBlocks = make(map[string]string, len(blocks))
+	}
+	maps.Copy(ki.PastedCodeBlocks, blocks)
+	ki.DraftMu.Unlock()
+}
+
+func (ki *KeyInterceptorReader) TakePastedCodeBlocks() map[string]string {
+	if ki == nil {
+		return nil
+	}
+	ki.DraftMu.Lock()
+	blocks := ki.PastedCodeBlocks
+	ki.PastedCodeBlocks = nil
+	ki.DraftMu.Unlock()
+	return blocks
 }
 
 func (ki *KeyInterceptorReader) AppendTypeAheadByte(b byte) {
@@ -270,8 +310,9 @@ func (ki *KeyInterceptorReader) AppendTypeAheadPaste(text string) {
 		return
 	}
 	ki.DraftMu.Lock()
-	ki.TypeAheadBuffer = append(ki.TypeAheadBuffer, text...)
-	ki.TypeAheadPastes = append(ki.TypeAheadPastes, text)
+	display := ki.preparePastedTextLocked(text, &ki.TypeAheadCodeBlocks)
+	ki.TypeAheadBuffer = append(ki.TypeAheadBuffer, display...)
+	ki.TypeAheadPastes = append(ki.TypeAheadPastes, display)
 	ki.DraftMu.Unlock()
 }
 
@@ -309,9 +350,7 @@ func drainByteChannel(ch <-chan byte) {
 	}
 }
 
-func (ki *KeyInterceptorReader) Drain() {
-	drainByteChannel(ki.InputChan)
-	drainByteChannel(ki.InjectChan)
+func (ki *KeyInterceptorReader) ResetEditorState() {
 	ki.DraftMu.Lock()
 	ki.PendingLineReplace = ""
 	ki.HasPendingLineReplace = false
@@ -325,6 +364,12 @@ func (ki *KeyInterceptorReader) Drain() {
 	ki.bracketedTruncated = false
 	ki.bracketedTail = nil
 	ki.InBracketedPaste = false
+}
+
+func (ki *KeyInterceptorReader) Drain() {
+	drainByteChannel(ki.InputChan)
+	drainByteChannel(ki.InjectChan)
+	ki.ResetEditorState()
 }
 
 func (ki *KeyInterceptorReader) resolveTargetWriter(fallback io.Writer) io.Writer {

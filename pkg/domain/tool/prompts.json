@@ -17,12 +17,12 @@
       "description": "Ask the user a structured question when blocking clarification, design selection, or explicit approval is required. Returns the user's answer.",
       "snippet": "Ask a structured clarification, design, or approval question",
       "guidelines": [
-        "Use only for blocking ambiguity or required approvals. Provide concise, distinct options; the UI automatically adds an 'Other' free-text option."
+        "Use only for blocking ambiguity or required approvals. Provide concise, distinct options and set 'recommended' to the exact label of your recommended option; the UI tags it as (Recommended) and automatically adds an 'Other' free-text option."
       ],
       "param_descriptions": {
-        "options": "Selectable choices as strings or {label, description} objects.",
+        "options": "Selectable choices as strings or {label, description} objects. Do not manually add '(Recommended)' or 'Other'; the UI adds both.",
         "question": "Concise question or approval request for the user.",
-        "recommended": "Optional label matching the recommended option.",
+        "recommended": "Exact label of the recommended option from 'options'. Set this whenever presenting selectable options so the UI tags and pre-selects it.",
         "options.label": "Short option label.",
         "options.description": "Optional trade-off or consequence of this option."
       }

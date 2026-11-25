@@ -66,6 +66,12 @@ func failureAdvice(message, toolName string) string {
 		return "Check the command name, PATH, and the project's installed dependencies, then retry."
 	case (toolName == "get_task_status" || toolName == "stop_task") && (strings.Contains(lower, "not found") || strings.Contains(lower, "no task")):
 		return "Check the background task list or events for a valid task ID."
+	case strings.HasPrefix(lower, "not executed: earlier tool "):
+		return ""
+	case strings.Contains(lower, "\" is disabled"):
+		return "Enable it with /tools or /config, or continue without this tool."
+	case strings.Contains(lower, "was not exposed for this step"):
+		return "Use /tools or set tool_exposure=full if this tool should always be available."
 	case strings.Contains(lower, "not found"), strings.Contains(lower, "no such file"):
 		return "Check the path or identifier and try again."
 	default:
@@ -83,19 +89,32 @@ func renderFailure(w io.Writer, message, toolName string, collapse bool, theme s
 		message = "The operation failed without a diagnostic."
 	}
 	width := max(1, markdown.RenderWidth(w)-4)
-	first, _, _ := strings.Cut(message, "\n")
-	first = style.TruncateCells(first, width)
-	fmt.Fprintln(w, style.NewStyle().Foreground(theme.Error).Bold(true).Render("✗ "+first))
-	advice := failureAdvice(message, toolName)
-	for _, row := range scrollback.ChatHistoryRows("Next: "+advice, width) {
-		fmt.Fprintln(w, "  "+style.NewStyle().Foreground(theme.TextMuted).Render(row))
+	firstRaw, rest, hasRest := strings.Cut(message, "\n")
+	errStyle := style.NewStyle().Foreground(theme.Error).Bold(true)
+	if collapse {
+		first := style.TruncateCells(firstRaw, width)
+		fmt.Fprintln(w, errStyle.Render("✗ "+first))
+	} else {
+		for i, row := range scrollback.ChatHistoryRows(firstRaw, width) {
+			if i == 0 {
+				fmt.Fprintln(w, errStyle.Render("✗ "+row))
+			} else {
+				fmt.Fprintln(w, errStyle.Render("  "+row))
+			}
+		}
+	}
+	if advice := failureAdvice(message, toolName); advice != "" {
+		for _, row := range scrollback.ChatHistoryRows("Next: "+advice, width) {
+			fmt.Fprintln(w, "  "+style.NewStyle().Foreground(theme.TextMuted).Render(row))
+		}
 	}
 	if collapse {
 		fmt.Fprintln(w, "  Ctrl+O to inspect error details")
 		return
 	}
-	if message != first {
-		for _, row := range scrollback.ChatHistoryRows(message, width) {
+	rest = strings.TrimSpace(rest)
+	if hasRest && rest != "" {
+		for _, row := range scrollback.ChatHistoryRows(rest, width) {
 			fmt.Fprintln(w, "  "+row)
 		}
 	}

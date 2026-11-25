@@ -3,6 +3,7 @@ package interceptor
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -41,6 +42,10 @@ func (ki *KeyInterceptorReader) BackspaceTypeAhead() {
 		} else {
 			ki.TypeAheadBuffer = ki.TypeAheadBuffer[:len(ki.TypeAheadBuffer)-1]
 		}
+		if len(ki.TypeAheadBuffer) == 0 {
+			ki.TypeAheadPastes = nil
+			ki.TypeAheadCodeBlocks = nil
+		}
 	}
 	ki.DraftMu.Unlock()
 }
@@ -56,20 +61,42 @@ func (ki *KeyInterceptorReader) NavigateHistory(direction int) {
 	if direction > 0 {
 		if ki.HistoryIndex == -1 {
 			ki.SavedTypeAhead = append([]byte(nil), ki.TypeAheadBuffer...)
+			ki.SavedTypeAheadPastes = append([]string(nil), ki.TypeAheadPastes...)
+			if len(ki.TypeAheadCodeBlocks) > 0 {
+				ki.SavedTypeAheadCodeBlocks = make(map[string]string, len(ki.TypeAheadCodeBlocks))
+				maps.Copy(ki.SavedTypeAheadCodeBlocks, ki.TypeAheadCodeBlocks)
+			} else {
+				ki.SavedTypeAheadCodeBlocks = nil
+			}
 			ki.HistoryIndex = 0
 			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
+			ki.TypeAheadPastes = nil
+			ki.TypeAheadCodeBlocks = nil
 		} else if ki.HistoryIndex+1 < hist.Len() {
 			ki.HistoryIndex++
 			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
+			ki.TypeAheadPastes = nil
+			ki.TypeAheadCodeBlocks = nil
 		}
 	} else if direction < 0 {
 		if ki.HistoryIndex > 0 {
 			ki.HistoryIndex--
 			ki.TypeAheadBuffer = []byte(hist.At(ki.HistoryIndex))
+			ki.TypeAheadPastes = nil
+			ki.TypeAheadCodeBlocks = nil
 		} else if ki.HistoryIndex == 0 {
 			ki.HistoryIndex = -1
 			ki.TypeAheadBuffer = append([]byte(nil), ki.SavedTypeAhead...)
+			ki.TypeAheadPastes = append([]string(nil), ki.SavedTypeAheadPastes...)
+			if len(ki.SavedTypeAheadCodeBlocks) > 0 {
+				ki.TypeAheadCodeBlocks = make(map[string]string, len(ki.SavedTypeAheadCodeBlocks))
+				maps.Copy(ki.TypeAheadCodeBlocks, ki.SavedTypeAheadCodeBlocks)
+			} else {
+				ki.TypeAheadCodeBlocks = nil
+			}
 			ki.SavedTypeAhead = nil
+			ki.SavedTypeAheadPastes = nil
+			ki.SavedTypeAheadCodeBlocks = nil
 		}
 	}
 

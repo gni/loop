@@ -45,7 +45,6 @@ func (a *Agent) selectInferenceTools(ctx context.Context, tools []tool.Tool, all
 	}
 	hasSkills := len(a.GetActiveSkills()) > 0
 	hasSpawned := a.hasSpawnedAgents()
-	hasTodos := len(a.GetTodos()) > 0
 	askUserEnabled := !strings.EqualFold(strings.TrimSpace(cfg.AskUserMode), "disabled")
 
 	selected := make([]tool.Tool, 0, len(tools))
@@ -53,7 +52,7 @@ func (a *Agent) selectInferenceTools(ctx context.Context, tools []tool.Tool, all
 		name := definition.Function.Name
 		needed := a.Registry.IsExposed(name)
 		if current != nil {
-			needed = run.ToolDiscovered(ctx, name)
+			needed = needed || run.ToolDiscovered(ctx, name)
 		}
 		if strings.HasPrefix(name, "mcp__") {
 			if owner, ok := a.MCPToolServer(name); ok && cfg.MCPServers[owner].Exposure != "search" {
@@ -64,14 +63,12 @@ func (a *Agent) selectInferenceTools(ctx context.Context, tools []tool.Tool, all
 			needed = true
 		}
 		switch name {
-		case "read", "edit", "write", "bash", "grep", "find_files", "list_directory", "search_tools":
+		case "read", "edit", "write", "bash", "grep", "find_files", "list_directory", "todo", "search_tools":
 			needed = true
 		case "load_skill":
 			needed = needed || hasSkills
 		case "ask_user":
 			needed = needed || askUserEnabled
-		case "todo":
-			needed = needed || cfg.GuidedMode || hasTodos || (current != nil && len(current.Plan) > 0)
 		case "task_state":
 			needed = needed || task.NeedsProgress(current)
 		case "get_task_status", "stop_task":

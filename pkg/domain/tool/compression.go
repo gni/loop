@@ -13,7 +13,7 @@ var compactToolDescriptions = map[string]string{
 	"write":                       "Create or overwrite file.",
 	"edit":                        "Replace unique oldText with newText in file.",
 	"todo":                        "Manage task plan. Use markdown ('- [ ] id: task', [>] active, [x] done) or action.",
-	"ask_user":                    "Ask user for blocking clarification or approval.",
+	"ask_user":                    "Ask user for blocking clarification or approval. When listing options, set recommended to the exact label of the best option (UI tags it and adds Other).",
 	"load_skill":                  "Load skill by name, or search metadata by query.",
 	"load_mcp":                    "Connect deferred MCP server (omit name to list).",
 	"search_tools":                "Discover and enable specialized tools for next step.",
@@ -30,6 +30,9 @@ var compactToolDescriptions = map[string]string{
 }
 
 var compactParameterHints = map[string]map[string]string{
+	"ask_user": {
+		"recommended": "Exact label of the recommended option from options (UI tags it as Recommended).",
+	},
 	"todo": {
 		"markdown": "Checklist lines: '- [ ] id: task' ([>] active, [x] done).",
 	},

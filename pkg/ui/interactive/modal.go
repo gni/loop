@@ -13,6 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"loop/pkg/agent"
+	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/terminal"
 	"loop/pkg/ui/style"
 )
@@ -115,6 +116,9 @@ type ChoiceMenuOption struct {
 	// FreeText marks an option that, when selected, lets the user type a
 	// free-form answer instead of just picking the label.
 	FreeText bool
+	// Recommended highlights and tags this choice as recommended without
+	// altering the canonical Label returned to callers.
+	Recommended bool
 }
 
 type modalOutput struct {
@@ -202,20 +206,44 @@ func runChoiceMenuEx(input io.Reader, output io.Writer, theme style.UITheme, pro
 
 	promptStyle := style.NewStyle().Foreground(theme.Text).Bold(true)
 	activeStyle := style.NewStyle().Foreground(theme.Primary).Bold(true)
+	badgeStyle := style.NewStyle().Foreground(theme.Highlight)
 	firstRender := true
 	setModalCursorHidden(output, true)
 	defer setModalCursorHidden(output, false)
 
 	renderOption := func(index int) string {
+		const recTag = " (Recommended)"
 		width, _ := style.GetTerminalSize()
-		label := MenuDisplayText(options[index].Label)
+		opt := options[index]
+		label := MenuDisplayText(opt.Label)
+		recWidth := 0
+		if opt.Recommended {
+			recWidth = style.CellWidth(recTag)
+		}
 		if width > 5 {
-			label = style.TruncateCells(label, width-5)
+			avail := width - 5
+			if opt.Recommended && avail > recWidth+4 {
+				label = style.TruncateCells(label, avail-recWidth)
+			} else {
+				if opt.Recommended {
+					label += recTag
+					recWidth = 0
+				}
+				label = style.TruncateCells(label, avail)
+			}
+		}
+		suffix := ""
+		if opt.Recommended && recWidth > 0 {
+			if index == selected {
+				suffix = badgeStyle.Bold(true).Render(recTag)
+			} else {
+				suffix = badgeStyle.Render(recTag)
+			}
 		}
 		if index == selected {
-			return fmt.Sprintf("  > %s", activeStyle.Render(label))
+			return fmt.Sprintf("  > %s%s", activeStyle.Render(label), suffix)
 		}
-		return fmt.Sprintf("    %s", label)
+		return fmt.Sprintf("    %s%s", label, suffix)
 	}
 
 	renderMenu := func() {
@@ -493,6 +521,9 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 				key = string([]rune(option.Keys)[0])
 			}
 			label := MenuDisplayText(option.Label)
+			if option.Recommended {
+				label += " (Recommended)"
+			}
 			if key != "" {
 				label = key + "=" + label
 			}
@@ -507,7 +538,7 @@ func runModalChoiceEx(w io.Writer, theme style.UITheme, prompt string, options [
 
 func AskForApproval(w io.Writer, theme style.UITheme, allowSession bool) (bool, bool) {
 	options := []ChoiceMenuOption{
-		{Label: "yes, proceed (Recommended)", Keys: "yY1"},
+		{Label: "yes, proceed", Keys: "yY1", Recommended: true},
 		{Label: "no, cancel", Keys: "nN2"},
 	}
 	if allowSession {
@@ -539,12 +570,14 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 	menuOptions := make([]ChoiceMenuOption, 0, len(options)+1)
 	seen := make(map[string]bool, len(options))
 	defaultIdx := 0
-	recommended = strings.TrimSpace(recommended)
+	recommended, _ = domaintool.StripRecommendedTag(recommended)
 	recommendedLower := strings.ToLower(recommended)
 	preferFreeText := recommendedLower == "other" || strings.HasPrefix(recommendedLower, "other:") || strings.HasPrefix(recommendedLower, "other (")
+	matchedIdx := -1
+	taggedIdx := -1
 
 	for _, option := range options {
-		label := strings.TrimSpace(option)
+		label, hadTag := domaintool.StripRecommendedTag(option)
 		key := strings.ToLower(label)
 		if label == "" || seen[key] {
 			continue
@@ -554,10 +587,16 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 		// A model may supply its own "Other" option. The UI owns that choice
 		// so it always opens the free-text editor instead of returning a label.
 		if key == "other" || strings.HasPrefix(key, "other:") || strings.HasPrefix(key, "other (") {
+			if hadTag && recommended == "" {
+				preferFreeText = true
+			}
 			continue
 		}
-		if strings.EqualFold(label, recommended) {
-			defaultIdx = len(menuOptions)
+		if recommended != "" && strings.EqualFold(label, recommended) {
+			matchedIdx = len(menuOptions)
+		}
+		if hadTag && taggedIdx < 0 {
+			taggedIdx = len(menuOptions)
 		}
 		menuOptions = append(menuOptions, ChoiceMenuOption{
 			Label: label,
@@ -565,14 +604,38 @@ func AskUserQuestion(w io.Writer, theme style.UITheme, question string, options 
 		})
 	}
 
-	if preferFreeText {
-		defaultIdx = len(menuOptions)
+	if matchedIdx < 0 && recommended != "" && !preferFreeText {
+		prefixMatches := 0
+		prefixIdx := -1
+		for i, opt := range menuOptions {
+			optLower := strings.ToLower(opt.Label)
+			if strings.HasPrefix(optLower, recommendedLower+":") || strings.HasPrefix(optLower, recommendedLower+" - ") {
+				prefixMatches++
+				prefixIdx = i
+			}
+		}
+		if prefixMatches == 1 {
+			matchedIdx = prefixIdx
+		}
 	}
-	menuOptions = append(menuOptions, ChoiceMenuOption{
+
+	otherOption := ChoiceMenuOption{
 		Label:    freeTextLabel,
 		Keys:     choiceShortcut(len(menuOptions)),
 		FreeText: true,
-	})
+	}
+	switch {
+	case matchedIdx >= 0:
+		defaultIdx = matchedIdx
+		menuOptions[matchedIdx].Recommended = true
+	case preferFreeText:
+		defaultIdx = len(menuOptions)
+		otherOption.Recommended = true
+	case taggedIdx >= 0:
+		defaultIdx = taggedIdx
+		menuOptions[taggedIdx].Recommended = true
+	}
+	menuOptions = append(menuOptions, otherOption)
 
 	prompt := strings.TrimSpace(question)
 	if prompt == "" {

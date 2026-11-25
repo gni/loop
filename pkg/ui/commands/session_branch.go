@@ -78,6 +78,15 @@ func handleBranchCommand(
 		a.ResetSessionApproval()
 		a.SyncSessionSystemPrompt(messages, "")
 	}
+	if kiReader != nil {
+		kiReader.ResetTypeAhead()
+		kiReader.ClearQueue()
+		kiReader.NotifyQueueChanged()
+	} else {
+		ui.GetUI().StateMu.Lock()
+		ui.GetUI().State.QueuedPromptsCount = 0
+		ui.GetUI().StateMu.Unlock()
+	}
 
 	if history := ui.GetUI().GetChatHistory(); history != nil {
 		ui.MarkSessionReloaded()

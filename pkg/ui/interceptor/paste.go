@@ -197,6 +197,12 @@ func (ki *KeyInterceptorReader) TakePromptPaste() string {
 }
 
 func (ki *KeyInterceptorReader) preparePastedText(pasteStr string) string {
+	ki.DraftMu.Lock()
+	defer ki.DraftMu.Unlock()
+	return ki.preparePastedTextLocked(pasteStr, &ki.PastedCodeBlocks)
+}
+
+func (ki *KeyInterceptorReader) preparePastedTextLocked(pasteStr string, blocks *map[string]string) string {
 	lineCount := strings.Count(pasteStr, "\n")
 	if len(pasteStr) > 0 && !strings.HasSuffix(pasteStr, "\n") {
 		lineCount++
@@ -218,8 +224,8 @@ func (ki *KeyInterceptorReader) preparePastedText(pasteStr string) string {
 	}
 
 	if lineCount > maxPasteLines || len(pasteStr) > maxPasteChars {
-		if ki.PastedCodeBlocks == nil {
-			ki.PastedCodeBlocks = make(map[string]string)
+		if *blocks == nil {
+			*blocks = make(map[string]string)
 		}
 		ki.PasteCounter++
 		unit, count := "chars", len(pasteStr)
@@ -227,10 +233,10 @@ func (ki *KeyInterceptorReader) preparePastedText(pasteStr string) string {
 			unit, count = "lines", lineCount
 		}
 		tagStr := fmt.Sprintf("[Pasted %d %s]", count, unit)
-		if _, exists := ki.PastedCodeBlocks[tagStr]; exists {
+		if _, exists := (*blocks)[tagStr]; exists {
 			tagStr = fmt.Sprintf("[Pasted %d %s #%d]", count, unit, ki.PasteCounter)
 		}
-		ki.PastedCodeBlocks[tagStr] = pasteStr
+		(*blocks)[tagStr] = pasteStr
 		return tagStr
 	}
 	return pasteStr

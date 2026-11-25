@@ -29,6 +29,14 @@ func configureREPLCallbacks(kiReader *interceptor.KeyInterceptorReader, _ *style
 		ui.GetUI().StateMu.Lock()
 		ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
 		ui.GetUI().StateMu.Unlock()
+		if !ui.GetUI().IsInModal() {
+			ui.TerminalMu.Lock()
+			if !ui.GetUI().IsInModal() {
+				ui.DrawConsoleStaticControlsLocked(kiReader.W, kiReader.Agent, kiReader, true)
+			}
+			ui.TerminalMu.Unlock()
+			return
+		}
 		ui.DrawStatusBar(kiReader.W, resolveTheme())
 	}
 	kiReader.OnRedrawTypeAhead = func() {

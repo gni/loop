@@ -9,6 +9,7 @@ import (
 
 	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
+	bashtool "loop/pkg/agent/tool/bash"
 	"loop/pkg/db"
 	"loop/pkg/ui/style"
 )
@@ -82,7 +83,7 @@ func (e *TurnEngine) prepareToolCallPlan(
 	bodyStreamed := !isParallel && sr.DidStreamToolBody(idx)
 	// Tool calls have no dependency graph. After a failed prerequisite, defer
 	// remaining actions until the model has inspected the actual result.
-	if e.batchFailure != "" && !e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).ReadOnly {
+	if e.batchFailure != "" && !e.isBatchReadOnlyCall(tc) {
 		plan.skipped, plan.dependencySkipped = true, true
 		plan.output = fmt.Sprintf("Not executed: earlier tool %s failed or reported syntax errors. Review its result, then issue any still-needed actions in a new turn. Read-only inspections may continue.", e.batchFailure)
 		return plan, false, false
@@ -106,10 +107,39 @@ func (e *TurnEngine) prepareToolCallPlan(
 		plan.skipped = true
 		return plan, false, false
 	}
-	if !run.ToolVisible(ctx, tc.Function.Name) {
+	if e.agent.Registry.IsDisabled(tc.Function.Name) {
+		if tool.NormalizeName(tc.Function.Name) == "ask_user" {
+			plan.toolErr = fmt.Errorf("tool %q is disabled; ask the user directly in plain text instead", tc.Function.Name)
+		} else {
+			plan.toolErr = fmt.Errorf("tool %q is disabled", tc.Function.Name)
+		}
+		plan.output = plan.toolErr.Error()
 		plan.skipped = true
-		plan.output = fmt.Sprintf("Tool %q was not exposed for this step. Discover it with search_tools before calling it.", tc.Function.Name)
 		return plan, false, false
+	}
+	if !run.ToolVisible(ctx, tc.Function.Name) {
+		_, exists := e.agent.Registry.Lookup(tc.Function.Name)
+		if !exists && e.agent.Registry.UnknownToolHook != nil {
+			_, exists = e.agent.Registry.UnknownToolHook(tc.Function.Name)
+		}
+		if !exists {
+			plan.toolErr = fmt.Errorf("unknown tool: %s", tc.Function.Name)
+			plan.output = plan.toolErr.Error()
+			plan.skipped = true
+			return plan, false, false
+		}
+		if e.agent.Registry.IsHidden(tc.Function.Name) {
+			plan.skipped = true
+			if run.ToolVisible(ctx, "search_tools") {
+				plan.output = fmt.Sprintf("Tool %q was not exposed for this step. Discover it with search_tools before calling it.", tc.Function.Name)
+			} else {
+				plan.output = fmt.Sprintf("Tool %q was not exposed for this step.", tc.Function.Name)
+			}
+			return plan, false, false
+		}
+		// Enabled, allowed, non-hidden tools whose schema was omitted only to
+		// save prompt tokens remain callable directly; expose them for later steps.
+		run.NoteDiscoveredTool(ctx, tc.Function.Name)
 	}
 
 	executor, prepared, err := e.agent.Registry.Prepare(tc.Function.Name, tc.Function.Arguments)
@@ -165,4 +195,11 @@ func (e *TurnEngine) prepareToolCallPlan(
 	}
 
 	return plan, false, false
+}
+
+func (e *TurnEngine) isBatchReadOnlyCall(tc db.ToolCall) bool {
+	if e.agent != nil && e.agent.Registry != nil && e.agent.Registry.Policy(tc.Function.Name, tc.Function.Arguments).ReadOnly {
+		return true
+	}
+	return tool.NormalizeName(tc.Function.Name) == "bash" && bashtool.IsReadOnlyArguments(tc.Function.Arguments)
 }

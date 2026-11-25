@@ -292,7 +292,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			if err := a.persistenceError(); err != nil {
 				return err
 			}
-			if a.NextInput != nil {
+			if iter > 1 && a.NextInput != nil {
 				for _, input := range a.NextInput() {
 					if input.Role == "user" && (input.ContextKind == "" || input.ContextKind == "instruction") {
 						run.AddInstruction(ctx, input.Content)

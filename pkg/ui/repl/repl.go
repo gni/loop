@@ -191,21 +191,20 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		if queued, ok := kiReader.DequeuePrompt(); ok {
 			line = queued.Text
 			kiReader.PastedLiterals = queued.Pastes
+			kiReader.MergePastedCodeBlocks(queued.CodeBlocks)
 			fromQueue = true
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
-			ui.GetUI().StateMu.Unlock()
-			ui.DrawStatusBar(os.Stderr, theme)
+			kiReader.NotifyQueueChanged()
 		} else {
-			kiReader.Drain()
+			kiReader.ResetEditorState()
 
-			uncommitted, pastes := kiReader.TakeTypeAhead()
+			uncommitted, pastes, blocks := kiReader.TakeTypeAheadWithBlocks()
 			// A draft already belongs to the editor, not to paste detection.
 			// Feed it before live keys without blocking on the injection channel
 			// or turning a following Enter into part of a multiline paste.
 			kiReader.SetPromptDraft("", 0)
 			if len(uncommitted) > 0 {
 				kiReader.PastedLiterals = pastes
+				kiReader.MergePastedCodeBlocks(blocks)
 				kiReader.PasteRemaining = append(kiReader.QueuePromptPaste(string(uncommitted)), kiReader.PasteRemaining...)
 			}
 
@@ -236,7 +235,11 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		// Sync local theme in case the user cycled themes via ◐ click or Ctrl+Y while editing.
 		liveAfterPrompt := a.LiveSettings()
 		theme = style.ResolveConfiguredTheme(liveAfterPrompt.Theme, liveAfterPrompt.SyntaxTheme)
-		_ = ui.ResetPromptAfterSubmit(os.Stderr, a, ppWriter, theme, promptPrefix)
+		if fromQueue {
+			ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader)
+		} else {
+			_ = ui.ResetPromptAfterSubmit(os.Stderr, a, ppWriter, theme, promptPrefix)
+		}
 
 		if !fromQueue {
 			if pasted := kiReader.TakePastedText(); pasted != "" {
@@ -250,13 +253,13 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 				kiReader.CtrlCInterrupted = false
 				kiReader.SetPromptDraft("", 0)
 				kiReader.SetPastedText("")
-				kiReader.PastedCodeBlocks = nil
+				_ = kiReader.TakePastedCodeBlocks()
 				kiReader.ResetTypeAhead()
+				kiReader.ClearQueue()
 				ui.GetUI().StateMu.Lock()
 				ui.GetUI().PasteLinesOffset = 0
 				ui.GetUI().State.QueuedPromptsCount = 0
 				ui.GetUI().StateMu.Unlock()
-				kiReader.ClearQueue()
 				kiReader.Drain()
 				refreshREPLStatus(a, messages, allowedTools, mam, kiReader, true)
 				continue
@@ -285,15 +288,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			attachmentSource = &source
 			commandLine = source
 		}
-		if kiReader.PastedCodeBlocks != nil {
-			var replacements []string
-			for tag, code := range kiReader.PastedCodeBlocks {
-				if strings.Contains(line, tag) {
-					replacements = append(replacements, tag, code)
-				}
-			}
-			line = strings.NewReplacer(replacements...).Replace(line)
-			kiReader.PastedCodeBlocks = nil
+		if blocks := kiReader.TakePastedCodeBlocks(); len(blocks) > 0 {
+			line = interceptor.ExpandPromptCodeBlocks(line, blocks)
 		}
 
 		trimmedLine := strings.TrimSpace(line)
@@ -390,7 +386,6 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 		executeREPLTurn(a, mam, ppWriter, &messages, line, allowedTools, theme, currentSessionID, fd, kiReader, attachmentSource, preExpanded, fromQueue)
 		turnRedrawn = chatHistory.RepaintPendingTurn() || turnRedrawn
 		a.OnStreamProgress = nil
-		kiReader.ActiveTurn.Store(false)
 		chatHistory.FinishTurn(nil)
 		// Both a deferred Ctrl+O, mid-turn theme switch, and an unsafe live
 		// syntax repaint require one authoritative replay after messages settle.
@@ -409,6 +404,7 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 			chatHistory.RepaintTurns()
 		}
 		refreshREPLStatus(a, messages, allowedTools, mam, kiReader, false)
+		kiReader.ActiveTurn.Store(false)
 	}
 
 	if !a.Ephemeral {

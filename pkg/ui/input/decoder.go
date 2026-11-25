@@ -379,7 +379,7 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 	switch final {
 	case 'u':
 		parts := strings.Split(body, ";")
-		if len(parts) > 2 {
+		if len(parts) < 1 || len(parts) > 3 {
 			return nil, false
 		}
 		codePart := strings.SplitN(parts[0], ":", 2)[0]
@@ -389,7 +389,7 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 		}
 		keyCode = c
 		modifier = 1
-		if len(parts) == 2 {
+		if len(parts) >= 2 && parts[1] != "" {
 			modPart := strings.SplitN(parts[1], ":", 2)[0]
 			m, err := strconv.Atoi(modPart)
 			if err != nil {

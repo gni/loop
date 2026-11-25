@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -270,7 +269,7 @@ func handleActiveTurnEscape(rawChan <-chan byte, kiReader *interceptor.KeyInterc
 		}
 		text := input.NormalizePastedText(pasted)
 		ui.GetUI().StateMu.Lock()
-		active := ui.GetUI().ActiveCancelFunc != nil
+		active := ui.GetUI().ActiveCancelFunc != nil || kiReader.ActiveTurn.Load()
 		ui.GetUI().StateMu.Unlock()
 		if active {
 			kiReader.AppendTypeAheadPaste(text)
@@ -311,7 +310,21 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 		return style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
 	}
 
+	showQueueNotice := func(notice string) {
+		if notice == "" {
+			return
+		}
+		ui.GetUI().SetPromptHint(notice, 2*time.Second, func() {
+			if kiReader.InputContext != nil && kiReader.InputContext.Err() != nil {
+				return
+			}
+			kiReader.RedrawTypeAhead()
+		})
+		kiReader.RedrawTypeAhead()
+	}
+
 	abortOperation := func(cancelFunc func(), clearQueue bool) {
+		ui.GetUI().ClearPromptHint()
 		if cancelFunc != nil {
 			cancelFunc()
 		}
@@ -322,12 +335,9 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 
 		if clearQueue {
 			cleared := kiReader.ClearQueue()
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().State.QueuedPromptsCount = 0
-			ui.GetUI().StateMu.Unlock()
-			activeTheme := resolveTheme()
-			ui.DrawStatusBar(os.Stderr, activeTheme)
+			kiReader.NotifyQueueChanged()
 			if cleared > 0 {
+				activeTheme := resolveTheme()
 				output := kiReader.W
 				if kiReader.Agent != nil && kiReader.Agent.CurrentWriter() != nil {
 					output = kiReader.Agent.CurrentWriter()
@@ -339,6 +349,8 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				qStyle := style.NewStyle().Foreground(activeTheme.TextMuted).Italic(true)
 				fmt.Fprintf(output, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
 			}
+		} else {
+			kiReader.RedrawTypeAhead()
 		}
 	}
 
@@ -383,6 +395,10 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 			if b == 30 {
 				b = 13
 			}
+			if b == 26 {
+				_, _ = kiReader.ControlQueue("undo")
+				continue
+			}
 			if b == 3 || b == 4 {
 				abortOperation(cancelFunc, false)
 				forwardApprovalBytes(kiReader, b)
@@ -405,7 +421,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 			}
 		}
 
-		if cancelFunc != nil && !inModal {
+		if (cancelFunc != nil || kiReader.ActiveTurn.Load()) && !inModal {
 			switch {
 			case b == 3 || b == 4:
 				abortOperation(cancelFunc, true)
@@ -416,7 +432,9 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 			case b == 16:
 				kiReader.NavigateHistory(1)
 			case b == 26:
-				kiReader.ControlQueue("undo")
+				if notice, handled := kiReader.ControlQueue("undo"); handled {
+					showQueueNotice(notice)
+				}
 			case handleShortcutKey(b):
 			case b == 127 || b == 8:
 				kiReader.BackspaceTypeAhead()
@@ -427,7 +445,7 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				kiReader.AppendTypeAheadByte('\n')
 				kiReader.RedrawTypeAhead()
 			case b == 13:
-				buf, pastes := kiReader.TakeTypeAhead()
+				buf, pastes, blocks := kiReader.TakeTypeAheadWithBlocks()
 				typed := string(buf)
 
 				// Queue controls act immediately while generation continues.
@@ -435,21 +453,25 @@ func startREPLRawInputDispatcher(rawChan <-chan byte, kiReader *interceptor.KeyI
 				source, pasted := interceptor.PastedInputSource(typed, pastes)
 				parts := strings.Fields(source)
 				if !pasted && len(parts) == 2 && (parts[0] == "/queue" || parts[0] == "/queues") {
-					if _, handled := kiReader.ControlQueue(parts[1]); handled {
-						kiReader.RedrawTypeAhead()
+					if notice, handled := kiReader.ControlQueue(parts[1]); handled {
+						showQueueNotice(notice)
 						continue
 					}
 				}
 
 				if trimmed := strings.TrimSpace(typed); trimmed != "" {
-					count := kiReader.EnqueuePrompt(trimmed, pastes)
-					ui.GetUI().StateMu.Lock()
-					ui.GetUI().State.QueuedPromptsCount = count
-					ui.GetUI().StateMu.Unlock()
-					ui.DrawStatusBar(os.Stderr, resolveTheme())
+					ui.GetUI().ClearPromptHint()
+					kiReader.EnqueuePromptInput(interceptor.PromptInput{
+						Text:       trimmed,
+						Pastes:     pastes,
+						CodeBlocks: blocks,
+					})
+					kiReader.NotifyQueueChanged()
+				} else {
+					kiReader.RedrawTypeAhead()
 				}
-				kiReader.RedrawTypeAhead()
 			case b >= 32 || b == '\t':
+				ui.GetUI().ClearPromptHint()
 				kiReader.AppendTypeAheadByte(b)
 				if len(rawChan) == 0 {
 					kiReader.RedrawTypeAhead()

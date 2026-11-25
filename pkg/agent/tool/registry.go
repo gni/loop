@@ -37,6 +37,8 @@ var NumberProp = domaintool.NumberProp
 var RuntimeMessage = domaintool.RuntimeMessage
 var RuntimeMessagef = domaintool.RuntimeMessagef
 var DefaultAskUserSelection = domaintool.DefaultAskUserSelection
+var StripRecommendedTag = domaintool.StripRecommendedTag
+var ResolveAskUserRecommendation = domaintool.ResolveAskUserRecommendation
 
 // GetPromptSnippet retrieves the prompt snippet for a tool executor.
 func GetPromptSnippet(t ToolExecutor) string {
@@ -278,6 +280,17 @@ func (r *ToolRegistry) IsExposed(name string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.exposed[NormalizeName(name)]
+}
+
+// IsHidden reports whether a tool was explicitly hidden pending search_tools discovery.
+func (r *ToolRegistry) IsHidden(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.hidden) == 0 {
+		return false
+	}
+	trimmed := strings.TrimSpace(name)
+	return r.hidden[trimmed] || r.hidden[NormalizeName(trimmed)]
 }
 
 func (r *ToolRegistry) ReplacePrefix(prefix string, executors map[string]ToolExecutor) {

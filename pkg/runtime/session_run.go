@@ -181,15 +181,26 @@ func (s *Session) runPrepared(ctx context.Context, prompt string, w io.Writer, t
 		s.mu.Lock()
 		if len(s.steering) > 0 {
 			prompt = s.steering[0]
+			s.steering[0] = ""
 			s.steering = s.steering[1:]
+			if len(s.steering) == 0 {
+				s.steering = nil
+			}
 		} else if len(s.followUp) > 0 {
 			prompt = s.followUp[0]
+			s.followUp[0] = ""
 			s.followUp = s.followUp[1:]
+			if len(s.followUp) == 0 {
+				s.followUp = nil
+			}
 		} else {
 			s.mu.Unlock()
 			break
 		}
 		s.mu.Unlock()
+		if err := s.event(agent.Event{Type: "queue_update", SessionID: s.ID, Data: s.Status()}); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
@@ -218,12 +229,18 @@ func (s *Session) Queue(prompt string, followUp bool) error {
 
 func (s *Session) takeSteering() []db.Message {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.steering) == 0 {
+		s.mu.Unlock()
 		return nil
 	}
 	prompt := s.steering[0]
+	s.steering[0] = ""
 	s.steering = s.steering[1:]
+	if len(s.steering) == 0 {
+		s.steering = nil
+	}
+	s.mu.Unlock()
+	_ = s.event(agent.Event{Type: "queue_update", SessionID: s.ID, Data: s.Status()})
 	return []db.Message{{Role: "user", Content: prompt}}
 }
 
@@ -236,5 +253,5 @@ func (s *Session) ClearQueue() error {
 	s.steering = nil
 	s.followUp = nil
 	s.mu.Unlock()
-	return s.event(agent.Event{Type: "queue_update", SessionID: s.ID})
+	return s.event(agent.Event{Type: "queue_update", SessionID: s.ID, Data: s.Status()})
 }

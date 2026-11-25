@@ -269,8 +269,13 @@ func HandleSlashCommand(
 			return true, false
 		}
 		if len(parts) > 1 {
-			if notice, handled := kiReader.ControlQueue(parts[1]); handled {
-				fmt.Fprintln(w, notice)
+			sub := strings.ToLower(parts[1])
+			if sub != "list" {
+				if notice, handled := kiReader.ControlQueue(sub); handled {
+					fmt.Fprintln(w, notice)
+					return true, false
+				}
+				fmt.Fprintln(w, "usage: /queue [list|undo|clear]")
 				return true, false
 			}
 		}

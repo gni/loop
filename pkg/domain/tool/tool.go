@@ -319,6 +319,7 @@ type TodoState interface {
 type AskUserOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
 }
 
 // UserInquirer is an optional interface implemented by AgentContext
@@ -327,13 +328,148 @@ type UserInquirer interface {
 	AskUser(question string, options []AskUserOption, recommended string) (string, error)
 }
 
+func isAskUserOtherLabel(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	return lower == "other" || strings.HasPrefix(lower, "other:") || strings.HasPrefix(lower, "other (")
+}
+
+// StripRecommendedTag removes a leading or trailing (Recommended) or
+// [Recommended] tag (case-insensitive) from an option label.
+func StripRecommendedTag(s string) (string, bool) {
+	orig := strings.TrimSpace(s)
+	if orig == "" {
+		return "", false
+	}
+	cur := orig
+	tagged := false
+	for {
+		lower := strings.ToLower(cur)
+		trimmed := false
+		for _, tag := range []string{"(recommended)", "[recommended]"} {
+			if strings.HasPrefix(lower, tag) {
+				rest := strings.TrimLeft(cur[len(tag):], " \t:-")
+				if rest != "" {
+					cur = strings.TrimSpace(rest)
+					tagged = true
+					trimmed = true
+					break
+				}
+			}
+			if strings.HasSuffix(lower, tag) {
+				rest := strings.TrimRight(cur[:len(cur)-len(tag)], " \t:-")
+				if rest != "" {
+					cur = strings.TrimSpace(rest)
+					tagged = true
+					trimmed = true
+					break
+				}
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	return cur, tagged
+}
+
+// ResolveAskUserRecommendation normalizes option labels and resolves the
+// recommended choice from top-level recommended text, per-option flags, or
+// inline (Recommended) tags without mutating the caller's slice.
+func ResolveAskUserRecommendation(options []AskUserOption, recommended string) ([]AskUserOption, string) {
+	normalized := make([]AskUserOption, 0, len(options))
+	taggedOther := false
+	for _, opt := range options {
+		label := strings.TrimSpace(opt.Label)
+		desc := strings.TrimSpace(opt.Description)
+		if label == "" {
+			label = desc
+			desc = ""
+		}
+		cleanLabel, hadTag := StripRecommendedTag(label)
+		if cleanLabel == "" {
+			continue
+		}
+		if isAskUserOtherLabel(cleanLabel) {
+			if opt.Recommended || hadTag {
+				taggedOther = true
+			}
+			continue
+		}
+		opt.Label = cleanLabel
+		opt.Description = desc
+		if hadTag {
+			opt.Recommended = true
+		}
+		normalized = append(normalized, opt)
+	}
+
+	recClean, _ := StripRecommendedTag(recommended)
+	if recClean != "" {
+		if isAskUserOtherLabel(recClean) {
+			for i := range normalized {
+				normalized[i].Recommended = false
+			}
+			return normalized, recClean
+		}
+		matchIdx := -1
+		for i, opt := range normalized {
+			if strings.EqualFold(opt.Label, recClean) {
+				matchIdx = i
+				break
+			}
+		}
+		if matchIdx < 0 {
+			prefixMatches := 0
+			prefixIdx := -1
+			recLower := strings.ToLower(recClean)
+			for i, opt := range normalized {
+				optLower := strings.ToLower(opt.Label)
+				if opt.Description != "" &&
+					(strings.EqualFold(opt.Label+": "+opt.Description, recClean) ||
+						strings.EqualFold(opt.Label+" - "+opt.Description, recClean)) {
+					matchIdx = i
+					break
+				}
+				if strings.HasPrefix(optLower, recLower+":") || strings.HasPrefix(optLower, recLower+" - ") {
+					prefixMatches++
+					prefixIdx = i
+				}
+			}
+			if matchIdx < 0 && prefixMatches == 1 {
+				matchIdx = prefixIdx
+			}
+		}
+		if matchIdx >= 0 {
+			for i := range normalized {
+				normalized[i].Recommended = i == matchIdx
+			}
+			return normalized, normalized[matchIdx].Label
+		}
+		return normalized, recClean
+	}
+
+	for i, opt := range normalized {
+		if opt.Recommended {
+			for j := range normalized {
+				normalized[j].Recommended = j == i
+			}
+			return normalized, normalized[i].Label
+		}
+	}
+	if taggedOther {
+		return normalized, "Other"
+	}
+	return normalized, ""
+}
+
 // DefaultAskUserSelection resolves the fallback option when interactive prompting is bypassed.
 func DefaultAskUserSelection(options []AskUserOption, recommended string) string {
-	if recommended != "" {
-		return recommended
+	normalized, resolved := ResolveAskUserRecommendation(options, recommended)
+	if resolved != "" {
+		return resolved
 	}
-	if len(options) > 0 {
-		return options[0].Label
+	if len(normalized) > 0 {
+		return normalized[0].Label
 	}
 	return "Confirmed"
 }

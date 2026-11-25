@@ -321,6 +321,7 @@ func (a *Agent) AskUser(question string, options []tool.AskUserOption, recommend
 
 // Approval questions require a live answer regardless of the ask_user mode.
 func (a *Agent) askUserInteractively(question string, options []tool.AskUserOption, recommended string) (string, error) {
+	options, recommended = tool.ResolveAskUserRecommendation(options, recommended)
 	if a.Inquirer != nil {
 		return a.Inquirer(question, options, recommended)
 	}

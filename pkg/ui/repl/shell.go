@@ -127,11 +127,22 @@ func (shell *manualShell) execute(
 	ui.DrawConsoleStaticControlsLocked(os.Stderr, a, kiReader, true)
 	ui.TerminalMu.Unlock()
 	defer func() {
-		if kiReader != nil {
-			kiReader.ActiveTurn.Store(false)
-		}
+		wasCancelled := ctx.Err() != nil
 		cancel()
 		ui.GetUI().SetActiveCancel(nil)
+		if kiReader != nil {
+			if wasCancelled {
+				kiReader.ResetTypeAhead()
+				cleared := kiReader.ClearQueue()
+				kiReader.NotifyQueueChanged()
+				if cleared > 0 {
+					qStyle := style.NewStyle().Foreground(theme.TextMuted).Italic(true)
+					fmt.Fprintf(ppWriter, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
+				}
+				kiReader.Drain()
+			}
+			kiReader.ActiveTurn.Store(false)
+		}
 	}()
 
 	fd := int(os.Stdin.Fd())

@@ -12,6 +12,7 @@ import (
 	"loop/pkg/db"
 	"loop/pkg/resources"
 	"loop/pkg/ui"
+	"loop/pkg/ui/commands"
 	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/render"
 	"loop/pkg/ui/style"
@@ -88,21 +89,29 @@ func executeREPLTurn(
 			defer restore()
 		}
 
+		wasCancelled := false
 		if err := mam.SendMessage(active.Name, line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending message: %v\n", err)
 		} else {
 			select {
 			case <-parent.Done():
 				active.CancelActiveTurn()
+				wasCancelled = true
 			case <-active.Context.Done():
 				fmt.Fprintln(os.Stderr, "agent context cancelled.")
+				wasCancelled = true
 			case <-active.Output:
 			}
 			ppWriter.EnsureNewline()
 		}
 
 		ui.GetUI().SetActiveCancel(nil)
-		kiReader.Drain()
+		if wasCancelled {
+			kiReader.ResetTypeAhead()
+			kiReader.ClearQueue()
+			kiReader.NotifyQueueChanged()
+			kiReader.Drain()
+		}
 		return
 	}
 
@@ -119,7 +128,8 @@ func executeREPLTurn(
 	}
 
 	// During nonstop execution, ordinary queued prompts steer the next model
-	// turn. Slash commands remain commands and are never sent to the model.
+	// turn. Slash commands, help aliases, and manual shell commands remain
+	// local commands and are never sent to the model.
 	previousInput := a.NextInput
 	nostopEnabled := false
 	if cfgSnapshot, cfgErr := a.Configuration(); cfgErr == nil && cfgSnapshot != nil {
@@ -132,23 +142,43 @@ func executeREPLTurn(
 					return input
 				}
 			}
-			queued := kiReader.GetQueuedPrompts()
-			if len(queued) == 0 {
-				return nil
+			directCommands := false
+			if cfgSnapshot, cfgErr := a.Configuration(); cfgErr == nil && cfgSnapshot != nil {
+				directCommands = cfgSnapshot.DirectCommands
 			}
-			source, _ := interceptor.PastedInputSource(queued[0].Text, queued[0].Pastes)
-			if strings.HasPrefix(strings.TrimSpace(source), "/") {
-				return nil
-			}
-			next, ok := kiReader.DequeuePrompt()
+			next, ok := kiReader.DequeuePromptIf(func(candidate interceptor.PromptInput) bool {
+				source, _ := interceptor.PastedInputSource(candidate.Text, candidate.Pastes)
+				trimmedSource := strings.TrimSpace(source)
+				if strings.HasPrefix(trimmedSource, "/") || commands.IsHelpCommand(trimmedSource) || commands.IsBuiltinSlashCommand(strings.TrimSpace(candidate.Text)) {
+					return false
+				}
+				if isManual, _ := parseManualCommand(source, directCommands); isManual {
+					return false
+				}
+				return true
+			})
 			if !ok {
 				return nil
 			}
-			ui.GetUI().StateMu.Lock()
-			ui.GetUI().State.QueuedPromptsCount = kiReader.QueueLen()
-			ui.GetUI().StateMu.Unlock()
-			renderTurnPromptHeader(ppWriter, a, theme, ui.GetPromptSymbol(nil), next.Text, true, kiReader)
-			return []db.Message{{Role: "user", Content: next.Text}}
+			source, pasted := interceptor.PastedInputSource(next.Text, next.Pastes)
+			expanded := interceptor.ExpandPromptCodeBlocks(next.Text, next.CodeBlocks)
+			if kiReader.Hist != nil && !strings.HasPrefix(expanded, "/") {
+				kiReader.Hist.Add(expanded)
+			}
+			attachSource := expanded
+			if pasted {
+				attachSource = source
+			}
+			msg := db.Message{Role: "user", Content: expanded}
+			if attached, attachBlocks, attachErr := resources.AttachmentsContext(ctx, attachSource, a.GetWorkspaceRoot(), a.SafePath); attachErr == nil {
+				msg.Content += strings.TrimPrefix(attached, attachSource)
+				msg.ContentBlocks = attachBlocks
+			}
+			kiReader.NotifyQueueChanged()
+			live := a.LiveSettings()
+			liveTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+			renderTurnPromptHeader(ppWriter, a, liveTheme, ui.GetPromptSymbol(nil), expanded, true, kiReader)
+			return []db.Message{msg}
 		}
 		defer func() { a.NextInput = previousInput }()
 	}
@@ -188,8 +218,15 @@ func executeREPLTurn(
 	ui.GetUI().StateMu.Unlock()
 	if wasCancelled {
 		kiReader.ResetTypeAhead()
-		kiReader.ClearQueue()
+		cleared := kiReader.ClearQueue()
+		kiReader.NotifyQueueChanged()
+		if cleared > 0 {
+			live := a.LiveSettings()
+			liveTheme := style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
+			qStyle := style.NewStyle().Foreground(liveTheme.TextMuted).Italic(true)
+			fmt.Fprintf(ppWriter, "\n%s\n", qStyle.Render(fmt.Sprintf("[queue cleared: %d item(s)]", cleared)))
+		}
 		ui.DrawStaticStatsLine(os.Stderr, theme, "", "")
+		kiReader.Drain()
 	}
-	kiReader.Drain()
 }
