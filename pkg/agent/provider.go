@@ -327,7 +327,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			Role:     "assistant",
 			Provider: p.Config.ActiveProvider, Model: p.Config.Model, StopReason: finishReason,
 			Content:          textBuilder.String(),
-			ReasoningContent: StripFallbackToolMarkup(cleanReasoningBuilder.String()),
+			ReasoningContent: toolProto.CleanReasoning(cleanReasoningBuilder.String()),
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			CacheReadTokens:  cacheReadTokens,

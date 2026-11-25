@@ -33,10 +33,10 @@ var (
 		regexp.MustCompile(`(?s)<old_text>(.*?)<\/old_text>\s*<new_text>(.*?)<\/new_text>`),
 	}
 	reConflictBlock     = regexp.MustCompile(`(?s)<<<<<<< SEARCH\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>> REPLACE`)
-	reTaskTag           = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+([^>]*))?>\s*(.*?)\s*<\/(?:task|item)>`)
+	reTaskTag           = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+(` + xmlAttrsPattern + `))?>\s*(.*?)\s*<\/(?:task|item)>`)
 	reQuestionTag       = regexp.MustCompile(`(?s)<question>(.*?)<\/question>`)
-	reOptionTag         = regexp.MustCompile(`(?s)<option(?:\s+([^>]*))?>(.*?)<\/option>`)
-	reInlineSkillTag    = regexp.MustCompile(`(?s)<skill(?:\s+([^>]*))?>(.*?)<\/skill>`)
+	reOptionTag         = regexp.MustCompile(`(?s)<option(?:\s+(` + xmlAttrsPattern + `))?>(.*?)<\/option>`)
+	reInlineSkillTag    = regexp.MustCompile(`(?s)<skill(?:\s+(` + xmlAttrsPattern + `))?>(.*?)<\/skill>`)
 	reDynamicSelfClose  = regexp.MustCompile(`(?s)<((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)\/>`)
 	reDynamicPaired     = regexp.MustCompile(`(?s)<((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)>`)
 	reToolCallSelfClose = regexp.MustCompile(`(?s)<tool_call\b(` + xmlAttrsPattern + `)\/>`)

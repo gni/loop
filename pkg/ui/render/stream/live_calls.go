@@ -129,6 +129,7 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 		view = &liveCallView{name: name, titleLine: -1, compactLine: -1, endsWithNewline: true}
 		sr.liveCallViews[index] = view
 	}
+	rawPath := path
 	path = safeLiveLabel(path)
 	if path != "" {
 		view.path = path
@@ -138,8 +139,8 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	if view.headerShown && sr.liveActiveCall != index {
 		return
 	}
-	if name == "bash" && delta == "" && path != "" && view.fullContent.Len() == 0 {
-		delta = path
+	if name == "bash" && delta == "" && rawPath != "" && view.fullContent.Len() == 0 {
+		delta = style.StripAnsi(strings.ToValidUTF8(rawPath, ""))
 	}
 	view.receivedBytes += len(delta)
 	view.fullContent.WriteString(delta)

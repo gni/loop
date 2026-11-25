@@ -133,3 +133,7 @@ func (jsonToolProtocol) NewStreamTextFilter(emit func(string), _ func(string, in
 func (jsonToolProtocol) ParseAssistantToolCalls(rawText string, nativeCalls []db.ToolCall) ([]db.ToolCall, string, error) {
 	return nativeCalls, rawText, nil
 }
+
+func (jsonToolProtocol) CleanReasoning(raw string) string {
+	return raw
+}

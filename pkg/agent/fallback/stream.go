@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const maxFallbackOpeningBytes = 4096
+const maxFallbackOpeningBytes = 16384
 
 var (
 	commonXMLAliasNames = []string{
@@ -193,16 +193,20 @@ func extractHermesFunctionName(text string) string {
 func extractOpeningTarget(toolName, opening string) string {
 	norm := domaintool.NormalizeName(toolName)
 	attrs := ParseXMLAttrs(opening)
-	for _, key := range fallbackTargetAttrKeys {
-		if v := strings.TrimSpace(attrs[key]); v != "" {
-			return v
-		}
-	}
 	if norm == "bash" {
 		for _, key := range fallbackBashAttrKeys {
 			if v := strings.TrimSpace(attrs[key]); v != "" {
 				return v
 			}
+		}
+	}
+	isWrapper := strings.HasPrefix(opening, "<tool_call") || strings.HasPrefix(opening, "<execute")
+	for _, key := range fallbackTargetAttrKeys {
+		if isWrapper && key == "name" {
+			continue
+		}
+		if v := strings.TrimSpace(attrs[key]); v != "" {
+			return v
 		}
 	}
 	if norm == "list_directory" && strings.HasSuffix(strings.TrimSpace(opening), "/>") {
@@ -502,18 +506,35 @@ func fallbackClosingTag(opening string) (string, bool) {
 }
 
 func openingEndIndex(text string) int {
-	gt := strings.IndexByte(text, '>')
-	nl := strings.IndexByte(text, '\n')
-	switch {
-	case gt < 0:
-		return nl
-	case nl < 0:
-		return gt
-	case nl < gt:
-		return nl
-	default:
-		return gt
+	var quote byte
+	seenEq := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '=':
+			seenEq = true
+		case ' ', '\t':
+			// Preserve seenEq across spaces between '=' and the opening quote.
+		case '"', '\'':
+			if seenEq {
+				quote = c
+				seenEq = false
+			}
+		case '>':
+			return i
+		case '\n':
+			return i
+		default:
+			seenEq = false
+		}
 	}
+	return -1
 }
 
 func closingBoundaryIndex(text, prefix string) int {

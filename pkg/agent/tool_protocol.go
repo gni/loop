@@ -22,6 +22,7 @@ type toolProtocol interface {
 	FormatPromptTools(sb *strings.Builder, entries []ToolEntry, toolNames map[string]bool, cfg SystemPromptConfig)
 	NewStreamTextFilter(emit func(string), onToolName func(string, int), onToolTarget func(string, int), onToolCall func(string, int)) *FallbackToolTextFilter
 	ParseAssistantToolCalls(rawText string, nativeCalls []db.ToolCall) ([]db.ToolCall, string, error)
+	CleanReasoning(raw string) string
 }
 
 var (

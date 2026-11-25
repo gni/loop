@@ -143,6 +143,10 @@ func (xmlToolProtocol) ParseAssistantToolCalls(rawText string, nativeCalls []db.
 	return calls, fallback.StripFallbackToolMarkup(rawText), nil
 }
 
+func (xmlToolProtocol) CleanReasoning(raw string) string {
+	return fallback.StripFallbackToolMarkup(raw)
+}
+
 func formatXMLToolSignature(entry ToolEntry) string {
 	props := entry.Parameters.Properties
 	if len(props) == 0 {

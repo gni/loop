@@ -345,7 +345,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 			state.textFilter.Flush()
 			state.reasoningFilter.Flush()
 			result.Content = state.text.String()
-			result.ReasoningContent = StripFallbackToolMarkup(state.reasoning.String())
+			result.ReasoningContent = toolProto.CleanReasoning(state.reasoning.String())
 		}
 	}()
 
@@ -384,7 +384,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	state.textFilter.Flush()
 	state.reasoningFilter.Flush()
 	result.Content = state.text.String()
-	result.ReasoningContent = StripFallbackToolMarkup(state.reasoning.String())
+	result.ReasoningContent = toolProto.CleanReasoning(state.reasoning.String())
 	result.StopReason = state.finish
 	finalized = true
 
