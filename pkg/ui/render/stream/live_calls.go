@@ -560,7 +560,19 @@ func (sr *StreamRenderer) BeginToolExecution(index int, name, arguments string) 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	view := sr.liveCallViews[index]
-	if view == nil || !view.headerShown || name == "write" || name == "edit" || sr.liveVisibleCall == index {
+	if view == nil || !view.headerShown || name == "write" || name == "edit" {
+		return
+	}
+	if sr.liveVisibleCall == index {
+		if view.lastRenderedPath == "" && view.titleLine >= 0 && name != "bash" && name != "ask_user" {
+			if target := safeLiveLabel(render.ExtractToolTarget(name, arguments)); target != "" {
+				symbol := render.RenderToolSymbol(name, render.ToolStatusPending, sr.theme)
+				if ReplaceTrackedStreamLine(sr.w, view.titleLine, render.FormatToolTitleForWidth(symbol, name, target, sr.theme, markdown.RenderWidth(sr.w))) {
+					view.path = target
+					view.lastRenderedPath = target
+				}
+			}
+		}
 		return
 	}
 	sr.finishLiveTextLocked()

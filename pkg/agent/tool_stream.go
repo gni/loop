@@ -39,10 +39,23 @@ type toolStreamState struct {
 	escaped       bool
 	complete      bool
 	rawTarget     bool
+	fromFallback  bool
+	hasTargetAttr bool
 	payloadKnown  bool
 	editDiffShown bool
 	readyNotified bool
 	draft         streamedDraft
+}
+
+func isRawBodyTargetTool(name string) bool {
+	switch name {
+	case "read", "list_directory", "grep", "find_files", "search_tools", "search_symbols",
+		"get_task_status", "stop_task", "load_skill", "load_mcp",
+		"inspect_subagent", "remove_subagent", "read_mcp_resource":
+		return true
+	default:
+		return false
+	}
 }
 
 // Track JSON completion in linear time. Validating the entire accumulated
@@ -56,8 +69,31 @@ func (s *toolStreamState) appendArguments(fragment string) {
 	}
 	s.arguments.WriteString(fragment)
 	if s.rawTarget {
-		for _, r := range fragment {
-			s.draft.appendVisible(r)
+		switch {
+		case s.name == "write" || s.name == "bash":
+			for _, r := range fragment {
+				s.draft.appendVisible(r)
+			}
+		case s.name == "todo":
+			trimmed := strings.TrimSpace(s.arguments.String())
+			if !strings.HasPrefix(trimmed, "<") {
+				for _, r := range fragment {
+					s.draft.appendVisible(r)
+				}
+			}
+		case isRawBodyTargetTool(s.name):
+			if !s.hasTargetAttr {
+				trimmed := strings.TrimSpace(s.arguments.String())
+				if trimmed != "" && !strings.HasPrefix(trimmed, "<") {
+					if idx := strings.IndexAny(trimmed, "\r\n"); idx >= 0 {
+						trimmed = strings.TrimSpace(trimmed[:idx])
+					}
+					if len(trimmed) > streamPathBytes {
+						trimmed = trimmed[:streamPathBytes]
+					}
+					s.draft.path = trimmed
+				}
+			}
 		}
 	} else {
 		s.draft.appendJSON(fragment)
@@ -236,17 +272,21 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 			s.batch.Observe(index, "", chunk.Content)
 		}
 	}
+	if chunk.Fallback {
+		state.fromFallback = true
+	}
 	if chunk.Type == "tool_name" {
 		state.name = chunk.Content
 		state.draft.toolName = chunk.Content
 		state.draft.edit = chunk.Content == "edit"
 		// Fallback text calls have no JSON completion marker. Seeing the
 		// next opening tag means the previous raw call has ended.
-		if s.active >= 0 && index > s.active && s.calls[s.active].rawTarget {
+		if s.active >= 0 && index > s.active && (s.calls[s.active].rawTarget || s.calls[s.active].fromFallback) {
 			s.calls[s.active].complete = true
 		}
 	} else if chunk.Type == "tool_target" {
 		state.rawTarget = true
+		state.hasTargetAttr = true
 		state.draft.path = chunk.Content
 	} else if chunk.Type == "tool_call" {
 		state.appendArguments(chunk.Content)
@@ -328,7 +368,7 @@ func (s *toolStreamSequencer) presentLiveCall(index int, state *toolStreamState)
 }
 
 func (s *toolStreamSequencer) notifyReady(index int, state *toolStreamState) {
-	if s.onReady == nil || state == nil || state.readyNotified || !state.complete || state.rawTarget || state.name == "" {
+	if s.onReady == nil || state == nil || state.readyNotified || !state.complete || state.rawTarget || state.fromFallback || state.name == "" {
 		return
 	}
 	state.readyNotified = true
@@ -400,7 +440,7 @@ func (s *toolStreamSequencer) Reconcile(calls []db.ToolCall) {
 			identity = false
 			continue
 		}
-		if !state.rawTarget && CanonicalizeToolArguments(state.name, state.arguments.String()) != CanonicalizeToolArguments(calls[index].Function.Name, calls[index].Function.Arguments) {
+		if !state.rawTarget && !state.fromFallback && state.arguments.Len() > 0 && CanonicalizeToolArguments(state.name, state.arguments.String()) != CanonicalizeToolArguments(calls[index].Function.Name, calls[index].Function.Arguments) {
 			identity = false
 			continue
 		}

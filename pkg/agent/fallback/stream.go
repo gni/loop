@@ -49,6 +49,7 @@ var (
 	fallbackTargetAttrKeys = [...]string{
 		"path", "file", "file_path", "filepath", "filename", "file_name",
 		"target", "target_file", "targetfile", "name", "to",
+		"pattern", "query", "task_id", "id", "uri", "url", "question", "action",
 	}
 
 	fallbackBashAttrKeys = [...]string{
@@ -190,18 +191,22 @@ func extractHermesFunctionName(text string) string {
 }
 
 func extractOpeningTarget(toolName, opening string) string {
+	norm := domaintool.NormalizeName(toolName)
 	attrs := ParseXMLAttrs(opening)
 	for _, key := range fallbackTargetAttrKeys {
 		if v := strings.TrimSpace(attrs[key]); v != "" {
 			return v
 		}
 	}
-	if toolName == "bash" {
+	if norm == "bash" {
 		for _, key := range fallbackBashAttrKeys {
 			if v := strings.TrimSpace(attrs[key]); v != "" {
 				return v
 			}
 		}
+	}
+	if norm == "list_directory" && strings.HasSuffix(strings.TrimSpace(opening), "/>") {
+		return "."
 	}
 	return ""
 }

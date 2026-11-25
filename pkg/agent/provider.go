@@ -145,13 +145,13 @@ func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chun
 	return toolProtocolForConfig(p.Config).NewStreamTextFilter(
 		emit,
 		func(toolName string, idx int) {
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: toolName, ToolCallIndex: idx}, observer)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: toolName, ToolCallIndex: idx, Fallback: true}, observer)
 		},
 		func(target string, idx int) {
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx}, observer)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_target", Content: target, ToolCallIndex: idx, Fallback: true}, observer)
 		},
 		func(chunk string, idx int) {
-			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx}, observer)
+			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx, Fallback: true}, observer)
 		},
 	)
 }

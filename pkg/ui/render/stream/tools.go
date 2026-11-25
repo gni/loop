@@ -211,8 +211,13 @@ func (sr *StreamRenderer) CompleteToolCall(index int, toolName string, toolArgs 
 		if isError {
 			status = render.ToolStatusError
 		}
-		if target != "" && view.titleLine >= 0 && toolName != "bash" {
-			ReplaceTrackedStreamLine(sr.w, view.titleLine, render.FormatToolTitleForWidth(render.RenderToolSymbol(toolName, status, sr.theme), toolName, safeLiveLabel(target), sr.theme, width))
+		if safeTarget := safeLiveLabel(target); safeTarget != "" {
+			view.path = safeTarget
+			if view.titleLine >= 0 && toolName != "bash" {
+				if ReplaceTrackedStreamLine(sr.w, view.titleLine, render.FormatToolTitleForWidth(render.RenderToolSymbol(toolName, status, sr.theme), toolName, safeTarget, sr.theme, width)) {
+					view.lastRenderedPath = safeTarget
+				}
+			}
 		}
 		return
 	}

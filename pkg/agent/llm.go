@@ -41,6 +41,7 @@ type StreamChunk struct {
 	Type          string
 	Content       string
 	ToolCallIndex int
+	Fallback      bool
 }
 
 type StreamOptions struct {
