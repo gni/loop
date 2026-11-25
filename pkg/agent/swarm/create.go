@@ -73,7 +73,7 @@ func (s *CreateSubagentTool) Definition() tool.Tool {
 				Properties: map[string]tool.SchemaProp{
 					"name": {
 						Type:        "string",
-						Description: tool.FormatParamDescription("create_subagent", "name", "Unique name for the subagent (alphanumeric and underscores only)."),
+						Description: tool.FormatParamDescription("create_subagent", "name", "Unique name for the subagent (lowercase letters, numbers, and underscores, e.g. code_reviewer)."),
 					},
 					"system_prompt": {
 						Type:        "string",
@@ -125,13 +125,17 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	args.Name = tool.FirstNonEmpty(args.Name, args.AgentName, args.SubagentName)
+	rawName := strings.TrimSpace(tool.FirstNonEmpty(args.Name, args.AgentName, args.SubagentName))
 	args.SystemPrompt = tool.FirstNonEmpty(args.SystemPrompt, args.Instructions, args.Prompt, args.Role)
 	if len(args.SkillNames) == 0 && len(args.Skills) > 0 {
 		args.SkillNames = args.Skills
 	}
-	if strings.TrimSpace(args.Name) == "" {
+	if rawName == "" {
 		return "", fmt.Errorf("missing required argument: name")
+	}
+	args.Name = subagent.NormalizeAgentName(rawName)
+	if args.Name == "" {
+		return "", fmt.Errorf("invalid subagent name %q: must contain at least one letter or number", rawName)
 	}
 	if strings.TrimSpace(args.SystemPrompt) == "" {
 		return "", fmt.Errorf("missing required argument: system_prompt")
@@ -171,7 +175,11 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	localSkills := make([]tool.Skill, 0, len(args.InlineSkills)+len(args.SkillNames))
 	localNames := make(map[string]struct{}, len(args.InlineSkills)+len(args.SkillNames))
 	for _, inlineSkill := range args.InlineSkills {
-		name := strings.TrimSpace(inlineSkill.Name)
+		rawSkillName := strings.TrimSpace(inlineSkill.Name)
+		name := subagent.NormalizeSkillName(rawSkillName)
+		if name == "" {
+			name = rawSkillName
+		}
 		key := strings.ToLower(name)
 		if _, exists := localNames[key]; exists {
 			return "", fmt.Errorf("agent-local skill '%s' is specified more than once", name)
@@ -230,5 +238,5 @@ func (s *CreateSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 		return "", err
 	}
 
-	return fmt.Sprintf("Subagent '%s' created successfully.", args.Name), nil
+	return fmt.Sprintf("Subagent '%s' created successfully. Invoke it with tool 'subagent__%s'.", args.Name, args.Name), nil
 }

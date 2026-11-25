@@ -251,8 +251,16 @@ func parseSubagentName(arguments string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("missing required argument: name")
 	}
+	for strings.HasPrefix(strings.ToLower(name), "subagent__") {
+		name = strings.TrimSpace(name[len("subagent__"):])
+	}
 	if err := subagent.ValidateAgentName(name); err != nil {
-		return "", err
+		if normalized := subagent.NormalizeAgentName(name); normalized != "" {
+			name = normalized
+		}
+		if err := subagent.ValidateAgentName(name); err != nil {
+			return "", err
+		}
 	}
 	return name, nil
 }
@@ -291,6 +299,9 @@ func (s *RemoveSubagentTool) Execute(ctx tool.AgentContext, arguments string) (s
 	name, err := parseSubagentName(arguments)
 	if err != nil {
 		return "", err
+	}
+	if resolved, exists := s.mam.ResolveAgentName(name); exists {
+		name = resolved
 	}
 	if err := s.mam.removeAgentFor(ctx, name); err != nil {
 		return "", err

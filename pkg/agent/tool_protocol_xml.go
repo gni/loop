@@ -105,6 +105,7 @@ func (xmlToolProtocol) FormatPromptTools(sb *strings.Builder, entries []ToolEntr
 	sb.WriteString("<bash>go vet ./...</bash>\n")
 	sb.WriteString("<todo>\n- [>] task-1: Inspect files\n- [ ] task-2: Apply fix\n</todo>\n")
 	sb.WriteString("<todo action=\"update\" task_id=\"task-1\" status=\"completed\"/>\n")
+	sb.WriteString("<ask_user question=\"Choose approach?\" recommended=\"Option A\">\n<option>Option A</option>\n<option>Option B</option>\n</ask_user>\n")
 	sb.WriteString("For any other tool, pass scalar arguments as attributes or child <parameter name=\"key\">value</parameter> tags (e.g. <tool_call name=\"tool_name\" arg=\"val\"/>).\n")
 	sb.WriteString("</tool_protocol>\n\n")
 }
@@ -259,6 +260,40 @@ func formatXMLToolCall(call db.ToolCall) string {
 			}
 		}
 		return fmt.Sprintf("<bash%s>\n%s\n</bash>", attrs.String(), cmd)
+
+	case "ask_user":
+		question, _ := args["question"].(string)
+		recommended, _ := args["recommended"].(string)
+		var attrs strings.Builder
+		if question != "" {
+			attrs.WriteString(xmlAttrString("question", question))
+		}
+		if recommended != "" {
+			attrs.WriteString(xmlAttrString("recommended", recommended))
+		}
+		if opts, ok := args["options"].([]any); ok && len(opts) > 0 {
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "<ask_user%s>\n", attrs.String())
+			for _, rawOpt := range opts {
+				switch opt := rawOpt.(type) {
+				case string:
+					if strings.TrimSpace(opt) != "" {
+						fmt.Fprintf(&sb, "<option>%s</option>\n", strings.TrimSpace(opt))
+					}
+				case map[string]any:
+					label, _ := opt["label"].(string)
+					desc, _ := opt["description"].(string)
+					if desc != "" {
+						fmt.Fprintf(&sb, "<option label=\"%s\">%s</option>\n", escapeXMLAttr(label), desc)
+					} else if label != "" {
+						fmt.Fprintf(&sb, "<option>%s</option>\n", label)
+					}
+				}
+			}
+			sb.WriteString("</ask_user>")
+			return sb.String()
+		}
+		return fmt.Sprintf("<ask_user%s/>", attrs.String())
 
 	case "todo":
 		if md, ok := args["markdown"].(string); ok && strings.TrimSpace(md) != "" {

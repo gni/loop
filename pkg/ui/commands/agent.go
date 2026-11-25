@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
+	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/swarm"
 	"loop/pkg/ui"
 	"loop/pkg/ui/interactive"
@@ -85,14 +86,14 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintln(w, "usage: /agent join <name> (use 'base' to return to base agent)")
 			return
 		}
-		target := parts[2]
-		if target == "base" || target == "main" {
+		target := strings.TrimSpace(strings.Join(parts[2:], " "))
+		if strings.EqualFold(target, "base") || strings.EqualFold(target, "main") {
 			mam.JoinAgent("base")
 			fmt.Fprintln(w, "switched back to default base agent.")
 			return
 		}
 		if mam.JoinAgent(target) {
-			fmt.Fprintf(w, "switched chat focus to agent '%s'.\n", target)
+			fmt.Fprintf(w, "switched chat focus to agent '%s'.\n", mam.ActiveAgentName())
 		} else {
 			fmt.Fprintf(w, "error: agent '%s' not found.\n", target)
 		}
@@ -102,7 +103,10 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintln(w, "usage: /agent spawn <name> <prompt> [parent_name] [skill_name]")
 			return
 		}
-		name := parts[2]
+		name := subagent.NormalizeAgentName(parts[2])
+		if name == "" {
+			name = parts[2]
+		}
 		promptStart := fieldStartIndex(line, 3)
 		if promptStart == -1 {
 			fmt.Fprintln(w, "error: failed to parse prompt")
@@ -131,8 +135,8 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 				prompt = strings.TrimSpace(prompt[:lastSpace])
 				continue
 			}
-			if mam.HasAgent(lastWord) && parentName == "" {
-				parentName = lastWord
+			if resolvedParent, exists := mam.ResolveAgentName(lastWord); exists && parentName == "" {
+				parentName = resolvedParent
 				prompt = strings.TrimSpace(prompt[:lastSpace])
 				continue
 			}
@@ -204,15 +208,19 @@ func handleAgentCommand(a *agent.Agent, line string, parts []string, mam *swarm.
 			fmt.Fprintln(w, "usage: /agent remove <name> (or /agent remove all)")
 			return
 		}
-		target := parts[2]
-		if target == "all" || target == "*" {
+		target := strings.TrimSpace(strings.Join(parts[2:], " "))
+		if strings.EqualFold(target, "all") || target == "*" {
 			printSubagentRemoval(w, mam, "removed")
 			return
+		}
+		displayTarget := target
+		if resolved, exists := mam.ResolveAgentName(target); exists {
+			displayTarget = resolved
 		}
 		if err := mam.RemoveAgent(target); err != nil {
 			fmt.Fprintf(w, "error removing agent: %v\n", err)
 		} else {
-			fmt.Fprintf(w, "agent '%s' removed.\n", target)
+			fmt.Fprintf(w, "agent '%s' removed.\n", displayTarget)
 		}
 
 	case "clear":

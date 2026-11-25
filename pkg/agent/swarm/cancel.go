@@ -61,7 +61,7 @@ func (mam *MultiAgentManager) ActiveSubagentName() (string, bool) {
 
 func (mam *MultiAgentManager) CancelSubagentTurn(name string) bool {
 	mam.mu.RLock()
-	ma, exists := mam.Agents[name]
+	_, ma, exists := mam.resolveAgentLocked(name)
 	mam.mu.RUnlock()
 	if !exists {
 		return false

@@ -23,15 +23,22 @@ type directToolMatchers struct {
 }
 
 var (
-	reAttr              = regexp.MustCompile(`([a-zA-Z0-9_\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>/]+))`)
-	rePathTag           = regexp.MustCompile(`(?s)<path>(.*?)<\/path>`)
-	reContentTag        = regexp.MustCompile(`(?s)<content>(.*?)<\/content>`)
-	reInstructionTag    = regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`)
-	reOldNewTag         = regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`)
+	reAttr           = regexp.MustCompile(`([a-zA-Z0-9_\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>/]+))`)
+	rePathTag        = regexp.MustCompile(`(?s)<path>(.*?)<\/path>`)
+	reContentTag     = regexp.MustCompile(`(?s)<content>(.*?)<\/content>`)
+	reInstructionTag = regexp.MustCompile(`(?s)<(?:instructions?|description)>(.*?)<\/(?:instructions?|description)>`)
+	oldNewTagRegexes = []*regexp.Regexp{
+		regexp.MustCompile(`(?s)<old>(.*?)<\/old>\s*<new>(.*?)<\/new>`),
+		regexp.MustCompile(`(?s)<oldText>(.*?)<\/oldText>\s*<newText>(.*?)<\/newText>`),
+		regexp.MustCompile(`(?s)<old_text>(.*?)<\/old_text>\s*<new_text>(.*?)<\/new_text>`),
+	}
 	reConflictBlock     = regexp.MustCompile(`(?s)<<<<<<< SEARCH\r?\n(.*?)\r?\n=======\r?\n(.*?)\r?\n>>>>>>> REPLACE`)
 	reTaskTag           = regexp.MustCompile(`(?s)<(?:task|item)(?:\s+([^>]*))?>\s*(.*?)\s*<\/(?:task|item)>`)
 	reQuestionTag       = regexp.MustCompile(`(?s)<question>(.*?)<\/question>`)
 	reOptionTag         = regexp.MustCompile(`(?s)<option(?:\s+([^>]*))?>(.*?)<\/option>`)
+	reInlineSkillTag    = regexp.MustCompile(`(?s)<skill(?:\s+([^>]*))?>(.*?)<\/skill>`)
+	reDynamicSelfClose  = regexp.MustCompile(`(?s)<((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)\/>`)
+	reDynamicPaired     = regexp.MustCompile(`(?s)<((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/((?:subagent|mcp|plugin)__[a-zA-Z0-9_\-]+)>`)
 	reToolCallSelfClose = regexp.MustCompile(`(?s)<tool_call\b(` + xmlAttrsPattern + `)\/>`)
 	reToolCallBlock     = regexp.MustCompile(`(?s)<tool_call\b(` + xmlPairedAttrsPattern + `)>(.*?)<\/tool_call>`)
 	reToolColonSelf     = regexp.MustCompile(`(?s)<tool:([a-zA-Z0-9_\-]+)\b(` + xmlAttrsPattern + `)\/>`)
@@ -229,7 +236,12 @@ func BuildXMLToolCall(name string, attrs map[string]string, rawBody string) db.T
 			argsMap["instructions"] = instructions
 		}
 
-		oldNewMatches := reOldNewTag.FindAllStringSubmatch(rawBody, -1)
+		var oldNewMatches [][]string
+		for _, re := range oldNewTagRegexes {
+			if m := re.FindAllStringSubmatch(rawBody, -1); len(m) > 0 {
+				oldNewMatches = append(oldNewMatches, m...)
+			}
+		}
 		fromOldNewTags := len(oldNewMatches) > 0
 		if !fromOldNewTags {
 			oldNewMatches = reConflictBlock.FindAllStringSubmatch(rawBody, -1)
@@ -280,12 +292,47 @@ func BuildXMLToolCall(name string, attrs map[string]string, rawBody string) db.T
 	case "get_task_status", "stop_task":
 		argsMap["task_id"] = tool.FirstNonEmpty(attrs["task_id"], attrs["id"], trimmedBody)
 
-	case "inspect_subagent", "remove_subagent", "load_skill", "load_mcp":
+	case "inspect_subagent", "remove_subagent", "load_mcp":
 		argsMap["name"] = tool.FirstNonEmpty(attrs["name"], trimmedBody)
 
+	case "load_skill":
+		if name := tool.FirstNonEmpty(attrs["name"], trimmedBody); name != "" {
+			argsMap["name"] = name
+		}
+
+	case "read_mcp_resource":
+		if uri := tool.FirstNonEmpty(attrs["uri"], trimmedBody); uri != "" {
+			argsMap["uri"] = uri
+		}
+
 	case "create_subagent":
-		if _, ok := argsMap["prompt"]; !ok && trimmedBody != "" {
-			argsMap["prompt"] = trimmedBody
+		bodyWithoutSkills := trimmedBody
+		if skillMatches := reInlineSkillTag.FindAllStringSubmatch(rawBody, -1); len(skillMatches) > 0 {
+			inlineSkills := make([]map[string]string, 0, len(skillMatches))
+			for _, sm := range skillMatches {
+				sAttrs := ParseXMLAttrs(sm[1])
+				sName := strings.TrimSpace(sAttrs["name"])
+				sInstr := trimTagBoundaryNewlines(sm[2])
+				if sName != "" && strings.TrimSpace(sInstr) != "" {
+					entry := map[string]string{
+						"name":         sName,
+						"instructions": sInstr,
+					}
+					if desc := strings.TrimSpace(sAttrs["description"]); desc != "" {
+						entry["description"] = desc
+					}
+					inlineSkills = append(inlineSkills, entry)
+				}
+			}
+			if len(inlineSkills) > 0 {
+				argsMap["inline_skills"] = inlineSkills
+			}
+			bodyWithoutSkills = strings.TrimSpace(reInlineSkillTag.ReplaceAllString(rawBody, ""))
+		}
+		if _, ok := argsMap["system_prompt"]; !ok {
+			if sp := tool.FirstNonEmpty(attrs["system_prompt"], attrs["instructions"], attrs["prompt"], attrs["role"], bodyWithoutSkills); sp != "" {
+				argsMap["system_prompt"] = sp
+			}
 		}
 
 	case "ask_user":
@@ -438,6 +485,14 @@ func ParseFallbackToolCallsStrict(content string) ([]db.ToolCall, error) {
 		}
 		for _, match := range direct.paired.FindAllStringSubmatchIndex(content, -1) {
 			add(match, BuildXMLToolCall(direct.name, ParseXMLAttrs(capture(match, 1)), capture(match, 2)))
+		}
+	}
+	for _, match := range reDynamicSelfClose.FindAllStringSubmatchIndex(content, -1) {
+		add(match, BuildXMLToolCall(capture(match, 1), ParseXMLAttrs(capture(match, 2)), ""))
+	}
+	for _, match := range reDynamicPaired.FindAllStringSubmatchIndex(content, -1) {
+		if capture(match, 1) == capture(match, 4) {
+			add(match, BuildXMLToolCall(capture(match, 1), ParseXMLAttrs(capture(match, 2)), capture(match, 3)))
 		}
 	}
 	for _, match := range reToolCallSelfClose.FindAllStringSubmatchIndex(content, -1) {

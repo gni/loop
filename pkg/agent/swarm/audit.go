@@ -37,8 +37,11 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 	}
 
 	s.mam.mu.RLock()
-	child, exists := s.mam.Agents[name]
+	resolvedName, child, exists := s.mam.resolveAgentLocked(name)
 	s.mam.mu.RUnlock()
+	if exists {
+		name = resolvedName
+	}
 
 	if !exists {
 		s.mam.mu.RLock()
@@ -50,7 +53,15 @@ func (s *AuditSubagentTool) Execute(ctx tool.AgentContext, arguments string) (st
 		}
 		path := filepath.Join(agentsDir, name+"_state.json")
 		if _, err := os.Stat(path); err != nil {
-			return "", fmt.Errorf("subagent '%s' not found", name)
+			norm := subagent.NormalizeAgentName(name)
+			if norm == "" || norm == name {
+				return "", fmt.Errorf("subagent '%s' not found", name)
+			}
+			altPath := filepath.Join(agentsDir, norm+"_state.json")
+			if _, altErr := os.Stat(altPath); altErr != nil {
+				return "", fmt.Errorf("subagent '%s' not found", name)
+			}
+			name = norm
 		}
 
 		store, err := subagent.NewStorage(agentsDir)

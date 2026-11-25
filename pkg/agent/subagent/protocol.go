@@ -41,6 +41,18 @@ type AgentState struct {
 	History []message.Message     `json:"history"`
 }
 
+// NormalizeAgentName converts a free-form agent name into a canonical lowercase
+// snake_case identifier accepted by storage, tools, and XML tags.
+func NormalizeAgentName(name string) string {
+	return domaintool.NormalizeAgentName(name)
+}
+
+// NormalizeSkillName converts a free-form agent-local skill name into a
+// canonical lowercase snake_case identifier.
+func NormalizeSkillName(name string) string {
+	return domaintool.NormalizeSkillName(name)
+}
+
 // ValidateAgentName verifies that an agent name is valid and adheres to naming conventions.
 func ValidateAgentName(name string) error {
 	if err := validateName(name); err != nil {
@@ -76,7 +88,12 @@ func validateName(name string) error {
 
 // ValidateAgentLocalSkill cleans and validates an agent-local skill declaration.
 func ValidateAgentLocalSkill(skill domaintool.Skill) (domaintool.Skill, error) {
-	skill.Name = strings.TrimSpace(skill.Name)
+	rawName := strings.TrimSpace(skill.Name)
+	if normalized := NormalizeSkillName(rawName); normalized != "" {
+		skill.Name = normalized
+	} else {
+		skill.Name = rawName
+	}
 	skill.Description = strings.TrimSpace(skill.Description)
 	skill.Content = strings.TrimSpace(skill.Content)
 	skill.Path = ""

@@ -92,7 +92,15 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 	preloadedSkills []tool.Skill,
 	persistDef bool,
 ) error {
-	name = strings.TrimSpace(name)
+	rawName := strings.TrimSpace(name)
+	name = rawName
+	if persistDef && rawName != "" {
+		normalized := subagent.NormalizeAgentName(rawName)
+		if normalized == "" {
+			return fmt.Errorf("invalid agent name %q: must contain at least one letter or number", rawName)
+		}
+		name = normalized
+	}
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	parentName = strings.TrimSpace(parentName)
 
@@ -124,7 +132,12 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 		mam.mu.Unlock()
 		return err
 	}
-	if _, exists := mam.Agents[name]; exists {
+	if persistDef {
+		if existingName, _, exists := mam.resolveAgentLocked(name); exists {
+			mam.mu.Unlock()
+			return fmt.Errorf("agent '%s' already exists", existingName)
+		}
+	} else if _, exists := mam.Agents[name]; exists {
 		mam.mu.Unlock()
 		return fmt.Errorf("agent '%s' already exists", name)
 	}
@@ -135,11 +148,12 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 
 	var parent *MultiAgent
 	if parentName != "" {
-		p, exists := mam.Agents[parentName]
+		resolvedParent, p, exists := mam.resolveAgentLocked(parentName)
 		if !exists {
 			mam.mu.Unlock()
 			return fmt.Errorf("parent agent '%s' not found", parentName)
 		}
+		parentName = resolvedParent
 		if mam.pending[parentName] {
 			mam.mu.Unlock()
 			return fmt.Errorf("parent agent '%s' is currently being modified", parentName)
@@ -195,9 +209,12 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 	referenceSkills := make([]tool.Skill, 0, len(skillNames))
 	assignedNames := make(map[string]struct{})
 	if inheritAllSkills {
-		localNames := make(map[string]bool, len(localSkills))
+		localNames := make(map[string]bool, len(localSkills)*2)
 		for _, skill := range localSkills {
 			localNames[strings.ToLower(strings.TrimSpace(skill.Name))] = true
+			if norm := subagent.NormalizeSkillName(skill.Name); norm != "" {
+				localNames[norm] = true
+			}
 		}
 		for _, skill := range activeSkills {
 			// Private instructions keep precedence when the inherited catalog
@@ -375,13 +392,44 @@ func subagentExecutor(ma *MultiAgent) *SubagentExecutor {
 	}
 }
 
+func (mam *MultiAgentManager) resolveAgentLocked(name string) (string, *MultiAgent, bool) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", nil, false
+	}
+	if ma, exists := mam.Agents[trimmed]; exists {
+		return trimmed, ma, true
+	}
+	norm := subagent.NormalizeAgentName(trimmed)
+	if norm == "" {
+		return "", nil, false
+	}
+	if ma, exists := mam.Agents[norm]; exists {
+		return norm, ma, true
+	}
+	for existingName, ma := range mam.Agents {
+		if subagent.NormalizeAgentName(existingName) == norm {
+			return existingName, ma, true
+		}
+	}
+	return "", nil, false
+}
+
+func (mam *MultiAgentManager) ResolveAgentName(name string) (string, bool) {
+	mam.mu.RLock()
+	defer mam.mu.RUnlock()
+	resolved, _, exists := mam.resolveAgentLocked(name)
+	return resolved, exists
+}
+
 func (mam *MultiAgentManager) SendMessage(name string, content string) error {
 	mam.mu.RLock()
-	ma, exists := mam.Agents[name]
+	resolvedName, ma, exists := mam.resolveAgentLocked(name)
 	mam.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("agent '%s' not found", name)
 	}
+	name = resolvedName
 	if ma.Context.Err() != nil {
 		return fmt.Errorf("agent '%s' is no longer running", name)
 	}
@@ -421,11 +469,12 @@ func (mam *MultiAgentManager) removeAgentFor(ctx tool.AgentContext, name string)
 		return err
 	}
 
-	ma, exists := mam.Agents[name]
+	resolvedName, ma, exists := mam.resolveAgentLocked(name)
 	if !exists {
 		mam.mu.Unlock()
 		return fmt.Errorf("agent '%s' not found", name)
 	}
+	name = resolvedName
 	if origin, ok := ctx.(*multiAgentContext); ok && origin.ma == ma {
 		mam.mu.Unlock()
 		return fmt.Errorf("subagent '%s' cannot remove itself", name)
@@ -576,14 +625,14 @@ func (mam *MultiAgentManager) ActiveAgentName() string {
 func (mam *MultiAgentManager) HasAgent(name string) bool {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
-	_, exists := mam.Agents[name]
+	_, _, exists := mam.resolveAgentLocked(name)
 	return exists
 }
 
 func (mam *MultiAgentManager) GetParentName(name string) string {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
-	ag, exists := mam.Agents[name]
+	_, ag, exists := mam.resolveAgentLocked(name)
 	if !exists || ag.parent() == nil {
 		return ""
 	}
@@ -593,7 +642,7 @@ func (mam *MultiAgentManager) GetParentName(name string) string {
 func (mam *MultiAgentManager) GetAgentSystemPrompt(name string) string {
 	mam.mu.RLock()
 	defer mam.mu.RUnlock()
-	ag, exists := mam.Agents[name]
+	_, ag, exists := mam.resolveAgentLocked(name)
 	if !exists {
 		return ""
 	}
@@ -604,11 +653,12 @@ func (mam *MultiAgentManager) JoinAgent(name string) bool {
 	mam.mu.Lock()
 	defer mam.mu.Unlock()
 
-	if name == "base" || name == "main" || name == "" {
+	trimmed := strings.TrimSpace(name)
+	if strings.EqualFold(trimmed, "base") || strings.EqualFold(trimmed, "main") || trimmed == "" {
 		mam.ActiveAgent = nil
 		return true
 	}
-	if ag, exists := mam.Agents[name]; exists {
+	if _, ag, exists := mam.resolveAgentLocked(trimmed); exists {
 		mam.ActiveAgent = ag
 		return true
 	}

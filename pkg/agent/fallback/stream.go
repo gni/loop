@@ -9,16 +9,37 @@ import (
 const maxFallbackOpeningBytes = 4096
 
 var (
+	commonXMLAliasNames = []string{
+		"read_file", "write_file", "edit_file", "view_file", "create_file",
+		"str_replace", "run_command", "shell", "ls", "glob",
+		"grep_search", "search_code", "list_dir", "todo_write", "ask_user_question",
+	}
+	dynamicToolPrefixes = []string{"subagent__", "mcp__", "plugin__"}
+
 	directToolNames = func() []string {
-		names := domaintool.BuiltinToolNames()
+		seen := make(map[string]bool)
+		var names []string
+		add := func(name string) {
+			if name == "" || seen[name] {
+				return
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+		for _, name := range domaintool.BuiltinToolNames() {
+			add(name)
+		}
 		for legacy := range domaintool.LegacyToolNames() {
-			names = append(names, legacy)
+			add(legacy)
+		}
+		for _, alias := range commonXMLAliasNames {
+			add(alias)
 		}
 		sort.Strings(names)
 		return names
 	}()
 	fallbackOpeningMarkers = func() []string {
-		markers := []string{"<tool_call", "<execute", "<tool:", "<function"}
+		markers := []string{"<tool_call", "<execute", "<tool:", "<function", "<subagent__", "<mcp__", "<plugin__"}
 		for _, name := range directToolNames {
 			markers = append(markers, "<"+name)
 		}
@@ -100,7 +121,27 @@ func (f *ToolTextFilter) Flush() {
 	f.process(true)
 }
 
+func extractDynamicToolName(opening string) string {
+	for _, prefix := range dynamicToolPrefixes {
+		if strings.HasPrefix(opening, "<"+prefix) {
+			rest := opening[1:]
+			end := strings.IndexAny(rest, " \t\r\n>/")
+			if end < 0 {
+				end = len(rest)
+			}
+			ident := rest[:end]
+			if len(ident) > len(prefix) && isValidXMLTagIdent(ident) {
+				return ident
+			}
+		}
+	}
+	return ""
+}
+
 func extractFallbackToolName(opening string) string {
+	if dyn := extractDynamicToolName(opening); dyn != "" {
+		return dyn
+	}
 	for _, toolName := range directToolNames {
 		if strings.HasPrefix(opening, "<"+toolName) {
 			if len(opening) == len(toolName)+1 {
@@ -335,6 +376,15 @@ func (f *ToolTextFilter) emitText(text string) {
 }
 
 func fallbackClosingTag(opening string) (string, bool) {
+	if dyn := extractDynamicToolName(opening); dyn != "" {
+		if !validFallbackOpeningBoundary(opening, len("<"+dyn)) {
+			return "", false
+		}
+		if strings.HasSuffix(strings.TrimSpace(opening), "/>") {
+			return "", true
+		}
+		return "</" + dyn + ">", true
+	}
 	for _, toolName := range directToolNames {
 		if strings.HasPrefix(opening, "<"+toolName) {
 			if !validFallbackOpeningBoundary(opening, len("<"+toolName)) {

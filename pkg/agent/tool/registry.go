@@ -83,13 +83,19 @@ func (r *ToolRegistry) Register(t ToolExecutor) {
 }
 
 func (r *ToolRegistry) Unregister(name string) {
-	name = NormalizeName(name)
+	trimmed := strings.TrimSpace(name)
+	norm := NormalizeName(trimmed)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
-	delete(r.schemas, name)
-	delete(r.hidden, name)
-	delete(r.exposed, name)
+	for _, key := range []string{name, trimmed, norm} {
+		if key == "" {
+			continue
+		}
+		delete(r.tools, key)
+		delete(r.schemas, key)
+		delete(r.hidden, key)
+		delete(r.exposed, key)
+	}
 }
 
 func (r *ToolRegistry) UnregisterPrefix(prefix string) {
@@ -197,8 +203,18 @@ func (r *ToolRegistry) Lookup(name string) (ToolExecutor, bool) {
 	if executor, exists := r.tools[name]; exists {
 		return executor, true
 	}
-	executor, exists := r.tools[NormalizeName(name)]
-	return executor, exists
+	norm := NormalizeName(name)
+	if executor, exists := r.tools[norm]; exists {
+		return executor, true
+	}
+	if strings.HasPrefix(norm, "subagent__") {
+		for registeredName, executor := range r.tools {
+			if strings.HasPrefix(strings.ToLower(registeredName), "subagent__") && NormalizeName(registeredName) == norm {
+				return executor, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (r *ToolRegistry) Execute(ctx AgentContext, name string, arguments string) (string, error) {

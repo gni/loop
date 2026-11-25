@@ -3,6 +3,9 @@ package tool
 import (
 	"sort"
 	"strings"
+	"unicode"
+
+	"loop/pkg/domain/limits"
 )
 
 var builtinNames = map[string]bool{
@@ -32,14 +35,21 @@ func LegacyToolNames() map[string]string {
 	}
 }
 
-// NormalizeName preserves integration names and normalizes builtin names/aliases.
+// NormalizeName preserves integration names and normalizes builtin names/aliases
+// as well as subagent delegation tool names.
 func NormalizeName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	lower := strings.ToLower(trimmed)
 	if builtinNames[lower] {
 		return lower
 	}
-	switch strings.ToLower(trimmed) {
+	if strings.HasPrefix(lower, "subagent__") {
+		if normalized := NormalizeAgentName(trimmed); normalized != "" {
+			return "subagent__" + normalized
+		}
+		return trimmed
+	}
+	switch lower {
 	case "write_path", "write_file", "writefile", "create_file", "createfile", "write_to_file", "writetofile", "save_file", "savefile", "new_file":
 		return "write"
 	case "edit_file", "editfile", "modify_file", "patch_file", "replace_file_content", "str_replace", "replace", "patch":
@@ -77,4 +87,148 @@ func NormalizeName(name string) string {
 	default:
 		return trimmed
 	}
+}
+
+func foldLatinRune(r rune) (string, bool) {
+	switch r {
+	case 'à', 'á', 'â', 'ã', 'ä', 'å', 'À', 'Á', 'Â', 'Ã', 'Ä', 'Å':
+		return "a", true
+	case 'æ', 'Æ':
+		return "ae", true
+	case 'ç', 'Ç':
+		return "c", true
+	case 'è', 'é', 'ê', 'ë', 'È', 'É', 'Ê', 'Ë':
+		return "e", true
+	case 'ì', 'í', 'î', 'ï', 'Ì', 'Í', 'Î', 'Ï':
+		return "i", true
+	case 'ñ', 'Ñ':
+		return "n", true
+	case 'ò', 'ó', 'ô', 'õ', 'ö', 'ø', 'Ò', 'Ó', 'Ô', 'Õ', 'Ö', 'Ø':
+		return "o", true
+	case 'œ', 'Œ':
+		return "oe", true
+	case 'ß':
+		return "ss", true
+	case 'ù', 'ú', 'û', 'ü', 'Ù', 'Ú', 'Û', 'Ü':
+		return "u", true
+	case 'ý', 'ÿ', 'Ý', 'Ÿ':
+		return "y", true
+	default:
+		return "", false
+	}
+}
+
+// classifySlugRune returns the lowercase ASCII emission and class for r:
+// 0 = separator/ignored, 1 = lowercase letter, 2 = uppercase letter, 3 = digit.
+func classifySlugRune(r rune) (string, int) {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return string(r), 1
+	case r >= 'A' && r <= 'Z':
+		return string(r + ('a' - 'A')), 2
+	case r >= '0' && r <= '9':
+		return string(r), 3
+	}
+	if folded, ok := foldLatinRune(r); ok {
+		if unicode.IsUpper(r) {
+			return folded, 2
+		}
+		return folded, 1
+	}
+	return "", 0
+}
+
+// NormalizeSlug converts free-form text (such as "James Bond" or "CodeReviewer!")
+// into a safe lowercase snake_case ASCII identifier capped to maxLen bytes.
+func NormalizeSlug(raw string, maxLen int) string {
+	runes := []rune(strings.TrimSpace(raw))
+	if len(runes) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(runes))
+	prevSep := true
+	prevKind := 0
+	for i, r := range runes {
+		out, kind := classifySlugRune(r)
+		if kind == 0 {
+			prevSep = true
+			prevKind = 0
+			continue
+		}
+		if b.Len() > 0 {
+			needUnderscore := prevSep
+			if !needUnderscore && kind == 2 {
+				if prevKind == 1 {
+					needUnderscore = true
+				} else if prevKind == 2 && i+1 < len(runes) {
+					_, nextKind := classifySlugRune(runes[i+1])
+					if nextKind == 1 {
+						needUnderscore = true
+					}
+				}
+			}
+			if needUnderscore {
+				b.WriteByte('_')
+			}
+		}
+		b.WriteString(out)
+		prevSep = false
+		prevKind = kind
+	}
+	slug := strings.Trim(b.String(), "_")
+	if maxLen > 0 && len(slug) > maxLen {
+		slug = strings.TrimRight(slug[:maxLen], "_")
+	}
+	return slug
+}
+
+// NormalizeSkillName converts a free-form inline skill name into a safe
+// lowercase snake_case identifier bounded by the configured name limit.
+func NormalizeSkillName(raw string) string {
+	maxLen := limits.NameMaxLength()
+	if maxLen <= 0 {
+		maxLen = limits.DefaultNameMaxLength
+	}
+	return NormalizeSlug(raw, maxLen)
+}
+
+// NormalizeAgentName converts free-form agent names (such as "James Bond") into
+// safe lowercase snake_case identifiers accepted by storage, tools, and XML tags.
+func NormalizeAgentName(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	for strings.HasPrefix(strings.ToLower(trimmed), "subagent__") {
+		trimmed = strings.TrimSpace(trimmed[len("subagent__"):])
+	}
+	maxLen := limits.NameMaxLength()
+	if maxLen <= 0 {
+		maxLen = limits.DefaultNameMaxLength
+	}
+	slug := NormalizeSlug(trimmed, maxLen)
+	if slug == "" {
+		return ""
+	}
+	if strings.HasSuffix(slug, "_state") {
+		const suffix = "_agent"
+		if len(slug)+len(suffix) > maxLen {
+			cut := maxLen - len(suffix)
+			if cut > 0 {
+				slug = strings.TrimRight(slug[:cut], "_")
+				for strings.HasSuffix(slug, "_state") {
+					slug = strings.TrimRight(strings.TrimSuffix(slug, "_state"), "_")
+				}
+			}
+		}
+		if slug == "" {
+			slug = "agent"
+		} else if len(slug)+len(suffix) <= maxLen {
+			slug += suffix
+		} else {
+			slug = strings.TrimRight(strings.TrimSuffix(slug, "_state"), "_")
+			if slug == "" {
+				slug = "agent"
+			}
+		}
+	}
+	return slug
 }

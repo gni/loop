@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strings"
 
 	"loop/pkg/agent/subagent"
@@ -15,18 +14,27 @@ import (
 )
 
 func createManagedAgent(mam *swarm.MultiAgentManager, sr *interactive.SessionReader, signals chan os.Signal, w io.Writer, theme style.UITheme) (bool, error) {
-	name, err := interactive.ReadMenuField(sr, signals, w, theme, "Create agent / 1 of 4", "Give this agent a name and a clear focus.", "Name", "", func(name string) error {
-		if err := subagent.ValidateAgentName(name); err != nil {
+	name, err := interactive.ReadMenuField(sr, signals, w, theme, "Create agent / 1 of 4", "Give this agent a name and a clear focus.", "Name", "", func(raw string) error {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return fmt.Errorf("agent name cannot be empty")
+		}
+		normalized := subagent.NormalizeAgentName(trimmed)
+		if normalized == "" {
+			return fmt.Errorf("agent name must contain at least one letter or number")
+		}
+		if err := subagent.ValidateAgentName(normalized); err != nil {
 			return err
 		}
-		if slices.Contains(mam.ListAgents(), name) {
-			return fmt.Errorf("An agent named %q already exists.", name)
+		if existing, exists := mam.ResolveAgentName(normalized); exists {
+			return fmt.Errorf("An agent named %q already exists.", existing)
 		}
 		return nil
 	})
 	if err != nil {
 		return false, err
 	}
+	name = subagent.NormalizeAgentName(name)
 	instructions, err := interactive.ReadMenuField(sr, signals, w, theme, "Create agent / 2 of 4", interactive.MenuDisplayText(name), "What should this agent focus on?", "", func(value string) error {
 		if value == "" {
 			return fmt.Errorf("Add instructions before continuing.")

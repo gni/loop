@@ -10,7 +10,7 @@ import (
 
 func (mam *MultiAgentManager) ListAgentSkills(name string) ([]tool.Skill, error) {
 	mam.mu.RLock()
-	ma, exists := mam.Agents[name]
+	_, ma, exists := mam.resolveAgentLocked(name)
 	mam.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("agent '%s' not found", name)
@@ -25,11 +25,12 @@ func (mam *MultiAgentManager) ListAgentSkills(name string) ([]tool.Skill, error)
 
 func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string) error {
 	mam.mu.RLock()
-	ma, exists := mam.Agents[agentName]
+	resolvedName, ma, exists := mam.resolveAgentLocked(agentName)
 	mam.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("agent '%s' not found", agentName)
 	}
+	agentName = resolvedName
 
 	var targetSkill *tool.Skill
 	for _, s := range mam.BaseAgent.GetActiveSkills() {
@@ -84,11 +85,12 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 
 func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
 	mam.mu.RLock()
-	ma, exists := mam.Agents[agentName]
+	resolvedName, ma, exists := mam.resolveAgentLocked(agentName)
 	mam.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("agent '%s' not found", agentName)
 	}
+	agentName = resolvedName
 
 	ma.HistoryMu.Lock()
 	ma.Skills = nil
