@@ -17,30 +17,19 @@ var editDiffRow = regexp.MustCompile(`(?m)^\x1b\[(?:31|32)m[0-9]+ +[+-] `)
 
 func inferenceMessages(ctx context.Context, messages []db.Message) []db.Message {
 	messages = compactRuntimeMessages(messages)
-	messages = skillContextMessages(messages)
 	messages = taskContextMessages(ctx, messages)
 	return taskInstructionMessages(ctx, messages)
 }
 
-// compactRuntimeMessages changes only the inference view. Saved messages,
-// execution evidence, errors and the terminal transcript remain available.
+// compactRuntimeMessages applies pure per-message inference formatting without
+// retroactively mutating earlier turns, preserving prompt KV-cache prefixes.
+// Saved messages, execution evidence, errors and the terminal transcript remain intact.
 func compactRuntimeMessages(messages []db.Message) []db.Message {
 	matches := message.MatchToolResults(messages)
-	lastRecap := -1
-	for i, msg := range messages {
-		if msg.ContextKind == "runtime" && strings.HasPrefix(msg.Content, "[recap ") {
-			lastRecap = i
-		}
-	}
 	out := make([]db.Message, 0, len(messages))
-	outCalls := make([]db.ToolCall, 0, len(messages))
 	for i, msg := range messages {
-		if i != lastRecap && msg.ContextKind == "runtime" && strings.HasPrefix(msg.Content, "[recap ") {
-			continue
-		}
 		if msg.Role != "tool" {
 			out = append(out, msg)
-			outCalls = append(outCalls, db.ToolCall{})
 			continue
 		}
 		originalContent := msg.Content
@@ -119,35 +108,6 @@ func compactRuntimeMessages(messages []db.Message) []db.Message {
 			msg.ContentBlocks = blocks
 		}
 		out = append(out, msg)
-		outCalls = append(outCalls, call)
-	}
-	// Older sessions may contain repeated full polling snapshots. Keep the
-	// newest identical body and the earlier status/command headers.
-	seenOutput := make(map[string]struct{ body, call string })
-	for i := len(out) - 1; i >= 0; i-- {
-		msg := &out[i]
-		if msg.Role != "tool" || msg.IsError || len(msg.ContentBlocks) != 0 {
-			continue
-		}
-		call := outCalls[i]
-		if tool.NormalizeName(call.Function.Name) != "get_task_status" {
-			continue
-		}
-		var args struct {
-			TaskID string `json:"task_id"`
-		}
-		if json.Unmarshal([]byte(call.Function.Arguments), &args) != nil || args.TaskID == "" {
-			continue
-		}
-		header, body, ok := strings.Cut(msg.Content, "\n\nOutput:\n")
-		if !ok || body == "" || strings.HasPrefix(body, "[New output") || body == "(no new output)" {
-			continue
-		}
-		if prior, exists := seenOutput[args.TaskID]; exists && prior.body == body {
-			msg.Content = header + "\n\nOutput:\n(unchanged; output retained in " + prior.call + ")"
-		} else {
-			seenOutput[args.TaskID] = struct{ body, call string }{body, msg.ToolCallID}
-		}
 	}
 	return out
 }

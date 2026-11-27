@@ -18,8 +18,9 @@ func (a *Agent) appendTurnInput(messages *[]db.Message, prompt, sessionID string
 	if pending := a.TakePendingSystemEvent(); pending != "" {
 		prompt = fmt.Sprintf("[%s]\n\n%s", pending, prompt)
 	}
-	// Optional knowledge is selected once for the new task, not on every step.
-	a.markSystemPromptDirty()
+	// Keep messages[0] frozen across turns so the KV cache prefix stays valid;
+	// SyncSessionSystemPrompt only rebuilds when the session starts or an
+	// explicit config/tool/protocol change marked the system prompt dirty.
 	a.SyncSessionSystemPrompt(messages, sessionID)
 
 	userMsg := db.Message{Role: "user", ContextKind: "objective", Content: prompt, ContentBlocks: a.InputBlocks, TaskState: run.TaskSnapshot(a.Context()), InheritedInstructions: run.DelegationInstructions(a.Context())}
@@ -97,25 +98,57 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 
 // consumeTurnChunks presents provider events on the caller goroutine. The
 // bounded relay absorbs terminal backpressure without executing provisional calls.
-func (a *Agent) consumeTurnChunks(ctx context.Context, chunks <-chan StreamChunk, sessionID string, loader *turnLoader, echoFilter *PromptEchoFilter, sr StreamRenderer, toolStream *toolStreamSequencer) {
+func (a *Agent) consumeTurnChunks(
+	ctx context.Context,
+	chunks <-chan StreamChunk,
+	sessionID string,
+	loader *turnLoader,
+	echoFilter *PromptEchoFilter,
+	sr StreamRenderer,
+	toolStream *toolStreamSequencer,
+	onStatusProgress func(tokens int, tps float64),
+) (int, time.Time) {
 	stream := relayStreamChunks(ctx, chunks)
 	refresh := time.NewTicker(33 * time.Millisecond)
 	defer refresh.Stop()
+
+	var streamChars, streamTokens int
+	var genStart, lastStatusDraw time.Time
+	maybeUpdateStatus := func() {
+		if onStatusProgress == nil || genStart.IsZero() || streamTokens <= 0 {
+			return
+		}
+		if now := time.Now(); now.Sub(lastStatusDraw) >= 100*time.Millisecond {
+			onStatusProgress(streamTokens, CalcStreamTPS(streamTokens, genStart, now))
+			lastStatusDraw = now
+		}
+	}
+
 	for {
 		var chunk StreamChunk
 		select {
 		case next, ok := <-stream:
 			if !ok {
-				return
+				return streamTokens, genStart
 			}
 			chunk = next
 		case <-refresh.C:
 			a.refreshStreamPresentation(sr)
+			maybeUpdateStatus()
 			continue
 		}
 		a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
+		if chunk.Content != "" && genStart.IsZero() {
+			switch chunk.Type {
+			case "reasoning", "text", "tool_name", "tool_target", "tool_call":
+				genStart = time.Now()
+				lastStatusDraw = genStart
+			}
+		}
 		switch chunk.Type {
 		case "reasoning":
+			streamChars += len(chunk.Content)
+			streamTokens = DisplayTokensFromChars(streamChars)
 			if loader != nil {
 				loader.PauseDots()
 				loader.Feed()
@@ -124,26 +157,35 @@ func (a *Agent) consumeTurnChunks(ctx context.Context, chunks <-chan StreamChunk
 				sr.WriteReasoning(cleaned)
 			}
 		case "text":
+			streamChars += len(chunk.Content)
+			streamTokens = DisplayTokensFromChars(streamChars)
 			if loader != nil {
 				loader.PauseDots()
 				loader.Feed()
 			}
 			sr.Write(chunk.Content)
 		case "tool_name":
+			streamChars += len(chunk.Content)
+			streamTokens = DisplayTokensFromChars(streamChars)
 			if loader != nil {
 				loader.ShowDots()
 				loader.Feed()
 			}
 			toolStream.Feed(chunk)
 		case "tool_target":
+			streamChars += len(chunk.Content)
+			streamTokens = DisplayTokensFromChars(streamChars)
 			toolStream.Feed(chunk)
 		case "tool_call":
+			streamChars += len(chunk.Content)
+			streamTokens = DisplayTokensFromChars(streamChars)
 			if loader != nil {
 				loader.Feed()
 			}
 			toolStream.Feed(chunk)
 		}
 		a.refreshStreamPresentation(sr)
+		maybeUpdateStatus()
 	}
 }
 

@@ -48,16 +48,6 @@ func (s *streamBufferWriter) Write(p []byte) (int, error) {
 	return s.ma.StreamBuffer.Write(p)
 }
 
-func calcStreamTPS(tokens int, start time.Time, now time.Time) float64 {
-	if start.IsZero() || tokens <= 0 {
-		return 0
-	}
-	if elapsed := now.Sub(start).Seconds(); elapsed > 0 {
-		return float64(tokens) / elapsed
-	}
-	return 0
-}
-
 func latestUserPrompt(history []db.Message) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].IsUserInput() {
@@ -308,12 +298,17 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
 				engine.MaybeRecap(sink, promptTokens, totalCompletion, effectiveLimit, writer, theme)
 			}
-			currentPrompt := ma.GetSystemPrompt()
 			ma.HistoryMu.Lock()
-			if len(ma.History) > 0 && ma.History[0].Role == "system" {
-				ma.History[0].Content = currentPrompt
-			}
+			needsPrompt := len(ma.History) > 0 && ma.History[0].Role == "system" && ma.History[0].Content == ""
 			ma.HistoryMu.Unlock()
+			if needsPrompt {
+				currentPrompt := ma.GetSystemPrompt()
+				ma.HistoryMu.Lock()
+				if len(ma.History) > 0 && ma.History[0].Role == "system" && ma.History[0].Content == "" {
+					ma.History[0].Content = currentPrompt
+				}
+				ma.HistoryMu.Unlock()
+			}
 			return sink.Err()
 		},
 		Infer: func(ctx context.Context, iter int) (*db.Message, error) {
@@ -391,7 +386,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				switch chunk.Type {
 				case "reasoning":
 					subagentStreamChars += len(chunk.Content)
-					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+					subagentCompletionTokens = agent.DisplayTokensFromChars(subagentStreamChars)
 					if enableThinking {
 						if cleaned := echoFilter.Write(chunk.Content); cleaned != "" {
 							startResponseHeader()
@@ -400,20 +395,21 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 					}
 				case "text":
 					subagentStreamChars += len(chunk.Content)
-					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+					subagentCompletionTokens = agent.DisplayTokensFromChars(subagentStreamChars)
 					startResponseHeader()
 					sr.Write(chunk.Content)
 				case "tool_name", "tool_target":
-					// The engine prints tool titles after the model call completes.
+					subagentStreamChars += len(chunk.Content)
+					subagentCompletionTokens = agent.DisplayTokensFromChars(subagentStreamChars)
 				case "tool_call":
 					subagentStreamChars += len(chunk.Content)
-					subagentCompletionTokens = agent.TokensFromChars(subagentStreamChars)
+					subagentCompletionTokens = agent.DisplayTokensFromChars(subagentStreamChars)
 				default:
 					startResponseHeader()
 				}
 
 				if now := time.Now(); now.Sub(lastDraw) >= 100*time.Millisecond {
-					updateSubagentStatus(true, calcStreamTPS(subagentCompletionTokens, subagentGenStart, now), subagentCompletionTokens)
+					updateSubagentStatus(true, agent.CalcStreamTPS(subagentCompletionTokens, subagentGenStart, now), subagentCompletionTokens)
 					lastDraw = now
 				}
 			}
@@ -437,7 +433,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 
 			if !subagentGenStart.IsZero() {
-				updateSubagentStatus(false, calcStreamTPS(subagentCompletionTokens, subagentGenStart, time.Now()), subagentCompletionTokens)
+				updateSubagentStatus(false, agent.CalcStreamTPS(subagentCompletionTokens, subagentGenStart, time.Now()), subagentCompletionTokens)
 			}
 
 			ma.StreamBufferMu.Lock()

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"math"
+	"time"
 
 	"loop/pkg/agent/tool"
 	"loop/pkg/config"
@@ -26,6 +27,11 @@ func TokensFromChars(chars int) int {
 }
 
 func displayTokensFromChars(chars int) int {
+	return DisplayTokensFromChars(chars)
+}
+
+// DisplayTokensFromChars estimates BPE output tokens for live status-bar counters.
+func DisplayTokensFromChars(chars int) int {
 	if chars <= 0 {
 		return 0
 	}
@@ -34,6 +40,17 @@ func displayTokensFromChars(chars int) int {
 		return 1
 	}
 	return tokens
+}
+
+// CalcStreamTPS computes live generation speed in tokens per second.
+func CalcStreamTPS(tokens int, start, now time.Time) float64 {
+	if start.IsZero() || tokens <= 0 {
+		return 0
+	}
+	if elapsed := now.Sub(start).Seconds(); elapsed >= 0.05 {
+		return float64(tokens) / elapsed
+	}
+	return 0
 }
 
 func estimateDisplayToolSchemaTokens(tools []tool.Tool) int {
@@ -209,9 +226,6 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 		cfg = a.Config
 		a.LLMProviderMu.RUnlock()
 		messages = inferenceMessages(a.Context(), messages)
-		if historyCompressionEnabled(cfg) {
-			messages = CompactHistoricalToolOutputs(messages)
-		}
 	} else {
 		messages = compactRuntimeMessages(messages)
 	}

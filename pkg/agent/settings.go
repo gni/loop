@@ -164,6 +164,7 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 		}
 		next.ReasoningEffort = effort
 	}
+	prevGuided := cfg.GuidedMode
 	cfg.CollapseResults, cfg.ShowThinking = next.CollapseResults, next.ShowThinking
 	cfg.GuidedMode, cfg.ReasoningEffort = next.GuidedMode, next.ReasoningEffort
 	cfg.Theme, cfg.SyntaxTheme = next.Theme, next.SyntaxTheme
@@ -171,6 +172,8 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 		cfg.AutoApprove, cfg.ParallelToolCalls = false, false
 	}
 	a.ensureGuided().SetEnabled(next.GuidedMode)
-	a.markSystemPromptDirty()
+	if next.GuidedMode != prevGuided {
+		a.markSystemPromptDirty()
+	}
 	return nil
 }

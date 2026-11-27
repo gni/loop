@@ -100,11 +100,36 @@ func (anthropicProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequ
 		})
 	}
 
+	systemText := strings.Join(in.system, "\n\n")
+	var systemPayload any = systemText
+	if p.Config != nil && p.Config.PromptCacheBreakpoints {
+		if systemText != "" {
+			systemPayload = []map[string]any{{
+				"type":          "text",
+				"text":          systemText,
+				"cache_control": map[string]any{"type": message.CacheControlEphemeral},
+			}}
+		}
+		if len(definitions) > 0 {
+			definitions[len(definitions)-1]["cache_control"] = map[string]any{"type": message.CacheControlEphemeral}
+		}
+		if len(turns) > 0 {
+			if blocks, ok := turns[len(turns)-1]["content"].([]map[string]any); ok && len(blocks) > 0 {
+				for i := len(blocks) - 1; i >= 0; i-- {
+					if blocks[i]["type"] != "thinking" {
+						blocks[i]["cache_control"] = map[string]any{"type": message.CacheControlEphemeral}
+						break
+					}
+				}
+			}
+		}
+	}
+
 	payload := map[string]any{
 		"model":      in.modelName,
 		"stream":     true,
 		"messages":   turns,
-		"system":     strings.Join(in.system, "\n\n"),
+		"system":     systemPayload,
 		"max_tokens": in.maxTokens,
 	}
 	if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {

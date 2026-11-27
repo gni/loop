@@ -13,6 +13,7 @@ import (
 	"loop/pkg/domain/message"
 	domaintool "loop/pkg/domain/tool"
 	"loop/pkg/storage"
+	transportllm "loop/pkg/transport/llm"
 )
 
 const nonFileToolMaxBytes = 8192
@@ -116,17 +117,20 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 }
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (ChatCompletionRequest, []db.Message, []byte, error) {
-	inputMsgs := messages
-	if historyCompressionEnabled(p.Config) {
-		inputMsgs = CompactHistoricalToolOutputs(inputMsgs)
-	}
-
-	validMessages, _ := sanitizeRequestMessages(inputMsgs)
+	validMessages, _ := sanitizeRequestMessages(messages)
 
 	proto := toolProtocolForConfig(p.Config)
 	finalTools := proto.PrepareWireTools(tools, p.Config != nil && p.Config.CompactPrompt)
 	wireMessages := proto.PrepareWireMessages(validMessages)
-	cleanMessages, maxCompTokens, err := p.budgetRequestContext(ctx, wireMessages, finalTools)
+	var compactFallback func() []db.Message
+	if historyCompressionEnabled(p.Config) {
+		compactFallback = func() []db.Message {
+			compacted := CompactHistoricalToolOutputs(messages)
+			valid, _ := sanitizeRequestMessages(compacted)
+			return proto.PrepareWireMessages(valid)
+		}
+	}
+	cleanMessages, maxCompTokens, err := p.budgetRequestContextWithFallback(ctx, wireMessages, finalTools, compactFallback)
 	if err != nil {
 		return ChatCompletionRequest{}, nil, nil, err
 	}
@@ -134,6 +138,9 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx conte
 	reqBody, err := p.chatCompletionRequest(cleanMessages, finalTools, maxCompTokens)
 	if err != nil {
 		return ChatCompletionRequest{}, nil, nil, err
+	}
+	if p.Config != nil && p.Config.PromptCacheBreakpoints {
+		transportllm.ApplyPromptCacheBreakpoints(reqBody.Messages)
 	}
 	jsonData, err := marshalChatCompletionRequest(reqBody)
 	return reqBody, cleanMessages, jsonData, err

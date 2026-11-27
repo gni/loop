@@ -271,6 +271,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 	var (
 		globalPromptTokensEst, effectiveLimit int
+		lastStreamTokens                      int
 		sr                                    StreamRenderer
 		ncw                                   *NewlineCounterWriter
 		toolStream                            *toolStreamSequencer
@@ -352,15 +353,15 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			echoFilter := NewPromptEchoFilter(prompt)
 			priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
 
-			updateStreamStatus := func(generating bool) {
+			updateStreamStatus := func(generating bool, liveTokens int, tps float64) {
 				if a.UI != nil && !isNonInteractive {
 					live := a.LiveSettings()
-					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens, 0, effectiveLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens)
+					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens+liveTokens, liveTokens, effectiveLimit, generating, tps, a.CountActiveTasks(), live.ShowTokens)
 					a.UI.DrawStatusBar(rawW, liveTheme())
 				}
 			}
 
-			updateStreamStatus(true)
+			updateStreamStatus(true, 0, 0)
 
 			// Stream each tool call in index order while keeping interleaved
 			// argument fragments from different files separate.
@@ -409,7 +410,10 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 				toolStream = newToolStreamSequencer(sr, true)
 				toolStream.SetBatch(batch)
 			}
-			a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream)
+			liveTokens, liveGenStart := a.consumeTurnChunks(ctx, chunkChan, sessionID, loader, echoFilter, sr, toolStream, func(tokens int, tps float64) {
+				updateStreamStatus(true, tokens, tps)
+			})
+			lastStreamTokens = liveTokens
 			timer.Time("llm", "end")
 
 			if pending := echoFilter.Flush(); pending != "" {
@@ -435,7 +439,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 					view.InvalidateTrackedRows()
 				}
 			}
-			updateStreamStatus(false)
+			updateStreamStatus(false, liveTokens, CalcStreamTPS(liveTokens, liveGenStart, time.Now()))
 
 			a.CurrentStreamMu.Lock()
 			streamCapture.buf = nil
@@ -465,7 +469,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 
 			var finalTps float64
 			if dur := a.LastGenerationDuration(); dur > 0 {
-				finalTps = float64(assistantMsg.CompletionTokens) / dur.Seconds()
+				turnTokens := assistantMsg.CompletionTokens
+				if turnTokens <= 0 {
+					turnTokens = lastStreamTokens
+				}
+				finalTps = float64(turnTokens) / dur.Seconds()
 			}
 
 			syncPostTurnStatus = func() {

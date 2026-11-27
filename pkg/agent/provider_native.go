@@ -92,14 +92,20 @@ func (p *OpenAICompatibleProvider) nativeRequestContext(ctx context.Context, mes
 		return "", nil, err
 	}
 	base := strings.TrimRight(p.Config.Endpoint, "/")
-	if historyCompressionEnabled(p.Config) {
-		messages = CompactHistoricalToolOutputs(messages)
-	}
-	messages, _ = sanitizeRequestMessages(messages)
+	rawMessages := messages
+	messages, _ = sanitizeRequestMessages(rawMessages)
 	toolProto := toolProtocolForConfig(p.Config)
 	tools = toolProto.PrepareWireTools(tools, p.Config.CompactPrompt)
 	messages = toolProto.PrepareWireMessages(messages)
-	clean, maxTokens, err := p.budgetRequestContext(ctx, messages, tools)
+	var compactFallback func() []db.Message
+	if historyCompressionEnabled(p.Config) {
+		compactFallback = func() []db.Message {
+			compacted := CompactHistoricalToolOutputs(rawMessages)
+			valid, _ := sanitizeRequestMessages(compacted)
+			return toolProto.PrepareWireMessages(valid)
+		}
+	}
+	clean, maxTokens, err := p.budgetRequestContextWithFallback(ctx, messages, tools, compactFallback)
 	if err != nil {
 		return "", nil, err
 	}

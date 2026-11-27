@@ -14,7 +14,6 @@ import (
 	"loop/pkg/config"
 	"loop/pkg/db"
 	"loop/pkg/domain/message"
-	"loop/pkg/domain/task"
 )
 
 // providerState owns settings and provider replacement. Runs use an immutable
@@ -296,17 +295,7 @@ func (a *Agent) inferenceTools(ctx context.Context, allowlist []string) []tool.T
 		return nil
 	}
 	tools := a.Registry.GetAvailableTools(allowlist)
-	tools = a.selectInferenceTools(ctx, tools, allowlist)
-	if current := run.TaskSnapshot(ctx); current != nil && !task.NeedsProgress(current) {
-		available := make([]tool.Tool, 0, len(tools))
-		for _, definition := range tools {
-			if definition.Function.Name != "task_state" {
-				available = append(available, definition)
-			}
-		}
-		tools = available
-	}
-	return tools
+	return a.selectInferenceTools(ctx, tools, allowlist)
 }
 
 func prepareToolDefinitions(tools []tool.Tool, compact bool) []tool.Tool {

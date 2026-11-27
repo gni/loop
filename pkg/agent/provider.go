@@ -218,11 +218,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return p.streamNative(ctx, messages, tools, chunkChan)
 	}
 
-	if p.Config != nil && p.Config.PromptCacheBreakpoints {
-		messages = append([]db.Message(nil), messages...)
-		transportllm.ApplyPromptCacheBreakpoints(messages)
-	}
-
 	requestStarted := time.Now()
 	timeoutDuration := p.streamTimeout()
 
@@ -370,8 +365,11 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			cacheWriteTokens = max(cacheWriteTokens, chunk.Usage.CacheWriteTokens, chunk.Usage.PromptTokensDetails.CacheWriteTokens)
 		}
 		if chunk.Timings != nil {
-			if promptTokens == 0 && chunk.Timings.PromptN > 0 {
-				promptTokens = chunk.Timings.PromptN
+			if chunk.Timings.CacheN > 0 {
+				cacheReadTokens = max(cacheReadTokens, chunk.Timings.CacheN)
+			}
+			if promptTokens == 0 && (chunk.Timings.PromptN > 0 || chunk.Timings.CacheN > 0) {
+				promptTokens = chunk.Timings.PromptN + chunk.Timings.CacheN
 			}
 			if completionTokens == 0 && chunk.Timings.PredictedN > 0 {
 				completionTokens = chunk.Timings.PredictedN

@@ -237,7 +237,9 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 				catalog = append(catalog, skill)
 			}
 		}
-		skills := relevantSkills(catalog, cfg.Task, catalogBudget)
+		// Keep the skills catalog deterministically sorted by name so the
+		// system prompt prefix does not reorder across user turns.
+		skills := relevantSkills(catalog, "", catalogBudget)
 		for _, s := range skills {
 			if s.DisableModelInvocation || loadedNames[strings.ToLower(s.Name)] {
 				continue
@@ -372,12 +374,6 @@ func (a *Agent) GetSystemPromptFor(allowlist []string) string {
 		}
 		a.SpawnedAgentsMu.RUnlock()
 		sort.Strings(cfg.ActiveAgents)
-
-		for _, t := range a.ListTasks() {
-			if t.Status == "running" {
-				cfg.ActiveTasks = append(cfg.ActiveTasks, t)
-			}
-		}
 	}
 	return BuildSystemPrompt(cfg)
 }

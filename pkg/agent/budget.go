@@ -21,6 +21,10 @@ func requestTokens(messages []db.Message) int {
 }
 
 func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
+	return p.budgetRequestContextWithFallback(ctx, messages, tools, nil)
+}
+
+func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.Context, messages []db.Message, tools []tool.Tool, compactFallback func() []db.Message) ([]db.Message, int, error) {
 	schemaTokens := EstimateToolSchemaTokens(tools)
 	contextLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), requestTokens(messages)+schemaTokens)
 	taskLimit := run.RequestTokenLimit(ctx)
@@ -60,7 +64,8 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 	ratio := p.requestCounter().estimateScale()
 	used := 0
 	measured := false
-	for attempt := range 4 {
+	triedCompactFallback := false
+	for attempt := 0; attempt < 4; {
 		if ctx != nil && ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
@@ -87,6 +92,17 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 			run.RecordRequestBudget(ctx, used, budget.Output)
 			return clean, budget.Output, nil
 		}
+		// Only run historical tool output compaction when context pressure
+		// actually exceeds preferredAvailable, preserving KV cache prefixes
+		// during normal turns while reclaiming space before evicting messages.
+		if compactFallback != nil && !triedCompactFallback {
+			triedCompactFallback = true
+			candidate := EnforceToolPairingInvariance(compactFallback())
+			if requestTokens(candidate) < requestTokens(clean) {
+				clean = candidate
+				continue
+			}
+		}
 		if attempt == 3 {
 			if used <= available {
 				run.RecordRequestBudget(ctx, used, budget.Output)
@@ -94,6 +110,7 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 			}
 			break
 		}
+		attempt++
 		target := preferredAvailable - schemaTokens
 		if measured || ratio > 1 {
 			// Leave a little room for the changed template when pruning old units.

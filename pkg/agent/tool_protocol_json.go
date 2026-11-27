@@ -6,14 +6,12 @@ import (
 	"strings"
 
 	"loop/pkg/agent/fallback"
-	"loop/pkg/agent/run"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
-	"loop/pkg/domain/task"
 	domaintool "loop/pkg/domain/tool"
 )
 
-// jsonToolProtocol implements native JSON function-calling schemas, adaptive
+// jsonToolProtocol implements native JSON function-calling schemas, session-stable
 // tool exposure, native tool_calls/tool history turns, and passthrough text streaming.
 type jsonToolProtocol struct{}
 
@@ -41,22 +39,17 @@ func (jsonToolProtocol) SelectInferenceTools(a *Agent, ctx context.Context, tool
 		return tools
 	} // Never hide capabilities without a discovery route.
 
-	current := run.TaskSnapshot(ctx)
-	objective := ""
-	if current != nil {
-		objective = strings.ToLower(current.Objective)
-	}
-	hasSkills := len(a.GetActiveSkills()) > 0
-	hasSpawned := a.hasSpawnedAgents()
+	// Keep the selected tool catalog strictly deterministic across turns and
+	// steps so the serialized tool prefix stays KV-cache-aligned. Volatile
+	// per-turn state (prompt keywords, active background tasks, task progress)
+	// must never add or remove schemas mid-session.
 	askUserEnabled := !strings.EqualFold(strings.TrimSpace(cfg.AskUserMode), "disabled")
+	subagentsEnabled := cfg.MaxSubagentDepth > 0
 
 	selected := make([]tool.Tool, 0, len(tools))
 	for _, definition := range tools {
 		name := definition.Function.Name
 		needed := a.Registry.IsExposed(name)
-		if current != nil {
-			needed = needed || run.ToolDiscovered(ctx, name)
-		}
 		if strings.HasPrefix(name, "mcp__") {
 			if owner, ok := a.MCPToolServer(name); ok && cfg.MCPServers[owner].Exposure != "search" {
 				needed = true
@@ -66,32 +59,13 @@ func (jsonToolProtocol) SelectInferenceTools(a *Agent, ctx context.Context, tool
 			needed = true
 		}
 		switch name {
-		case "read", "edit", "write", "bash", "grep", "find_files", "list_directory", "todo", "search_tools":
+		case "read", "edit", "write", "bash", "grep", "find_files", "list_directory", "todo", "search_tools",
+			"task_state", "get_task_status", "stop_task", "search_symbols", "load_skill":
 			needed = true
-		case "load_skill":
-			needed = needed || hasSkills
 		case "ask_user":
 			needed = needed || askUserEnabled
-		case "task_state":
-			needed = needed || task.NeedsProgress(current)
-		case "get_task_status", "stop_task":
-			needed = needed || a.CountActiveTasks() > 0
-		case "remove_subagent", "list_subagents", "inspect_subagent":
-			needed = needed || hasSpawned
-		case "create_subagent":
-			if hasSpawned {
-				needed = true
-			} else if objective != "" {
-				for _, word := range []string{"subagent", "delegate", "swarm"} {
-					needed = needed || strings.Contains(objective, word)
-				}
-			}
-		case "search_symbols":
-			if objective != "" {
-				for _, word := range []string{"symbol", "definition", "caller", "reference"} {
-					needed = needed || strings.Contains(objective, word)
-				}
-			}
+		case "create_subagent", "remove_subagent", "list_subagents", "inspect_subagent":
+			needed = needed || subagentsEnabled
 		}
 		if needed {
 			selected = append(selected, definition)

@@ -144,11 +144,19 @@ func (a *Agent) SyncSessionSystemPrompt(messages *[]db.Message, sessionID string
 	if a == nil || messages == nil {
 		return
 	}
-	currentSysPrompt := a.GetSystemPrompt()
 	a.stateMu.Lock()
 	forceUpdate := a.ForceSystemPromptUpdate
 	a.ForceSystemPromptUpdate = false
 	a.stateMu.Unlock()
+
+	a.MessagesMu.RLock()
+	needsPrompt := len(*messages) == 0 || ((*messages)[0].Role == "system" && (forceUpdate || (*messages)[0].Content == ""))
+	a.MessagesMu.RUnlock()
+	if !needsPrompt {
+		return
+	}
+
+	currentSysPrompt := a.GetSystemPrompt()
 
 	a.MessagesMu.Lock()
 	if len(*messages) == 0 {
@@ -213,8 +221,19 @@ func (a *Agent) SetActiveSkills(skills []tool.Skill) {
 	cloned := make([]tool.Skill, len(skills))
 	copy(cloned, skills)
 	a.stateMu.Lock()
+	changed := len(a.ActiveSkills) != len(cloned)
+	if !changed {
+		for i := range cloned {
+			if a.ActiveSkills[i] != cloned[i] {
+				changed = true
+				break
+			}
+		}
+	}
 	a.ActiveSkills = cloned
-	a.ForceSystemPromptUpdate = true
+	if changed {
+		a.ForceSystemPromptUpdate = true
+	}
 	a.stateMu.Unlock()
 }
 

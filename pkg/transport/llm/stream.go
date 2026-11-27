@@ -26,23 +26,34 @@ type Usage struct {
 	} `json:"prompt_tokens_details"`
 }
 
-// Timings reports llama.cpp token generation counts when usage is omitted.
+// Timings reports llama.cpp token generation and KV-cache counts.
 type Timings struct {
 	PromptN    int `json:"prompt_n"`
+	CacheN     int `json:"cache_n"`
 	PredictedN int `json:"predicted_n"`
 }
 
-// ApplyPromptCacheBreakpoints marks the system prompt and the tool-catalog prefix
-// (the message block that carries the catalog, i.e. the first system turn) with an
-// ephemeral cache breakpoint. Call this only for endpoints that explicitly
-// support cache_control in OpenAI-compatible chat messages.
+// ApplyPromptCacheBreakpoints marks the leading system prompt and the latest
+// non-system message with ephemeral cache breakpoints so both the static prefix
+// and the rolling conversation prefix can be cached. Call this only for
+// endpoints that explicitly support cache_control in OpenAI-compatible chat messages.
 func ApplyPromptCacheBreakpoints(messages []message.Message) {
+	systemMarked := false
+	lastTurn := -1
 	for i, m := range messages {
-		if m.IsSystem() {
+		if !systemMarked && m.IsSystem() {
 			hash := sha256.Sum256([]byte(m.Content))
 			messages[i].CacheControl = []message.CacheBlock{{Type: message.CacheControlEphemeral, Key: fmt.Sprintf("%x", hash[:])}}
-			break
+			systemMarked = true
+			continue
 		}
+		if !m.IsSystem() {
+			lastTurn = i
+		}
+	}
+	if lastTurn >= 0 {
+		hash := sha256.Sum256([]byte(messages[lastTurn].Content))
+		messages[lastTurn].CacheControl = []message.CacheBlock{{Type: message.CacheControlEphemeral, Key: fmt.Sprintf("%x", hash[:])}}
 	}
 }
 

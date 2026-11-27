@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"loop/pkg/agent"
-	"loop/pkg/agent/run"
 	"loop/pkg/agent/subagent"
 	"loop/pkg/agent/tool"
 	"loop/pkg/db"
@@ -105,9 +104,6 @@ func (ma *MultiAgent) GetSystemPrompt() string {
 	canSpawn := slices.ContainsFunc(allowlist, tool.IsSpawnTool)
 
 	cfg := ma.BaseAgent.BaseSystemPromptConfig(allowlist, canSpawn)
-	if ctx, _, _, ok := ma.activeTurn(); ok {
-		cfg.Task = run.Objective(ctx)
-	}
 	cfg.BaseInstruction = ma.SystemPrompt
 	if canSpawn {
 		cfg.ActiveAgents = activeAgents

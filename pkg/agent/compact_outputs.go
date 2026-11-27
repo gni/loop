@@ -37,6 +37,7 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 	completeReads := make(map[string]bool)
 	successfulUpdates := make(map[string]bool)
 	successfulCommands := make(map[string]bool)
+	seenTaskOutput := make(map[string]struct{ body, call string })
 	for index := len(messages) - 1; index >= 0; index-- {
 		msg := messages[index]
 		if msg.Role != "tool" {
@@ -63,6 +64,24 @@ func CompactHistoricalToolOutputs(messages []db.Message) []db.Message {
 		alreadyCompacted := strings.HasPrefix(msg.Content, "[Historical ") ||
 			strings.Contains(msg.Content, "omitted from historical") ||
 			strings.Contains(msg.Content, "truncated from historical")
+		if toolName == "get_task_status" && !failed && len(msg.ContentBlocks) == 0 && hasCall {
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if json.Unmarshal([]byte(call.Function.Arguments), &args) == nil && args.TaskID != "" {
+				if header, body, ok := strings.Cut(msg.Content, "\n\nOutput:\n"); ok && body != "" && !strings.HasPrefix(body, "[New output") && body != "(no new output)" {
+					if index < lastAssistantIndex {
+						if prior, exists := seenTaskOutput[args.TaskID]; exists && prior.body == body {
+							msg.Content = header + "\n\nOutput:\n(unchanged; output retained in " + prior.call + ")"
+							alreadyCompacted = true
+						}
+					}
+					if _, exists := seenTaskOutput[args.TaskID]; !exists {
+						seenTaskOutput[args.TaskID] = struct{ body, call string }{body, msg.ToolCallID}
+					}
+				}
+			}
+		}
 		switch {
 		case index >= lastAssistantIndex:
 			// New results can supersede older reads, but stay intact themselves.

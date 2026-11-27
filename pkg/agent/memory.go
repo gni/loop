@@ -34,7 +34,6 @@ func (a *Agent) LoadMemoryContext() string {
 	if a.Config != nil && a.Config.MemoryPolicy != "" {
 		policy = strings.ToLower(strings.TrimSpace(a.Config.MemoryPolicy))
 	}
-	objective := a.knowledgeObjective()
 	read := func(path, kind string) bool {
 		optional := strings.HasSuffix(strings.ToUpper(path), "MEMORY.MD")
 		if optional && policy == "off" {
@@ -49,8 +48,10 @@ func (a *Agent) LoadMemoryContext() string {
 			return true
 		}
 		if text := strings.TrimSpace(content); text != "" {
-			if optional && policy == "auto" && !strings.Contains(strings.ToLower(objective), "memory.md") {
-				text = relevantKnowledge(text, objective, max(512, min(4096, a.GetEffectiveContextLimit(0)/8)))
+			if optional && policy == "auto" {
+				// Use a deterministic top-down excerpt (empty query) so the
+				// system prompt prefix never shifts when the user prompt changes.
+				text = relevantKnowledge(text, "", max(512, min(4096, a.GetEffectiveContextLimit(0)/8)))
 			}
 			fmt.Fprintf(&output, "\n\n%s (%s):\n%s", kind, path, text)
 		}

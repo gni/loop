@@ -62,28 +62,12 @@ func latestHistoricalTask(messages []db.Message) *task.State {
 func taskContextMessages(ctx context.Context, messages []db.Message) []db.Message {
 	current := run.TaskSnapshot(ctx)
 	if !task.HasWork(current) {
-		if run.RestoreTask(ctx, latestHistoricalTask(messages)) {
-			current = run.TaskSnapshot(ctx)
-		}
+		run.RestoreTask(ctx, latestHistoricalTask(messages))
 	}
-	if !task.NeedsProgress(current) {
-		return messages
-	}
-	if current.Status == task.Running && current.ExpectedOutcome == "" && current.Summary == "" && len(current.Pending()) == 0 {
-		return messages
-	}
-	brief := run.TaskBrief(current)
-	if brief == "" {
-		return messages
-	}
-	brief = "Request progress (assessment, not proof):\n" + brief
-	output := make([]db.Message, 0, len(messages)+1)
-	for _, msg := range messages {
-		if msg.ContextKind != "task_context" {
-			output = append(output, msg)
-		}
-	}
-	return append(output, db.Message{Role: "user", ContextKind: "task_context", Content: brief})
+	// Do not append an ephemeral mutable progress message at the tail of every
+	// inference turn: removing/re-injecting it breaks tail KV cache reuse and
+	// mutates adjacent user/tool turns (especially in XML protocol mode).
+	return messages
 }
 
 func isPinnedRequestContext(msg db.Message) bool {
