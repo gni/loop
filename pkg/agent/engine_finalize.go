@@ -208,13 +208,26 @@ func (e *TurnEngine) finalizeToolCall(
 			} else {
 				var rendered bytes.Buffer
 				render.ToolOutput(&rendered, theme, pruned, false, tc.Function.Name, tc.Function.Arguments, tc.Function.Name == "write")
-				if line := verifiedToolSummaryLine(rendered.String()); line != "" {
-					if replacer, ok := sr.(WriteResultPresenter); ok {
-						_ = replacer.TryCompleteWriteResult(idx, line)
+				editDiffAlreadyShown := true
+				if tc.Function.Name == "edit" {
+					if ep, ok := sr.(EditPreviewPresenter); ok {
+						editDiffAlreadyShown = ep.HasRenderedEditDiff(idx)
 					}
-					// Old previews may have scrolled away; their result must
-					// not appear beneath an unrelated later file.
-					resultHandled = true
+				}
+				if tc.Function.Name == "edit" && !editDiffAlreadyShown && !a.LiveSettings().CollapseResults {
+					if ep, ok := sr.(EditPreviewPresenter); ok && ep.ReplaceCompactEditOutput(idx, rendered.String()) {
+						resultHandled = true
+					}
+				}
+				if !resultHandled {
+					if line := verifiedToolSummaryLine(rendered.String()); line != "" {
+						if replacer, ok := sr.(WriteResultPresenter); ok {
+							_ = replacer.TryCompleteWriteResult(idx, line)
+						}
+						// Old previews may have scrolled away; their result must
+						// not appear beneath an unrelated later file.
+						resultHandled = true
+					}
 				}
 			}
 		}

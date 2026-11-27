@@ -314,6 +314,27 @@ func RenderToolOutputWithOptions(w io.Writer, output string, isError bool, colla
 	}
 }
 
+// FormatEditDiffLines styles unified diff lines using the active theme colors.
+func FormatEditDiffLines(diff string, theme style.UITheme) []string {
+	body := strings.TrimRight(diff, "\r\n")
+	if body == "" {
+		return nil
+	}
+	rawLines := strings.Split(body, "\n")
+	bodyStyle := style.NewStyle().Foreground(theme.Text)
+	out := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		if styled, ok := styleDiffOutputLine(line, theme); ok {
+			out = append(out, styled)
+		} else if strings.Contains(line, "\x1b[") {
+			out = append(out, line)
+		} else {
+			out = append(out, bodyStyle.Render(line))
+		}
+	}
+	return out
+}
+
 func styleDiffOutputLine(line string, theme style.UITheme) (string, bool) {
 	if strings.HasPrefix(line, "\x1b[32m") {
 		return style.NewStyle().Foreground(theme.Success).Render(style.StripAnsi(line)), true

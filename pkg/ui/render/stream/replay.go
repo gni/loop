@@ -40,6 +40,7 @@ func (sr *StreamRenderer) appendLiveReplayTextLocked(kind, text string) {
 
 type liveReplayCall struct {
 	name, path, content, result string
+	editDiff                    string
 	arguments, output           string
 	bytes, index                int
 	completed, failed           bool
@@ -56,7 +57,8 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 	for i, v := range sr.liveCallViews {
 		calls[i] = liveReplayCall{
 			name: v.name, path: v.path, content: v.fullContent.String(),
-			result: v.result, bytes: v.receivedBytes, index: i,
+			editDiff: v.editDiff,
+			result:   v.result, bytes: v.receivedBytes, index: i,
 			completed: v.completed, failed: v.failed,
 			arguments: v.arguments, output: v.output, resultRecorded: v.resultRecorded,
 		}
@@ -177,8 +179,12 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 			if call.name == "bash" {
 				continue
 			}
-			if collapsed && !call.failed && (call.name == "write" || call.name == "edit") {
-				// Match the compact live progress format; never emit source.
+			if call.name == "edit" && !collapsed && call.editDiff != "" {
+				for _, line := range render.FormatEditDiffLines(call.editDiff, theme) {
+					fmt.Fprintln(w, line)
+				}
+			} else if !call.failed && ((collapsed && call.name == "write") || call.name == "edit") {
+				// Match the compact live progress format while receiving.
 				clean := safeLiveLabel(strings.Join(strings.Fields(call.content), " "))
 				maxExcerpt := 72
 				if viewportWidth > 0 && viewportWidth < 100 {
@@ -186,8 +192,8 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 				}
 				clean = render.TailCells(clean, maxExcerpt)
 				label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", call.name, call.index+1, call.bytes)
-				if call.name == "write" && clean != "" && maxExcerpt > 0 {
-					label = fmt.Sprintf("↳ receiving write #%d: %s", call.index+1, clean)
+				if (call.name == "write" || call.name == "edit") && clean != "" && maxExcerpt > 0 {
+					label = fmt.Sprintf("↳ receiving %s #%d: %s", call.name, call.index+1, clean)
 				}
 				if !call.completed {
 					fmt.Fprintln(w, style.NewStyle().Foreground(theme.TextMuted).Render(label))

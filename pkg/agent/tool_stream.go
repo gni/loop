@@ -74,6 +74,8 @@ func (s *toolStreamState) appendArguments(fragment string) {
 			for _, r := range fragment {
 				s.draft.appendVisible(r)
 			}
+		case s.name == "edit":
+			s.draft.appendXML(fragment)
 		case s.name == "todo":
 			trimmed := strings.TrimSpace(s.arguments.String())
 			if !strings.HasPrefix(trimmed, "<") {
@@ -333,7 +335,7 @@ func (s *toolStreamSequencer) presentLive(force bool) {
 		if !state.complete && !force {
 			return
 		}
-		if s.deferFollowing && state.name != "write" && state.name != "edit" {
+		if s.deferFollowing && state.name != "write" && (state.name != "edit" || !state.editDiffShown) {
 			return
 		}
 		next := s.calls[s.active+1]
@@ -353,16 +355,19 @@ func (s *toolStreamSequencer) presentLiveCall(index int, state *toolStreamState)
 		// Wait for the complete filename instead of rewriting a split path.
 		path = ""
 	}
-	if state.name == "edit" && s.editDiffPreview != nil {
-		s.onLiveContent(index, state.name, path, "")
-		if state.complete && !state.editDiffShown {
+	// Stream decoded edit text live into the compact receiving row so users
+	// see immediate progress in both collapsed and uncollapsed modes, then
+	// replace that progress row with the full diff once complete.
+	s.onLiveContent(index, state.name, path, delta)
+	if state.name == "edit" && s.editDiffPreview != nil && state.complete && !state.editDiffShown {
+		if diff := s.editDiffPreview(state.name, state.arguments.String()); diff != "" {
 			state.editDiffShown = true
-			if diff := s.editDiffPreview(state.name, state.arguments.String()); diff != "" {
+			if presenter, ok := s.renderer.(EditPreviewPresenter); ok {
+				presenter.ShowLiveEditDiff(index, path, diff)
+			} else {
 				s.onLiveContent(index, state.name, path, diff)
 			}
 		}
-	} else {
-		s.onLiveContent(index, state.name, path, delta)
 	}
 	s.progress(index, state)
 }

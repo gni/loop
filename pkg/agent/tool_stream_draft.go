@@ -35,10 +35,65 @@ type streamedDraft struct {
 	edit             bool
 	linePrefix       string
 	lineStart        bool
+	xmlInTag         bool
+	xmlTag           strings.Builder
 	tail             []rune
 	liveTail         []rune
 	liveHead         int
 	pending          strings.Builder
+}
+
+// appendXML decodes XML <edit> body fragments (<old>...</old><new>...</new>)
+// into readable +/- lines without leaking XML tag markup into the live excerpt.
+func (d *streamedDraft) appendXML(fragment string) {
+	for _, r := range fragment {
+		if d.xmlInTag {
+			if r == '>' {
+				tag := strings.ToLower(strings.TrimSpace(d.xmlTag.String()))
+				d.xmlTag.Reset()
+				d.xmlInTag = false
+				name := tag
+				if fields := strings.Fields(tag); len(fields) > 0 {
+					name = fields[0]
+				}
+				switch name {
+				case "old":
+					d.readingBody = true
+					d.linePrefix = "- "
+					d.lineStart = true
+				case "new":
+					d.readingBody = true
+					d.linePrefix = "+ "
+					d.lineStart = true
+				case "/old", "/new":
+					if d.readingBody && !d.lineStart {
+						d.appendPlain('\n')
+						d.lineStart = true
+					}
+					d.readingBody = false
+					d.linePrefix = ""
+				}
+				continue
+			}
+			if d.xmlTag.Len() < 128 {
+				d.xmlTag.WriteRune(r)
+			}
+			continue
+		}
+		if r == '<' {
+			d.xmlInTag = true
+			d.xmlTag.Reset()
+			continue
+		}
+		if d.readingBody {
+			if d.lineStart && (r == '\n' || r == '\r') {
+				continue
+			}
+			d.appendVisible(r)
+		} else if r != '\n' && r != '\r' && r != ' ' && r != '\t' {
+			d.appendPlain(r)
+		}
+	}
 }
 
 func (d *streamedDraft) appendVisible(r rune) {

@@ -99,6 +99,13 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 		}
 		return nil, 0, &run.InferenceFailure{Kind: run.ContextOverflow, Cause: fmt.Errorf("reserved output exceeds model context limit %d", contextLimit)}
 	}
+	// Reserve only a practical output floor before mutating or evicting history.
+	// Using the full MaxCompletionTokens ceiling (e.g. 32k on a 128k window)
+	// here would trigger premature history compaction around 89k tokens and
+	// wipe the KV cache long before auto-compaction (109k), even though
+	// budget.Output already clamps max_tokens smoothly to contextLimit-used-headroom.
+	preferredOutput := min(output, max(floor, min(2048, contextLimit/16)))
+	preferredAvailable := contextLimit - preferredOutput - headroom
 	originalCount := len(clean)
 	// A measured request may have a different token density than the fallback.
 	// Retain the conservative ratio if the server becomes unavailable mid-trim.
@@ -141,7 +148,6 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 		budget.Output = max(0, min(output, contextLimit-used-headroom))
 		budget.Measured, budget.Removed = measured, originalCount-len(clean)
 		p.setContextBudget(budget)
-		preferredAvailable := contextLimit - output - headroom
 		if used <= preferredAvailable {
 			run.RecordRequestBudget(ctx, used, budget.Output)
 			return clean, budget.Output, nil

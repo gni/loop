@@ -57,6 +57,11 @@ type LiveCollapsePresenter interface{ SetLiveCollapse(bool) }
 type LiveThemePresenter interface{ SetTheme(style.UITheme) }
 type PendingWritePresenter interface{ MarkPendingWriteResults(string) }
 type WriteResultPresenter interface{ TryCompleteWriteResult(int, string) bool }
+type EditPreviewPresenter interface {
+	ShowLiveEditDiff(index int, path, diff string)
+	HasRenderedEditDiff(index int) bool
+	ReplaceCompactEditOutput(index int, rendered string) bool
+}
 type ReplaySafety interface{ SafeToReplay() bool }
 type TrackedRowInvalidator interface{ InvalidateTrackedRows() }
 type ToolResultRecorder interface {

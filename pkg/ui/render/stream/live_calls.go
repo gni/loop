@@ -34,6 +34,8 @@ type liveCallView struct {
 	bashHighlighter  *syntax.BashCommandHighlighter
 	language         string
 	fullContent      strings.Builder // Semantic source, including hidden chunks.
+	editDiff         string
+	diffRendered     bool
 	result           string
 	output           string
 	arguments        string
@@ -145,10 +147,10 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 	view.receivedBytes += len(delta)
 	view.fullContent.WriteString(delta)
 	if !view.headerShown && (name == "write" || name == "edit") {
-		if view.path == "" && (name == "edit" || view.fullContent.Len() == 0) {
+		if view.path == "" && view.fullContent.Len() == 0 {
 			return
 		}
-		// A write can start with an unnamed heading as soon as content
+		// A write or edit can start with an unnamed heading as soon as content
 		// arrives. Keep its eventual filename in this same call instead of
 		// appending a second heading below the source.
 		delta = view.fullContent.String()
@@ -196,8 +198,14 @@ func (sr *StreamRenderer) ShowLiveToolContent(index int, name, path, delta strin
 			view.lastRenderedPath = view.path
 		}
 	}
-	if sr.liveCollapse && (name == "write" || name == "edit") {
+	if name == "edit" && view.diffRendered {
+		return
+	}
+	if (sr.liveCollapse && name == "write") || name == "edit" {
 		// Keep only a bounded excerpt for the compact progress row.
+		// Edit always uses this single-line live stream while receiving
+		// arguments (both collapsed and uncollapsed), then replaces it with
+		// the full diff once ready.
 		for _, r := range delta {
 			view.compactTail = append(view.compactTail, r)
 			if len(view.compactTail) > 96 {
@@ -250,8 +258,8 @@ func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallV
 	}
 	clean = render.TailCells(clean, maxExcerpt)
 	label := fmt.Sprintf("↳ receiving %s #%d (%d bytes)", view.name, index+1, view.receivedBytes)
-	if clean != "" && maxExcerpt > 0 && view.name == "write" {
-		label = fmt.Sprintf("↳ receiving write #%d: %s", index+1, clean)
+	if clean != "" && maxExcerpt > 0 && (view.name == "write" || view.name == "edit") {
+		label = fmt.Sprintf("↳ receiving %s #%d: %s", view.name, index+1, clean)
 	}
 	line := style.NewStyle().Foreground(sr.theme.TextMuted).Render(label)
 	if view.compactLine != -1 {
@@ -267,6 +275,127 @@ func (sr *StreamRenderer) showCollapsedLiveCallLocked(index int, view *liveCallV
 	}
 	fmt.Fprintln(sr.w, line)
 	view.endsWithNewline = true
+}
+
+// ShowLiveEditDiff replaces the single-line "↳ receiving edit" progress row
+// with the theme-styled diff once an edit call's arguments are complete (when
+// uncollapsed). When collapsed, the diff is retained for replay and the compact
+// progress row stays in place for the final one-line summary.
+func (sr *StreamRenderer) ShowLiveEditDiff(index int, path, diff string) {
+	if diff == "" {
+		return
+	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	view := sr.liveCallViews[index]
+	if view == nil || view.name != "edit" || !view.headerShown {
+		return
+	}
+	if safePath := safeLiveLabel(path); safePath != "" {
+		view.path = safePath
+		if safePath != view.lastRenderedPath && view.titleLine >= 0 {
+			if ReplaceTrackedStreamLine(sr.w, view.titleLine, sr.liveToolTitle("edit", safePath)) {
+				view.lastRenderedPath = safePath
+			}
+		}
+	}
+	view.editDiff = diff
+	if sr.liveCollapse {
+		return
+	}
+	styledLines := render.FormatEditDiffLines(diff, sr.theme)
+	if len(styledLines) == 0 {
+		return
+	}
+	sr.replaceCompactRowWithLinesLocked(view, styledLines)
+	view.diffRendered = true
+	view.bytes = len(diff)
+	view.endsWithNewline = true
+}
+
+// HasRenderedEditDiff reports whether an edit preview already painted its full
+// diff lines on screen, so finalization only needs to write the summary row.
+func (sr *StreamRenderer) HasRenderedEditDiff(index int) bool {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	view := sr.liveCallViews[index]
+	return view != nil && view.diffRendered
+}
+
+// ReplaceCompactEditOutput replaces an edit's compact progress row in place
+// with the finalized multi-line output (diff + summary) when the progress row
+// is still the latest row on screen (for example in XML mode or when live diff
+// preview was unavailable).
+func (sr *StreamRenderer) ReplaceCompactEditOutput(index int, rendered string) bool {
+	trimmed := strings.TrimRight(rendered, "\r\n")
+	if trimmed == "" {
+		return false
+	}
+	lines := strings.Split(trimmed, "\n")
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	view := sr.liveCallViews[index]
+	if view == nil || view.name != "edit" || view.compactLine == -1 {
+		return false
+	}
+	if view.compactLine == -2 {
+		// Non-repaintable writer: emit the finalized diff + summary directly.
+		delete(sr.writeResultLines, index)
+		view.compactLine = -1
+		for _, line := range lines {
+			fmt.Fprintln(sr.w, line)
+		}
+		view.diffRendered = true
+		view.endsWithNewline = true
+		return true
+	}
+	if GetNewlineCount(sr.w) != view.compactLine+1 {
+		return false
+	}
+	if !sr.replaceCompactRowWithLinesLocked(view, lines) {
+		return false
+	}
+	delete(sr.writeResultLines, index)
+	view.diffRendered = true
+	view.endsWithNewline = true
+	return true
+}
+
+// replaceCompactRowWithLinesLocked replaces view.compactLine with lines[0] when
+// it is the last rendered row and appends lines[1:] directly below it.
+func (sr *StreamRenderer) replaceCompactRowWithLinesLocked(view *liveCallView, lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	replaced := false
+	if view.compactLine >= 0 && GetNewlineCount(sr.w) == view.compactLine+1 {
+		first := lines[0]
+		width := markdown.RenderWidth(sr.w)
+		if width > 0 && style.CellWidth(first) >= width {
+			wrapped := style.HardWrapAnsiLine(first, width)
+			if len(wrapped) > 0 && ReplaceTrackedStreamLine(sr.w, view.compactLine, wrapped[0]) {
+				replaced = true
+				for _, extra := range wrapped[1:] {
+					fmt.Fprintln(sr.w, extra)
+				}
+				sr.requestLiveSyntaxRefreshLocked()
+			}
+		} else if ReplaceTrackedStreamLine(sr.w, view.compactLine, first) {
+			replaced = true
+		}
+		if replaced {
+			view.compactLine = -1
+			for _, line := range lines[1:] {
+				fmt.Fprintln(sr.w, line)
+			}
+			return true
+		}
+	}
+	view.compactLine = -1
+	for _, line := range lines {
+		fmt.Fprintln(sr.w, line)
+	}
+	return false
 }
 
 // writeLiveBashLocked streams every incoming bash command fragment immediately

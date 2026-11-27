@@ -173,7 +173,7 @@ func (sr *StreamRenderer) DidStreamToolBody(index int) bool {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
-	if view := sr.liveCallViews[index]; view != nil && (view.name == "write" || view.name == "edit" || view.name == "todo") && (view.bytes > 0 || view.compactLine != -1) {
+	if view := sr.liveCallViews[index]; view != nil && (view.name == "write" || view.name == "edit" || view.name == "todo") && (view.bytes > 0 || view.compactLine != -1 || view.diffRendered) {
 		return true
 	}
 	return sr.parser != nil && index >= 0 && index < len(sr.parser.ToolBodyStreamed) && sr.parser.ToolBodyStreamed[index]
