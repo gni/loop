@@ -66,7 +66,11 @@ func formatCompactLimit(limit int) string {
 		}
 		return fmt.Sprintf("%.1fM", float64(limit)/1_000_000.0)
 	case limit >= 1000:
-		return fmt.Sprintf("%dk", limit/1000)
+		k := int(math.Round(float64(limit) / 1000.0))
+		if k >= 1000 {
+			return "1M"
+		}
+		return fmt.Sprintf("%dk", k)
 	default:
 		return fmt.Sprintf("%d", limit)
 	}
@@ -111,7 +115,7 @@ func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
 	}
 
 	const barCells = 5
-	filled := int((pct / 100.0) * float64(barCells))
+	filled := int(math.Round((pct / 100.0) * float64(barCells)))
 	if pct > 0 && filled == 0 {
 		filled = 1
 	}

@@ -98,14 +98,14 @@ func syncCommandStatus(
 		msgs = *messages
 	}
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(msgs)
-	effLimit := a.GetEffectiveContextLimit(pTok)
+	statusLimit := a.GetStatusContextLimit(pTok)
 
 	ui.GetUI().StateMu.Lock()
 	ui.GetUI().LastStatusBarText = ""
 	ui.GetUI().StateMu.Unlock()
 
 	live := a.LiveSettings()
-	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
+	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, statusLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
 	if refreshConsole {
 		ui.RefreshConsoleAfterTurn(os.Stderr, a, kiReader)
 	}

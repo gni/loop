@@ -28,9 +28,9 @@ func refreshREPLStatus(
 			tps = float64(latestTurnTokens) / dur.Seconds()
 		}
 	}
-	effLimit := a.GetEffectiveContextLimit(pTok)
+	statusLimit := a.GetStatusContextLimit(pTok)
 	live := a.LiveSettings()
-	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, false, tps, activeTasks, live.ShowTokens, estimated)
+	ui.UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, statusLimit, false, tps, activeTasks, live.ShowTokens, estimated)
 	if isCancellation {
 		ui.RefreshConsoleAfterPromptCancellation(os.Stderr, a, kiReader)
 	} else {

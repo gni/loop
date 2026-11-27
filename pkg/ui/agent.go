@@ -618,8 +618,8 @@ func (ui *AgentUIImpl) CheckCtrlDConfirmation(timeout time.Duration) bool {
 
 func syncAgentStatus(a *agent.Agent, theme style.UITheme, calcHistoryTokens func() (int, int, bool)) {
 	pTok, cTok, estimated := calcHistoryTokens()
-	effLimit := a.GetEffectiveContextLimit(pTok)
+	statusLimit := a.GetStatusContextLimit(pTok)
 	live := a.LiveSettings()
-	UpdateStatus(live.Model, pTok, cTok, 0, effLimit, false, 0, GetActiveTasks(a), live.ShowTokens, estimated)
+	UpdateStatus(live.Model, pTok, cTok, 0, statusLimit, false, 0, GetActiveTasks(a), live.ShowTokens, estimated)
 	DrawStatusBar(os.Stderr, theme)
 }

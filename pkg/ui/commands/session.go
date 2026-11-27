@@ -355,9 +355,9 @@ func handleCompressCommand(
 		}
 	}
 	pTok, cTok, estimated := calcHistoryTokens()
-	effLimit := a.GetEffectiveContextLimit(pTok)
+	statusLimit := a.GetStatusContextLimit(pTok)
 	live := a.LiveSettings()
-	ui.UpdateStatus(live.Model, pTok, cTok, 0, effLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
+	ui.UpdateStatus(live.Model, pTok, cTok, 0, statusLimit, false, 0, getActiveTasks(a), live.ShowTokens, estimated)
 	ui.DrawStatusBar(os.Stderr, *theme)
 }
 

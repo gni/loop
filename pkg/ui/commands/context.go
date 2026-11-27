@@ -46,7 +46,10 @@ func handleContextCommand(
 		fmt.Fprintln(w, headerStyle.Render("│  CONTEXT WINDOW & ADAPTIVE SIZING CONFIGURATION                                                   │"))
 		fmt.Fprintln(w, headerStyle.Render("├───────────────────────────────────────────────────────────────────────────────────────────────────┤"))
 		fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Context Status"))
+		compactionLimit := a.CompactionLimit(effLimit)
+		thresholdPct := int(a.CompressionThreshold()*100.0 + 0.5)
 		fmt.Fprintf(w, "    Current Prompt Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", pTok)))
+		fmt.Fprintf(w, "    Auto-Compaction Limit:  %s tokens (%d%% threshold)\n", valueStyle.Render(fmt.Sprintf("%d", compactionLimit)), thresholdPct)
 		fmt.Fprintf(w, "    Effective Active Tier:  %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", effLimit)))
 		fmt.Fprintf(w, "    Configured Ceiling:     %s tokens\n", valueStyle.Render(fmt.Sprintf("%d", a.Config.ContextWindowLimit)))
 		if serverLimit > 0 {

@@ -56,7 +56,7 @@ func handleModelCommand(
 	}
 
 	if a.UI != nil {
-		ui.UpdateStatus(a.Config.Model, -1, -1, 0, a.Config.ContextWindowLimit, false, 0, a.CountActiveTasks(), a.Config.ShowTokens)
+		ui.UpdateStatus(a.Config.Model, -1, -1, 0, a.GetStatusContextLimit(0), false, 0, a.CountActiveTasks(), a.Config.ShowTokens)
 	}
 	if theme != nil {
 		ui.DrawStatusBar(w, *theme)

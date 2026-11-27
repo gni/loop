@@ -353,10 +353,10 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			responseHeaderStarted = false
 			var subagentStreamChars, subagentCompletionTokens int
 			var subagentGenStart, lastDraw time.Time
-			subagentCtxLimit := config.DefaultContextWindowLimit
+			subagentCtxLimit := agent.CompactionLimit(config.DefaultContextWindowLimit)
 			if ma.BaseAgent != nil {
 				estimatedPrompt, _ := ma.BaseAgent.GetGlobalTokens(historyCopy, allowlist)
-				subagentCtxLimit = ma.BaseAgent.GetEffectiveContextLimit(estimatedPrompt)
+				subagentCtxLimit = ma.BaseAgent.GetStatusContextLimit(estimatedPrompt)
 			}
 
 			startResponseHeader := func() {

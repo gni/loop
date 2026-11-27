@@ -269,6 +269,12 @@ func RenderToolOutputWithOptions(w io.Writer, output string, isError bool, colla
 	if body != "" {
 		lines = strings.Split(body, "\n")
 	}
+	if exitFooter == "[Command exit code: 0]" && len(lines) > 0 {
+		// Match live streaming: streamed bash output omits the redundant zero
+		// exit footer so final redraw and history replay do not shift layout.
+		// Keep the footer for silent commands (no stdout) and non-zero exits.
+		exitFooter = ""
+	}
 	totalLines := len(lines)
 	if exitFooter != "" {
 		if totalLines > 0 {

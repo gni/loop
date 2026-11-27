@@ -356,7 +356,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			updateStreamStatus := func(generating bool, liveTokens int, tps float64) {
 				if a.UI != nil && !isNonInteractive {
 					live := a.LiveSettings()
-					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens+liveTokens, liveTokens, effectiveLimit, generating, tps, a.CountActiveTasks(), live.ShowTokens)
+					a.UI.UpdateStatus(live.Model, globalPromptTokensEst, priorCompletionTokens+liveTokens, liveTokens, a.CompactionLimit(effectiveLimit), generating, tps, a.CountActiveTasks(), live.ShowTokens)
 					a.UI.DrawStatusBar(rawW, liveTheme())
 				}
 			}
@@ -479,7 +479,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			syncPostTurnStatus = func() {
 				if a.UI != nil && !isNonInteractive {
 					live := a.LiveSettings()
-					a.UI.UpdateStatus(live.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, postEffectiveLimit, false, finalTps, a.CountActiveTasks(), live.ShowTokens)
+					a.UI.UpdateStatus(live.Model, globalPromptTokens, globalCompletionTokens, assistantMsg.CompletionTokens, a.CompactionLimit(postEffectiveLimit), false, finalTps, a.CountActiveTasks(), live.ShowTokens)
 					a.UI.DrawStatusBar(rawW, liveTheme())
 				}
 			}

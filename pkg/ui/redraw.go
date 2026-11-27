@@ -172,7 +172,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 
 	pTok, cTok, estimated := calculateActiveTokenUsage(a, activeMessages, activeToolAllowlist(kiReader), mam)
 	latestTurnTokens := a.GetLatestAssistantCompletionTokens(activeMessages)
-	effLimit := a.GetEffectiveContextLimit(pTok)
+	statusLimit := a.GetStatusContextLimit(pTok)
 
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
@@ -211,7 +211,7 @@ func RedrawScreenWithNotice(w io.Writer, a *agent.Agent, kiReader *keyIntercepto
 		finalBuf.Write(buf.Bytes())
 	}
 
-	UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, effLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens, estimated)
+	UpdateStatus(live.Model, pTok, cTok, latestTurnTokens, statusLimit, generating, 0, a.CountActiveTasks(), live.ShowTokens, estimated)
 	DrawConsoleStaticControlsLocked(render.WrapSyncFrame(cwFinal), a, kiReader, true)
 	if !live.NativeScroll {
 		if agentUI, ok := a.UI.(*AgentUIImpl); ok && agentUI.PPWriter != nil {

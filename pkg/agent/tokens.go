@@ -232,17 +232,25 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	messages, _ = sanitizeRequestMessages(messages)
 	messages = EnforceToolPairingInvariance(messages)
 
-	hasCompactionAnchor := false
+	// Ignore pre-compaction PromptTokens measurements on retained tail messages,
+	// but resume using exact provider measurements once a new assistant turn
+	// completes after the compaction boundary.
+	compactionBoundary := -1
 	lastMeasured := -1
 	for i, msg := range messages {
 		if (msg.Role == "system" || msg.Role == "user") && msg.Usage != nil {
-			hasCompactionAnchor = true
+			if msg.CompactionTailMessages > 0 {
+				compactionBoundary = max(compactionBoundary, i+msg.CompactionTailMessages)
+			} else {
+				// Legacy summaries without a recorded tail boundary stay estimated.
+				compactionBoundary = len(messages)
+			}
 		}
-		if msg.Role == "assistant" && msg.PromptTokens > 0 {
+		if msg.Role == "assistant" && msg.PromptTokens > 0 && i > compactionBoundary {
 			lastMeasured = i
 		}
 	}
-	if lastMeasured >= 0 && !hasCompactionAnchor {
+	if lastMeasured >= 0 {
 		base := messages[lastMeasured].PromptTokens
 		if lastMeasured == len(messages)-1 {
 			return base, 0, false

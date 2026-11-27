@@ -19,7 +19,12 @@ import (
 )
 
 func (a *Agent) CompressionThreshold() float64 {
-	if a != nil && a.Config != nil && a.Config.CompressionThreshold > 0 {
+	if a == nil {
+		return CompressionThresholdRatio()
+	}
+	a.LLMProviderMu.RLock()
+	defer a.LLMProviderMu.RUnlock()
+	if a.Config != nil && a.Config.CompressionThreshold > 0 {
 		return a.Config.CompressionThreshold
 	}
 	return CompressionThresholdRatio()
@@ -29,11 +34,14 @@ func CompressionThresholdRatio() float64 {
 	return 0.80
 }
 
-func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio ...float64) bool {
-	if effectiveLimit <= 0 || promptTokens <= 0 {
-		return false
+// CompactionLimit returns the token count at which automatic history
+// compaction triggers for the given effective context window and optional
+// compression threshold ratio. CompactionTrigger and UI context meters share
+// this formula so 100% on the status bar matches auto-compaction.
+func CompactionLimit(effectiveLimit int, ratio ...float64) int {
+	if effectiveLimit <= 0 {
+		return 0
 	}
-	decision := promptTokens + completionTokens
 	// A reserve larger than the local context would request compaction after
 	// every tool turn. Scale it down while keeping room for the output floor.
 	outputFloor := limits.Current().CompletionTokenFloor
@@ -52,15 +60,37 @@ func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio
 	}
 
 	reserve = max(reserve, minimumReserve)
-	return decision >= effectiveLimit-reserve || decision >= int(r*float64(effectiveLimit))
+	limit := min(effectiveLimit-reserve, int(r*float64(effectiveLimit)))
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
+
+func CompactionTrigger(promptTokens, completionTokens, effectiveLimit int, ratio ...float64) bool {
+	if effectiveLimit <= 0 || promptTokens <= 0 {
+		return false
+	}
+	return promptTokens+completionTokens >= CompactionLimit(effectiveLimit, ratio...)
+}
+
+// CompactionLimit returns the usable pre-compaction token budget for the given
+// effective context window using this agent's configured compression threshold.
+func (a *Agent) CompactionLimit(effectiveLimit int) int {
+	if effectiveLimit <= 0 {
+		return 0
+	}
+	return CompactionLimit(effectiveLimit, a.CompressionThreshold())
+}
+
+// GetStatusContextLimit returns the usable pre-compaction token budget for UI
+// context meters so 100% reflects when automatic compaction triggers.
+func (a *Agent) GetStatusContextLimit(currentPromptTokens int) int {
+	return a.CompactionLimit(a.GetEffectiveContextLimit(currentPromptTokens))
 }
 
 func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit int) bool {
-	thresh := CompressionThresholdRatio()
-	if a != nil {
-		thresh = a.CompressionThreshold()
-	}
-	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, thresh)
+	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, a.CompressionThreshold())
 }
 
 func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, error) {

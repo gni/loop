@@ -166,8 +166,8 @@ func RunREPLContext(ctx context.Context, a *agent.Agent, allowedTools []string, 
 
 	initialLive := a.LiveSettings()
 	ui.SetCollapseStatus(initialLive.CollapseResults)
-	initialEffLimit := a.GetEffectiveContextLimit(initialPromptTokens)
-	ui.UpdateStatus(initialLive.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, initialEffLimit, false, 0, activeTasks, initialLive.ShowTokens, initialTokensEstimated)
+	initialStatusLimit := a.GetStatusContextLimit(initialPromptTokens)
+	ui.UpdateStatus(initialLive.Model, initialPromptTokens, initialCompletionTokens, latestTurnTokens, initialStatusLimit, false, 0, activeTasks, initialLive.ShowTokens, initialTokensEstimated)
 	ui.DrawStaticPromptSeparator(os.Stderr, initialLive.ShowThinking, initialLive.ReasoningEffort, theme)
 	ui.GetUI().StateMu.Lock()
 	savedStats := ui.GetUI().LastStatsText
