@@ -101,8 +101,8 @@ func formatCompactTps(tps float64) string {
 	return fmt.Sprintf("%.1f", tps)
 }
 
-// contextGaugeBar returns a fixed 5-cell progress bar and threshold style.
-func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
+// contextGaugeBar returns a progress bar of barCells cells and its threshold style.
+func contextGaugeBar(pct float64, barCells int, theme style.UITheme) (string, style.Style) {
 	barTint := theme.Primary
 	metricTint := theme.Text
 	switch {
@@ -114,7 +114,9 @@ func contextGaugeBar(pct float64, theme style.UITheme) (string, style.Style) {
 		metricTint = theme.Warning
 	}
 
-	const barCells = 5
+	if barCells < 1 {
+		barCells = 5
+	}
 	filled := int(math.Round((pct / 100.0) * float64(barCells)))
 	if pct > 0 && filled == 0 {
 		filled = 1
@@ -166,21 +168,31 @@ func formatStatusBarLeftForBudget(state StatusBarState, theme style.UITheme, _ i
 		usedTok := formatCompactTokens(contextTokens, ctxEst)
 		limitTok := formatCompactLimit(state.ContextLimit)
 		pctTok := formatCompactPercent(pct, ctxEst)
-		bar, ctxStyle := contextGaugeBar(pct, theme)
+		// Match bar fill and threshold colors to the displayed rounded percentage
+		// so values like 29.97% (displayed as 30%) never under-fill the bar.
+		displayPct := pct
+		if displayPct >= 1 {
+			displayPct = math.Round(displayPct)
+		}
+		bar10, ctxStyle := contextGaugeBar(displayPct, 10, theme)
+		bar5, _ := contextGaugeBar(displayPct, 5, theme)
 
-		ctxFull := bar + " " + ctxStyle.Render(pctTok+" "+usedTok+"/"+limitTok)
+		ctxFull10 := bar10 + " " + ctxStyle.Render(pctTok+" "+usedTok+"/"+limitTok)
+		ctxFull5 := bar5 + " " + ctxStyle.Render(pctTok+" "+usedTok+"/"+limitTok)
 		ctxPctRatio := ctxStyle.Render(pctTok + " " + usedTok + "/" + limitTok)
 		ctxRatio := ctxStyle.Render(usedTok + "/" + limitTok)
 		ctxPct := ctxStyle.Render(pctTok)
 
 		if hasTps {
 			candidates = append(candidates,
-				ioLine+div+ctxFull+tpsSeg,
+				ioLine+div+ctxFull10+tpsSeg,
+				ioLine+div+ctxFull5+tpsSeg,
 				ioLine+div+ctxPctRatio+tpsSeg,
 			)
 		}
 		candidates = append(candidates,
-			ioLine+div+ctxFull,
+			ioLine+div+ctxFull10,
+			ioLine+div+ctxFull5,
 			ioLine+div+ctxPctRatio,
 		)
 		if hasTps {
