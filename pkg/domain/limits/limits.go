@@ -146,7 +146,7 @@ type Limits struct {
 
 // DefaultReasoningBudgets returns the compiled per-effort thinking budgets.
 func DefaultReasoningBudgets() map[string]int {
-	return map[string]int{"low": 512, "medium": 2048, "high": 8192, "max": -1}
+	return map[string]int{"minimal": 256, "low": 512, "medium": 2048, "high": 8192, "xhigh": 16384, "max": -1}
 }
 
 // Defaults returns the compiled defaults.

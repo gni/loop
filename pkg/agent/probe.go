@@ -20,28 +20,67 @@ func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
 	return p.DetectedContextLimit
 }
 
+type probedServerInfo struct {
+	thinkingSupported bool
+	detectedContext   int
+	probedCaps        config.ChatCapabilities
+	preserveReasoning bool
+	visionKnown       bool
+	visionSupported   bool
+	templateEfforts   map[string]bool
+	complete          bool
+}
+
+func parseTemplateReasoningEfforts(chatTemplate string) map[string]bool {
+	if chatTemplate == "" || !strings.Contains(chatTemplate, "reasoning_effort") {
+		return nil
+	}
+	// Detect effort level keys declared inside Jinja effort maps or comparisons
+	// (e.g. Strata's effort_map = {"none": 0.0, "minimal": 0.1, ..., "max": 0.99}).
+	candidates := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	found := make(map[string]bool)
+	for _, key := range candidates {
+		if strings.Contains(chatTemplate, `"`+key+`"`) || strings.Contains(chatTemplate, `'`+key+`'`) {
+			found[key] = true
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return found
+}
+
+func (p *OpenAICompatibleProvider) applyProbedInfo(info probedServerInfo) {
+	if !info.complete {
+		return
+	}
+	p.thinkingMu.Lock()
+	p.ThinkingSupported = info.thinkingSupported
+	p.ThinkingSupportChecked = true
+	p.ProbedCapabilities = info.probedCaps
+	p.PreserveReasoningSupported = info.preserveReasoning
+	p.ProbedVisionKnown = info.visionKnown
+	p.ProbedVisionSupported = info.visionSupported
+	p.ProbedEfforts = info.templateEfforts
+	p.thinkingMu.Unlock()
+	p.ContextLimitMu.Lock()
+	if info.detectedContext > 0 {
+		p.DetectedContextLimit = info.detectedContext
+	}
+	p.ContextLimitChecked = true
+	p.ContextLimitMu.Unlock()
+}
+
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
 	p.probeMu.Lock()
 	defer p.probeMu.Unlock()
-	supported, detected, probedCaps, complete := p.probeServerCapabilitiesHTTP(ctx)
-	if complete {
-		p.thinkingMu.Lock()
-		p.ThinkingSupported = supported
-		p.ThinkingSupportChecked = true
-		p.ProbedCapabilities = probedCaps
-		p.thinkingMu.Unlock()
-		p.ContextLimitMu.Lock()
-		if detected > 0 {
-			p.DetectedContextLimit = detected
-		}
-		p.ContextLimitChecked = true
-		p.ContextLimitMu.Unlock()
-	}
-	return supported
+	info := p.probeServerCapabilitiesHTTP(ctx)
+	p.applyProbedInfo(info)
+	return info.thinkingSupported
 }
 
 // Probe metadata without holding status locks. Both routes share one deadline.
-func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) (bool, int, config.ChatCapabilities, bool) {
+func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) probedServerInfo {
 	timeout := 5 * time.Second
 	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
 		timeout = time.Duration(p.Config.Timeout) * time.Second
@@ -50,7 +89,7 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	defer cancel()
 
 	if p.Config == nil || p.Config.Endpoint == "" {
-		return false, 0, config.ChatCapabilities{}, true
+		return probedServerInfo{complete: true}
 	}
 	if checkCtx.Value(credentialContextKey{}) == nil && p.ResolveCredential != nil {
 		if key, err := p.ResolveCredential(checkCtx); err == nil && key != "" {
@@ -59,7 +98,7 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	}
 	base, err := url.Parse(p.Config.Endpoint)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return false, 0, config.ChatCapabilities{}, true
+		return probedServerInfo{complete: true}
 	}
 	// llama.cpp exposes /props at the server root, even when chat uses /v1.
 	base.Path = "/props"
@@ -68,8 +107,7 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	query.Set("model", p.Config.ResolveModelAlias(p.Config.Model))
 	base.RawQuery = query.Encode()
 	base.Fragment = ""
-	supported, detected := false, 0
-	var probedCaps config.ChatCapabilities
+	var info probedServerInfo
 	authRejected := false
 	if p.api() == "chat-completions" || p.api() == "responses" {
 		var props struct {
@@ -80,7 +118,10 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 			SupportsThinking  json.RawMessage `json:"supports_thinking"`
 			Thinking          json.RawMessage `json:"thinking"`
 			ChatTemplate      string          `json:"chat_template"`
-			ChatTemplateCaps  struct {
+			Modalities        struct {
+				Vision *bool `json:"vision"`
+			} `json:"modalities"`
+			ChatTemplateCaps struct {
 				SupportsParallelToolCalls bool `json:"supports_parallel_tool_calls"`
 				SupportsPreserveReasoning bool `json:"supports_preserve_reasoning"`
 				SupportsReasoning         bool `json:"supports_reasoning"`
@@ -110,31 +151,40 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 			for _, flag := range []json.RawMessage{props.SupportsReasoning, props.SupportsThinking, props.Thinking} {
 				var enabled bool
 				if json.Unmarshal(flag, &enabled) == nil && enabled {
-					supported = true
+					info.thinkingSupported = true
 				}
 			}
-			if props.ChatTemplateCaps.SupportsPreserveReasoning || props.ChatTemplateCaps.SupportsReasoning || props.ChatTemplateCaps.SupportsThinking {
-				supported = true
+			if props.ChatTemplateCaps.SupportsPreserveReasoning {
+				info.preserveReasoning = true
+				info.thinkingSupported = true
+			}
+			if props.ChatTemplateCaps.SupportsReasoning || props.ChatTemplateCaps.SupportsThinking {
+				info.thinkingSupported = true
 			}
 			if strings.Contains(props.ChatTemplate, "enable_thinking") || strings.Contains(props.ChatTemplate, "reasoning_effort") || strings.Contains(props.ChatTemplate, "<think>") {
-				supported = true
+				info.thinkingSupported = true
+			}
+			info.templateEfforts = parseTemplateReasoningEfforts(props.ChatTemplate)
+			if props.Modalities.Vision != nil {
+				info.visionKnown = true
+				info.visionSupported = *props.Modalities.Vision
 			}
 			if props.ChatTemplate != "" || len(props.DefaultGenerationSettings.Params) > 0 {
-				probedCaps.Temperature = true
-				probedCaps.StreamOptions = true
-				probedCaps.Penalties = true
+				info.probedCaps.Temperature = true
+				info.probedCaps.StreamOptions = true
+				info.probedCaps.Penalties = true
 			}
 			if props.ChatTemplateCaps.SupportsParallelToolCalls {
-				probedCaps.ParallelToolCalls = true
+				info.probedCaps.ParallelToolCalls = true
 			}
-			if supported {
-				probedCaps.ThinkingControls = true
-				probedCaps.ReasoningEffort = true
+			if info.thinkingSupported {
+				info.probedCaps.ThinkingControls = true
+				info.probedCaps.ReasoningEffort = true
 			}
-			detected = smallestContextLimit(props.NCtx, props.MaxContext, props.EngineMaxContext, props.DefaultGenerationSettings.NCtx, props.DefaultGenerationSettings.MaxContext)
+			info.detectedContext = smallestContextLimit(props.NCtx, props.MaxContext, props.EngineMaxContext, props.DefaultGenerationSettings.NCtx, props.DefaultGenerationSettings.MaxContext)
 		}
 	}
-	if detected == 0 {
+	if info.detectedContext == 0 || !info.visionKnown {
 		endpoint, err := transporthttp.ModelDiscoveryURL(p.Config.Endpoint, p.api())
 		var catalog modelCatalog
 		if err == nil {
@@ -145,19 +195,32 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 			if ok {
 				selected := strings.TrimPrefix(p.Config.ResolveModelAlias(p.Config.Model), "models/")
 				entries := append(catalog.Data, catalog.Models...)
-				for _, entry := range entries {
-					if entry.modelID() == selected {
-						detected = smallestContextLimit(detected, entry.contextLimit())
+				applyCatalogEntry := func(entry modelMetadata) {
+					if info.detectedContext == 0 {
+						info.detectedContext = smallestContextLimit(info.detectedContext, entry.contextLimit())
+					}
+					if !info.visionKnown {
+						if vision, known := entry.visionSupport(); known {
+							info.visionKnown = true
+							info.visionSupported = vision
+						}
 					}
 				}
-				if detected == 0 && len(entries) == 1 {
-					detected = smallestContextLimit(detected, entries[0].contextLimit())
+				matched := false
+				for _, entry := range entries {
+					if entry.modelID() == selected {
+						matched = true
+						applyCatalogEntry(entry)
+					}
+				}
+				if !matched && len(entries) == 1 {
+					applyCatalogEntry(entries[0])
 				}
 			}
 		}
 	}
-	complete := ctx.Err() == nil && (!authRejected || supported || detected > 0)
-	return supported, detected, probedCaps, complete
+	info.complete = ctx.Err() == nil && (!authRejected || info.thinkingSupported || info.detectedContext > 0 || info.visionKnown)
+	return info
 }
 
 func (p *OpenAICompatibleProvider) readServerMetadata(ctx context.Context, endpoint string, limit int64, target any) bool {
@@ -207,19 +270,6 @@ func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) 
 	if p.ThinkingProbeChecked() {
 		return
 	}
-	supported, detected, probedCaps, complete := p.probeServerCapabilitiesHTTP(ctx)
-	if !complete {
-		return
-	}
-	p.thinkingMu.Lock()
-	p.ThinkingSupported = supported
-	p.ThinkingSupportChecked = true
-	p.ProbedCapabilities = probedCaps
-	p.thinkingMu.Unlock()
-	p.ContextLimitMu.Lock()
-	if detected > 0 {
-		p.DetectedContextLimit = detected
-	}
-	p.ContextLimitChecked = true
-	p.ContextLimitMu.Unlock()
+	info := p.probeServerCapabilitiesHTTP(ctx)
+	p.applyProbedInfo(info)
 }

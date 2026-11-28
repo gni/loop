@@ -22,7 +22,7 @@ func handleThinkingCommand(a *agent.Agent, parts []string, w io.Writer) {
 	}
 
 	if len(parts) < 2 {
-		fmt.Fprintf(w, "Current reasoning effort: %s (show thinking: %v)\nUsage: /thinking [off|low|medium|high|max]\n", currentEffort, next.ShowThinking)
+		fmt.Fprintf(w, "Current reasoning effort: %s (show thinking: %v)\nUsage: /thinking [off|minimal|low|medium|high|xhigh|max]\n", currentEffort, next.ShowThinking)
 		return
 	}
 

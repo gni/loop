@@ -47,6 +47,10 @@ func isInterruptedToolMessage(msg db.Message) bool {
 }
 
 func contextUnits(messages []db.Message) []contextUnit {
+	return contextUnitsFor(messages, false)
+}
+
+func contextUnitsFor(messages []db.Message, includeReasoning bool) []contextUnit {
 	latestInput, latestAssistant, latestStep := -1, -1, -1
 	matches := message.MatchToolResults(messages)
 	latestFiles := make(map[string]int)
@@ -87,7 +91,7 @@ func contextUnits(messages []db.Message) []contextUnit {
 		allSuperseded := true
 		for index := start; index < end; index++ {
 			msg := messages[index]
-			unit.tokens += EstimateMessageTokens(msg)
+			unit.tokens += EstimateMessageTokensWithReasoning(msg, includeReasoning)
 			if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
 				unit.priority = max(unit.priority, 1)
 				if msg.Role == "tool" {
@@ -130,7 +134,11 @@ func contextUnits(messages []db.Message) []contextUnit {
 // preserving the latest assistant turn ahead of older tool calls and keeping
 // active-task failures indivisible.
 func allocateContext(messages []db.Message, limit int) []db.Message {
-	units := contextUnits(messages)
+	return allocateContextFor(messages, limit, false)
+}
+
+func allocateContextFor(messages []db.Message, limit int, includeReasoning bool) []db.Message {
+	units := contextUnitsFor(messages, includeReasoning)
 	total := 0
 	for _, unit := range units {
 		total += unit.tokens
@@ -162,6 +170,10 @@ func allocateContext(messages []db.Message, limit int) []db.Message {
 }
 
 func contextBreakdown(messages []db.Message, schemaTokens int) ContextBudget {
+	return contextBreakdownFor(messages, schemaTokens, false)
+}
+
+func contextBreakdownFor(messages []db.Message, schemaTokens int, includeReasoning bool) ContextBudget {
 	budget := ContextBudget{Tools: schemaTokens}
 	latestInput := -1
 	for index, msg := range messages {
@@ -170,7 +182,7 @@ func contextBreakdown(messages []db.Message, schemaTokens int) ContextBudget {
 		}
 	}
 	for index, msg := range messages {
-		tokens := EstimateMessageTokens(msg)
+		tokens := EstimateMessageTokensWithReasoning(msg, includeReasoning)
 		switch {
 		case msg.Role == "system" || msg.ContextKind == "system":
 			budget.System += tokens

@@ -13,9 +13,13 @@ import (
 )
 
 func requestTokens(messages []db.Message) int {
+	return requestTokensFor(messages, false)
+}
+
+func requestTokensFor(messages []db.Message, includeReasoning bool) int {
 	tokens := 0
 	for _, msg := range messages {
-		tokens += EstimateMessageTokens(msg)
+		tokens += EstimateMessageTokensWithReasoning(msg, includeReasoning)
 	}
 	return tokens
 }
@@ -24,7 +28,7 @@ func requestTokens(messages []db.Message) int {
 // compaction boundary whose PromptTokens came from the active model. This lets
 // request budgeting stay aligned with the server's real tokenizer when the
 // endpoint does not expose /chat/completions/input_tokens.
-func (p *OpenAICompatibleProvider) calibratedHistoryPromptAnchor(messages []db.Message, schemaTokens int) (measuredIndex, measuredPrompt, prefixApprox int) {
+func (p *OpenAICompatibleProvider) calibratedHistoryPromptAnchor(messages []db.Message, schemaTokens int, includeReasoning bool) (measuredIndex, measuredPrompt, prefixApprox int) {
 	compactionBoundary := -1
 	measuredIndex = -1
 	activeModel := ""
@@ -48,7 +52,7 @@ func (p *OpenAICompatibleProvider) calibratedHistoryPromptAnchor(messages []db.M
 	if measuredIndex < 0 {
 		return -1, 0, 0
 	}
-	return measuredIndex, messages[measuredIndex].PromptTokens, requestTokens(messages[:measuredIndex]) + schemaTokens
+	return measuredIndex, messages[measuredIndex].PromptTokens, requestTokensFor(messages[:measuredIndex], includeReasoning) + schemaTokens
 }
 
 func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) ([]db.Message, int, error) {
@@ -56,17 +60,18 @@ func (p *OpenAICompatibleProvider) budgetRequestContext(ctx context.Context, mes
 }
 
 func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.Context, messages []db.Message, tools []tool.Tool, compactFallback func() []db.Message) ([]db.Message, int, error) {
+	preserveReasoning := p.PreserveReasoningEnabled()
 	schemaTokens := EstimateToolSchemaTokens(tools)
 	clean := EnforceToolPairingInvariance(messages)
-	anchorIdx, anchorPrompt, anchorApprox := p.calibratedHistoryPromptAnchor(clean, schemaTokens)
+	anchorIdx, anchorPrompt, anchorApprox := p.calibratedHistoryPromptAnchor(clean, schemaTokens, preserveReasoning)
 	calibratedScale := 0.0
 	if anchorIdx >= 0 && anchorApprox > 0 {
 		// Retain a 5% cushion above the server's observed token density.
 		calibratedScale = max(0.45, min(2.0, (float64(anchorPrompt)/float64(anchorApprox))*1.05))
 	}
-	initialTokens := requestTokens(clean) + schemaTokens
+	initialTokens := requestTokensFor(clean, preserveReasoning) + schemaTokens
 	if anchorIdx >= 0 && anchorIdx < len(clean) {
-		initialTokens = anchorPrompt + requestTokens(clean[anchorIdx:])
+		initialTokens = anchorPrompt + requestTokensFor(clean[anchorIdx:], preserveReasoning)
 	}
 	contextLimit := ResolveAdaptiveContextLimit(p.Config, p.GetDetectedContextLimit(), initialTokens)
 	taskLimit := run.RequestTokenLimit(ctx)
@@ -117,14 +122,14 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 		if ctx != nil && ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
-		approximate := requestTokens(clean) + schemaTokens
+		approximate := requestTokensFor(clean, preserveReasoning) + schemaTokens
 		used, measured = p.countRequestTokens(ctx, clean, tools, output)
 		if measured {
 			ratio = max(ratio, float64(used)/float64(max(1, approximate)))
 		} else if attempt == 0 && !triedCompactFallback && anchorIdx >= 0 && anchorIdx < len(clean) {
 			// Use the server's exact PromptTokens for the already-measured prefix
 			// plus a conservative estimate only for unsent messages appended after it.
-			used = anchorPrompt + requestTokens(clean[anchorIdx:])
+			used = anchorPrompt + requestTokensFor(clean[anchorIdx:], preserveReasoning)
 			if calibratedScale > 0 {
 				if scaled := int(math.Ceil(float64(approximate) * calibratedScale)); scaled > used && schemaTokens > anchorPrompt {
 					used = scaled
@@ -143,7 +148,7 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 				used = int(scaled)
 			}
 		}
-		budget := contextBreakdown(clean, schemaTokens)
+		budget := contextBreakdownFor(clean, schemaTokens, preserveReasoning)
 		budget.Limit, budget.Input, budget.Headroom = contextLimit, used, headroom
 		budget.Output = max(0, min(output, contextLimit-used-headroom))
 		budget.Measured, budget.Removed = measured, originalCount-len(clean)
@@ -158,7 +163,7 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 		if compactFallback != nil && !triedCompactFallback {
 			triedCompactFallback = true
 			candidate := EnforceToolPairingInvariance(compactFallback())
-			if requestTokens(candidate) < requestTokens(clean) {
+			if requestTokensFor(candidate, preserveReasoning) < requestTokensFor(clean, preserveReasoning) {
 				clean = candidate
 				continue
 			}
@@ -176,7 +181,7 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 			// Leave a little room for the changed template when pruning old units.
 			target = int(float64(preferredAvailable)*float64(approximate)/float64(max(1, used))*0.95) - schemaTokens
 		}
-		trimmed := EnforceToolPairingInvariance(trimMessagesToTokenBudget(clean, max(0, target)))
+		trimmed := EnforceToolPairingInvariance(trimMessagesToTokenBudgetFor(clean, max(0, target), preserveReasoning))
 		if len(trimmed) == len(clean) {
 			if used <= available {
 				run.RecordRequestBudget(ctx, used, budget.Output)
@@ -190,7 +195,7 @@ func (p *OpenAICompatibleProvider) budgetRequestContextWithFallback(ctx context.
 	if measured {
 		qualifier = ""
 	}
-	breakdown := contextBreakdown(clean, schemaTokens)
+	breakdown := contextBreakdownFor(clean, schemaTokens, preserveReasoning)
 	if taskLimit > 0 {
 		return nil, 0, fmt.Errorf("%w: required input and output cannot fit the remaining %d tokens", run.ErrTokenBudget, taskLimit)
 	}

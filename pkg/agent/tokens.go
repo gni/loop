@@ -65,14 +65,24 @@ func estimateDisplayToolSchemaTokens(tools []tool.Tool) int {
 }
 
 func estimateDisplayMessageTokens(m db.Message) int {
-	// Reasoning content is never resubmitted to the provider on subsequent turns.
+	return estimateDisplayMessageTokensFor(m, false)
+}
+
+func estimateDisplayMessageTokensFor(m db.Message, includeReasoning bool) int {
 	chars := len(m.Content) + len(m.Role) + len(m.Name) + len(m.ToolCallID)
+	if includeReasoning && m.Role == "assistant" {
+		chars += len(m.ReasoningContent)
+	}
 	for _, tc := range m.ToolCalls {
 		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
 	}
 	for _, block := range m.ContentBlocks {
 		if block.Type == "image" {
 			chars += 4096
+		} else if block.Type == "thinking" {
+			if block.Signature != "" {
+				chars += len(block.Text)
+			}
 		} else {
 			chars += len(block.Text)
 		}
@@ -91,14 +101,21 @@ func EstimateToolSchemaTokens(tools []tool.Tool) int {
 	return TokensFromChars(len(data)) + 8*len(tools)
 }
 
-func messageChars(m db.Message) int {
-	chars := len(m.Content) + len(m.ReasoningContent)
+func messageWireChars(m db.Message, includeReasoning bool) int {
+	chars := len(m.Content)
+	if includeReasoning && m.Role == "assistant" {
+		chars += len(m.ReasoningContent)
+	}
 	for _, tc := range m.ToolCalls {
 		chars += len(tc.Function.Name) + len(tc.Function.Arguments)
 	}
 	for _, block := range m.ContentBlocks {
 		if block.Type == "image" {
 			chars += 4096
+		} else if block.Type == "thinking" {
+			if block.Signature != "" {
+				chars += len(block.Text)
+			}
 		} else {
 			chars += len(block.Text)
 		}
@@ -106,10 +123,18 @@ func messageChars(m db.Message) int {
 	return chars
 }
 
+func messageChars(m db.Message) int {
+	return messageWireChars(m, false)
+}
+
 func EstimateMessageTokens(m db.Message) int {
+	return EstimateMessageTokensWithReasoning(m, false)
+}
+
+func EstimateMessageTokensWithReasoning(m db.Message, includeReasoning bool) int {
 	// Provider usage describes an entire request, not the size of this message.
-	// Compaction must budget the content actually retained in the history.
-	return TokensFromChars(messageChars(m)+len(m.Role)+len(m.Name)+len(m.ToolCallID)) + 8
+	// Compaction must budget only the content actually sent on the wire.
+	return TokensFromChars(messageWireChars(m, includeReasoning)+len(m.Role)+len(m.Name)+len(m.ToolCallID)) + 8
 }
 
 func CacheTokenTotals(history []db.Message) (int, int) {
@@ -198,7 +223,7 @@ func CalculateHistoryTokens(history []db.Message) (int, int) {
 			chars += messageChars(m)
 			continue
 		}
-		if m.Role == "assistant" && (messageChars(m) > 0) {
+		if m.Role == "assistant" && (messageChars(m) > 0 || m.ReasoningContent != "") {
 			prompt := m.PromptTokens
 			if prompt == 0 {
 				prompt = TokensFromChars(chars)
@@ -221,15 +246,19 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 	// assistant turn (when no post-turn compaction summary invalidated it),
 	// adding a calibrated estimate only for unsent messages appended afterward.
 	var cfg *config.Config
+	preserveReasoning := false
 	if a != nil {
 		a.LLMProviderMu.RLock()
 		cfg = a.Config
+		if pr, ok := a.LLMProvider.(interface{ PreserveReasoningEnabled() bool }); ok {
+			preserveReasoning = pr.PreserveReasoningEnabled()
+		}
 		a.LLMProviderMu.RUnlock()
 		messages = inferenceMessages(a.Context(), messages)
 	} else {
 		messages = compactRuntimeMessages(messages)
 	}
-	messages, _ = sanitizeRequestMessages(messages)
+	messages, _ = sanitizeRequestMessagesWithOptions(messages, preserveReasoning)
 	messages = EnforceToolPairingInvariance(messages)
 
 	// Ignore pre-compaction PromptTokens measurements on retained tail messages,
@@ -255,16 +284,16 @@ func (a *Agent) GetGlobalTokenUsage(messages []db.Message, allowedTools []string
 		if lastMeasured == len(messages)-1 {
 			return base, 0, false
 		}
-		delta := estimateDisplayMessageTokens(messages[lastMeasured])
+		delta := estimateDisplayMessageTokensFor(messages[lastMeasured], preserveReasoning)
 		for _, msg := range messages[lastMeasured+1:] {
-			delta += estimateDisplayMessageTokens(msg)
+			delta += estimateDisplayMessageTokensFor(msg, preserveReasoning)
 		}
 		return base + delta, 0, true
 	}
 
 	messageTokens := 0
 	for _, msg := range messages {
-		messageTokens += estimateDisplayMessageTokens(msg)
+		messageTokens += estimateDisplayMessageTokensFor(msg, preserveReasoning)
 	}
 
 	toolTokens := 0

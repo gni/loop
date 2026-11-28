@@ -12,7 +12,7 @@ import (
 
 func buildConfigSettingItems(cloned *config.Config) []*interactive.SettingItem {
 	askUserOptions := []string{"interactive", "always_ask", "auto_recommended", "disabled"}
-	reasoningOptions := []string{"off", "low", "medium", "high", "max"}
+	reasoningOptions := []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 	items := []*interactive.SettingItem{
 		boolConfigItem("logo", "logo", "Show the logo in an empty chat", cloned),
@@ -60,7 +60,7 @@ func buildConfigSettingItems(cloned *config.Config) []*interactive.SettingItem {
 			ID:          "reasoning_effort",
 			Name:        "reasoning effort",
 			Value:       func() string { return cloned.ReasoningEffort },
-			Description: "Thinking/reasoning budget constraint (off, low, medium, high, max)",
+			Description: "Thinking/reasoning budget constraint (off, minimal, low, medium, high, xhigh, max)",
 			Options:     reasoningOptions,
 			OnEdit: func(newVal string) error {
 				effort, err := config.ParseReasoningEffort(newVal)

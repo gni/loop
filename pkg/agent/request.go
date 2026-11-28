@@ -19,6 +19,10 @@ import (
 const nonFileToolMaxBytes = 8192
 
 func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
+	return sanitizeRequestMessagesWithOptions(inputMsgs, false)
+}
+
+func sanitizeRequestMessagesWithOptions(inputMsgs []db.Message, preserveReasoning bool) ([]db.Message, int) {
 	validMessages := make([]db.Message, 0, len(inputMsgs))
 	totalChars := 0
 
@@ -43,7 +47,9 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		}
 		msg = mergeRequestTextBlocks(msg)
 
-		msg.ReasoningContent = ""
+		if !preserveReasoning || msg.Role != "assistant" {
+			msg.ReasoningContent = ""
+		}
 		if msg.Role == "tool" && msg.Name != "" {
 			msg.Name = tool.NormalizeName(msg.Name)
 		}
@@ -79,7 +85,7 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 		}
 
 		validMessages = append(validMessages, msg)
-		totalChars += messageChars(msg)
+		totalChars += messageWireChars(msg, preserveReasoning)
 	}
 
 	return validMessages, totalChars
@@ -90,6 +96,10 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 // Assistant calls and their tool responses are removed together.
 func trimMessagesToTokenBudget(messages []db.Message, limitTokens int) []db.Message {
 	return allocateContext(messages, limitTokens)
+}
+
+func trimMessagesToTokenBudgetFor(messages []db.Message, limitTokens int, includeReasoning bool) []db.Message {
+	return allocateContextFor(messages, limitTokens, includeReasoning)
 }
 
 // chatCapabilities merges explicit configuration capabilities with probed server support.
@@ -117,7 +127,8 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequest(
 }
 
 func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx context.Context, messages []db.Message, tools []tool.Tool) (ChatCompletionRequest, []db.Message, []byte, error) {
-	validMessages, _ := sanitizeRequestMessages(messages)
+	preserveReasoning := p.PreserveReasoningEnabled()
+	validMessages, _ := sanitizeRequestMessagesWithOptions(messages, preserveReasoning)
 
 	proto := toolProtocolForConfig(p.Config)
 	finalTools := proto.PrepareWireTools(tools, p.Config != nil && p.Config.CompactPrompt)
@@ -126,7 +137,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx conte
 	if historyCompressionEnabled(p.Config) {
 		compactFallback = func() []db.Message {
 			compacted := CompactHistoricalToolOutputs(messages)
-			valid, _ := sanitizeRequestMessages(compacted)
+			valid, _ := sanitizeRequestMessagesWithOptions(compacted, preserveReasoning)
 			return proto.PrepareWireMessages(valid)
 		}
 	}
@@ -142,7 +153,7 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx conte
 	if p.Config != nil && p.Config.PromptCacheBreakpoints {
 		transportllm.ApplyPromptCacheBreakpoints(reqBody.Messages)
 	}
-	jsonData, err := marshalChatCompletionRequest(reqBody)
+	jsonData, err := marshalChatCompletionRequestWithOptions(reqBody, preserveReasoning)
 	return reqBody, cleanMessages, jsonData, err
 }
 
@@ -177,12 +188,7 @@ func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, 
 
 	reasoningEffort := ""
 	if enableThinking {
-		switch effort {
-		case "max":
-			reasoningEffort = "high"
-		case "low", "medium", "high":
-			reasoningEffort = effort
-		}
+		reasoningEffort = p.wireReasoningEffort(effort)
 	}
 
 	if budget > maxCompTokens && maxCompTokens > 0 {
@@ -241,10 +247,7 @@ func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, 
 	if caps.ThinkingControls {
 		reqBody.ReasoningControl = true
 		if enableThinking {
-			strength := effort
-			if strength == "max" {
-				strength = "high"
-			}
+			strength := reasoningEffort
 			reqBody.ReasoningFormat = "auto"
 			reqBody.ChatTemplateKwargs = &ChatTemplateKwargs{
 				EnableThinking:    true,
@@ -270,10 +273,8 @@ func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, 
 	if len(reqBody.Tools) == 0 {
 		reqBody.Tools = nil
 	} else {
-		if caps.ParallelToolCalls {
-			// Provider batching is independent of local execution concurrency.
-			// The engine still decides which tool calls can run in parallel.
-			parallelCalls := true
+		if caps.ParallelToolCalls && p.Config != nil {
+			parallelCalls := p.Config.ParallelToolCalls
 			reqBody.ParallelToolCalls = &parallelCalls
 		}
 	}
@@ -282,7 +283,11 @@ func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, 
 }
 
 func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error) {
-	wireMessages := make([]wireChatMessage, 0, len(reqBody.Messages))
+	return marshalChatCompletionRequestWithOptions(reqBody, false)
+}
+
+func buildWireChatMessages(messages []db.Message, preserveReasoning bool) []wireChatMessage {
+	wireMessages := make([]wireChatMessage, 0, len(messages))
 	var pendingImageParts []map[string]any
 
 	flushPendingImages := func() {
@@ -296,7 +301,7 @@ func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error)
 		}
 	}
 
-	for _, msg := range reqBody.Messages {
+	for _, msg := range messages {
 		if msg.Role == "tool" {
 			hasImages := false
 			for _, block := range msg.ContentBlocks {
@@ -348,16 +353,26 @@ func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error)
 			continue
 		}
 		flushPendingImages()
+		reasoning := ""
+		if preserveReasoning && msg.Role == "assistant" {
+			reasoning = msg.ReasoningContent
+		}
 		wireMessages = append(wireMessages, wireChatMessage{
-			Role:         msg.Role,
-			Content:      msg.ChatContent(),
-			ToolCalls:    msg.ToolCalls,
-			ToolCallID:   msg.ToolCallID,
-			CacheControl: msg.CacheControl,
-			Name:         msg.Name,
+			Role:             msg.Role,
+			Content:          msg.ChatContent(),
+			ReasoningContent: reasoning,
+			ToolCalls:        msg.ToolCalls,
+			ToolCallID:       msg.ToolCallID,
+			CacheControl:     msg.CacheControl,
+			Name:             msg.Name,
 		})
 	}
 	flushPendingImages()
+	return wireMessages
+}
+
+func marshalChatCompletionRequestWithOptions(reqBody ChatCompletionRequest, preserveReasoning bool) ([]byte, error) {
+	wireMessages := buildWireChatMessages(reqBody.Messages, preserveReasoning)
 	wireReq := chatCompletionWireRequest{
 		Model:                reqBody.Model,
 		Messages:             wireMessages,
@@ -385,12 +400,13 @@ func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error)
 }
 
 type wireChatMessage struct {
-	Role         string               `json:"role"`
-	Content      any                  `json:"content"`
-	ToolCalls    []db.ToolCall        `json:"tool_calls,omitempty"`
-	ToolCallID   string               `json:"tool_call_id,omitempty"`
-	CacheControl []message.CacheBlock `json:"cache_control,omitempty"`
-	Name         string               `json:"name,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []db.ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	CacheControl     []message.CacheBlock `json:"cache_control,omitempty"`
+	Name             string               `json:"name,omitempty"`
 }
 
 type chatCompletionWireRequest = chatCompletionRequest[wireChatMessage]

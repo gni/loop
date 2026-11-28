@@ -19,12 +19,13 @@ type turnLoader struct {
 	stopOnce         sync.Once
 	showMicroseconds bool
 
-	mu         sync.Mutex
-	renderMu   sync.Mutex
-	hasDots    bool
-	paused     bool
-	frameIndex int
-	lastFeed   time.Time
+	mu              sync.Mutex
+	renderMu        sync.Mutex
+	hasDots         bool
+	paused          bool
+	receivedContent bool
+	frameIndex      int
+	lastFeed        time.Time
 }
 
 func (a *Agent) newTurnLoader(ctx context.Context, w io.Writer, theme style.UITheme, startTime time.Time) *turnLoader {
@@ -52,7 +53,7 @@ func (tl *turnLoader) currentFrame() string {
 	return style.ActivitySpinnerFrame(tl.theme, tl.frameIndex)
 }
 
-func (tl *turnLoader) renderFrame(frame string) {
+func (tl *turnLoader) renderFrame(frame string, waitingLabel string) {
 	tl.renderMu.Lock()
 	defer tl.renderMu.Unlock()
 	select {
@@ -64,6 +65,9 @@ func (tl *turnLoader) renderFrame(frame string) {
 		frame = style.ActivitySpinnerIdle(tl.theme)
 	}
 	timeStr := fmt.Sprintf("(%s)", style.FormatElapsedDuration(time.Since(tl.startTime), tl.showMicroseconds))
+	if waitingLabel != "" {
+		timeStr = fmt.Sprintf("(%s · %s)", style.FormatElapsedDuration(time.Since(tl.startTime), tl.showMicroseconds), waitingLabel)
+	}
 	timeStyled := style.NewStyle().Foreground(tl.theme.Border).Render(timeStr)
 	tl.agent.UI.DrawStatsLine(tl.w, tl.theme, frame, timeStyled)
 }
@@ -76,7 +80,7 @@ func (tl *turnLoader) run(ctx context.Context) {
 	initFrame := tl.currentFrame()
 	tl.frameIndex++
 	tl.mu.Unlock()
-	tl.renderFrame(initFrame)
+	tl.renderFrame(initFrame, "")
 
 	for {
 		select {
@@ -90,18 +94,23 @@ func (tl *turnLoader) run(ctx context.Context) {
 				tl.mu.Unlock()
 				continue
 			}
+			sinceFeed := time.Since(tl.lastFeed)
 			// If dots were paused (e.g. streaming) but no chunks received for 500ms, stream has hung/paused -> resume dots
-			if !tl.hasDots && time.Since(tl.lastFeed) > 500*time.Millisecond {
+			if !tl.hasDots && sinceFeed > 500*time.Millisecond {
 				tl.hasDots = true
 			}
 			frame := ""
+			waitingLabel := ""
 			if tl.hasDots {
 				frame = tl.currentFrame()
 				tl.frameIndex++
+				if tl.receivedContent && sinceFeed >= 1500*time.Millisecond {
+					waitingLabel = "generating"
+				}
 			}
 			tl.mu.Unlock()
 
-			tl.renderFrame(frame)
+			tl.renderFrame(frame, waitingLabel)
 		}
 	}
 }
@@ -114,7 +123,7 @@ func (tl *turnLoader) PauseDots() {
 	tl.hasDots = false
 	tl.lastFeed = time.Now()
 	tl.mu.Unlock()
-	tl.renderFrame("")
+	tl.renderFrame("", "")
 }
 
 func (tl *turnLoader) ShowDots() {
@@ -127,7 +136,7 @@ func (tl *turnLoader) ShowDots() {
 	frame := tl.currentFrame()
 	tl.frameIndex++
 	tl.mu.Unlock()
-	tl.renderFrame(frame)
+	tl.renderFrame(frame, "")
 }
 
 func (tl *turnLoader) Feed() {
@@ -135,6 +144,7 @@ func (tl *turnLoader) Feed() {
 		return
 	}
 	tl.mu.Lock()
+	tl.receivedContent = true
 	tl.lastFeed = time.Now()
 	tl.mu.Unlock()
 }
@@ -160,7 +170,7 @@ func (tl *turnLoader) Resume() {
 	frame := tl.currentFrame()
 	tl.frameIndex++
 	tl.mu.Unlock()
-	tl.renderFrame(frame)
+	tl.renderFrame(frame, "")
 }
 
 func (tl *turnLoader) Stop() {

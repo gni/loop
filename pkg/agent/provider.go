@@ -21,15 +21,19 @@ import (
 )
 
 type OpenAICompatibleProvider struct {
-	ResolveCredential      func(context.Context) (string, error)
-	Config                 *config.Config
-	HTTPClient             *http.Client
-	ThinkingSupported      bool
-	ThinkingSupportChecked bool
-	ProbedCapabilities     config.ChatCapabilities
-	DetectedContextLimit   int
-	ContextLimitChecked    bool
-	ContextLimitMu         sync.RWMutex
+	ResolveCredential          func(context.Context) (string, error)
+	Config                     *config.Config
+	HTTPClient                 *http.Client
+	ThinkingSupported          bool
+	ThinkingSupportChecked     bool
+	ProbedCapabilities         config.ChatCapabilities
+	PreserveReasoningSupported bool
+	ProbedVisionKnown          bool
+	ProbedVisionSupported      bool
+	ProbedEfforts              map[string]bool
+	DetectedContextLimit       int
+	ContextLimitChecked        bool
+	ContextLimitMu             sync.RWMutex
 
 	thinkingMu        sync.Mutex
 	probeMu           sync.Mutex
@@ -78,6 +82,10 @@ func (p *OpenAICompatibleProvider) ResetThinkingCapabilities() {
 	p.ThinkingSupported = false
 	p.ThinkingSupportChecked = false
 	p.ProbedCapabilities = config.ChatCapabilities{}
+	p.PreserveReasoningSupported = false
+	p.ProbedVisionKnown = false
+	p.ProbedVisionSupported = false
+	p.ProbedEfforts = nil
 	p.thinkingMu.Unlock()
 }
 
@@ -87,11 +95,82 @@ func (p *OpenAICompatibleProvider) ProbedChatCapabilities() config.ChatCapabilit
 	return p.ProbedCapabilities
 }
 
+func (p *OpenAICompatibleProvider) PreserveReasoningEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.PreserveReasoningSupported
+}
+
+func (p *OpenAICompatibleProvider) ProbedVisionSupport() (supported bool, known bool) {
+	if p == nil {
+		return false, false
+	}
+	p.thinkingMu.Lock()
+	defer p.thinkingMu.Unlock()
+	return p.ProbedVisionSupported, p.ProbedVisionKnown
+}
+
+func (p *OpenAICompatibleProvider) wireReasoningEffort(effort string) string {
+	switch effort {
+	case "", "off", "none":
+		return "none"
+	}
+	p.thinkingMu.Lock()
+	efforts := p.ProbedEfforts
+	p.thinkingMu.Unlock()
+	if len(efforts) > 0 {
+		if efforts[effort] {
+			return effort
+		}
+		switch effort {
+		case "max":
+			if efforts["xhigh"] {
+				return "xhigh"
+			}
+			return "high"
+		case "xhigh":
+			if efforts["max"] {
+				return "max"
+			}
+			return "high"
+		case "minimal":
+			if efforts["low"] {
+				return "low"
+			}
+		}
+		return effort
+	}
+	// Without explicit template metadata, map "max" to "high" for strict
+	// OpenAI chat-completions compatibility while passing standard levels through.
+	if effort == "max" {
+		return "high"
+	}
+	return effort
+}
+
 func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Context, func(), *atomic.Bool, func()) {
+	streamCtx, kick, _, timedOut, stop := startStreamWatchdogWithActiveIdle(ctx, timeout, timeout)
+	return streamCtx, kick, timedOut, stop
+}
+
+// startStreamWatchdogWithActiveIdle enforces initialTimeout until markActive is
+// called (after HTTP 200 stream headers arrive), then switches to
+// activeIdleTimeout on subsequent kicks so backends that buffer large native
+// tool calls before emitting one final delta.tool_calls chunk do not time out
+// prematurely.
+func startStreamWatchdogWithActiveIdle(ctx context.Context, initialTimeout, activeIdleTimeout time.Duration) (context.Context, func(), func(), *atomic.Bool, func()) {
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	var timedOut atomic.Bool
+	var activeStream atomic.Bool
 	activityChan := make(chan struct{}, 1)
 	watchdogDone := make(chan struct{})
+
+	if activeIdleTimeout < initialTimeout {
+		activeIdleTimeout = initialTimeout
+	}
 
 	kick := func() {
 		select {
@@ -100,9 +179,14 @@ func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Co
 		}
 	}
 
-	if timeout > 0 {
+	markActive := func() {
+		activeStream.Store(true)
+		kick()
+	}
+
+	if initialTimeout > 0 {
 		go func() {
-			timer := time.NewTimer(timeout)
+			timer := time.NewTimer(initialTimeout)
 			defer timer.Stop()
 
 			for {
@@ -118,7 +202,11 @@ func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Co
 						default:
 						}
 					}
-					timer.Reset(timeout)
+					nextTimeout := initialTimeout
+					if activeStream.Load() {
+						nextTimeout = activeIdleTimeout
+					}
+					timer.Reset(nextTimeout)
 				case <-timer.C:
 					timedOut.Store(true)
 					cancelStream()
@@ -133,7 +221,7 @@ func startStreamWatchdog(ctx context.Context, timeout time.Duration) (context.Co
 		cancelStream()
 	}
 
-	return streamCtx, kick, &timedOut, stop
+	return streamCtx, kick, markActive, &timedOut, stop
 }
 
 func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chunkChan chan<- StreamChunk, chunkType string, dest *strings.Builder) *FallbackToolTextFilter {
@@ -183,9 +271,6 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return nil, fmt.Errorf("provider config is nil")
 	}
 	p.clearContextBudget()
-	if err := p.validateCapabilities(messages); err != nil {
-		return nil, err
-	}
 	defer func() {
 		runErr = classifyInferenceFailure(runErr)
 		p.refreshContextAfterOverflow(ctx, runErr)
@@ -230,14 +315,25 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 			return nil, err
 		}
 	}
+	if err := p.validateCapabilities(ctx, messages); err != nil {
+		return nil, err
+	}
 	if p.api() != "chat-completions" {
 		return p.streamNative(ctx, messages, tools, chunkChan)
 	}
 
 	requestStarted := time.Now()
 	timeoutDuration := p.streamTimeout()
+	activeIdleTimeout := timeoutDuration
+	// Backends such as Strata buffer entire native tool calls until closing
+	// tokens arrive, causing long silent gaps after streaming reasoning.
+	// Allow a bounded 3x idle grace once the stream is active when tools are
+	// attached, without altering short test timeouts (<10s) or nostop mode.
+	if timeoutDuration >= 10*time.Second && len(tools) > 0 && toolProtocolForConfig(p.Config).UsesNativeSchemas() {
+		activeIdleTimeout = min(timeoutDuration*3, 10*time.Minute)
+	}
 
-	streamCtx, kickTimer, timedOut, stopWatchdog := startStreamWatchdog(ctx, timeoutDuration)
+	streamCtx, kickTimer, markStreamActive, timedOut, stopWatchdog := startStreamWatchdogWithActiveIdle(ctx, timeoutDuration, activeIdleTimeout)
 	defer stopWatchdog()
 
 	url := completionURL(p.Config.Endpoint)
@@ -251,7 +347,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	if err != nil {
 		return nil, err
 	}
-	estimatedInput = requestTokens(request.Messages) + EstimateToolSchemaTokens(request.Tools)
+	estimatedInput = requestTokensFor(request.Messages, p.PreserveReasoningEnabled()) + EstimateToolSchemaTokens(request.Tools)
 
 	resilient := transporthttp.NewResilientClient(transporthttp.RetryConfig{
 		MaxRetries: 3,
@@ -294,7 +390,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		}
 		return nil, err
 	}
-	kickTimer()
+	markStreamActive()
 	defer resp.Body.Close()
 
 	streamReader := transportllm.NewStreamReader(resp.Body)

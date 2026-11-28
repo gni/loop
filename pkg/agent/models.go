@@ -52,17 +52,37 @@ func (p *OpenAICompatibleProvider) selectedModel() model.Model {
 	return model.Model{ID: p.Config.Model, Provider: p.Config.ActiveProvider}
 }
 
-func (p *OpenAICompatibleProvider) validateCapabilities(messages []db.Message) error {
+func (p *OpenAICompatibleProvider) validateCapabilities(ctx context.Context, messages []db.Message) error {
 	if p == nil || p.Config == nil {
 		return fmt.Errorf("provider config is nil")
 	}
-	selected := p.selectedModel()
+	hasImage := false
 	for _, msg := range messages {
 		for _, block := range msg.ContentBlocks {
-			if block.Type == "image" && !selected.Supports("image") {
-				return fmt.Errorf("model %s does not support image input", selected.ID)
+			if block.Type == "image" {
+				hasImage = true
+				break
 			}
 		}
+		if hasImage {
+			break
+		}
+	}
+	if !hasImage {
+		return nil
+	}
+	selected := p.selectedModel()
+	if len(selected.Input) > 0 {
+		if !selected.Supports("image") {
+			return fmt.Errorf("model %s does not support image input", selected.ID)
+		}
+		return nil
+	}
+	if ctx != nil && !p.ThinkingProbeChecked() && (p.api() == "chat-completions" || p.api() == "responses") {
+		p.ProbeServerCapabilities(ctx)
+	}
+	if vision, known := p.ProbedVisionSupport(); known && !vision {
+		return fmt.Errorf("model %s does not support image input", selected.ID)
 	}
 	return nil
 }
@@ -143,11 +163,21 @@ func (a *Agent) DiscoverModels(ctx context.Context) ([]model.Model, error) {
 				entries[index].ContextWindow = entry.contextLimit()
 			}
 			if entries[index].MaxOutput <= 0 {
-				entries[index].MaxOutput = max(0, entry.Output)
+				entries[index].MaxOutput = entry.maxOutputLimit()
+			}
+			if len(entries[index].Input) == 0 {
+				entries[index].Input = entry.inputModalities()
 			}
 		} else {
 			seen[id] = len(entries)
-			entries = append(entries, model.Model{ID: id, Provider: cfg.ActiveProvider, API: profile.API, ContextWindow: entry.contextLimit(), MaxOutput: max(0, entry.Output)})
+			entries = append(entries, model.Model{
+				ID:            id,
+				Provider:      cfg.ActiveProvider,
+				API:           profile.API,
+				ContextWindow: entry.contextLimit(),
+				MaxOutput:     entry.maxOutputLimit(),
+				Input:         entry.inputModalities(),
+			})
 		}
 	}
 	return entries, nil
@@ -163,6 +193,23 @@ type modelMetadata struct {
 	MaxModelLen      int    `json:"max_model_len"`
 	Input            int    `json:"inputTokenLimit"`
 	Output           int    `json:"outputTokenLimit"`
+	Limit            struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	Meta struct {
+		NCtx      int `json:"n_ctx"`
+		LlamaSwap struct {
+			MaxOutputTokens int `json:"max_output_tokens"`
+		} `json:"llamaswap"`
+	} `json:"meta"`
+	Architecture struct {
+		InputModalities []string `json:"input_modalities"`
+	} `json:"architecture"`
+	Modalities struct {
+		Vision *bool `json:"vision"`
+		Audio  *bool `json:"audio"`
+	} `json:"modalities"`
 }
 
 type modelCatalog struct {
@@ -178,7 +225,57 @@ func (m modelMetadata) modelID() string {
 }
 
 func (m modelMetadata) contextLimit() int {
-	return smallestContextLimit(m.ContextLength, m.ContextWindow, m.MaxContextLength, m.MaxModelLen, m.Input)
+	return smallestContextLimit(m.ContextLength, m.ContextWindow, m.MaxContextLength, m.MaxModelLen, m.Input, m.Limit.Context, m.Meta.NCtx)
+}
+
+func (m modelMetadata) maxOutputLimit() int {
+	return smallestContextLimit(m.Output, m.Limit.Output, m.Meta.LlamaSwap.MaxOutputTokens)
+}
+
+func (m modelMetadata) inputModalities() []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(kind string) {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		if kind == "vision" {
+			kind = "image"
+		}
+		if kind == "" || seen[kind] {
+			return
+		}
+		seen[kind] = true
+		out = append(out, kind)
+	}
+	for _, raw := range m.Architecture.InputModalities {
+		add(raw)
+	}
+	if m.Modalities.Vision != nil {
+		add("text")
+		if *m.Modalities.Vision {
+			add("image")
+		}
+	}
+	if m.Modalities.Audio != nil && *m.Modalities.Audio {
+		add("text")
+		add("audio")
+	}
+	return out
+}
+
+func (m modelMetadata) visionSupport() (supported bool, known bool) {
+	if m.Modalities.Vision != nil {
+		return *m.Modalities.Vision, true
+	}
+	modalities := m.inputModalities()
+	if len(modalities) == 0 {
+		return false, false
+	}
+	for _, mod := range modalities {
+		if mod == "image" {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 func smallestContextLimit(values ...int) int {

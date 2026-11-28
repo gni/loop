@@ -112,14 +112,21 @@ func (a *Agent) consumeTurnChunks(
 	refresh := time.NewTicker(33 * time.Millisecond)
 	defer refresh.Stop()
 
-	var streamChars, streamTokens int
-	var genStart, lastStatusDraw time.Time
+	var streamChars, streamTokens, lastReportedTokens int
+	var genStart, lastChunkAt, lastStatusDraw time.Time
 	maybeUpdateStatus := func() {
-		if onStatusProgress == nil || genStart.IsZero() || streamTokens <= 0 {
+		if onStatusProgress == nil || genStart.IsZero() || streamTokens <= 0 || streamTokens == lastReportedTokens {
 			return
 		}
 		if now := time.Now(); now.Sub(lastStatusDraw) >= 100*time.Millisecond {
-			onStatusProgress(streamTokens, CalcStreamTPS(streamTokens, genStart, now))
+			// Measure throughput up to the most recent chunk timestamp so a
+			// silent server-side tool buffering pause does not decay t/s to 0.
+			measuredAt := lastChunkAt
+			if measuredAt.IsZero() {
+				measuredAt = now
+			}
+			onStatusProgress(streamTokens, CalcStreamTPS(streamTokens, genStart, measuredAt))
+			lastReportedTokens = streamTokens
 			lastStatusDraw = now
 		}
 	}
@@ -138,11 +145,15 @@ func (a *Agent) consumeTurnChunks(
 			continue
 		}
 		a.emit(Event{Type: "message_update", SessionID: sessionID, Delta: chunk.Content, Kind: chunk.Type})
-		if chunk.Content != "" && genStart.IsZero() {
+		if chunk.Content != "" {
 			switch chunk.Type {
 			case "reasoning", "text", "tool_name", "tool_target", "tool_call":
-				genStart = time.Now()
-				lastStatusDraw = genStart
+				now := time.Now()
+				if genStart.IsZero() {
+					genStart = now
+					lastStatusDraw = now
+				}
+				lastChunkAt = now
 			}
 		}
 		switch chunk.Type {

@@ -25,10 +25,10 @@ func ParseReasoningEffort(val string) (string, error) {
 	switch v := strings.ToLower(strings.TrimSpace(val)); v {
 	case "off", "none", "false", "0":
 		return "off", nil
-	case "low", "medium", "high", "max":
+	case "minimal", "low", "medium", "high", "xhigh", "max":
 		return v, nil
 	default:
-		return "", fmt.Errorf("invalid reasoning effort '%s'. Allowed: off, low, medium, high, max", val)
+		return "", fmt.Errorf("invalid reasoning effort '%s'. Allowed: off, minimal, low, medium, high, xhigh, max", val)
 	}
 }
 

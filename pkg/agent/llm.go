@@ -118,10 +118,19 @@ func copyProviderCapabilities(destination, source *OpenAICompatibleProvider) {
 	destination.tokenCounterMu.Unlock()
 	source.thinkingMu.Lock()
 	supported, checked, probedCaps := source.ThinkingSupported, source.ThinkingSupportChecked, source.ProbedCapabilities
+	preserveReasoning := source.PreserveReasoningSupported
+	visionKnown, visionSupported := source.ProbedVisionKnown, source.ProbedVisionSupported
+	var probedEfforts map[string]bool
+	if len(source.ProbedEfforts) > 0 {
+		probedEfforts = maps.Clone(source.ProbedEfforts)
+	}
 	source.thinkingMu.Unlock()
 	if checked {
 		destination.thinkingMu.Lock()
 		destination.ThinkingSupported, destination.ThinkingSupportChecked, destination.ProbedCapabilities = supported, checked, probedCaps
+		destination.PreserveReasoningSupported = preserveReasoning
+		destination.ProbedVisionKnown, destination.ProbedVisionSupported = visionKnown, visionSupported
+		destination.ProbedEfforts = probedEfforts
 		destination.thinkingMu.Unlock()
 	}
 	source.ContextLimitMu.RLock()
