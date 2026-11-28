@@ -142,7 +142,7 @@ func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chun
 		dest.WriteString(text)
 		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: chunkType, Content: text}, observer)
 	}
-	return toolProtocolForConfig(p.Config).NewStreamTextFilter(
+	filter := toolProtocolForConfig(p.Config).NewStreamTextFilter(
 		emit,
 		func(toolName string, idx int) {
 			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_name", Content: toolName, ToolCallIndex: idx, Fallback: true}, observer)
@@ -154,6 +154,22 @@ func (p *OpenAICompatibleProvider) newStreamTextFilter(ctx context.Context, chun
 			emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_call", Content: chunk, ToolCallIndex: idx, Fallback: true}, observer)
 		},
 	)
+	filter.SetToolEndCallback(func(idx int) {
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "tool_done", ToolCallIndex: idx, Fallback: true}, observer)
+	})
+	return filter
+}
+
+// newReasoningTextFilter strips fallback XML tool tags from reasoning text
+// without emitting live tool chunks. Otherwise tool tags mentioned inside
+// <think>...</think> hijack ToolCallIndex 0 and drop real tool streaming.
+func (p *OpenAICompatibleProvider) newReasoningTextFilter(ctx context.Context, chunkChan chan<- StreamChunk, dest *strings.Builder) *FallbackToolTextFilter {
+	observer := p.chunkDropObserver(ctx)
+	emit := func(text string) {
+		dest.WriteString(text)
+		emitChunkObserved(ctx, chunkChan, StreamChunk{Type: "reasoning", Content: text}, observer)
+	}
+	return toolProtocolForConfig(p.Config).NewStreamTextFilter(emit, nil, nil, nil)
 }
 
 func (p *OpenAICompatibleProvider) StreamChatCompletions(
@@ -291,7 +307,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 	captureRawText := !toolProto.UsesNativeSchemas()
 
 	textFilter := p.newStreamTextFilter(ctx, chunkChan, "text", &textBuilder)
-	reasoningFilter := p.newStreamTextFilter(ctx, chunkChan, "reasoning", &cleanReasoningBuilder)
+	reasoningFilter := p.newReasoningTextFilter(ctx, chunkChan, &cleanReasoningBuilder)
 
 	emitText := func(text string) {
 		if text != "" {
@@ -417,9 +433,34 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 				if err := budget.add(tc.ID, tc.Function.Name, tc.Function.Arguments); err != nil {
 					return buildMessage(), err
 				}
-				idx := 0
+				idx := -1
 				if tc.Index != nil {
 					idx = *tc.Index
+				} else {
+					if tc.ID != "" {
+						for existingIdx, existingCall := range toolCallsMap {
+							if existingCall.ID == tc.ID {
+								idx = existingIdx
+								break
+							}
+						}
+					}
+					if idx < 0 {
+						if tc.ID != "" || (tc.Function.Name != "" && len(toolCallsMap) > 0) {
+							idx = len(toolCallsMap)
+							for _, exists := toolCallsMap[idx]; exists; _, exists = toolCallsMap[idx] {
+								idx++
+							}
+						} else if len(toolCallsMap) > 0 {
+							for existingIdx := range toolCallsMap {
+								if existingIdx > idx {
+									idx = existingIdx
+								}
+							}
+						} else {
+							idx = 0
+						}
+					}
 				}
 				if idx < 0 {
 					return buildMessage(), fmt.Errorf("invalid tool call index %d", idx)
@@ -461,7 +502,7 @@ func (p *OpenAICompatibleProvider) StreamChatCompletions(
 		return buildMessage(), fmt.Errorf("provider stream ended before a completion marker: %w", ErrIncompleteResponse)
 	}
 	if finishReason == "length" || finishReason == "max_tokens" {
-		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q: %w", finishReason, ErrIncompleteResponse)
+		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q: %w", finishReason, ErrOutputTruncated)
 	}
 	if finishReason == "content_filter" {
 		return buildMessage(), fmt.Errorf("completion terminated with finish reason %q; response is incomplete", finishReason)

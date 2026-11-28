@@ -21,6 +21,7 @@ type callPlan struct {
 	toolErr           error
 	skipped           bool
 	dependencySkipped bool
+	duplicateOf       string
 	started           bool
 	guardHit          bool
 	approvalRendered  bool

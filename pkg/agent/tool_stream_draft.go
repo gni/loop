@@ -44,40 +44,84 @@ type streamedDraft struct {
 }
 
 // appendXML decodes XML <edit> body fragments (<old>...</old><new>...</new>)
-// into readable +/- lines without leaking XML tag markup into the live excerpt.
+// into readable +/- lines without leaking XML tag markup or swallowing literal
+// '<' characters in code (such as "i < n", "<-ch", "<T>", "<div>", or conflict blocks).
 func (d *streamedDraft) appendXML(fragment string) {
+	emitLiteral := func(r rune) {
+		if d.readingBody {
+			if d.lineStart && (r == '\n' || r == '\r') {
+				return
+			}
+			d.appendVisible(r)
+		} else if r != '\n' && r != '\r' && r != ' ' && r != '\t' {
+			d.appendPlain(r)
+		}
+	}
+	flushPendingTag := func() {
+		raw := d.xmlTag.String()
+		d.xmlTag.Reset()
+		d.xmlInTag = false
+		emitLiteral('<')
+		for _, tr := range raw {
+			emitLiteral(tr)
+		}
+	}
 	for _, r := range fragment {
 		if d.xmlInTag {
 			if r == '>' {
-				tag := strings.ToLower(strings.TrimSpace(d.xmlTag.String()))
+				raw := d.xmlTag.String()
 				d.xmlTag.Reset()
 				d.xmlInTag = false
+				tag := strings.ToLower(strings.TrimSpace(raw))
 				name := tag
 				if fields := strings.Fields(tag); len(fields) > 0 {
 					name = fields[0]
 				}
 				switch name {
-				case "old":
+				case "old", "oldtext", "old_text":
 					d.readingBody = true
 					d.linePrefix = "- "
 					d.lineStart = true
-				case "new":
+				case "new", "newtext", "new_text":
 					d.readingBody = true
 					d.linePrefix = "+ "
 					d.lineStart = true
-				case "/old", "/new":
+				case "/old", "/new", "/oldtext", "/old_text", "/newtext", "/new_text":
 					if d.readingBody && !d.lineStart {
 						d.appendPlain('\n')
 						d.lineStart = true
 					}
 					d.readingBody = false
 					d.linePrefix = ""
+				case "path", "/path", "instructions", "/instructions", "instruction", "/instruction", "description", "/description":
+					// Structural metadata tags are omitted from the live code excerpt.
+				default:
+					// Not a known edit XML delimiter (for example "<T>" or "<div>" in code).
+					emitLiteral('<')
+					for _, tr := range raw {
+						emitLiteral(tr)
+					}
+					emitLiteral('>')
 				}
 				continue
 			}
-			if d.xmlTag.Len() < 128 {
-				d.xmlTag.WriteRune(r)
+			if r == '<' {
+				flushPendingTag()
+				d.xmlInTag = true
+				continue
 			}
+			if r == '\n' || r == '\r' || d.xmlTag.Len() >= 32 {
+				flushPendingTag()
+				emitLiteral(r)
+				continue
+			}
+			if d.xmlTag.Len() == 0 && r != '/' && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				d.xmlInTag = false
+				emitLiteral('<')
+				emitLiteral(r)
+				continue
+			}
+			d.xmlTag.WriteRune(r)
 			continue
 		}
 		if r == '<' {
@@ -85,14 +129,7 @@ func (d *streamedDraft) appendXML(fragment string) {
 			d.xmlTag.Reset()
 			continue
 		}
-		if d.readingBody {
-			if d.lineStart && (r == '\n' || r == '\r') {
-				continue
-			}
-			d.appendVisible(r)
-		} else if r != '\n' && r != '\r' && r != ' ' && r != '\t' {
-			d.appendPlain(r)
-		}
+		emitLiteral(r)
 	}
 }
 
@@ -223,8 +260,11 @@ func (d *streamedDraft) appendJSON(fragment string) {
 			d.inString = true
 			key := strings.ToLower(d.lastKey)
 			d.readingBody = d.valueNext && (key == "content" || key == "body" || key == "text" || key == "question" || key == "prompt")
+			if d.toolName == "write" {
+				d.readingBody = d.valueNext && (key == "content" || key == "code_content" || key == "codecontent" || key == "write_content" || key == "writecontent" || key == "file_content" || key == "filecontent" || key == "text" || key == "body" || key == "data" || key == "contents")
+			}
 			if d.toolName == "bash" {
-				d.readingBody = d.valueNext && (key == "command" || key == "cmd" || key == "arguments")
+				d.readingBody = d.valueNext && (key == "command" || key == "cmd" || key == "commandline" || key == "script" || key == "arguments")
 			}
 			if d.toolName == "todo" {
 				d.readingBody = d.valueNext && (key == "markdown" || key == "task" || key == "description" || key == "title" || key == "content" || key == "desc" || key == "summary")
@@ -235,12 +275,12 @@ func (d *streamedDraft) appendJSON(fragment string) {
 				}
 			}
 			if d.edit && d.valueNext {
-				switch d.lastKey {
-				case "oldText", "old_text", "old_string", "oldString":
+				switch key {
+				case "oldtext", "old_text", "old_string", "oldstring", "old", "old_str", "oldstr", "search", "targetcontent", "target_content":
 					d.readingBody = true
 					d.linePrefix = "- "
 					d.lineStart = true
-				case "newText", "new_text", "new_string", "newString":
+				case "newtext", "new_text", "new_string", "newstring", "new", "new_str", "newstr", "replace", "replacementcontent", "replacement_content":
 					d.readingBody = true
 					d.linePrefix = "+ "
 					d.lineStart = true

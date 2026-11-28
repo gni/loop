@@ -84,10 +84,38 @@ func (anthropicProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequ
 			continue
 		}
 		if len(turns) > 0 && turns[len(turns)-1]["role"] == role {
-			turns[len(turns)-1]["content"] = append(turns[len(turns)-1]["content"].([]map[string]any), content...)
+			existing := turns[len(turns)-1]["content"].([]map[string]any)
+			if role == "assistant" {
+				// Anthropic requires thinking blocks to precede non-thinking blocks
+				// within an assistant turn when consecutive assistant turns merge.
+				var thinkingBlocks, otherBlocks []map[string]any
+				for _, blk := range existing {
+					if blk["type"] == "thinking" {
+						thinkingBlocks = append(thinkingBlocks, blk)
+					} else {
+						otherBlocks = append(otherBlocks, blk)
+					}
+				}
+				for _, blk := range content {
+					if blk["type"] == "thinking" {
+						thinkingBlocks = append(thinkingBlocks, blk)
+					} else {
+						otherBlocks = append(otherBlocks, blk)
+					}
+				}
+				turns[len(turns)-1]["content"] = append(thinkingBlocks, otherBlocks...)
+			} else {
+				turns[len(turns)-1]["content"] = append(existing, content...)
+			}
 		} else {
 			turns = append(turns, map[string]any{"role": role, "content": content})
 		}
+	}
+	if len(turns) > 0 && turns[0]["role"] != "user" {
+		turns = append([]map[string]any{{
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": "[earlier conversation context omitted]"}},
+		}}, turns...)
 	}
 
 	definitions := make([]map[string]any, 0, len(in.tools))
@@ -132,16 +160,21 @@ func (anthropicProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequ
 		"system":     systemPayload,
 		"max_tokens": in.maxTokens,
 	}
-	if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
-		modelID := strings.ToLower(p.Config.Model)
+	if effort := normalizedReasoningEffort(p.Config); effort == "" || effort == "off" || effort == "none" {
+		modelID := strings.ToLower(in.modelName)
 		if in.hasReasoningCap || strings.Contains(modelID, "claude-3-7") || strings.Contains(modelID, "sonnet-4") || strings.Contains(modelID, "opus-4") || strings.Contains(modelID, "haiku-4") || strings.Contains(modelID, "sonnet-5") || strings.Contains(modelID, "opus-5") || strings.Contains(modelID, "haiku-5") || strings.Contains(modelID, "fable-5") || strings.Contains(modelID, "mythos") {
 			// Explicitly disable thinking on models that otherwise enable it by default.
 			// Models with mandatory thinking will reject this instead of silently reasoning.
 			payload["thinking"] = map[string]any{"type": "disabled"}
 		}
 	} else if in.maxTokens > 1024 {
-		budget := max(p.GetLimits().ReasoningTokenBudgets[effort], 1024)
-		payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": min(budget, in.maxTokens-1)}
+		budget := p.GetLimits().ReasoningTokenBudgets[effort]
+		if budget < 0 {
+			budget = in.maxTokens - 1
+		} else {
+			budget = min(max(budget, 1024), in.maxTokens-1)
+		}
+		payload["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 	}
 	if len(definitions) > 0 {
 		payload["tools"] = definitions

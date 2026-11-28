@@ -74,7 +74,11 @@ func (s *Store) browserLogin(ctx context.Context, name string, profile config.Pr
 	redirectURI := "http://" + listener.Addr().String() + callbackPath
 	if callback != nil {
 		if callback.Port() == "" || callback.Port() == "0" {
-			callback.Host = listener.Addr().String()
+			if _, port, err := net.SplitHostPort(listener.Addr().String()); err == nil {
+				callback.Host = net.JoinHostPort(callback.Hostname(), port)
+			} else {
+				callback.Host = listener.Addr().String()
+			}
 		}
 		redirectURI = callback.String()
 	}

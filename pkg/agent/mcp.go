@@ -93,7 +93,7 @@ func (m *mcpToolExecutor) Execute(ctx tool.AgentContext, arguments string) (stri
 	return result.Output, err
 }
 
-func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
+func (m *mcpToolExecutor) resolveClient(ctx context.Context) (*mcpClient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -103,7 +103,7 @@ func (m *mcpToolExecutor) resolveClient() (*mcpClient, error) {
 	if m.agent == nil {
 		return nil, fmt.Errorf("MCP server '%s' is not connected", m.server)
 	}
-	client, err := m.agent.connectMCPServer(m.server)
+	client, err := m.agent.connectMCPServer(ctx, m.server)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func (a *Agent) StartMCPServers(configs map[string]config.MCPServerConfig) error
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if _, err := a.connectServer(name, configs[name], generation); err != nil {
+			if _, err := a.connectServer(a.Context(), name, configs[name], generation); err != nil {
 				failuresMu.Lock()
 				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 				failuresMu.Unlock()
@@ -188,7 +188,7 @@ func (a *Agent) LoadMCPServer(name string) (string, error) {
 		return "", fmt.Errorf("MCP is disabled; set mcp=true")
 	}
 
-	client, err := a.connectMCPServer(name)
+	client, err := a.connectMCPServer(a.Context(), name)
 	if err != nil {
 		return "", err
 	}
@@ -222,9 +222,15 @@ func (a *Agent) DeferredMCPServers() []string {
 	return names
 }
 
-func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
+func (a *Agent) connectServer(ctx context.Context, name string, cfg config.MCPServerConfig, generation int) (*mcpClient, error) {
 	if a == nil {
 		return nil, fmt.Errorf("nil agent")
+	}
+	if ctx == nil {
+		ctx = a.Context()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	a.MCPClientsMu.Lock()
@@ -238,7 +244,11 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	}
 	if attempt := a.mcpConnecting[name]; attempt != nil {
 		a.MCPClientsMu.Unlock()
-		<-attempt.done
+		select {
+		case <-attempt.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		a.MCPClientsMu.Lock()
 		stale := a.mcpGeneration != generation
 		a.MCPClientsMu.Unlock()
@@ -266,7 +276,9 @@ func (a *Agent) connectServer(name string, cfg config.MCPServerConfig, generatio
 	a.mcpConnecting[name] = attempt
 	a.MCPClientsMu.Unlock()
 
+	stopCancel := context.AfterFunc(ctx, client.cancel)
 	client, err := a.startAndRegisterMCPServer(client, generation)
+	stopCancel()
 	err = transporthttp.RedactError(err)
 	a.MCPClientsMu.Lock()
 	if a.mcpGeneration != generation {
@@ -390,7 +402,7 @@ func (a *Agent) ResolveUnknownTool(name string) (tool.ToolExecutor, bool) {
 	return a.Registry.Lookup(name)
 }
 
-func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
+func (a *Agent) connectMCPServer(ctx context.Context, name string) (*mcpClient, error) {
 	a.MCPClientsMu.Lock()
 	if a.Config == nil || !a.Config.MCP {
 		a.MCPClientsMu.Unlock()
@@ -406,7 +418,7 @@ func (a *Agent) connectMCPServer(name string) (*mcpClient, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("MCP server '%s' is disabled", name)
 	}
-	return a.connectServer(name, cfg, generation)
+	return a.connectServer(ctx, name, cfg, generation)
 }
 
 func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) (*mcpClient, error) {
@@ -418,7 +430,6 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) (*mcpClien
 	} else {
 		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
-	transport.ResponseHeaderTimeout = connectTimeout
 	a.LLMProviderMu.RLock()
 	cfgSnapshot := a.Config
 	a.LLMProviderMu.RUnlock()
@@ -436,6 +447,9 @@ func (a *Agent) newMCPClient(name string, cfg config.MCPServerConfig) (*mcpClien
 		Timeout:   a.GetLimits().MCPRequestTimeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
 			if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
 				return http.ErrUseLastResponse
 			}

@@ -31,8 +31,19 @@ func AttachmentFromBytes(data []byte) (ContentBlock, error) {
 	return ContentBlock{Type: "text", Text: strings.ToValidUTF8(string(data), "�")}, nil
 }
 
+// HasRenderableBlocks reports whether the message holds text or image blocks
+// suitable for chat-completions wire content arrays.
+func (m Message) HasRenderableBlocks() bool {
+	for _, block := range m.ContentBlocks {
+		if block.Type == "text" || block.Type == "image" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Message) ChatContent() any {
-	if len(m.ContentBlocks) == 0 {
+	if !m.HasRenderableBlocks() {
 		return m.Content
 	}
 	parts := make([]map[string]any, 0, len(m.ContentBlocks)+1)

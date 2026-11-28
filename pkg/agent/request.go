@@ -69,11 +69,11 @@ func sanitizeRequestMessages(inputMsgs []db.Message) ([]db.Message, int) {
 				}
 				msg.ToolCalls = normalisedTCs
 			}
-			if msg.Content == "" && len(msg.ToolCalls) == 0 && len(msg.ContentBlocks) == 0 {
+			if msg.Content == "" && len(msg.ToolCalls) == 0 && !msg.HasRenderableBlocks() {
 				continue
 			}
 		} else {
-			if msg.Content == "" && len(msg.ContentBlocks) == 0 {
+			if msg.Content == "" && !msg.HasRenderableBlocks() {
 				msg.Content = " "
 			}
 		}
@@ -146,13 +146,26 @@ func (p *OpenAICompatibleProvider) prepareChatCompletionRequestContext(ctx conte
 	return reqBody, cleanMessages, jsonData, err
 }
 
+// normalizedReasoningEffort returns a canonical effort string ("off", "low",
+// "medium", "high", "max", or "" when unset), normalizing aliases like "false"/"0".
+func normalizedReasoningEffort(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(cfg.ReasoningEffort)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := config.ParseReasoningEffort(raw); err == nil {
+		return parsed
+	}
+	return strings.ToLower(raw)
+}
+
 // chatCompletionRequest is shared by inference and the optional local token counter
 // so tools, thinking controls, and chat formatting use the same request settings.
 func (p *OpenAICompatibleProvider) chatCompletionRequest(messages []db.Message, tools []tool.Tool, maxCompTokens int) (ChatCompletionRequest, error) {
-	effort := ""
-	if p.Config != nil {
-		effort = strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort))
-	}
+	effort := normalizedReasoningEffort(p.Config)
 	enableThinking := effort != "off" && effort != "none" && effort != ""
 	budget := -1
 	if enableThinking {
@@ -307,6 +320,27 @@ func marshalChatCompletionRequest(reqBody ChatCompletionRequest) ([]byte, error)
 			wireMessages = append(wireMessages, wireChatMessage{
 				Role:         "tool",
 				Content:      content,
+				ToolCallID:   msg.ToolCallID,
+				CacheControl: msg.CacheControl,
+				Name:         msg.Name,
+			})
+			continue
+		}
+		if len(pendingImageParts) > 0 && msg.Role == "user" {
+			userParts := append([]map[string]any{{"type": "text", "text": "Attached image(s) from tool result:"}}, pendingImageParts...)
+			pendingImageParts = nil
+			switch content := msg.ChatContent().(type) {
+			case string:
+				if content != "" {
+					userParts = append(userParts, map[string]any{"type": "text", "text": content})
+				}
+			case []map[string]any:
+				userParts = append(userParts, content...)
+			}
+			wireMessages = append(wireMessages, wireChatMessage{
+				Role:         msg.Role,
+				Content:      userParts,
+				ToolCalls:    msg.ToolCalls,
 				ToolCallID:   msg.ToolCallID,
 				CacheControl: msg.CacheControl,
 				Name:         msg.Name,

@@ -351,7 +351,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			}
 
 			echoFilter := NewPromptEchoFilter(prompt)
-			priorCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
+			priorCompletionTokens := a.GetSessionTotalCompletionTokens(requestMessages)
 
 			updateStreamStatus := func(generating bool, liveTokens int, tps float64) {
 				if a.UI != nil && !isNonInteractive {
@@ -464,8 +464,11 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			// Compaction is performed immediately before the next inference, when
 			// another model call is actually necessary. A final answer must not
 			// trigger a separate summarization request.
-			globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(*messages, allowlist)
-			globalCompletionTokens := a.GetSessionTotalCompletionTokens(*messages)
+			a.MessagesMu.RLock()
+			postRecordSnapshot := append([]db.Message(nil), (*messages)...)
+			a.MessagesMu.RUnlock()
+			globalPromptTokens, postEffectiveLimit := a.estimateTurnContext(postRecordSnapshot, allowlist)
+			globalCompletionTokens := a.GetSessionTotalCompletionTokens(postRecordSnapshot)
 
 			var finalTps float64
 			if dur := a.LastGenerationDuration(); dur > 0 {
@@ -499,6 +502,12 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 			return nil
 		},
 		CompletionReminder: func(ctx context.Context, iter int, reminder string) error {
+			if syncPostTurnStatus != nil {
+				syncPostTurnStatus()
+			}
+			if ncw != nil {
+				lastToolTrailingNewlines = ncw.TrailingNewlines()
+			}
 			sink.Append(db.Message{Role: "user", ContextKind: "runtime", Content: reminder})
 			return a.persistenceError()
 		},
@@ -531,12 +540,19 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		},
 		Compact: func(ctx context.Context) error {
 			closePending()
-			if len(*messages) <= 4 {
+			a.MessagesMu.RLock()
+			msgCount := len(*messages)
+			a.MessagesMu.RUnlock()
+			if msgCount <= 4 {
 				return fmt.Errorf("current input exceeds the local model context")
 			}
 			a.emit(Event{Type: "retry", SessionID: sessionID, Output: "compacting context after provider context rejection"})
-			if err := a.CompressHistory(ctx, messages, sessionID, theme, writerToUse); err != nil {
+			compacted, err := a.CompressHistoryWithOutcome(ctx, messages, sessionID, theme, writerToUse)
+			if err != nil {
 				return err
+			}
+			if !compacted {
+				return fmt.Errorf("unable to compact conversation history further")
 			}
 			engine.HistoryCompacted()
 			return nil
@@ -555,6 +571,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		},
 		Pause: func(ctx context.Context, iter, failures int) error {
 			if failures > 0 {
+				closePending()
 				a.emit(Event{Type: "retry", SessionID: sessionID, Output: "recovering local inference"})
 				if ncw != nil {
 					ncw.EnsureNewline()
@@ -578,7 +595,7 @@ func (a *Agent) RunAgentLoop(ctx context.Context, w io.Writer, messages *[]db.Me
 		}
 		if outcome.Status == run.LimitReached {
 			fmt.Fprintf(writerToUse, "\n%v\n", err)
-		} else if outcome.Status != run.Blocked {
+		} else if err != run.ErrBlocked {
 			var errorWriter io.Writer = writerToUse
 			if ncw != nil {
 				errorWriter = ncw

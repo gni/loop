@@ -197,8 +197,12 @@ func (c *mcpClient) startSSE() error {
 	if transport, ok := c.client.Transport.(*http.Transport); ok && transport != nil {
 		sseTransport = transport.Clone()
 		sseTransport.ResponseHeaderTimeout = c.connectTimeout
+		sseTransport.TLSHandshakeTimeout = c.connectTimeout
 	} else {
-		sseTransport = &http.Transport{ResponseHeaderTimeout: c.connectTimeout}
+		sseTransport = &http.Transport{
+			ResponseHeaderTimeout: c.connectTimeout,
+			TLSHandshakeTimeout:   c.connectTimeout,
+		}
 	}
 	sseClient := *c.client
 	sseClient.Timeout = 0
@@ -225,6 +229,7 @@ func (c *mcpClient) startSSE() error {
 	endpointChan := make(chan string, 1)
 
 	go func() {
+		defer c.sseBody.Close()
 		defer c.failPendingRequests()
 		defer close(endpointChan)
 		reader := sse.NewReader(c.sseBody)
@@ -368,7 +373,9 @@ func (c *mcpClient) handleMessage(data string) {
 	if msg.Method == "notifications/tools/list_changed" {
 		c.dirty.Store(true)
 	}
-	if len(msg.ID) == 0 {
+	// Server-to-client JSON-RPC requests carry both "method" and "id".
+	// Ignore them here so their IDs never collide with in-flight client RPCs.
+	if msg.Method != "" || len(msg.ID) == 0 {
 		return
 	}
 

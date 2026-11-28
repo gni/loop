@@ -217,7 +217,20 @@ func pinnedTaskInstructions(ctx context.Context, kept, source []db.Message) []db
 	for _, instruction := range instructions {
 		present := false
 		for _, msg := range kept {
-			if msg.Role == "user" && strings.TrimSpace(msg.Content) == instruction {
+			if msg.Role != "user" {
+				continue
+			}
+			content := strings.TrimSpace(msg.Content)
+			if msg.ContextKind == "objective" {
+				content = strings.TrimPrefix(content, "[Original task; later user instructions take precedence]\n")
+				if msg.TaskState != nil {
+					obj := strings.TrimSpace(msg.TaskState.Objective)
+					if obj == instruction && strings.HasSuffix(content, "\n\n"+obj) {
+						content = obj
+					}
+				}
+			}
+			if content == instruction {
 				present = true
 				break
 			}

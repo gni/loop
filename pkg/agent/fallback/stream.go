@@ -72,6 +72,7 @@ type ToolTextFilter struct {
 	emitToolName             func(string, int)
 	emitToolTarget           func(string, int)
 	emitToolCall             func(string, int)
+	emitToolEnd              func(int)
 	toolCallIndex            int
 	activeToolName           string
 }
@@ -99,6 +100,13 @@ func (f *ToolTextFilter) SetToolTargetCallback(emitToolTarget func(string, int))
 		return
 	}
 	f.emitToolTarget = emitToolTarget
+}
+
+func (f *ToolTextFilter) SetToolEndCallback(emitToolEnd func(int)) {
+	if f == nil {
+		return
+	}
+	f.emitToolEnd = emitToolEnd
 }
 
 func (f *ToolTextFilter) Write(chunk string) {
@@ -270,6 +278,9 @@ func (f *ToolTextFilter) process(final bool) {
 				if f.emitToolCall != nil && body != "" {
 					f.emitToolCall(body, f.toolCallIndex)
 				}
+				if f.emitToolEnd != nil {
+					f.emitToolEnd(f.toolCallIndex)
+				}
 				f.pending = strings.TrimPrefix(f.pending[closeIndex+len(f.closingTag):], ">")
 				f.closingTag = ""
 				f.trimLeadingTagNewline = false
@@ -283,6 +294,9 @@ func (f *ToolTextFilter) process(final bool) {
 			if final {
 				if f.emitToolCall != nil && f.pending != "" {
 					f.emitToolCall(f.pending, f.toolCallIndex)
+				}
+				if f.emitToolEnd != nil {
+					f.emitToolEnd(f.toolCallIndex)
 				}
 				f.pending = ""
 				f.closingTag = ""
@@ -379,6 +393,7 @@ func (f *ToolTextFilter) process(final bool) {
 		openEnd := openingEndIndex(f.pending[openIndex:])
 		if openEnd < 0 {
 			if final {
+				f.emitText(f.pending)
 				f.pending = ""
 				return
 			}
@@ -416,6 +431,9 @@ func (f *ToolTextFilter) process(final bool) {
 		}
 
 		if closingTag == "" {
+			if f.emitToolEnd != nil {
+				f.emitToolEnd(f.toolCallIndex)
+			}
 			f.activeToolName = ""
 			f.toolCallIndex++
 			f.discardLeadingWhitespace = true
@@ -440,6 +458,9 @@ func trimSingleTrailingNewline(s string) string {
 }
 
 func fallbackClosingTag(opening string) (string, bool) {
+	if !strings.HasSuffix(opening, ">") {
+		return "", false
+	}
 	if dyn := extractDynamicToolName(opening); dyn != "" {
 		if !validFallbackOpeningBoundary(opening, len("<"+dyn)) {
 			return "", false
@@ -528,13 +549,41 @@ func openingEndIndex(text string) int {
 			}
 		case '>':
 			return i
+		case '<':
+			if i > 0 {
+				return i - 1
+			}
 		case '\n':
+			// Allow multiline XML opening tags whose continuation lines carry
+			// key=value attributes, while rejecting prose like "<read foo\nbar".
+			rest := strings.TrimLeft(text[i+1:], " \t\r")
+			if rest == "" {
+				continue
+			}
+			if rest[0] == '>' || rest[0] == '/' || looksLikeXMLAttrStart(rest) {
+				seenEq = false
+				continue
+			}
 			return i
 		default:
 			seenEq = false
 		}
 	}
 	return -1
+}
+
+func looksLikeXMLAttrStart(s string) bool {
+	i := 0
+	for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '-') {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return i < len(s) && s[i] == '='
 }
 
 func closingBoundaryIndex(text, prefix string) int {

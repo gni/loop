@@ -21,6 +21,7 @@ import (
 var (
 	ErrEmptyResponse      = run.ErrEmptyResponse
 	ErrIncompleteResponse = errors.New("provider response is incomplete")
+	ErrOutputTruncated    = errors.New("output truncated at max_completion_tokens; raise max_completion_tokens or continue in smaller steps")
 	responseHTTPStatus    = regexp.MustCompile(`non-200 status: (\d{3})\b`)
 )
 

@@ -422,6 +422,9 @@ func (sr *SessionReader) readSS3(key []byte, timeout time.Duration) ([]byte, boo
 		}
 		key = append(key, next)
 		if next >= 0x40 && next <= 0x7e {
+			if norm, ok := input.NormalizeSS3(key); ok {
+				return norm, false, nil
+			}
 			return key, false, nil
 		}
 	}
@@ -483,10 +486,18 @@ func (sr *SessionReader) ReadKeyOrResize(sigChan chan os.Signal) ([]byte, bool, 
 				continue
 			case '[':
 				key = append(key, next)
-				return sr.readCSI(key, escTimeout)
+				res, resized, err := sr.readCSI(key, escTimeout)
+				if err != nil || resized || len(res) > 0 {
+					return res, resized, err
+				}
+				continue
 			case 'O':
 				key = append(key, next)
-				return sr.readSS3(key, escTimeout)
+				res, resized, err := sr.readSS3(key, escTimeout)
+				if err != nil || resized || len(res) > 0 {
+					return res, resized, err
+				}
+				continue
 			default:
 				key = append(key, next)
 				if next >= utf8.RuneSelf {

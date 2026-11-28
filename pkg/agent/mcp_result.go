@@ -28,13 +28,13 @@ type mcpResult struct {
 }
 
 func (m *mcpToolExecutor) ExecuteResult(ctx tool.AgentContext, arguments string) (tool.ToolResult, error) {
-	client, err := m.resolveClient()
-	if err != nil {
-		return tool.ToolResult{}, err
-	}
 	parent := context.Background()
 	if ctx != nil {
 		parent = ctx.Context()
+	}
+	client, err := m.resolveClient(parent)
+	if err != nil {
+		return tool.ToolResult{}, err
 	}
 	return client.callToolResult(parent, m.toolName, arguments)
 }

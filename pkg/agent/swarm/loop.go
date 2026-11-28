@@ -284,7 +284,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 				return err
 			}
 			engine.BeginTurn()
-			compacted, err := ma.compressIfNeeded(ctx, writer, theme)
+			compacted, err := ma.compressIfNeeded(ctx, writer, theme, engine)
 			if err != nil {
 				return err
 			}
@@ -485,8 +485,12 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			return nil
 		},
 		Compact: func(ctx context.Context) error {
-			if err := ma.compactHistory(ctx, writer, theme); err != nil {
+			compacted, err := ma.compactHistory(ctx, writer, theme)
+			if err != nil {
 				return err
+			}
+			if !compacted {
+				return fmt.Errorf("unable to compact subagent conversation history further")
 			}
 			engine.HistoryCompacted()
 			return nil

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
+	"loop/pkg/agent/fallback"
 	"loop/pkg/db"
 )
 
@@ -64,7 +66,11 @@ func (s *toolStreamState) appendArguments(fragment string) {
 	if !s.payloadKnown && !s.rawTarget {
 		if first := strings.TrimSpace(fragment); first != "" {
 			s.payloadKnown = true
-			s.rawTarget = first[0] != '{' && first[0] != '['
+			if s.fromFallback && (s.name == "bash" || s.name == "write") {
+				s.rawTarget = first[0] != '{'
+			} else {
+				s.rawTarget = first[0] != '{' && first[0] != '['
+			}
 		}
 	}
 	s.arguments.WriteString(fragment)
@@ -91,7 +97,11 @@ func (s *toolStreamState) appendArguments(fragment string) {
 						trimmed = strings.TrimSpace(trimmed[:idx])
 					}
 					if len(trimmed) > streamPathBytes {
-						trimmed = trimmed[:streamPathBytes]
+						cut := streamPathBytes
+						for cut > 0 && !utf8.RuneStart(trimmed[cut]) {
+							cut--
+						}
+						trimmed = trimmed[:cut]
 					}
 					s.draft.path = trimmed
 				}
@@ -210,7 +220,7 @@ func (s *toolStreamSequencer) Feed(chunk StreamChunk) {
 		return
 	}
 	switch chunk.Type {
-	case "tool_name", "tool_target", "tool_call":
+	case "tool_name", "tool_target", "tool_call", "tool_done":
 	default:
 		return
 	}
@@ -292,6 +302,8 @@ func (s *toolStreamSequencer) feedIndexed(chunk StreamChunk) {
 		state.draft.path = chunk.Content
 	} else if chunk.Type == "tool_call" {
 		state.appendArguments(chunk.Content)
+	} else if chunk.Type == "tool_done" {
+		state.complete = true
 	}
 	if s.livePreview {
 		s.presentLive(false)
@@ -335,7 +347,13 @@ func (s *toolStreamSequencer) presentLive(force bool) {
 		if !state.complete && !force {
 			return
 		}
-		if s.deferFollowing && state.name != "write" && (state.name != "edit" || !state.editDiffShown) {
+		editCanAdvance := state.editDiffShown
+		if !editCanAdvance && state.name == "edit" {
+			if cl, ok := s.renderer.(interface{ IsLiveCollapsed() bool }); ok && cl.IsLiveCollapsed() {
+				editCanAdvance = true
+			}
+		}
+		if s.deferFollowing && state.name != "write" && (state.name != "edit" || !editCanAdvance) {
 			return
 		}
 		next := s.calls[s.active+1]
@@ -360,7 +378,15 @@ func (s *toolStreamSequencer) presentLiveCall(index int, state *toolStreamState)
 	// replace that progress row with the full diff once complete.
 	s.onLiveContent(index, state.name, path, delta)
 	if state.name == "edit" && s.editDiffPreview != nil && state.complete && !state.editDiffShown {
-		if diff := s.editDiffPreview(state.name, state.arguments.String()); diff != "" {
+		previewArgs := state.arguments.String()
+		if state.rawTarget || state.fromFallback {
+			attrs := map[string]string{}
+			if state.draft.path != "" {
+				attrs["path"] = state.draft.path
+			}
+			previewArgs = fallback.BuildXMLToolCall("edit", attrs, previewArgs).Function.Arguments
+		}
+		if diff := s.editDiffPreview(state.name, previewArgs); diff != "" {
 			state.editDiffShown = true
 			if presenter, ok := s.renderer.(EditPreviewPresenter); ok {
 				presenter.ShowLiveEditDiff(index, path, diff)

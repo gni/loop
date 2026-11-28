@@ -216,7 +216,25 @@ func ReadToken(ctx context.Context, rawChan <-chan byte, pending *[]byte, escTim
 		if !inTime3 || !got3 {
 			return Token{Kind: TokenAltKey, Raw: []byte{'\x1b', 'O'}}, true
 		}
-		return Token{Kind: TokenSS3, Raw: []byte{'\x1b', 'O', third}}, true
+		seq := []byte{'\x1b', 'O', third}
+		// Support modified SS3 sequences such as \x1bO2M or \x1bO1;5D while
+		// returning immediately on standard 3-byte SS3 sequences (\x1bOM, \x1bOA).
+		b := third
+		if !(b >= 0x40 && b <= 0x7e) && ((b >= '0' && b <= '9') || b == ';') {
+			for len(seq) < 16 && !(b >= 0x40 && b <= 0x7e) {
+				nb, ngot, ninTime := nextByteWithTimeout(escTimeout)
+				if !ninTime || !ngot {
+					break
+				}
+				if nb < 0x20 || nb >= 0x7f {
+					unread(nb)
+					break
+				}
+				seq = append(seq, nb)
+				b = nb
+			}
+		}
+		return Token{Kind: TokenSS3, Raw: seq}, true
 	case ']', 'P', 'X', '^', '_':
 		// Consume terminal string responses (OSC/DCS/SOS/PM/APC) cleanly so payloads never leak.
 		consumeStringSequence(nextByteWithTimeout, second, escTimeout)
@@ -365,9 +383,73 @@ func utf8SequenceLength(lead byte) int {
 	}
 }
 
+func isKittyPUA(code int) bool {
+	return code >= 0xE000 && code <= 0xF8FF
+}
+
+// NormalizeSS3 normalizes VT100/xterm application-keypad SS3 sequences
+// (such as \x1bOM for Keypad Enter and \x1bOj..\x1bOy for keypad operators/digits)
+// into standard bytes while leaving cursor/function SS3 sequences intact.
+func NormalizeSS3(seq []byte) ([]byte, bool) {
+	if len(seq) < 3 || seq[0] != '\x1b' || seq[1] != 'O' {
+		return nil, false
+	}
+	final := seq[len(seq)-1]
+	param := string(seq[2 : len(seq)-1])
+	modifier := 1
+	if param != "" {
+		modStr := param
+		if idx := strings.LastIndexByte(param, ';'); idx >= 0 {
+			modStr = param[idx+1:]
+		}
+		m, err := strconv.Atoi(modStr)
+		if err != nil || m < 1 {
+			return nil, false
+		}
+		modifier = m
+	}
+	mask := modifier - 1
+	hasShift := mask&1 != 0
+	hasAlt := mask&2 != 0
+	hasCtrl := mask&4 != 0
+
+	if final == 'M' {
+		if hasShift || hasCtrl {
+			return []byte{'\n'}, true
+		}
+		if hasAlt {
+			return []byte{'\x1b', '\r'}, true
+		}
+		return []byte{'\r'}, true
+	}
+	if hasCtrl || hasAlt {
+		return nil, false
+	}
+	switch {
+	case final >= 'p' && final <= 'y':
+		return []byte{'0' + (final - 'p')}, true
+	case final == 'X':
+		return []byte{'='}, true
+	case final == 'j':
+		return []byte{'*'}, true
+	case final == 'k':
+		return []byte{'+'}, true
+	case final == 'l':
+		return []byte{','}, true
+	case final == 'm':
+		return []byte{'-'}, true
+	case final == 'n':
+		return []byte{'.'}, true
+	case final == 'o':
+		return []byte{'/'}, true
+	}
+	return nil, false
+}
+
 // NormalizeCSI normalizes Kitty CSI-u (\x1b[code;mod u) and xterm modifyOtherKeys
 // (\x1b[27;mod;code~) into standard bytes while preserving Shift/Alt/Ctrl fidelity.
-// Returns (decoded, true) when normalized, or (nil, false) to keep the original CSI intact.
+// Returns (decoded, true) when normalized (with an empty slice for ignored key
+// release or unmapped PUA functional events), or (nil, false) to keep the original CSI intact.
 func NormalizeCSI(seq []byte) ([]byte, bool) {
 	if len(seq) < 4 || seq[0] != '\x1b' || seq[1] != '[' {
 		return nil, false
@@ -375,27 +457,38 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 	final := seq[len(seq)-1]
 	body := string(seq[2 : len(seq)-1])
 
-	var keyCode, modifier int
+	var keyCode, shiftedCode, modifier int
 	switch final {
 	case 'u':
 		parts := strings.Split(body, ";")
 		if len(parts) < 1 || len(parts) > 3 {
 			return nil, false
 		}
-		codePart := strings.SplitN(parts[0], ":", 2)[0]
-		c, err := strconv.Atoi(codePart)
+		keyParts := strings.Split(parts[0], ":")
+		c, err := strconv.Atoi(keyParts[0])
 		if err != nil {
 			return nil, false
 		}
 		keyCode = c
+		if len(keyParts) >= 2 && keyParts[1] != "" {
+			if sc, scErr := strconv.Atoi(keyParts[1]); scErr == nil {
+				shiftedCode = sc
+			}
+		}
 		modifier = 1
 		if len(parts) >= 2 && parts[1] != "" {
-			modPart := strings.SplitN(parts[1], ":", 2)[0]
-			m, err := strconv.Atoi(modPart)
-			if err != nil {
-				return nil, false
+			modParts := strings.Split(parts[1], ":")
+			if len(modParts) > 1 && modParts[1] == "3" {
+				// Kitty key release event: consume without emitting input.
+				return []byte{}, true
 			}
-			modifier = m
+			if modParts[0] != "" {
+				m, err := strconv.Atoi(modParts[0])
+				if err != nil {
+					return nil, false
+				}
+				modifier = m
+			}
 		}
 	case '~':
 		parts := strings.Split(body, ";")
@@ -420,6 +513,58 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 	hasAlt := mask&2 != 0
 	hasCtrl := mask&4 != 0
 
+	// Normalize Kitty PUA functional and keypad codepoints before control/text decoding.
+	switch {
+	case keyCode == 57344:
+		keyCode = 27
+	case keyCode == 57345 || keyCode == 57414: // Enter / KP_ENTER
+		keyCode = 13
+	case keyCode == 57346:
+		keyCode = 9
+	case keyCode == 57347:
+		keyCode = 127
+	case keyCode == 57349 || keyCode == 57426: // Delete / KP_DELETE
+		return []byte("\x1b[3~"), true
+	case keyCode == 57425: // KP_INSERT
+		return []byte("\x1b[2~"), true
+	case keyCode == 57421: // KP_PAGE_UP
+		return []byte("\x1b[5~"), true
+	case keyCode == 57422: // KP_PAGE_DOWN
+		return []byte("\x1b[6~"), true
+	case keyCode == 57350 || keyCode == 57417: // Left / KP_LEFT
+		return encodeNavCSI('D', mask), true
+	case keyCode == 57351 || keyCode == 57418: // Right / KP_RIGHT
+		return encodeNavCSI('C', mask), true
+	case keyCode == 57352 || keyCode == 57419: // Up / KP_UP
+		return encodeNavCSI('A', mask), true
+	case keyCode == 57353 || keyCode == 57420: // Down / KP_DOWN
+		return encodeNavCSI('B', mask), true
+	case keyCode == 57356 || keyCode == 57423: // Home / KP_HOME
+		return encodeNavCSI('H', mask), true
+	case keyCode == 57357 || keyCode == 57424: // End / KP_END
+		return encodeNavCSI('F', mask), true
+	case keyCode >= 57399 && keyCode <= 57408: // KP_0..KP_9
+		keyCode = '0' + (keyCode - 57399)
+	case keyCode == 57409: // KP_DECIMAL
+		keyCode = '.'
+	case keyCode == 57410: // KP_DIVIDE
+		keyCode = '/'
+	case keyCode == 57411: // KP_MULTIPLY
+		keyCode = '*'
+	case keyCode == 57412: // KP_SUBTRACT
+		keyCode = '-'
+	case keyCode == 57413: // KP_ADD
+		keyCode = '+'
+	case keyCode == 57415: // KP_EQUAL
+		keyCode = '='
+	case keyCode == 57416: // KP_SEPARATOR
+		keyCode = ','
+	case isKittyPUA(keyCode):
+		// Never leak unmapped Kitty PUA functional/modifier keys (NumLock,
+		// CapsLock, bare modifiers, F13-F35, media keys) as printable runes.
+		return []byte{}, true
+	}
+
 	// Preserve Shift+Tab (\x1b[Z), Alt+Backspace (\x1b\x7f), and Ctrl+Backspace (\x08) accurately.
 	switch keyCode {
 	case 9: // Tab
@@ -433,7 +578,7 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 			return []byte{'\t'}, true
 		}
 		return nil, false
-	case 13: // Enter
+	case 13: // Enter / KP_ENTER
 		// Shift+Enter or Ctrl+Enter inserts a newline (\n); plain Enter submits (\r).
 		if hasShift || hasCtrl {
 			return []byte{'\n'}, true
@@ -474,9 +619,14 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	if hasAlt && !hasCtrl && keyCode >= 0x20 && keyCode <= utf8.MaxRune && utf8.ValidRune(rune(keyCode)) {
-		r := rune(keyCode)
-		if hasShift && r >= 'a' && r <= 'z' {
+	resolvedCode := keyCode
+	if hasShift && shiftedCode >= 0x20 && shiftedCode <= utf8.MaxRune && !isKittyPUA(shiftedCode) && utf8.ValidRune(rune(shiftedCode)) {
+		resolvedCode = shiftedCode
+	}
+
+	if hasAlt && !hasCtrl && resolvedCode >= 0x20 && resolvedCode <= utf8.MaxRune && utf8.ValidRune(rune(resolvedCode)) {
+		r := rune(resolvedCode)
+		if hasShift && shiftedCode == 0 && r >= 'a' && r <= 'z' {
 			r = r - 'a' + 'A'
 		}
 		var buf [1 + utf8.UTFMax]byte
@@ -485,9 +635,9 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 		return buf[:1+n], true
 	}
 
-	if !hasCtrl && !hasAlt && keyCode >= 0x20 && keyCode <= utf8.MaxRune && utf8.ValidRune(rune(keyCode)) {
-		r := rune(keyCode)
-		if hasShift && r >= 'a' && r <= 'z' {
+	if !hasCtrl && !hasAlt && resolvedCode >= 0x20 && resolvedCode <= utf8.MaxRune && utf8.ValidRune(rune(resolvedCode)) {
+		r := rune(resolvedCode)
+		if hasShift && shiftedCode == 0 && r >= 'a' && r <= 'z' {
 			r = r - 'a' + 'A'
 		}
 		var buf [utf8.UTFMax]byte
@@ -496,4 +646,12 @@ func NormalizeCSI(seq []byte) ([]byte, bool) {
 	}
 
 	return nil, false
+}
+
+func encodeNavCSI(nav byte, mask int) []byte {
+	normMod := 1 + mask&7
+	if normMod == 1 {
+		return []byte{27, '[', nav}
+	}
+	return []byte("\x1b[1;" + strconv.Itoa(normMod) + string(nav))
 }

@@ -9,6 +9,7 @@ import (
 type ThinkingStreamFilter struct {
 	buffer        string
 	inThoughtMode bool
+	closeTag      string
 	onContent     func(string)
 	onReasoning   func(string)
 }
@@ -66,7 +67,11 @@ func (f *ThinkingStreamFilter) Feed(chunk string) {
 			emit = f.onContent
 			nextMode = true
 		} else {
-			tags = []string{"<channel|>", "</think>"}
+			if f.closeTag != "" {
+				tags = []string{f.closeTag}
+			} else {
+				tags = []string{"<channel|>", "</think>"}
+			}
 			emit = f.onReasoning
 			nextMode = false
 		}
@@ -78,6 +83,15 @@ func (f *ThinkingStreamFilter) Feed(chunk string) {
 			}
 			f.buffer = f.buffer[idx+len(tag):]
 			f.inThoughtMode = nextMode
+			if nextMode {
+				if tag == "<|channel>thought" {
+					f.closeTag = "<channel|>"
+				} else {
+					f.closeTag = "</think>"
+				}
+			} else {
+				f.closeTag = ""
+			}
 			continue
 		}
 

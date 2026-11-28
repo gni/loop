@@ -86,7 +86,7 @@ func (t *mcpResourceTool) ExecuteResult(ctx tool.AgentContext, arguments string)
 		if err := parent.Err(); err != nil {
 			return tool.ToolResult{}, err
 		}
-		client, err := t.agent.connectMCPServer(name)
+		client, err := t.agent.connectMCPServer(parent, name)
 		if err == nil && client.capabilities != nil && client.capabilities.Resources == nil {
 			if args.Server != "" || t.method == "resources/read" {
 				return tool.ToolResult{}, fmt.Errorf("MCP server %q does not advertise resources", name)

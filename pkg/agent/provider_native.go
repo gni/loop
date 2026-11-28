@@ -164,22 +164,27 @@ type nativeStreamState struct {
 	budget             responseBudget
 	outputErr          error
 	generationStart    time.Time
+	inputTokens        int
 	complete           bool
 	finish             string
 }
 
 func (s *nativeStreamState) applyUsage(usage nativeUsage) {
-	if usage.Input > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 {
-		s.result.PromptTokens = usage.Input
-		if s.api == "messages" {
-			s.result.PromptTokens += usage.CacheRead + usage.CacheWrite
-		}
-	}
-	if usage.Output > 0 {
-		s.result.CompletionTokens = usage.Output
+	if usage.Input > 0 {
+		s.inputTokens = max(s.inputTokens, usage.Input)
 	}
 	s.result.CacheReadTokens = max(s.result.CacheReadTokens, max(usage.CacheRead, usage.Details.Cached))
 	s.result.CacheWriteTokens = max(s.result.CacheWriteTokens, usage.CacheWrite)
+	if s.inputTokens > 0 || s.result.CacheReadTokens > 0 || s.result.CacheWriteTokens > 0 {
+		if s.api == "messages" {
+			s.result.PromptTokens = s.inputTokens + s.result.CacheReadTokens + s.result.CacheWriteTokens
+		} else {
+			s.result.PromptTokens = max(s.result.PromptTokens, s.inputTokens)
+		}
+	}
+	if usage.Output > 0 {
+		s.result.CompletionTokens = max(s.result.CompletionTokens, usage.Output)
+	}
 }
 
 func (s *nativeStreamState) emit(kind, delta string) {
@@ -247,6 +252,9 @@ func (s *nativeStreamState) setCall(index int, item nativeItem) {
 		s.itemIndexes[item.ID] = index
 	}
 	emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: "tool_name", Content: normName, ToolCallIndex: index}, s.observer)
+	if item.Arguments != "" {
+		emitChunkObserved(s.streamCtx, s.chunks, StreamChunk{Type: "tool_call", Content: item.Arguments, ToolCallIndex: index}, s.observer)
+	}
 }
 
 func (s *nativeStreamState) emitToolCallDelta(index int, delta string) {
@@ -343,7 +351,7 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 		thinkingSignatures: make(map[int]*strings.Builder),
 	}
 	state.textFilter = p.newStreamTextFilter(streamCtx, chunks, "text", &state.text)
-	state.reasoningFilter = p.newStreamTextFilter(streamCtx, chunks, "reasoning", &state.reasoning)
+	state.reasoningFilter = p.newReasoningTextFilter(streamCtx, chunks, &state.reasoning)
 
 	finalized := false
 	defer func() {
@@ -399,8 +407,10 @@ func (p *OpenAICompatibleProvider) streamNative(ctx context.Context, messages []
 	}
 	switch state.finish {
 	case "length", "max_tokens", "MAX_TOKENS":
+		return result, fmt.Errorf("provider stopped with %s: %w", state.finish, ErrOutputTruncated)
+	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
 		return result, fmt.Errorf("provider stopped with %s: %w", state.finish, ErrIncompleteResponse)
-	case "SAFETY", "RECITATION", "content_filter":
+	case "SAFETY", "RECITATION", "content_filter", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY", "refusal":
 		return result, fmt.Errorf("provider stopped with incomplete outcome %s", state.finish)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"loop/pkg/agent/tool"
+	bashtool "loop/pkg/agent/tool/bash"
 	filetool "loop/pkg/agent/tool/file"
 	"loop/pkg/domain/evidence"
 	"loop/pkg/domain/limits"
@@ -26,8 +27,16 @@ var (
 
 	bashTargetRegexes  = []*regexp.Regexp{pathlibRe, sedFileRe, redirRe, rmTouchRe, catFileRe, lsDirRe}
 	bashModifyPrefixes = []string{
-		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add", "git stash",
-		"mkdir", "touch", "cp ", "mv ", "rm ", "npm ", "pnpm ", "yarn ", "pip ", "go get ", "go mod ", "cargo ", "gofmt ", "patch ", "tee ",
+		"git commit", "git checkout", "git restore", "git reset", "git apply", "git add",
+		"git stash push", "git stash pop", "git stash apply", "git stash drop", "git stash clear",
+		"mkdir", "touch", "cp ", "mv ", "rm ",
+		"npm install", "npm i ", "npm ci", "npm uninstall", "npm update", "npm init",
+		"pnpm install", "pnpm add", "pnpm remove", "pnpm update",
+		"yarn add", "yarn remove", "yarn install", "yarn upgrade",
+		"pip install", "pip uninstall", "pip3 install", "pip3 uninstall",
+		"go get ", "go mod tidy", "go mod init", "go mod edit", "go mod download",
+		"cargo add", "cargo remove", "cargo update", "cargo fmt", "cargo fix", "cargo new", "cargo init",
+		"gofmt -w", "patch ", "tee ",
 	}
 )
 
@@ -361,7 +370,7 @@ func bashFailureKey(command, directory string) string {
 
 func isBashModifying(cmd string) bool {
 	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" {
+	if trimmed == "" || bashtool.IsReadOnlyCommand(trimmed) {
 		return false
 	}
 	if strings.Contains(trimmed, "sed -i") || strings.Contains(trimmed, "> ") || redirRe.MatchString(trimmed) {
@@ -369,6 +378,9 @@ func isBashModifying(cmd string) bool {
 	}
 	for _, sub := range cmdSplitRe.Split(trimmed, -1) {
 		sub = strings.TrimSpace(sub)
+		if sub == "git stash" {
+			return true
+		}
 		for _, p := range bashModifyPrefixes {
 			if strings.HasPrefix(sub, p) {
 				return true

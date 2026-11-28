@@ -93,7 +93,10 @@ func (a *Agent) CompactionTrigger(promptTokens, completionTokens, effectiveLimit
 	return CompactionTrigger(promptTokens, completionTokens, effectiveLimit, a.CompressionThreshold())
 }
 
-func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int) (int, int, error) {
+func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessionID string, theme style.UITheme, w io.Writer, allowlist []string, promptTokens, completionTokens, effectiveLimit int, engine *TurnEngine) (int, int, error) {
+	if engine != nil && engine.CompactionCooldownActive(promptTokens, effectiveLimit) {
+		return promptTokens, effectiveLimit, nil
+	}
 	if a != nil {
 		a.MessagesMu.RLock()
 	}
@@ -102,8 +105,18 @@ func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessi
 		a.MessagesMu.RUnlock()
 	}
 	if a.autoCompactionDue(current, promptTokens, completionTokens, effectiveLimit) {
-		if err := a.CompressHistory(ctx, messages, sessionID, theme, w); err != nil {
+		compacted, err := a.CompressHistoryWithOutcome(ctx, messages, sessionID, theme, w)
+		if err != nil {
 			return promptTokens, effectiveLimit, err
+		}
+		if !compacted {
+			if engine != nil {
+				engine.NoteCompactionNoOp(promptTokens)
+			}
+			return promptTokens, effectiveLimit, nil
+		}
+		if engine != nil {
+			engine.ClearCompactionCooldown()
 		}
 		if a != nil {
 			a.MessagesMu.RLock()
@@ -116,6 +129,12 @@ func (a *Agent) maybeCompress(ctx context.Context, messages *[]db.Message, sessi
 		return recomputed, limit, nil
 	}
 	return promptTokens, effectiveLimit, nil
+}
+
+// AutoCompactionDue reports whether automatic history compaction should run
+// for messages, requiring sufficient new history growth since any prior summary.
+func (a *Agent) AutoCompactionDue(messages []db.Message, promptTokens, completionTokens, effectiveLimit int) bool {
+	return a.autoCompactionDue(messages, promptTokens, completionTokens, effectiveLimit)
 }
 
 // Automatic compaction requires new history since the latest summary. Counting
@@ -222,11 +241,23 @@ func (a *Agent) CompressHistory(
 	theme style.UITheme,
 	w io.Writer,
 	instructions ...string,
-) (compressionErr error) {
+) error {
+	_, err := a.CompressHistoryWithOutcome(ctx, messages, sessionID, theme, w, instructions...)
+	return err
+}
+
+func (a *Agent) CompressHistoryWithOutcome(
+	ctx context.Context,
+	messages *[]db.Message,
+	sessionID string,
+	theme style.UITheme,
+	w io.Writer,
+	instructions ...string,
+) (compacted bool, compressionErr error) {
 	ctx, releaseContext := a.withLifetime(ctx)
 	defer releaseContext()
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	a.emit(Event{Type: "compaction_start", SessionID: sessionID})
 	started := time.Now()
@@ -369,7 +400,7 @@ func (a *Agent) CompressHistory(
 	if sessionID != "" {
 		if err := a.AppendEntryContext(ctx, sessionID, session.Record{Type: "compaction", Messages: newMessages, Message: *summaryAssistantMsg}); err != nil {
 			a.recordPersistenceError(err)
-			return err
+			return false, err
 		}
 	}
 	if a != nil {
@@ -379,6 +410,7 @@ func (a *Agent) CompressHistory(
 	if a != nil {
 		a.MessagesMu.Unlock()
 	}
+	compacted = true
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, a.formatNotice("[system: context compression complete]", "muted", theme))

@@ -82,7 +82,19 @@ func taskInstructionMessages(ctx context.Context, messages []db.Message) []db.Me
 		}
 		view = append(view, msg)
 	}
-	return append(view, db.Message{Role: "user", ContextKind: "instruction", Content: combined.String()})
+	// Insert in the stable prefix slot right after any leading system message
+	// (matching pinnedTaskInstructions) rather than moving to the tail on every
+	// step, which would break KV cache reuse and merge into XML <tool_result> turns.
+	pinned := db.Message{Role: "user", ContextKind: "instruction", Content: combined.String()}
+	insertAt := 0
+	if len(view) > 0 && view[0].Role == "system" {
+		insertAt = 1
+	}
+	result := make([]db.Message, 0, len(view)+1)
+	result = append(result, view[:insertAt]...)
+	result = append(result, pinned)
+	result = append(result, view[insertAt:]...)
+	return result
 }
 
 // Adjacent user messages are coalesced only after budgeting. Doing it earlier

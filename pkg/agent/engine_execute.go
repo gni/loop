@@ -147,6 +147,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 	calls := assistantMsg.ToolCalls[startIndex:endIndex]
 	plans := make([]callPlan, len(calls))
 
+	seenBatch := make(map[string]string, len(calls))
 	for batchIndex, tc := range calls {
 		callIndex := startIndex + batchIndex
 		plan, halted, aborted := e.prepareToolCallPlan(ctx, callIndex, tc, assistantMsg.ToolCalls[callIndex:], assistantMsg.Content, true, true, sink, sr, loader, w, theme, render)
@@ -158,6 +159,15 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 			}
 			e.RecordInterruption(sink, assistantMsg.ToolCalls[startIndex:callIndex], reason)
 			return halted, aborted
+		}
+		if !plan.skipped && !plan.guardHit {
+			callKey := buildCallKey(plan.call.Function.Name, plan.call.Function.Arguments)
+			if firstID, duplicate := seenBatch[callKey]; duplicate {
+				plan.duplicateOf = firstID
+				plan.output = fmt.Sprintf("Duplicate of earlier call %s in the same batch; reuse its result.", firstID)
+			} else {
+				seenBatch[callKey] = plan.call.ID
+			}
 		}
 		plans[batchIndex] = plan
 	}
@@ -175,7 +185,7 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 
 	for i := range plans {
 		plan := &plans[i]
-		if plan.skipped || plan.guardHit {
+		if plan.skipped || plan.guardHit || plan.duplicateOf != "" {
 			ready <- i
 			continue
 		}
@@ -273,7 +283,9 @@ func (e *TurnEngine) executeToolCallsParallelRange(
 				}
 			}
 			e.ensureToolHeaderRendered(callIndex, plan.call, assistantMsg.Content, false, sr, w, theme, render)
-			if plan.skipped {
+			if plan.duplicateOf != "" {
+				e.emitDuplicateToolCall(callIndex, plan.call, plan.output, sink, sr, w, theme, render)
+			} else if plan.skipped {
 				e.emitRejectedToolCall(callIndex, plan.call, plan.output, !plan.approvalRendered, false, sink, sr, w, theme, render, plan.dependencySkipped)
 			} else {
 				e.finalizeToolCall(callIndex, plan.call, plan.output, plan.toolErr, plan.approvalRendered, false, sink, sr, w, theme, render, afterCall, plan.rich)

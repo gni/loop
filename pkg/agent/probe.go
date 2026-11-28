@@ -23,23 +23,25 @@ func (p *OpenAICompatibleProvider) GetDetectedContextLimit() int {
 func (p *OpenAICompatibleProvider) CheckThinkingSupport(ctx context.Context) bool {
 	p.probeMu.Lock()
 	defer p.probeMu.Unlock()
-	supported, detected, probedCaps := p.probeServerCapabilitiesHTTP(ctx)
-	p.thinkingMu.Lock()
-	p.ThinkingSupported = supported
-	p.ThinkingSupportChecked = true
-	p.ProbedCapabilities = probedCaps
-	p.thinkingMu.Unlock()
-	p.ContextLimitMu.Lock()
-	if detected > 0 {
-		p.DetectedContextLimit = detected
+	supported, detected, probedCaps, complete := p.probeServerCapabilitiesHTTP(ctx)
+	if complete {
+		p.thinkingMu.Lock()
+		p.ThinkingSupported = supported
+		p.ThinkingSupportChecked = true
+		p.ProbedCapabilities = probedCaps
+		p.thinkingMu.Unlock()
+		p.ContextLimitMu.Lock()
+		if detected > 0 {
+			p.DetectedContextLimit = detected
+		}
+		p.ContextLimitChecked = true
+		p.ContextLimitMu.Unlock()
 	}
-	p.ContextLimitChecked = true
-	p.ContextLimitMu.Unlock()
 	return supported
 }
 
 // Probe metadata without holding status locks. Both routes share one deadline.
-func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) (bool, int, config.ChatCapabilities) {
+func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Context) (bool, int, config.ChatCapabilities, bool) {
 	timeout := 5 * time.Second
 	if p.Config != nil && p.Config.Timeout > 0 && time.Duration(p.Config.Timeout)*time.Second < timeout {
 		timeout = time.Duration(p.Config.Timeout) * time.Second
@@ -48,11 +50,16 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	defer cancel()
 
 	if p.Config == nil || p.Config.Endpoint == "" {
-		return false, 0, config.ChatCapabilities{}
+		return false, 0, config.ChatCapabilities{}, true
+	}
+	if checkCtx.Value(credentialContextKey{}) == nil && p.ResolveCredential != nil {
+		if key, err := p.ResolveCredential(checkCtx); err == nil && key != "" {
+			checkCtx = context.WithValue(checkCtx, credentialContextKey{}, key)
+		}
 	}
 	base, err := url.Parse(p.Config.Endpoint)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return false, 0, config.ChatCapabilities{}
+		return false, 0, config.ChatCapabilities{}, true
 	}
 	// llama.cpp exposes /props at the server root, even when chat uses /v1.
 	base.Path = "/props"
@@ -63,6 +70,7 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	base.Fragment = ""
 	supported, detected := false, 0
 	var probedCaps config.ChatCapabilities
+	authRejected := false
 	if p.api() == "chat-completions" || p.api() == "responses" {
 		var props struct {
 			NCtx              int             `json:"n_ctx"`
@@ -84,13 +92,19 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 				Params     map[string]interface{} `json:"params"`
 			} `json:"default_generation_settings"`
 		}
-		readProps := p.readServerMetadata(checkCtx, base.String(), 128*1024, &props)
-		if !readProps && base.RawQuery != "" {
+		readProps, status := p.readServerMetadataStatus(checkCtx, base.String(), 128*1024, &props)
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			authRejected = true
+		}
+		if !readProps && base.RawQuery != "" && !authRejected {
 			// Single-model servers (such as Strata or llama.cpp) return 404 on
 			// /props?model=<alias> when the client uses a local alias (e.g. "op"),
 			// while GET /props without a query string returns the active model's metadata.
 			base.RawQuery = ""
-			readProps = p.readServerMetadata(checkCtx, base.String(), 128*1024, &props)
+			readProps, status = p.readServerMetadataStatus(checkCtx, base.String(), 128*1024, &props)
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				authRejected = true
+			}
 		}
 		if readProps {
 			for _, flag := range []json.RawMessage{props.SupportsReasoning, props.SupportsThinking, props.Thinking} {
@@ -123,26 +137,38 @@ func (p *OpenAICompatibleProvider) probeServerCapabilitiesHTTP(ctx context.Conte
 	if detected == 0 {
 		endpoint, err := transporthttp.ModelDiscoveryURL(p.Config.Endpoint, p.api())
 		var catalog modelCatalog
-		if err == nil && p.readServerMetadata(checkCtx, endpoint, 4<<20, &catalog) {
-			selected := strings.TrimPrefix(p.Config.ResolveModelAlias(p.Config.Model), "models/")
-			entries := append(catalog.Data, catalog.Models...)
-			for _, entry := range entries {
-				if entry.modelID() == selected {
-					detected = smallestContextLimit(detected, entry.contextLimit())
-				}
+		if err == nil {
+			ok, status := p.readServerMetadataStatus(checkCtx, endpoint, 4<<20, &catalog)
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				authRejected = true
 			}
-			if detected == 0 && len(entries) == 1 {
-				detected = smallestContextLimit(detected, entries[0].contextLimit())
+			if ok {
+				selected := strings.TrimPrefix(p.Config.ResolveModelAlias(p.Config.Model), "models/")
+				entries := append(catalog.Data, catalog.Models...)
+				for _, entry := range entries {
+					if entry.modelID() == selected {
+						detected = smallestContextLimit(detected, entry.contextLimit())
+					}
+				}
+				if detected == 0 && len(entries) == 1 {
+					detected = smallestContextLimit(detected, entries[0].contextLimit())
+				}
 			}
 		}
 	}
-	return supported, detected, probedCaps
+	complete := ctx.Err() == nil && (!authRejected || supported || detected > 0)
+	return supported, detected, probedCaps, complete
 }
 
 func (p *OpenAICompatibleProvider) readServerMetadata(ctx context.Context, endpoint string, limit int64, target any) bool {
+	ok, _ := p.readServerMetadataStatus(ctx, endpoint, limit, target)
+	return ok
+}
+
+func (p *OpenAICompatibleProvider) readServerMetadataStatus(ctx context.Context, endpoint string, limit int64, target any) (bool, int) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	req.Header.Set("loop", buildinfo.Version)
 	api := p.api()
@@ -163,14 +189,14 @@ func (p *OpenAICompatibleProvider) readServerMetadata(ctx context.Context, endpo
 	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := requestClient.Do(req)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return false, resp.StatusCode
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	return err == nil && int64(len(body)) <= limit && json.Unmarshal(body, target) == nil
+	return err == nil && int64(len(body)) <= limit && json.Unmarshal(body, target) == nil, resp.StatusCode
 }
 
 // ProbeServerCapabilities reads explicit reasoning metadata, if present, and
@@ -181,7 +207,10 @@ func (p *OpenAICompatibleProvider) ProbeServerCapabilities(ctx context.Context) 
 	if p.ThinkingProbeChecked() {
 		return
 	}
-	supported, detected, probedCaps := p.probeServerCapabilitiesHTTP(ctx)
+	supported, detected, probedCaps, complete := p.probeServerCapabilitiesHTTP(ctx)
+	if !complete {
+		return
+	}
 	p.thinkingMu.Lock()
 	p.ThinkingSupported = supported
 	p.ThinkingSupportChecked = true

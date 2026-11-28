@@ -50,6 +50,13 @@ func NewResilientClient(cfg RetryConfig) *ResilientClient {
 	if cfg.Client == nil {
 		cfg.Client = http.DefaultClient
 	}
+	if cfg.Client.CheckRedirect == nil {
+		cloned := *cfg.Client
+		cloned.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		cfg.Client = &cloned
+	}
 	return &ResilientClient{config: cfg}
 }
 

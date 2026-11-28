@@ -60,7 +60,7 @@ func (a *Agent) prepareAgentStep(ctx context.Context, messages *[]db.Message, al
 
 	globalPromptTokensEst, effectiveLimit = a.estimateTurnContext(stepSnapshot, allowlist)
 	timer.Time("compaction", "start")
-	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit)
+	globalPromptTokensEst, effectiveLimit, err = a.maybeCompress(ctx, messages, sessionID, theme, w, allowlist, globalPromptTokensEst, 0, effectiveLimit, engine)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -182,6 +182,8 @@ func (a *Agent) consumeTurnChunks(
 			if loader != nil {
 				loader.Feed()
 			}
+			toolStream.Feed(chunk)
+		case "tool_done":
 			toolStream.Feed(chunk)
 		}
 		a.refreshStreamPresentation(sr)

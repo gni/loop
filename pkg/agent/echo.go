@@ -59,6 +59,12 @@ func matchNormalizedPrefix(text, target string) int {
 			return -1
 		}
 		if len(currentNorm) == len(normTarget) {
+			if (unicode.IsLetter(r) || unicode.IsDigit(r)) && i < len(text) {
+				nextRune, _ := utf8.DecodeRuneInString(text[i:])
+				if unicode.IsLetter(nextRune) || unicode.IsDigit(nextRune) {
+					return -1
+				}
+			}
 			return i
 		}
 	}

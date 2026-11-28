@@ -12,6 +12,8 @@ type responsesProtocol struct{}
 
 type responsesEvent struct {
 	Type        string          `json:"type"`
+	Code        string          `json:"code"`
+	Message     string          `json:"message"`
 	OutputIndex int             `json:"output_index"`
 	ItemID      string          `json:"item_id"`
 	Arguments   string          `json:"arguments"`
@@ -25,10 +27,12 @@ type responsesEvent struct {
 			Reason string `json:"reason"`
 		} `json:"incomplete_details"`
 		Error struct {
+			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	} `json:"response"`
 	Error *struct {
+		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
 }
@@ -88,13 +92,13 @@ func (responsesProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequ
 	if len(definitions) > 0 {
 		payload["tools"] = definitions
 	}
-	if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort != "" && effort != "off" && effort != "none" {
+	if effort := normalizedReasoningEffort(p.Config); effort != "" && effort != "off" && effort != "none" {
 		if effort == "max" {
 			effort = "high"
 		}
 		payload["reasoning"] = map[string]string{"effort": effort}
 	} else {
-		modelID := strings.ToLower(strings.TrimSpace(p.Config.Model))
+		modelID := strings.ToLower(strings.TrimSpace(in.modelName))
 		if in.hasReasoningCap || strings.HasPrefix(modelID, "gpt-5") || strings.HasPrefix(modelID, "gpt-6") || strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") || strings.HasPrefix(modelID, "o4") {
 			// A missing reasoning field allows the backend to use its default.
 			// Models that cannot disable reasoning must reject this setting.
@@ -151,14 +155,32 @@ func (responsesProtocol) handleEvent(s *nativeStreamState, data []byte) (bool, e
 		}
 		s.emitToolCallDelta(index, delta)
 	case "response.function_call_arguments.done":
-		if err := s.budget.add(event.Arguments); err != nil {
-			return false, err
-		}
 		index, ok := s.itemIndexes[event.ItemID]
 		if !ok {
 			return false, fmt.Errorf("arguments for unknown tool call")
 		}
+		prevLen := 0
+		if buf := s.argumentBuffers[index]; buf != nil {
+			prevLen = buf.Len()
+		}
+		if len(event.Arguments) > prevLen {
+			if err := s.budget.add(event.Arguments[prevLen:]); err != nil {
+				return false, err
+			}
+		}
 		s.argumentBuffers.replace(index, event.Arguments)
+	case "error":
+		msg := transport.RedactDiagnostic(event.Message)
+		if event.Code != "" && msg != "" {
+			return false, fmt.Errorf("provider error (%s): %s", transport.RedactDiagnostic(event.Code), msg)
+		}
+		if msg != "" {
+			return false, fmt.Errorf("provider error: %s", msg)
+		}
+		if event.Code != "" {
+			return false, fmt.Errorf("provider error (%s)", transport.RedactDiagnostic(event.Code))
+		}
+		return false, fmt.Errorf("provider error")
 	case "response.completed":
 		s.applyUsage(event.Response.Usage)
 		if status := event.Response.Status; status != "" && status != "completed" {
@@ -175,6 +197,9 @@ func (responsesProtocol) handleEvent(s *nativeStreamState, data []byte) (bool, e
 		}
 		if s.result.StopReason == "content_filter" {
 			return false, fmt.Errorf("provider stopped with incomplete outcome %s", s.result.StopReason)
+		}
+		if s.result.StopReason == "max_output_tokens" || s.result.StopReason == "max_tokens" || s.result.StopReason == "length" {
+			return false, fmt.Errorf("provider stopped with %s: %w", s.result.StopReason, ErrOutputTruncated)
 		}
 		return false, fmt.Errorf("provider stopped with %s: %w", s.result.StopReason, ErrIncompleteResponse)
 	case "response.failed":

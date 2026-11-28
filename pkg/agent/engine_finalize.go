@@ -37,6 +37,28 @@ func isBatchNonBlockingTool(name string) bool {
 	}
 }
 
+func (e *TurnEngine) emitDuplicateToolCall(
+	idx int,
+	tc db.ToolCall,
+	output string,
+	sink HistorySink,
+	sr StreamRenderer,
+	w io.Writer,
+	theme style.UITheme,
+	render EngineRenderer,
+) {
+	if e.policy.ToolBatch != nil {
+		e.policy.ToolBatch.SetResult(idx, output, nil)
+		e.policy.ToolBatch.Finish(idx, false)
+	}
+	recordRenderedToolResult(sr, idx, tc, output, false)
+	sr.CompleteToolCall(idx, tc.Function.Name, tc.Function.Arguments, false)
+	render.ToolOutput(w, theme, output, false, tc.Function.Name, tc.Function.Arguments, false)
+	e.agent.emit(Event{Type: "tool_execution_end", SessionID: e.policy.SessionKey, ToolCall: &tc, Output: output, IsError: false})
+	observed := &evidence.Record{Kind: "tool", Target: tc.Function.Name, Outcome: evidence.NotExecuted}
+	sink.Append(db.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: output, IsError: false, ToolOutcome: evidence.NotExecuted, Evidence: observed, TaskState: e.observeTaskTool(tc, observed, false)})
+}
+
 func (e *TurnEngine) emitRejectedToolCall(
 	idx int,
 	tc db.ToolCall,
@@ -217,9 +239,12 @@ func (e *TurnEngine) finalizeToolCall(
 				if tc.Function.Name == "edit" && !editDiffAlreadyShown && !a.LiveSettings().CollapseResults {
 					if ep, ok := sr.(EditPreviewPresenter); ok && ep.ReplaceCompactEditOutput(idx, rendered.String()) {
 						resultHandled = true
+					} else if replacer, ok := sr.(WriteResultPresenter); ok {
+						// Compact row could not be expanded in place; clear the
+						// receiving placeholder and let ToolOutput render the full diff.
+						_ = replacer.TryCompleteWriteResult(idx, "⎿  Applied (diff below)")
 					}
-				}
-				if !resultHandled {
+				} else if !resultHandled {
 					if line := verifiedToolSummaryLine(rendered.String()); line != "" {
 						if replacer, ok := sr.(WriteResultPresenter); ok {
 							_ = replacer.TryCompleteWriteResult(idx, line)

@@ -167,38 +167,41 @@ func Execute(ctx context.Context, policy Policy, driver Driver) (result Result, 
 			if err == nil {
 				break
 			}
+			recordInterrupted := func(finalErr error) (Result, error) {
+				if driver.Interrupted != nil {
+					if recordErr := driver.Interrupted(stepCtx, step, msg, finalErr); recordErr != nil {
+						return result, errors.Join(finalErr, recordErr)
+					}
+				}
+				return result, finalErr
+			}
 			if ctx.Err() == nil && !errors.Is(err, retry.ErrExhausted) && !compacted && driver.Compact != nil && driver.IsContextOverflow != nil && driver.IsContextOverflow(err) {
 				if budgetErr := retry.Check(stepCtx); budgetErr != nil {
-					return result, errors.Join(err, budgetErr)
+					return recordInterrupted(errors.Join(err, budgetErr))
 				}
 				compacted = true
 				if compactErr := driver.Compact(stepCtx); compactErr != nil {
-					return result, errors.Join(err, compactErr)
+					return recordInterrupted(errors.Join(err, compactErr))
 				}
 				continue
 			}
-			if driver.Interrupted != nil {
-				if recordErr := driver.Interrupted(stepCtx, step, msg, err); recordErr != nil {
-					return result, errors.Join(err, recordErr)
-				}
-			}
 			if ctx.Err() != nil || errors.Is(err, retry.ErrExhausted) || errors.Is(err, ErrTokenBudget) || recoveries >= policy.RecoveryAttempts || driver.IsRecoverable == nil || !driver.IsRecoverable(err) {
-				return result, err
+				return recordInterrupted(err)
 			}
 			if budgetErr := retry.Check(stepCtx); budgetErr != nil {
-				return result, errors.Join(err, budgetErr)
+				return recordInterrupted(errors.Join(err, budgetErr))
 			}
 			recoveries++
 			if driver.Pause != nil {
 				if waitErr := driver.Pause(stepCtx, step, recoveries); waitErr != nil {
-					return result, waitErr
+					return recordInterrupted(waitErr)
 				}
 			} else {
 				timer := time.NewTimer(time.Second * time.Duration(1<<min(recoveries-1, 5)))
 				select {
 				case <-stepCtx.Done():
 					timer.Stop()
-					return result, stepCtx.Err()
+					return recordInterrupted(stepCtx.Err())
 				case <-timer.C:
 				}
 			}

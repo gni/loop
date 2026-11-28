@@ -52,6 +52,13 @@ func (sr *StreamRenderer) SetLiveCollapse(collapsed bool) {
 	sr.mu.Unlock()
 }
 
+// IsLiveCollapsed reports whether live tool previews are currently collapsed.
+func (sr *StreamRenderer) IsLiveCollapsed() bool {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	return sr.liveCollapse
+}
+
 // SetInteractiveQuestions gives the question menu ownership of question text.
 // Automatic answers still need their question displayed by the live preview.
 func (sr *StreamRenderer) SetInteractiveQuestions(enabled bool) {

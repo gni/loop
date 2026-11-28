@@ -106,6 +106,7 @@ type TurnEngine struct {
 	awareness                  *TurnAwareness
 	guided                     *GuidedController
 	consecutiveGuardRejections int
+	compactionNoOpAt           int
 	batchFailure               string
 }
 
@@ -346,13 +347,40 @@ type EngineLoader interface {
 	PauseDots()
 }
 
+// CompactionCooldownActive suppresses repeated automatic compaction attempts
+// after a no-op compaction (e.g. summary not smaller than existing history)
+// until enough new prompt tokens accumulate.
+func (e *TurnEngine) CompactionCooldownActive(promptTokens, effectiveLimit int) bool {
+	if e == nil || e.compactionNoOpAt <= 0 {
+		return false
+	}
+	minimumGrowth := max(64, min(2048, effectiveLimit/8))
+	return promptTokens < e.compactionNoOpAt+minimumGrowth
+}
+
+func (e *TurnEngine) NoteCompactionNoOp(promptTokens int) {
+	if e != nil && promptTokens > 0 {
+		e.compactionNoOpAt = promptTokens
+	}
+}
+
+func (e *TurnEngine) ClearCompactionCooldown() {
+	if e != nil {
+		e.compactionNoOpAt = 0
+	}
+}
+
 // HistoryCompacted permits rereading evidence that has left the model context,
 // while retaining repeated-failure diagnostics and the operation guard.
-func (e *TurnEngine) HistoryCompacted() { e.guard.ForgetInspectionResults() }
+func (e *TurnEngine) HistoryCompacted() {
+	e.compactionNoOpAt = 0
+	e.guard.ForgetInspectionResults()
+}
 
 func (e *TurnEngine) UserSteered() {
 	previous := e.guard
 	e.guard = NewTurnExecutionGuardWithConfig(previous.maxConsecutiveCalls, previous.reminderThresholds)
 	e.guard.SetObservationInvalidator(previous.invalidator)
 	e.consecutiveGuardRejections = 0
+	e.compactionNoOpAt = 0
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"loop/pkg/domain/limits"
 	"loop/pkg/ui/input"
@@ -49,8 +48,12 @@ func normalizeKeyboardInput(ctx context.Context, rawInput <-chan byte, historyIn
 			switch tok.Kind {
 			case input.TokenIgnored:
 				continue
-			case input.TokenBytes, input.TokenEscape, input.TokenSS3, input.TokenMouse:
+			case input.TokenBytes, input.TokenEscape, input.TokenMouse:
 				if !send(tok.Raw) {
+					return
+				}
+			case input.TokenSS3:
+				if !send(decodeSS3Sequence(tok.Raw)) {
 					return
 				}
 			case input.TokenAltKey:
@@ -123,8 +126,9 @@ func decodeKeyboardSequence(seq []byte) []byte {
 		}
 	}
 
-	// Handle Kitty CSI-u extensions (release suppression, PUA functional keys,
-	// shifted keycodes, Ctrl+Space, and encoded LF) before delegating to input.NormalizeCSI.
+	// Handle REPL-specific CSI-u encodings (encoded LF and Ctrl+Space) before
+	// delegating standard CSI-u, Kitty PUA keypad/functional keys, and release
+	// suppression to input.NormalizeCSI.
 	if final == 'u' {
 		fields := strings.Split(body, ";")
 		keys := strings.Split(fields[0], ":")
@@ -133,51 +137,28 @@ func decodeKeyboardSequence(seq []byte) []byte {
 			return seq
 		}
 		mod := 1
-		if len(fields) > 1 {
+		if len(fields) > 1 && fields[1] != "" {
 			modifiers := strings.Split(fields[1], ":")
 			if len(modifiers) > 1 && modifiers[1] == "3" {
 				return nil
 			}
-			mod, err = strconv.Atoi(modifiers[0])
-			if err != nil || mod < 1 {
-				return seq
+			if modifiers[0] != "" {
+				mod, err = strconv.Atoi(modifiers[0])
+				if err != nil || mod < 1 {
+					return seq
+				}
 			}
 		}
 		mask := mod - 1
-		hasShift := mask&1 != 0
 		hasAlt := mask&2 != 0
 		hasCtrl := mask&4 != 0
 
 		switch code {
-		case 57344:
-			seq = rewriteCSIU(27, mod)
-		case 57345:
-			seq = rewriteCSIU(13, mod)
-		case 57346:
-			seq = rewriteCSIU(9, mod)
-		case 57347:
-			seq = rewriteCSIU(127, mod)
-		case 57349:
-			return []byte("\x1b[3~")
-		case 57350, 57351, 57352, 57353, 57356, 57357:
-			nav := map[int]byte{57350: 'D', 57351: 'C', 57352: 'A', 57353: 'B', 57356: 'H', 57357: 'F'}[code]
-			normMod := 1 + mask&7
-			if normMod == 1 {
-				return []byte{27, '[', nav}
-			}
-			return []byte("\x1b[1;" + strconv.Itoa(normMod) + string(nav))
 		case 10:
 			return []byte{30}
 		case 32:
 			if hasCtrl && !hasAlt {
 				return []byte{0}
-			}
-		}
-		if len(keys) > 1 && hasShift && !hasCtrl && !hasAlt {
-			if shifted, parseErr := strconv.Atoi(keys[1]); parseErr == nil && shifted >= 0x20 && shifted <= utf8.MaxRune && utf8.ValidRune(rune(shifted)) {
-				var buf [utf8.UTFMax]byte
-				n := utf8.EncodeRune(buf[:], rune(shifted))
-				return buf[:n]
 			}
 		}
 	} else if final == '~' && strings.HasPrefix(text, "\x1b[27;") {
@@ -190,20 +171,24 @@ func decodeKeyboardSequence(seq []byte) []byte {
 	}
 
 	if decoded, ok := input.NormalizeCSI(seq); ok {
-		// Convert modified Enter forms (\n from Shift/Ctrl+Enter, \x1b\r from Alt+Enter)
-		// into byte 30 to match Loop's prompt newline convention.
-		if (len(decoded) == 1 && decoded[0] == '\n') || (len(decoded) == 2 && decoded[0] == '\x1b' && decoded[1] == '\r') {
-			return []byte{30}
-		}
-		return decoded
+		return mapREPLNormalizedKey(decoded)
 	}
 
 	return seq
 }
 
-func rewriteCSIU(code, mod int) []byte {
-	if mod <= 1 {
-		return []byte("\x1b[" + strconv.Itoa(code) + "u")
+func decodeSS3Sequence(seq []byte) []byte {
+	if decoded, ok := input.NormalizeSS3(seq); ok {
+		return mapREPLNormalizedKey(decoded)
 	}
-	return []byte("\x1b[" + strconv.Itoa(code) + ";" + strconv.Itoa(mod) + "u")
+	return seq
+}
+
+// Convert modified Enter forms (\n from Shift/Ctrl+Enter, \x1b\r from Alt+Enter)
+// into byte 30 to match Loop's prompt newline convention.
+func mapREPLNormalizedKey(decoded []byte) []byte {
+	if (len(decoded) == 1 && decoded[0] == '\n') || (len(decoded) == 2 && decoded[0] == '\x1b' && decoded[1] == '\r') {
+		return []byte{30}
+	}
+	return decoded
 }

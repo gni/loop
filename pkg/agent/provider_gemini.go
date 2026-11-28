@@ -78,15 +78,29 @@ func (geminiProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequest
 				parts = append(parts, map[string]any{"text": msg.Content})
 			}
 			parts = append(parts, generateContentBlockParts(msg.ContentBlocks)...)
-			for _, call := range msg.ToolCalls {
+			for callIdx, call := range msg.ToolCalls {
 				var arguments map[string]any
 				if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
 					arguments = map[string]any{"_raw_arguments": call.Function.Arguments}
 				}
 				part := map[string]any{"functionCall": map[string]any{"id": call.ID, "name": call.Function.Name, "args": arguments}}
-				for _, block := range msg.ContentBlocks {
-					if block.Type == "signature" && block.Signature != "" && (block.ToolCallID == "" || block.ToolCallID == call.ID) && msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
-						part["thoughtSignature"] = block.Signature
+				if msg.Provider == p.Config.ActiveProvider && msg.Model == p.Config.Model {
+					exactSig := ""
+					fallbackSig := ""
+					for _, block := range msg.ContentBlocks {
+						if block.Type != "signature" || block.Signature == "" {
+							continue
+						}
+						if block.ToolCallID == call.ID {
+							exactSig = block.Signature
+						} else if block.ToolCallID == "" && fallbackSig == "" {
+							fallbackSig = block.Signature
+						}
+					}
+					if exactSig != "" {
+						part["thoughtSignature"] = exactSig
+					} else if callIdx == 0 && fallbackSig != "" {
+						part["thoughtSignature"] = fallbackSig
 					}
 				}
 				parts = append(parts, part)
@@ -101,6 +115,12 @@ func (geminiProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequest
 		}
 	}
 	flushToolImages()
+	if len(turns) > 0 && turns[0]["role"] != "user" {
+		turns = append([]map[string]any{{
+			"role":  "user",
+			"parts": []map[string]any{{"text": "[earlier conversation context omitted]"}},
+		}}, turns...)
+	}
 
 	definitions := make([]map[string]any, 0, len(in.tools))
 	for _, definition := range in.tools {
@@ -113,13 +133,13 @@ func (geminiProtocol) buildRequest(p *OpenAICompatibleProvider, in nativeRequest
 	}
 
 	generation := map[string]any{"maxOutputTokens": in.maxTokens}
-	if effort := strings.ToLower(strings.TrimSpace(p.Config.ReasoningEffort)); effort == "" || effort == "off" || effort == "none" {
-		modelID := strings.ToLower(strings.TrimPrefix(p.Config.Model, "models/"))
+	if effort := normalizedReasoningEffort(p.Config); effort == "" || effort == "off" || effort == "none" {
+		modelID := strings.ToLower(strings.TrimPrefix(in.modelName, "models/"))
 		switch {
 		case strings.HasPrefix(modelID, "gemini-2.5-flash"):
 			generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
 		case strings.HasPrefix(modelID, "gemini-2.5-"), strings.HasPrefix(modelID, "gemini-3"), strings.HasPrefix(modelID, "gemini-4"):
-			return "", nil, fmt.Errorf("reasoning:off is not supported by Gemini model %q; select a model that supports disabling thinking", p.Config.Model)
+			return "", nil, fmt.Errorf("reasoning:off is not supported by Gemini model %q; select a model that supports disabling thinking", in.modelName)
 		default:
 			if in.hasReasoningCap {
 				generation["thinkingConfig"] = map[string]any{"thinkingBudget": 0, "includeThoughts": false}
@@ -175,10 +195,18 @@ func (geminiProtocol) handleEvent(s *nativeStreamState, data []byte) (bool, erro
 			}
 			s.emit(kind, part.Text)
 		}
+		partCallID := ""
 		if part.FunctionCall != nil {
 			call := part.FunctionCall
 			index := len(s.calls)
-			s.setCall(index, nativeItem{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
+			rawArgs := strings.TrimSpace(string(call.Arguments))
+			if rawArgs == "" || rawArgs == "null" {
+				rawArgs = "{}"
+			}
+			s.setCall(index, nativeItem{ID: call.ID, Name: call.Name, Arguments: rawArgs})
+			if added := s.calls[index]; added != nil {
+				partCallID = added.ID
+			}
 		}
 		if part.Signature != "" {
 			if len(s.result.ContentBlocks) >= maxResponseToolCalls {
@@ -187,7 +215,7 @@ func (geminiProtocol) handleEvent(s *nativeStreamState, data []byte) (bool, erro
 			if err := s.budget.add(part.Signature); err != nil {
 				return false, err
 			}
-			s.result.ContentBlocks = append(s.result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature, ToolCallID: signatureCallID(s.calls)})
+			s.result.ContentBlocks = append(s.result.ContentBlocks, message.ContentBlock{Type: "signature", Signature: part.Signature, ToolCallID: partCallID})
 		}
 	}
 	if candidate.FinishReason != "" {
