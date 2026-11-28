@@ -98,7 +98,7 @@ func DrawChatViewport(w io.Writer, rows, previous []string, hint, previousHint s
 
 type overlayCell struct {
 	r   rune
-	sgr string
+	sgr style.SGRState
 }
 
 // parseOverlayRow decodes a single-width styled viewport row into per-column
@@ -109,15 +109,13 @@ func parseOverlayRow(line string) ([]overlayCell, bool) {
 		return nil, true
 	}
 	cells := make([]overlayCell, 0, 96)
-	curSGR := ""
+	var curSGR style.SGRState
 	for i := 0; i < len(line); {
 		if line[i] == '\x1b' {
 			end := style.SkipAnsiEscape(line, i)
 			seq := line[i:end]
-			if seq == "\x1b[0m" || seq == "\x1b[m" {
-				curSGR = ""
-			} else if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
-				curSGR = seq
+			if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+				curSGR.Apply(seq)
 			}
 			i = end
 			continue
@@ -131,14 +129,15 @@ func parseOverlayRow(line string) ([]overlayCell, bool) {
 		if rSize != len(cluster) {
 			return nil, false
 		}
-		// Spaces carry no foreground ink, so normalize their SGR for clean diffs.
+		// Plain spaces carry no visible ink, so normalize their SGR for clean diffs.
+		// Preserve SGR on spaces with background, underline, reverse, or strike.
 		sgr := curSGR
-		if r == ' ' {
-			sgr = ""
+		if r == ' ' && !curSGR.HasSpaceInk() {
+			sgr.Reset()
 		}
 		cells = append(cells, overlayCell{r: r, sgr: sgr})
 	}
-	for len(cells) > 0 && cells[len(cells)-1].r == ' ' {
+	for len(cells) > 0 && cells[len(cells)-1].r == ' ' && cells[len(cells)-1].sgr.IsZero() {
 		cells = cells[:len(cells)-1]
 	}
 	return cells, true
@@ -191,7 +190,7 @@ func DrawChatViewportOverlay(w io.Writer, rows, previous []string) {
 			continue
 		}
 
-		activeSGR := ""
+		var activeSGR style.SGRState
 		col := 0
 		for col < maxLen {
 			var cc, pc overlayCell
@@ -213,9 +212,9 @@ func DrawChatViewportOverlay(w io.Writer, rows, previous []string) {
 			// If every remaining cell past len(cur) is now blank, clear tail with \x1b[K.
 			if col >= len(cur) {
 				begin()
-				if activeSGR != "" {
+				if !activeSGR.IsZero() {
 					frame.WriteString(terminal.ResetAttributes)
-					activeSGR = ""
+					activeSGR.Reset()
 				}
 				fmt.Fprintf(&frame, "\x1b[%d;%dH\x1b[K", row+1, col+1)
 				break
@@ -233,11 +232,12 @@ func DrawChatViewportOverlay(w io.Writer, rows, previous []string) {
 						break
 					}
 				}
-				if cc.r != ' ' && cc.sgr != activeSGR {
-					if cc.sgr == "" {
+				if cc.sgr != activeSGR {
+					if !activeSGR.IsZero() {
 						frame.WriteString(terminal.ResetAttributes)
-					} else {
-						frame.WriteString(cc.sgr)
+					}
+					if !cc.sgr.IsZero() {
+						frame.WriteString(cc.sgr.Sequence())
 					}
 					activeSGR = cc.sgr
 				}
@@ -245,7 +245,7 @@ func DrawChatViewportOverlay(w io.Writer, rows, previous []string) {
 				col++
 			}
 		}
-		if activeSGR != "" {
+		if !activeSGR.IsZero() {
 			frame.WriteString(terminal.ResetAttributes)
 		}
 	}

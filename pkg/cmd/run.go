@@ -41,12 +41,8 @@ func runRoot(cmd *cobra.Command, args []string) (runErr error) {
 	}
 	loadCustomThemes(workspace)
 	noninteractive := printOnce || len(args) > 0 || outputMode != "text" || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
-	trusted := config.WorkspaceTrusted(configPath, workspace)
-	if cmd.Flags().Changed("trust") {
-		trusted = trustProject
-	} else if ignoreProject {
-		trusted = false
-	} else if !noninteractive {
+	trusted := resolveWorkspaceTrust(cmd, workspace)
+	if !cmd.Flags().Changed("trust") && !ignoreProject && !noninteractive {
 		trusted = promptWorkspaceTrust(workspace)
 	}
 	cfg, err := config.LoadWorkspaceConfigContext(cmd.Context(), configPath, workspace, trusted)
@@ -73,7 +69,7 @@ func runRoot(cmd *cobra.Command, args []string) (runErr error) {
 	if noTools {
 		allowed = []string{}
 	}
-	options := runtime.Options{Config: cfg, ConfigPath: configPath, Workspace: workspace, SessionID: sessionIDFlag, SessionName: sessionName, Resume: resumeSession, NoSession: noSession, Tools: allowed, KeepSelection: cmd.Flags().Changed("model") || cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("reasoning")}
+	options := runtime.Options{Config: cfg, ConfigPath: configPath, Workspace: workspace, SessionID: sessionIDFlag, SessionName: sessionName, Resume: resumeSession, NoSession: noSession, Tools: allowed, KeepSelection: cmd.Flags().Changed("model") || cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("reasoning"), KeepDisabledTools: cmd.Flags().Changed("disable-tools") || cmd.Flags().Changed("disabled-tools")}
 	if outputMode == "text" && cfg.Nostop.Enabled() {
 		options.Output = cmd.OutOrStdout()
 	}

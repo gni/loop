@@ -390,7 +390,7 @@ func (f *ToolTextFilter) process(final bool) {
 			}
 		}
 
-		openEnd := openingEndIndex(f.pending[openIndex:])
+		openEnd := openingEndIndex(f.pending[openIndex:], final)
 		if openEnd < 0 {
 			if final {
 				f.emitText(f.pending)
@@ -526,7 +526,7 @@ func fallbackClosingTag(opening string) (string, bool) {
 	}
 }
 
-func openingEndIndex(text string) int {
+func openingEndIndex(text string, final bool) int {
 	var quote byte
 	seenEq := false
 	for i := 0; i < len(text); i++ {
@@ -558,13 +558,27 @@ func openingEndIndex(text string) int {
 			// key=value attributes, while rejecting prose like "<read foo\nbar".
 			rest := strings.TrimLeft(text[i+1:], " \t\r")
 			if rest == "" {
-				continue
+				if final {
+					return i
+				}
+				return -1
 			}
-			if rest[0] == '>' || rest[0] == '/' || looksLikeXMLAttrStart(rest) {
+			if rest[0] == '>' || rest[0] == '/' {
 				seenEq = false
 				continue
 			}
-			return i
+			switch checkXMLAttrStart(rest) {
+			case xmlAttrYes:
+				seenEq = false
+				continue
+			case xmlAttrIncomplete:
+				if final {
+					return i
+				}
+				return -1
+			default:
+				return i
+			}
 		default:
 			seenEq = false
 		}
@@ -572,18 +586,30 @@ func openingEndIndex(text string) int {
 	return -1
 }
 
-func looksLikeXMLAttrStart(s string) bool {
+const (
+	xmlAttrNo = iota
+	xmlAttrYes
+	xmlAttrIncomplete
+)
+
+func checkXMLAttrStart(s string) int {
 	i := 0
 	for i < len(s) && ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '-') {
 		i++
 	}
 	if i == 0 {
-		return false
+		return xmlAttrNo
 	}
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
 		i++
 	}
-	return i < len(s) && s[i] == '='
+	if i == len(s) {
+		return xmlAttrIncomplete
+	}
+	if s[i] == '=' {
+		return xmlAttrYes
+	}
+	return xmlAttrNo
 }
 
 func closingBoundaryIndex(text, prefix string) int {

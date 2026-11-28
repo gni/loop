@@ -222,6 +222,9 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	_, textWithoutBOM := SplitBOM(data)
 	contentStr := SanitizeUTF8([]byte(textWithoutBOM))
 	if len(data) == 0 || strings.TrimSpace(contentStr) == "" {
+		if tracksRanges {
+			coverage.RecordReadRange(safePath, data, 1, 1, true)
+		}
 		return renderReadPage(entryHeader, []string{"(empty file)"}, offset, 1, budget)
 	}
 
@@ -238,7 +241,7 @@ func (t *readTool) executeRead(ctx domaintool.AgentContext, arguments string, bl
 	if err == nil && tracksRanges {
 		complete := !clipped
 		for i := offset; i <= shownEnd; i++ {
-			if window[i-offset] != lines[i-1] {
+			if strings.TrimSuffix(window[i-offset], "\r") != strings.TrimSuffix(lines[i-1], "\r") {
 				complete = false
 			}
 		}

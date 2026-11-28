@@ -83,6 +83,7 @@ func RunInteractiveProviderConfig(
 							}
 							return "(not set)"
 						},
+						EditValue:   func() string { return cloned.Providers[pName].Model },
 						Description: fmt.Sprintf("Model identifier to request for '%s'", pName),
 						OnEdit: func(newVal string) error {
 							curr := cloned.Providers[pName]
@@ -123,6 +124,8 @@ func RunInteractiveProviderConfig(
 							}
 							return key[:4] + "..." + key[len(key)-4:] + " (masked)"
 						},
+						EditValue:   func() string { return cloned.Providers[pName].APIKey },
+						Secret:      true,
 						Description: fmt.Sprintf("API key or env reference ($VAR) for '%s'", pName),
 						OnEdit: func(newVal string) error {
 							curr := cloned.Providers[pName]
@@ -140,10 +143,19 @@ func RunInteractiveProviderConfig(
 							}
 							return "default"
 						},
+						EditValue: func() string {
+							if t := cloned.Providers[pName].Timeout; t > 0 {
+								return strconv.Itoa(t)
+							}
+							return ""
+						},
 						Description: fmt.Sprintf("Timeout in seconds for '%s' (0 to use default)", pName),
 						OnEdit: func(newVal string) error {
 							newVal = strings.TrimSpace(newVal)
 							if newVal == "" {
+								curr := cloned.Providers[pName]
+								curr.Timeout = 0
+								cloned.Providers[pName] = curr
 								return nil
 							}
 							sec, err := strconv.Atoi(newVal)

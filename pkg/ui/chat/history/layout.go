@@ -39,7 +39,7 @@ func (h *ChatHistory) scheduleLayoutsLocked() {
 		}
 		return
 	}
-	if h.closed.Load() {
+	if h.closed.Load() || h.isNativeScroll() {
 		return
 	}
 	top := h.top
@@ -124,7 +124,7 @@ func (h *ChatHistory) scheduleLayoutsLocked() {
 }
 
 func (h *ChatHistory) finishLayoutJobLocked(job *turnLayoutJob, rows *render.Scrollback, err error) {
-	if h.closed.Load() || h.layoutJob != job {
+	if h.closed.Load() || h.isNativeScroll() || h.layoutJob != job {
 		_ = rows.Close()
 		return
 	}

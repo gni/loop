@@ -23,6 +23,10 @@ func Commands(directories []string) []Command {
 	seen := make(map[string]bool)
 	var commands []Command
 	for _, directory := range directories {
+		evalDir, err := filepath.EvalSymlinks(directory)
+		if err != nil {
+			continue
+		}
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			continue
@@ -32,7 +36,15 @@ func Commands(directories []string) []Command {
 				continue
 			}
 			path := filepath.Join(directory, entry.Name())
-			info, err := os.Stat(path)
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				continue
+			}
+			rel, relErr := filepath.Rel(evalDir, resolved)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			info, err := os.Stat(resolved)
 			if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
 				continue
 			}

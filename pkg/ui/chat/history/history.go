@@ -301,6 +301,14 @@ func (h *ChatHistory) SyncNativeScreenLocked(transcript []byte) {
 	if h.closed.Load() {
 		return
 	}
+	h.closePagesLocked()
+	h.turns = nil
+	h.active = nil
+	h.historyStart = 0
+	h.searchQuery, h.searchNotice = "", ""
+	h.setSearchEditingLocked(false)
+	h.searchDraft = ""
+	h.searchRow = -1
 	width, height := ui.GetTerminalSize()
 	bottom := style.ConsoleScrollBottom(height, ui.GetUI().GetPasteLinesOffset())
 	if h.buffer != nil {

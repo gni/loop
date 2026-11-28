@@ -462,7 +462,7 @@ func RenderSlashMenuRows(
 		rawCmdW := style.CellWidth(name)
 		var cmdPart string
 		if rawCmdW > cmdColWidth {
-			truncated := style.TruncateCells(name, max(1, cmdColWidth-1)) + "…"
+			truncated := style.TruncateCells(name, max(1, cmdColWidth))
 			cmdPart = cStyle.Render(truncated)
 			rawCmdW = style.CellWidth(truncated)
 		} else {
@@ -473,7 +473,7 @@ func RenderSlashMenuRows(
 					cmdPart += " " + aStyle.Render(it.Args)
 					rawCmdW += 1 + style.CellWidth(it.Args)
 				} else if rem >= 4 {
-					truncArgs := style.TruncateCells(it.Args, rem-1) + "…"
+					truncArgs := style.TruncateCells(it.Args, rem)
 					cmdPart += " " + aStyle.Render(truncArgs)
 					rawCmdW += 1 + style.CellWidth(truncArgs)
 				}
@@ -494,7 +494,7 @@ func RenderSlashMenuRows(
 		if descWidth > 2 && it.Description != "" {
 			desc := style.SanitizeTerminalText(it.Description)
 			if style.CellWidth(desc) > descWidth {
-				desc = style.TruncateCells(desc, max(1, descWidth-1)) + "…"
+				desc = style.TruncateCells(desc, max(1, descWidth))
 			}
 			descPart = dStyle.Render(desc)
 		}

@@ -22,8 +22,14 @@ func WithAttachmentSource(ctx context.Context, prompt, source string) context.Co
 }
 
 func AttachmentSource(ctx context.Context, prompt string) (string, bool) {
+	if ctx == nil {
+		return prompt, false
+	}
 	input, ok := ctx.Value(attachmentSourceKey{}).(attachmentSource)
-	return input.source, ok && input.prompt == prompt
+	if !ok || input.prompt != prompt {
+		return prompt, false
+	}
+	return input.source, true
 }
 
 // WithPreExpandedPrompt marks a prompt whose leading template command has already

@@ -26,20 +26,21 @@ import (
 var ErrBusy = errors.New("session is already running; use steer or follow_up")
 
 type Options struct {
-	Config        *config.Config
-	ConfigPath    string
-	Workspace     string
-	SessionID     string
-	SessionName   string
-	Resume        bool
-	NoSession     bool
-	KeepSelection bool
-	Store         domainsession.ContextStore
-	HTTPClient    *http.Client
-	Output        io.Writer
-	Events        func(agent.Event) error
-	Tools         []string
-	Inquirer      func(string, []tool.AskUserOption, string) (string, error)
+	Config            *config.Config
+	ConfigPath        string
+	Workspace         string
+	SessionID         string
+	SessionName       string
+	Resume            bool
+	NoSession         bool
+	KeepSelection     bool
+	KeepDisabledTools bool
+	Store             domainsession.ContextStore
+	HTTPClient        *http.Client
+	Output            io.Writer
+	Events            func(agent.Event) error
+	Tools             []string
+	Inquirer          func(string, []tool.AskUserOption, string) (string, error)
 }
 
 type State struct {
@@ -178,7 +179,7 @@ func NewContext(ctx context.Context, options Options) (*Session, error) {
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("load session %s: %w", id, readErr)
 		}
-		todos, err = restoreSettingsFromEntries(entries, cfg, &options.Tools, options.KeepSelection)
+		todos, err = restoreSettingsFromEntries(entries, cfg, &options.Tools, options.KeepSelection, options.KeepDisabledTools)
 		if err != nil {
 			return nil, err
 		}

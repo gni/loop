@@ -32,7 +32,7 @@ func credentialCommand(mcp bool) *cobra.Command {
 				return nil, "", config.ProviderConfig{}, fmt.Errorf("HTTP MCP server %q does not exist", key)
 			}
 			profile := config.ProviderConfig{Endpoint: server.URL, OAuth: server.OAuth}
-			if cmd.Name() == "login" && profile.OAuth == nil {
+			if cmd.Name() == "login" && environment == "" && profile.OAuth == nil {
 				profile.OAuth, err = store.Discover(cmd.Context(), server.URL)
 				if err != nil {
 					return nil, "", profile, err

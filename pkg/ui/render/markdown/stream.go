@@ -513,7 +513,7 @@ func (r *LiveMarkdownRenderer) Flush() {
 		r.writeRune(ch, &plain)
 	}
 	r.utf8Pending = ""
-	r.flushTable(&plain)
+	r.flushTable(&plain, true)
 
 	if r.inMathHeader {
 		line := r.mathHeader.String()

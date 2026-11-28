@@ -47,16 +47,17 @@ func inspectSyntax(filename string, data []byte) ([]evidence.Diagnostic, string)
 			return diagnostics, fmt.Sprintf("\n\n[Syntax Warning: Go syntax error detected in %s:\n%v\nPlease review and correct syntax before proceeding.]", filepath.Base(filename), err)
 		}
 	case ".json":
-		if !json.Valid(data) {
+		jsonData := bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+		if !json.Valid(jsonData) {
 			var value json.RawMessage
-			parseErr := json.Unmarshal(data, &value)
+			parseErr := json.Unmarshal(jsonData, &value)
 			d := evidence.Diagnostic{Severity: "error", Message: "Invalid JSON syntax"}
 			var syntaxErr *json.SyntaxError
 			if errors.As(parseErr, &syntaxErr) {
-				offset := min(max(0, int(syntaxErr.Offset)-1), len(data))
+				offset := min(max(0, int(syntaxErr.Offset)-1), len(jsonData))
 				d.Message = syntaxErr.Error()
-				d.Line = bytes.Count(data[:offset], []byte{'\n'}) + 1
-				d.Column = offset - bytes.LastIndexByte(data[:offset], '\n')
+				d.Line = bytes.Count(jsonData[:offset], []byte{'\n'}) + 1
+				d.Column = offset - bytes.LastIndexByte(jsonData[:offset], '\n')
 			}
 			return []evidence.Diagnostic{d}, fmt.Sprintf("\n\n[Syntax Warning: Invalid JSON syntax detected in %s. Please ensure valid JSON formatting.]", filepath.Base(filename))
 		}

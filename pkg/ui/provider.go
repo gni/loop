@@ -87,12 +87,13 @@ func HandleProviderCommand(
 				}
 			}
 			if name != "" {
-				if _, ok := next.Providers[name]; !ok {
-					fmt.Fprintf(w, "error: provider '%s' not found.\n", name)
+				if err := next.ActivateProvider(name); err != nil {
+					fmt.Fprintf(w, "error: %v\n", err)
 					return false
 				}
+			} else {
+				next.ActiveProvider = ""
 			}
-			next.ActiveProvider = name
 			if modelOverride != "" {
 				next.Model = modelOverride
 				next.UpdateActiveProvider()
@@ -116,15 +117,22 @@ func HandleProviderCommand(
 		ShutdownStatusBar(os.Stderr)
 		newConfig, errInteractive := RunInteractiveProviderConfig(a.Config, theme, input, output, a.ConfigPath)
 		InitStatusBar(os.Stderr)
+		updated := false
 		if errInteractive == nil && newConfig != nil {
 			if err := commitProviderConfig(a, newConfig); err != nil {
 				fmt.Fprintf(w, "error: %v\n", err)
+				updated = agent.ConfigApplied(err)
+			} else {
+				updated = true
 			}
 		} else if errInteractive != nil {
 			fmt.Fprintf(w, "error: provider configuration failed: %v\n", errInteractive)
 		}
 
 		RestoreAfterModal(w, a, kiReader)
+		if updated {
+			syncStatus()
+		}
 		return
 	}
 

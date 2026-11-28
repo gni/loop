@@ -209,6 +209,17 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 	maxDepth := ma.BaseAgent.LiveSettings().MaxSubagentDepth
 	canSpawn := ma.Depth()+1 < subagent.EffectiveMaxDepth(maxDepth)
 
+	ma.BaseAgent.LLMProviderMu.RLock()
+	selection := append([]string(nil), ma.BaseAgent.ToolSelection...)
+	ma.BaseAgent.LLMProviderMu.RUnlock()
+	var selectedSet map[string]bool
+	if len(selection) > 0 {
+		selectedSet = make(map[string]bool, len(selection))
+		for _, name := range selection {
+			selectedSet[name] = true
+		}
+	}
+
 	allTools := ma.BaseAgent.Registry.GetAllExecutors()
 	allowlist := make([]string, 0, len(allTools))
 	for name := range allTools {
@@ -216,6 +227,9 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 			continue
 		}
 		if after, ok := strings.CutPrefix(name, "subagent__"); ok {
+			if selectedSet != nil && !selectedSet[name] && !selectedSet["spawn_subagent"] {
+				continue
+			}
 			targetName := after
 			ma.SubagentsMu.RLock()
 			_, isChild := ma.Subagents[targetName]
@@ -223,6 +237,8 @@ func (ma *MultiAgent) GetToolAllowlist() []string {
 			if isChild {
 				allowlist = append(allowlist, name)
 			}
+		} else if selectedSet != nil && !selectedSet[name] {
+			continue
 		} else if tool.IsSubagentTool(name) {
 			if canSpawn {
 				allowlist = append(allowlist, name)

@@ -72,6 +72,10 @@ func (p *PromptPreservingWriter) outputWriterLocked() io.Writer {
 func (p *PromptPreservingWriter) SetNativeScroll(enabled bool) {
 	TerminalMu.Lock()
 	defer TerminalMu.Unlock()
+	p.setNativeScrollLocked(enabled)
+}
+
+func (p *PromptPreservingWriter) setNativeScrollLocked(enabled bool) {
 	p.nativeScroll = enabled
 	if enabled && p.scrollCount == 0 && p.printCol == 1 && !p.pendingLineFeed && p.printLine == p.getScrollBottom() {
 		p.printLine = 1

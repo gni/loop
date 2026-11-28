@@ -16,7 +16,7 @@ func init() {
 		if err != nil {
 			return err
 		}
-		cfg, err := config.LoadWorkspaceConfigContext(cmd.Context(), configPath, workspace, false)
+		cfg, err := config.LoadWorkspaceConfigContext(cmd.Context(), configPath, workspace, resolveWorkspaceTrust(cmd, workspace))
 		if err != nil {
 			return err
 		}

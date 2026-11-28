@@ -33,6 +33,9 @@ func (sr *StreamRenderer) SetSequentialToolResults(enabled bool) {
 func (sr *StreamRenderer) StartToolCall(toolName string, toolCallIndex int) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	if toolCallIndex < 0 {
+		return
+	}
 	if toolName == "task_state" {
 		sr.trackProgressCallLocked(toolCallIndex)
 		sr.endThinking()
@@ -113,6 +116,9 @@ func (sr *StreamRenderer) SetToolTarget(target string, toolCallIndex int) {
 	if sr.parser != nil {
 		if sr.parser.ActiveToolName == "task_state" {
 			return
+		}
+		if sr.parser.ActiveToolIndex < 0 && toolCallIndex >= 0 {
+			sr.parser.ActiveToolIndex = toolCallIndex
 		}
 		sr.parser.Path = target
 		sr.parser.IsRawStream = true

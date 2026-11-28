@@ -161,6 +161,10 @@ func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte
 		ui.TerminalMu.Unlock()
 		return true, nil
 	case render.HoverCollapseBadge:
+		if h.reader.ActiveTurn.Load() {
+			h.reader.PendingCollapseToggles.Add(1)
+			return true, nil
+		}
 		if err := h.a.UpdateLiveSettings(func(next *agent.LiveSettings) {
 			next.CollapseResults = !next.CollapseResults
 		}); err != nil {
@@ -175,9 +179,7 @@ func (h *ChatHistory) handleChromeClick(target render.HoverTarget) (bool, []byte
 		ui.GetUI().LastStatusBarText = ""
 		ui.GetUI().StateMu.Unlock()
 		ui.DrawStatusBarLocked(h.reader.W, theme)
-		if h.reader.ActiveTurn.Load() {
-			h.reader.PendingCollapseToggles.Add(1)
-		} else if !h.closed.Load() {
+		if !h.closed.Load() {
 			h.drawn = nil
 			h.paintLocked()
 		}

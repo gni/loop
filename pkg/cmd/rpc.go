@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"loop/pkg/config"
@@ -148,8 +149,12 @@ func serveRPC(ctx context.Context, options runtime.Options, input io.Reader, wri
 				break
 			}
 			next := options
-			next.Config, commandErr = s.Configuration()
+			next.Config, commandErr = s.BaseConfiguration()
 			if commandErr != nil {
+				break
+			}
+			if command.Type == "switch_session" && strings.TrimSpace(command.SessionID) == "" {
+				commandErr = fmt.Errorf("session_id is required for switch_session")
 				break
 			}
 			next.SessionID = command.SessionID

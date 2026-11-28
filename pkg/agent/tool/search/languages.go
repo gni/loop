@@ -64,14 +64,44 @@ func (p scriptSourceParser) Parse(_ string, data []byte) goMetadata {
 	return result
 }
 
+func canStartRegexLiteral(source string, pos int) bool {
+	j := pos - 1
+	for j >= 0 && (source[j] == ' ' || source[j] == '\t' || source[j] == '\r' || source[j] == '\n') {
+		j--
+	}
+	if j < 0 {
+		return true
+	}
+	ch := source[j]
+	switch ch {
+	case '(', '[', '{', ',', ';', ':', '=', '!', '&', '|', '?', '+', '-', '*', '%', '^', '~', '<', '>':
+		return true
+	}
+	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '$' {
+		end := j + 1
+		for j >= 0 && ((source[j] >= 'a' && source[j] <= 'z') || (source[j] >= 'A' && source[j] <= 'Z') || (source[j] >= '0' && source[j] <= '9') || source[j] == '_' || source[j] == '$') {
+			j--
+		}
+		word := source[j+1 : end]
+		switch word {
+		case "return", "case", "throw", "in", "of", "typeof", "void", "delete", "new", "yield", "await", "else", "do":
+			return true
+		}
+	}
+	return false
+}
+
 func maskScript(source string, python bool) string {
 	data := []byte(source)
 	quote := byte(0)
 	triple, block, lineComment, escaped := false, false, false, false
+	inRegex, inRegexClass := false, false
 	for i := 0; i < len(data); i++ {
 		ch := source[i]
 		if ch == '\n' {
 			lineComment = false
+			inRegex = false
+			inRegexClass = false
 			if quote != 0 && !triple && quote != '`' && !escaped {
 				quote = 0
 			}
@@ -88,6 +118,29 @@ func maskScript(source string, python bool) string {
 				data[i+1] = ' '
 				i++
 				block = false
+			}
+			continue
+		}
+		if inRegex {
+			data[i] = ' '
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '[' {
+				inRegexClass = true
+				continue
+			}
+			if ch == ']' && inRegexClass {
+				inRegexClass = false
+				continue
+			}
+			if ch == '/' && !inRegexClass {
+				inRegex = false
 			}
 			continue
 		}
@@ -129,6 +182,12 @@ func maskScript(source string, python bool) string {
 				data[i], data[i+1] = ' ', ' '
 				i++
 				block = true
+				continue
+			}
+			if canStartRegexLiteral(source, i) {
+				data[i] = ' '
+				inRegex = true
+				inRegexClass = false
 				continue
 			}
 		}

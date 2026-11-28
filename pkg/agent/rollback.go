@@ -79,40 +79,44 @@ func (gc *GuidedController) bindRecovery(ctx context.Context, path, workspace st
 		if err == nil && ((journal.Version != 1 && journal.Version != 2) || journal.Workspace != workspace) {
 			err = fmt.Errorf("invalid rollback journal identity")
 		}
-		var total int
-		loaded := make(map[string]FileSnapshot, len(journal.Snapshots))
-		for key, record := range journal.Snapshots {
-			snap := record.FileSnapshot
-			if record.Blob != "" {
-				decoded, decodeErr := hex.DecodeString(record.Blob)
-				if decodeErr != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != record.Blob {
-					err = fmt.Errorf("invalid rollback blob")
-					break
-				}
-				snap.Data, err = storage.ReadFile(filepath.Join(path+".d", record.Blob), maxSnapshotBytes-int64(total))
-				if err != nil {
-					break
-				}
-				sum := sha256.Sum256(snap.Data)
-				if hex.EncodeToString(sum[:]) != record.Blob {
-					err = fmt.Errorf("rollback blob checksum mismatch")
-					break
-				}
-				gc.journalBlobs[record.Blob] = true
-			} else if journal.Version == 2 && snap.Existed {
-				err = fmt.Errorf("missing rollback blob")
-				break
-			}
-			total += len(snap.Data)
-			if key != normalizeSnapshotPath(key) || key != snap.AbsPath || !filepath.IsAbs(snap.Target) || snap.Expected == "" || total > maxSnapshotBytes || len(journal.Snapshots) > maxSnapshotFiles {
-				err = fmt.Errorf("invalid rollback snapshot")
-				break
-			}
-			loaded[key] = snap
-		}
 		if err == nil {
-			gc.snapshots = loaded
-			gc.journalHash = snapshotHash(data, 0)
+			var total int
+			loaded := make(map[string]FileSnapshot, len(journal.Snapshots))
+			loadedBlobs := make(map[string]bool, len(journal.Snapshots))
+			for key, record := range journal.Snapshots {
+				snap := record.FileSnapshot
+				if record.Blob != "" {
+					decoded, decodeErr := hex.DecodeString(record.Blob)
+					if decodeErr != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != record.Blob {
+						err = fmt.Errorf("invalid rollback blob")
+						break
+					}
+					snap.Data, err = storage.ReadFile(filepath.Join(path+".d", record.Blob), maxSnapshotBytes-int64(total))
+					if err != nil {
+						break
+					}
+					sum := sha256.Sum256(snap.Data)
+					if hex.EncodeToString(sum[:]) != record.Blob {
+						err = fmt.Errorf("rollback blob checksum mismatch")
+						break
+					}
+					loadedBlobs[record.Blob] = true
+				} else if journal.Version == 2 && snap.Existed {
+					err = fmt.Errorf("missing rollback blob")
+					break
+				}
+				total += len(snap.Data)
+				if key != normalizeSnapshotPath(key) || key != snap.AbsPath || !filepath.IsAbs(snap.Target) || snap.Expected == "" || total > maxSnapshotBytes || len(journal.Snapshots) > maxSnapshotFiles {
+					err = fmt.Errorf("invalid rollback snapshot")
+					break
+				}
+				loaded[key] = snap
+			}
+			if err == nil {
+				gc.snapshots = loaded
+				gc.journalBlobs = loadedBlobs
+				gc.journalHash = snapshotHash(data, 0)
+			}
 		}
 	}
 	if err != nil {

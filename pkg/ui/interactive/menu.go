@@ -58,6 +58,8 @@ type SettingItem struct {
 	ID          string
 	Name        string
 	Value       func() string
+	EditValue   func() string
+	Secret      bool
 	Description string
 	Options     []string
 	IsBool      bool
@@ -395,7 +397,16 @@ func RunSettingsMenuLoop(rlInput io.Reader, rlOutput io.Writer, theme style.UITh
 						comp.Invalidate()
 					}
 				} else if item.OnEdit != nil {
-					_, err := ReadMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.Name, item.Description, "Value", item.Value(), item.OnEdit)
+					initial := item.Value()
+					if item.EditValue != nil {
+						initial = item.EditValue()
+					}
+					var err error
+					if item.Secret {
+						_, err = ReadMenuSecretField(sr, sigChan, rlOutput, theme, "Edit "+item.Name, item.Description, "Value", initial, item.OnEdit)
+					} else {
+						_, err = ReadMenuField(sr, sigChan, rlOutput, theme, "Edit "+item.Name, item.Description, "Value", initial, item.OnEdit)
+					}
 					comp.Invalidate()
 					if err != nil && !errors.Is(err, ErrSelectionCancelled) {
 						return err

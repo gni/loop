@@ -199,6 +199,16 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 			return "", fmt.Errorf("background working directory is unavailable: %s", directory)
 		}
 	}
+	var unsetSet map[string]bool
+	if len(options.UnsetEnvironment) > 0 {
+		unsetSet = make(map[string]bool, len(options.UnsetEnvironment))
+		for _, key := range options.UnsetEnvironment {
+			if key != "" {
+				unsetSet[key] = true
+				delete(environment, key)
+			}
+		}
+	}
 	maps.Copy(environment, options.Environment)
 	if a.IsShellScanDefaultsEnabled() {
 		shellCommand = bashtool.WithScanDefaults(command, workspace)
@@ -206,6 +216,16 @@ func (a *Agent) SpawnTaskWithOptions(ctx context.Context, command string, w io.W
 	cmd := bashtool.NewCommand(shellCommand)
 	cmd.Dir = directory
 	cmd.WaitDelay = 2 * time.Second
+	if len(unsetSet) > 0 {
+		filtered := cmd.Env[:0]
+		for _, item := range cmd.Env {
+			if k, _, ok := strings.Cut(item, "="); ok && unsetSet[k] {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		cmd.Env = filtered
+	}
 	for key, value := range environment {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}

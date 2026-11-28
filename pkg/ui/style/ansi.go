@@ -219,6 +219,7 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 	var lines []string
 	var curLine strings.Builder
 	curLineVisible := 0
+	var curLineSGR SGRState
 
 	var curWord strings.Builder
 	curWordVisible := 0
@@ -228,19 +229,58 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 
 	var spaces strings.Builder
 	spacesVisible := 0
+	var spacesEndSGR SGRState
 
 	emitLine := func() {
-		if !activeSGR.IsZero() {
+		if !curLineSGR.IsZero() {
 			curLine.WriteString("\x1b[0m")
 		}
 		lines = append(lines, curLine.String())
 		curLine.Reset()
 		curLineVisible = 0
+		curLineSGR.Reset()
 	}
 
 	startNextLine := func(sgr SGRState) {
 		if !sgr.IsZero() {
 			curLine.WriteString(sgr.Sequence())
+			curLineSGR = sgr
+		}
+	}
+
+	syncLineSGR := func(target SGRState) {
+		if target == curLineSGR {
+			return
+		}
+		if !curLineSGR.IsZero() {
+			curLine.WriteString("\x1b[0m")
+		}
+		if !target.IsZero() {
+			curLine.WriteString(target.Sequence())
+		}
+		curLineSGR = target
+	}
+
+	writeSpacesWrapped := func(raw string) {
+		for j := 0; j < len(raw); {
+			if raw[j] == '\x1b' {
+				escEnd := SkipAnsiEscape(raw, j)
+				seq := raw[j:escEnd]
+				curLine.WriteString(seq)
+				if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+					curLineSGR.Apply(seq)
+				}
+				j = escEnd
+				continue
+			}
+			if curLineVisible >= limit {
+				sgr := curLineSGR
+				emitLine()
+				startNextLine(sgr)
+			}
+			curLine.WriteByte(raw[j])
+			curLineVisible++
+			j++
 		}
 	}
 
@@ -250,17 +290,25 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 
 		if wordLen == 0 {
 			if spacesLen > 0 {
-				if curLineVisible > 0 && curLineVisible+spacesLen > limit {
-					emitLine()
-					startNextLine(activeSGR)
+				if curLineVisible+spacesLen <= limit {
+					curLine.WriteString(spaces.String())
+					curLineVisible += spacesLen
+					curLineSGR = spacesEndSGR
+				} else {
+					if curLineVisible > 0 {
+						sgr := curLineSGR
+						emitLine()
+						startNextLine(sgr)
+					}
+					writeSpacesWrapped(spaces.String())
+					curLineSGR = spacesEndSGR
 				}
-				curLine.WriteString(spaces.String())
-				curLineVisible += spacesLen
 				spaces.Reset()
 				spacesVisible = 0
 			}
 			if curWord.Len() > 0 {
 				curLine.WriteString(curWord.String())
+				curLineSGR = activeSGR
 				curWord.Reset()
 				hasWordSGR = false
 			}
@@ -271,20 +319,30 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 			if spacesLen > 0 && spacesLen+wordLen <= limit {
 				curLine.WriteString(spaces.String())
 				curLineVisible += spacesLen
+				curLineSGR = spacesEndSGR
+			} else if spacesLen > 0 {
+				target := activeSGR
+				if hasWordSGR {
+					target = wordStartSGR
+				}
+				syncLineSGR(target)
 			}
 			spaces.Reset()
 			spacesVisible = 0
 			curLine.WriteString(curWord.String())
 			curLineVisible += wordLen
+			curLineSGR = activeSGR
 		} else if curLineVisible+spacesLen+wordLen <= limit {
 			if spacesLen > 0 {
 				curLine.WriteString(spaces.String())
 				curLineVisible += spacesLen
+				curLineSGR = spacesEndSGR
 				spaces.Reset()
 				spacesVisible = 0
 			}
 			curLine.WriteString(curWord.String())
 			curLineVisible += wordLen
+			curLineSGR = activeSGR
 		} else {
 			emitLine()
 			spaces.Reset()
@@ -296,6 +354,7 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 			}
 			curLine.WriteString(curWord.String())
 			curLineVisible = wordLen
+			curLineSGR = activeSGR
 		}
 
 		curWord.Reset()
@@ -310,15 +369,19 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 			if curWordVisible == 0 && spacesVisible > 0 {
 				// Keep ANSI escapes in exact stream order relative to buffered spaces.
 				spaces.WriteString(seq)
+				if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+					activeSGR.Apply(seq)
+				}
+				spacesEndSGR = activeSGR
 			} else {
 				if !hasWordSGR && curWordVisible == 0 {
 					wordStartSGR = activeSGR
 					hasWordSGR = true
 				}
 				curWord.WriteString(seq)
-			}
-			if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
-				activeSGR.Apply(seq)
+				if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+					activeSGR.Apply(seq)
+				}
 			}
 			i = escEnd
 			continue
@@ -330,6 +393,7 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 			}
 			spaces.WriteByte(' ')
 			spacesVisible++
+			spacesEndSGR = activeSGR
 			i++
 			continue
 		}
@@ -354,6 +418,9 @@ func wrapSingleAnsiLine(line string, limit int) []string {
 
 	flushWord()
 	if curLine.Len() > 0 || len(lines) == 0 {
+		if !curLineSGR.IsZero() {
+			curLine.WriteString("\x1b[0m")
+		}
 		lines = append(lines, curLine.String())
 	}
 

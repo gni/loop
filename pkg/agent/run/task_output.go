@@ -37,9 +37,10 @@ func ReadBackgroundTaskOutput(ctx context.Context, id string, full bool, provide
 		previous = state.processOutput[key]
 	}
 	seen := previous.streams && previous.startedAt == snapshot.StartedAt && previous.stdout <= snapshot.StdoutBytes && previous.stderr <= snapshot.StderrBytes
-	// Do not acknowledge an incomplete UTF-8 write. The next complete snapshot
-	// can then deliver the entire character without hiding continuation bytes.
-	valid := utf8.ValidString(snapshot.Stdout) && utf8.ValidString(snapshot.Stderr)
+	// Do not acknowledge an incomplete trailing UTF-8 sequence while the task is
+	// still running, so the next snapshot can deliver the complete rune.
+	incomplete := snapshot.Status == "running" && (hasIncompleteTrailingUTF8(snapshot.Stdout) || hasIncompleteTrailingUTF8(snapshot.Stderr))
+	valid := !incomplete
 	if !valid {
 		seen = false
 	}
@@ -74,6 +75,16 @@ func ReadBackgroundTaskOutput(ctx context.Context, id string, full bool, provide
 		}
 	}
 	return snapshot, text, nil
+}
+
+func hasIncompleteTrailingUTF8(s string) bool {
+	for back := 1; back <= 3 && back <= len(s); back++ {
+		start := len(s) - back
+		if utf8.RuneStart(s[start]) {
+			return !utf8.FullRuneInString(s[start:])
+		}
+	}
+	return false
 }
 
 func backgroundStreamDelta(text string, total, previous int64, seen bool) string {

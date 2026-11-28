@@ -40,6 +40,12 @@ func (s SGRState) IsZero() bool {
 	return s == (SGRState{})
 }
 
+// HasSpaceInk reports whether a space cell rendered with this SGR state leaves
+// visible ink on the terminal (background color, underline, reverse, or strike).
+func (s SGRState) HasSpaceInk() bool {
+	return s.BG.kind != colorNone || s.Underline || s.Reverse || s.Strike
+}
+
 // Reset clears all SGR attributes.
 func (s *SGRState) Reset() {
 	*s = SGRState{}

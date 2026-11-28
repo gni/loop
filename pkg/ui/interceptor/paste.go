@@ -90,7 +90,13 @@ func (ki *KeyInterceptorReader) handlePasteData(p []byte, n int) (int, bool) {
 			if len(data) == 0 && len(ki.PasteStartPending) > 0 {
 				return 0, true
 			}
-			return ki.copyReadData(p, NormalizePromptNavigationKeys(data)), false
+			normalized := NormalizePromptNavigationKeys(data)
+			copied := copy(p, normalized)
+			if copied < len(normalized) {
+				overflow := append([]byte(nil), normalized[copied:]...)
+				ki.InputRemaining = append(overflow, ki.InputRemaining...)
+			}
+			return copied, false
 		}
 	}
 

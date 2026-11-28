@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,10 +102,15 @@ func (t *listTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 		return "", fmt.Errorf("path '%s' is a file, not a directory. Use the 'read' tool to view its contents", targetPath)
 	}
 
-	return ListDirectoryTreeContext(ctx.Context(), safePath, ctx.GetWorkspaceRoot(), depth, limits.For(ctx).ListMaxEntries, offset)
+	bounds := limits.For(ctx)
+	return listDirectoryTreeWithLimits(ctx.Context(), safePath, ctx.GetWorkspaceRoot(), depth, bounds.ListMaxEntries, offset, bounds)
 }
 
 func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string, maxDepth, maxEntries, offset int) (string, error) {
+	return listDirectoryTreeWithLimits(ctx, dirPath, workspaceRoot, maxDepth, maxEntries, offset, limits.Current())
+}
+
+func listDirectoryTreeWithLimits(ctx context.Context, dirPath, workspaceRoot string, maxDepth, maxEntries, offset int, bounds limits.Limits) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -114,11 +120,11 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 	if maxDepth <= 0 {
 		maxDepth = 2
 	}
-	if maxDepth > limits.ListMaxDepth() {
-		maxDepth = limits.ListMaxDepth()
+	if maxDepth > bounds.ListMaxDepth {
+		maxDepth = bounds.ListMaxDepth
 	}
-	if maxEntries <= 0 || maxEntries > limits.ListMaxEntries() {
-		maxEntries = limits.ListMaxEntries()
+	if maxEntries <= 0 || maxEntries > bounds.ListMaxEntries {
+		maxEntries = bounds.ListMaxEntries
 	}
 	if offset < 1 {
 		offset = 1
@@ -154,6 +160,9 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 
 		entries, err := os.ReadDir(currentDir)
 		if err != nil {
+			if depth > 1 && (errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist)) {
+				return
+			}
 			walkErr = fmt.Errorf("read directory %s: %w", currentDir, err)
 			return
 		}
@@ -167,11 +176,11 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 			fullPath := filepath.Join(currentDir, name)
 
 			if entry.IsDir() {
-				if IsIgnoredDirName(name) || IsIgnoredByGit(fullPath, workspaceRoot, gitIgnorePatterns) {
+				if IsIgnoredDirName(name) || IsIgnoredByGitEntry(fullPath, workspaceRoot, gitIgnorePatterns, true) {
 					continue
 				}
 			} else {
-				if IsIgnoredFileName(name) || IsIgnoredByGit(fullPath, workspaceRoot, gitIgnorePatterns) {
+				if IsIgnoredFileName(name) || IsIgnoredByGitEntry(fullPath, workspaceRoot, gitIgnorePatterns, false) {
 					continue
 				}
 			}
@@ -208,7 +217,7 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 			if total >= offset && !limitReached && !bytesReached {
 				if shown >= maxEntries {
 					limitReached = true
-				} else if bytesUsed+len(line)+1 > limits.MaxOutputBytes() {
+				} else if bytesUsed+len(line)+1 > bounds.MaxOutputBytes {
 					bytesReached = true
 				} else {
 					bytesUsed += len(line) + 1
@@ -238,7 +247,7 @@ func ListDirectoryTreeContext(ctx context.Context, dirPath, workspaceRoot string
 		next := shown + offset
 		notice := file.SearchLimitNotice("list_directory", shown, total, next)
 		if bytesReached && !limitReached {
-			notice = file.OutputLimitNotice("list_directory", limits.MaxOutputBytes()/1024, shown, total, next)
+			notice = file.OutputLimitNotice("list_directory", bounds.MaxOutputBytes/1024, shown, total, next)
 		}
 		rendered = append(rendered, strings.TrimRight(notice, "\n"))
 	}

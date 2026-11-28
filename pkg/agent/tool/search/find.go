@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -121,6 +122,12 @@ func (t *findTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return cancelErr
 			}
 			if err != nil {
+				if path != safePath && (errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist)) {
+					if d != nil && d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				return fmt.Errorf("walk search path %s: %w", path, err)
 			}
 			if path == safePath {

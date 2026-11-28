@@ -38,6 +38,9 @@ func init() {
 				if local {
 					directory = ".loop"
 				}
+				if absDir, err := filepath.Abs(directory); err == nil {
+					directory = absDir
+				}
 				manager := packages.Manager{Directory: directory}
 				source := ""
 				if len(args) > 0 {

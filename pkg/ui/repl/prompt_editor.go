@@ -28,6 +28,7 @@ type PromptEditor struct {
 	redraw   func()
 	draw     func()
 	complete func(line string, pos int, key rune) (string, int, bool)
+	pending  []byte
 }
 
 // NewPromptEditor creates a native prompt editor wired to the REPL's input
@@ -59,13 +60,23 @@ func (e *PromptEditor) ReadLine() (string, error) {
 
 	line := ""
 	pos := 0
-	var pending []byte
+	pending := e.pending
+	e.pending = nil
+	needMore := false
 	buf := make([]byte, 4096)
 
 	for {
-		n, err := e.reader.Read(buf)
-		if n > 0 {
-			pending = append(pending, buf[:n]...)
+		var readErr error
+		if len(pending) == 0 || needMore {
+			needMore = false
+			n, err := e.reader.Read(buf)
+			if n > 0 {
+				pending = append(pending, buf[:n]...)
+			}
+			readErr = err
+		}
+
+		if len(pending) > 0 {
 			dirty := false
 			didRedrawScreen := false
 
@@ -73,10 +84,21 @@ func (e *PromptEditor) ReadLine() (string, error) {
 				b := pending[0]
 				switch b {
 				case '\r', '\n':
+					if b == '\r' && len(pending) > 1 && pending[1] == '\n' {
+						pending = pending[2:]
+					} else {
+						pending = pending[1:]
+					}
+					if len(pending) > 0 {
+						e.pending = append([]byte(nil), pending...)
+					}
 					return line, nil
 				case '\x04':
 					pending = pending[1:]
 					if len(line) == 0 {
+						if len(pending) > 0 {
+							e.pending = append([]byte(nil), pending...)
+						}
 						return "", io.EOF
 					}
 					var changed bool
@@ -112,6 +134,7 @@ func (e *PromptEditor) ReadLine() (string, error) {
 				}
 
 				if !utf8.FullRune(pending) && len(pending) < utf8.UTFMax {
+					needMore = true
 					break
 				}
 				r, size := utf8.DecodeRune(pending)
@@ -131,8 +154,8 @@ func (e *PromptEditor) ReadLine() (string, error) {
 			}
 		}
 
-		if err != nil {
-			return line, err
+		if readErr != nil {
+			return line, readErr
 		}
 	}
 }

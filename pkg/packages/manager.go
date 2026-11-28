@@ -40,8 +40,19 @@ type Manifest struct {
 
 type Manager struct{ Directory string }
 
+func (m Manager) absDirectory() (string, error) {
+	if strings.TrimSpace(m.Directory) == "" {
+		return "", fmt.Errorf("package directory is empty")
+	}
+	return filepath.Abs(m.Directory)
+}
+
 func (m Manager) List() ([]Package, error) {
-	data, err := storage.ReadFile(filepath.Join(m.Directory, "packages.json"), maxRegistryBytes)
+	dir, err := m.absDirectory()
+	if err != nil {
+		return nil, err
+	}
+	data, err := storage.ReadFile(filepath.Join(dir, "packages.json"), maxRegistryBytes)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -67,6 +78,10 @@ func encodeRegistry(packages []Package) ([]byte, error) {
 }
 
 func (m Manager) save(ctx context.Context, packages []Package) error {
+	dir, err := m.absDirectory()
+	if err != nil {
+		return err
+	}
 	data, err := encodeRegistry(packages)
 	if err != nil {
 		return err
@@ -74,14 +89,19 @@ func (m Manager) save(ctx context.Context, packages []Package) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return config.WritePrivateFile(filepath.Join(m.Directory, "packages.json"), data)
+	return config.WritePrivateFile(filepath.Join(dir, "packages.json"), data)
 }
 
 func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 	if source == "" {
 		return Package{}, fmt.Errorf("package source is empty")
 	}
-	release, err := storage.LockContext(ctx, filepath.Join(m.Directory, ".packages.lock"), true)
+	dir, err := m.absDirectory()
+	if err != nil {
+		return Package{}, err
+	}
+	m.Directory = dir
+	release, err := storage.LockContext(ctx, filepath.Join(dir, ".packages.lock"), true)
 	if err != nil {
 		return Package{}, err
 	}
@@ -92,7 +112,7 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 	}
 	sum := sha256.Sum256([]byte(source))
 	key := hex.EncodeToString(sum[:16])
-	destination := filepath.Join(m.Directory, "packages", key)
+	destination := filepath.Join(dir, "packages", key)
 	installed := Package{Source: source, Directory: destination}
 	preparedDirectory := ""
 	if strings.HasPrefix(source, "git:") || strings.HasPrefix(source, "https://") {
@@ -119,11 +139,17 @@ func (m Manager) Install(ctx context.Context, source string) (Package, error) {
 			return installed, fmt.Errorf("invalid git ref")
 		}
 		resolved, err := command(ctx, "git", "-C", staging, "rev-parse", "--verify", ref+"^{commit}")
+		if err != nil && ref != "HEAD" && !strings.HasPrefix(ref, "refs/") {
+			resolved, err = command(ctx, "git", "-C", staging, "rev-parse", "--verify", "refs/remotes/origin/"+ref+"^{commit}")
+		}
 		if err != nil {
 			return installed, err
 		}
 		installed.Revision = strings.TrimSpace(resolved)
 		if _, err := command(ctx, "git", "-C", staging, "checkout", "--detach", installed.Revision); err != nil {
+			return installed, err
+		}
+		if err := verifyNoEscapingSymlinks(ctx, staging); err != nil {
 			return installed, err
 		}
 		manifest, err := ReadManifestContext(ctx, staging)
@@ -198,7 +224,12 @@ func (m Manager) RemoveContext(ctx context.Context, source string) error {
 	if source == "" {
 		return fmt.Errorf("package source is empty")
 	}
-	release, err := storage.LockContext(ctx, filepath.Join(m.Directory, ".packages.lock"), true)
+	dir, err := m.absDirectory()
+	if err != nil {
+		return err
+	}
+	m.Directory = dir
+	release, err := storage.LockContext(ctx, filepath.Join(dir, ".packages.lock"), true)
 	if err != nil {
 		return err
 	}
@@ -349,6 +380,36 @@ func resourcePathWithBase(base, directory, relative string) (string, error) {
 		return "", fmt.Errorf("package resource escapes package directory")
 	}
 	return path, nil
+}
+
+func verifyNoEscapingSymlinks(ctx context.Context, directory string) error {
+	base, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("package contains invalid or dangling symlink %q", entry.Name())
+		}
+		rel, err := filepath.Rel(base, resolved)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("package symlink %q escapes package directory", entry.Name())
+		}
+		return nil
+	})
 }
 
 func command(ctx context.Context, name string, args ...string) (string, error) {

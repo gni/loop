@@ -38,25 +38,49 @@ func firstSubpathSegment(root, target string) string {
 }
 
 func resolveExistingAncestorSymlinks(cleanTarget, inputPath string) (string, error) {
-	ancestor := cleanTarget
-	for {
-		realAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
-		if resolveErr == nil {
-			rel, relErr := filepath.Rel(ancestor, cleanTarget)
-			if relErr != nil {
-				return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
+	current := cleanTarget
+	for hops := 0; hops < 40; hops++ {
+		ancestor := current
+		followedLink := false
+		for {
+			realAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
+			if resolveErr == nil {
+				rel, relErr := filepath.Rel(ancestor, current)
+				if relErr != nil {
+					return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
+				}
+				return filepath.Clean(filepath.Join(realAncestor, rel)), nil
 			}
-			return filepath.Clean(filepath.Join(realAncestor, rel)), nil
+			if !os.IsNotExist(resolveErr) {
+				return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, resolveErr)
+			}
+			if info, lstatErr := os.Lstat(ancestor); lstatErr == nil && info.Mode()&os.ModeSymlink != 0 {
+				linkTarget, readErr := os.Readlink(ancestor)
+				if readErr != nil {
+					return "", fmt.Errorf("cannot resolve symlink '%s': %w", inputPath, readErr)
+				}
+				rel, relErr := filepath.Rel(ancestor, current)
+				if relErr != nil {
+					return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, relErr)
+				}
+				if !filepath.IsAbs(linkTarget) {
+					linkTarget = filepath.Join(filepath.Dir(ancestor), linkTarget)
+				}
+				current = filepath.Clean(filepath.Join(linkTarget, rel))
+				followedLink = true
+				break
+			}
+			parent := filepath.Dir(ancestor)
+			if parent == ancestor {
+				return "", fmt.Errorf("cannot resolve existing ancestor of '%s'", inputPath)
+			}
+			ancestor = parent
 		}
-		if !os.IsNotExist(resolveErr) {
-			return "", fmt.Errorf("cannot resolve path '%s': %w", inputPath, resolveErr)
+		if !followedLink {
+			break
 		}
-		parent := filepath.Dir(ancestor)
-		if parent == ancestor {
-			return "", fmt.Errorf("cannot resolve existing ancestor of '%s'", inputPath)
-		}
-		ancestor = parent
 	}
+	return "", fmt.Errorf("too many symlink levels resolving '%s'", inputPath)
 }
 
 func privateRuntimeConfigName(name string) bool {
@@ -87,8 +111,9 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 	agentDir := resources.AgentDirectory(a.ConfigPath)
 	if agentDir != "" {
 		if absDir, err := filepath.Abs(agentDir); err == nil {
-			agentDirs = append(agentDirs, filepath.Clean(absDir))
-			if evalDir, evalErr := filepath.EvalSymlinks(absDir); evalErr == nil {
+			cleanDir := filepath.Clean(absDir)
+			agentDirs = append(agentDirs, cleanDir)
+			if evalDir, evalErr := resolveExistingAncestorSymlinks(cleanDir, cleanDir); evalErr == nil {
 				agentDirs = append(agentDirs, filepath.Clean(evalDir))
 			}
 		}
@@ -96,7 +121,7 @@ func (a *Agent) isProtectedRuntimePath(candidate string) error {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		homeLoop := filepath.Clean(filepath.Join(home, ".loop"))
 		agentDirs = append(agentDirs, homeLoop)
-		if evalHomeLoop, evalErr := filepath.EvalSymlinks(homeLoop); evalErr == nil {
+		if evalHomeLoop, evalErr := resolveExistingAncestorSymlinks(homeLoop, homeLoop); evalErr == nil {
 			agentDirs = append(agentDirs, filepath.Clean(evalHomeLoop))
 		}
 	}
@@ -221,17 +246,18 @@ func (a *Agent) SafePath(inputPath string) (string, error) {
 		}
 	}
 
-	if !withinRoot(cleanRoot, cleanTarget) {
+	evalRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve workspace root: %w", err)
+	}
+
+	if !withinRoot(cleanRoot, cleanTarget) && !withinRoot(evalRoot, cleanTarget) {
 		if strings.TrimSpace(inputPath) == ".." {
 			return "", fmt.Errorf("path '..' is outside workspace root '%s'. Workspace root is the top-level directory", a.WorkspaceRoot)
 		}
 		return "", fmt.Errorf("security violation: path '%s' escapes workspace root '%s'", inputPath, a.WorkspaceRoot)
 	}
 
-	evalRoot, err := filepath.EvalSymlinks(cleanRoot)
-	if err != nil {
-		return "", fmt.Errorf("cannot resolve workspace root: %w", err)
-	}
 	if !withinRoot(evalRoot, evalTarget) {
 		return "", fmt.Errorf("security violation: path '%s' resolves via symlink outside workspace root '%s'", inputPath, a.WorkspaceRoot)
 	}
@@ -262,11 +288,11 @@ func (a *Agent) SafeReadPath(inputPath string) (string, error) {
 			continue
 		}
 		root := filepath.Dir(skill.Path)
-		if !withinRoot(root, cleanTarget) {
+		evalRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
 			continue
 		}
-		evalRoot, err := filepath.EvalSymlinks(root)
-		if err == nil && withinRoot(evalRoot, evalTarget) {
+		if (withinRoot(root, cleanTarget) || withinRoot(evalRoot, cleanTarget)) && withinRoot(evalRoot, evalTarget) {
 			return cleanTarget, nil
 		}
 	}

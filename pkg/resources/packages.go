@@ -57,7 +57,16 @@ func LoadPackagesContext(ctx context.Context, directories ...string) (PackageRes
 			return resources, err
 		}
 		for _, entry := range installed {
-			manifest, err := packages.ReadManifestContext(ctx, entry.Directory)
+			pkgDir := entry.Directory
+			if pkgDir != "" && !filepath.IsAbs(pkgDir) {
+				baseName := filepath.Base(key)
+				if pkgDir == baseName || strings.HasPrefix(pkgDir, baseName+string(filepath.Separator)) {
+					pkgDir = filepath.Join(filepath.Dir(key), pkgDir)
+				} else {
+					pkgDir = filepath.Join(key, pkgDir)
+				}
+			}
+			manifest, err := packages.ReadManifestContext(ctx, pkgDir)
 			if err != nil {
 				return resources, fmt.Errorf("package %s: %w", entry.Name, err)
 			}
@@ -72,7 +81,7 @@ func LoadPackagesContext(ctx context.Context, directories ...string) (PackageRes
 			resources.Plugins = append(resources.Plugins, manifest.Plugins...)
 			resources.Extensions = append(resources.Extensions, manifest.Extensions...)
 			for event, resolved := range manifest.Hooks {
-				resources.Hooks = append(resources.Hooks, Hook{Event: event, Path: resolved, Directory: entry.Directory})
+				resources.Hooks = append(resources.Hooks, Hook{Event: event, Path: resolved, Directory: pkgDir})
 			}
 		}
 	}

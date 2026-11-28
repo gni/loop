@@ -211,6 +211,16 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 		}
 	}
 
+	waitTeardown := func() {
+		cancel()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-doneCh:
+		case <-timer.C:
+		}
+	}
+
 	select {
 	case <-doneCh:
 		if res, done, err := checkTask(); done {
@@ -220,14 +230,18 @@ func (s *SubagentExecutor) execute(ctx tool.AgentContext, arguments string, asse
 		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
 		return "", errSub
 	case <-ctx.Context().Done():
+		waitTeardown()
 		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", ctx.Context().Err())
 		drainSubagentOutput(s.subagent.Output)
 		return "", ctx.Context().Err()
 	case <-s.subagent.Context.Done():
+		waitTeardown()
 		errSub := fmt.Errorf("subagent '%s' context cancelled", s.subagent.Name)
 		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errSub)
+		drainSubagentOutput(s.subagent.Output)
 		return "", errSub
 	case <-executionCtx.Done():
+		waitTeardown()
 		errTimeout := fmt.Errorf("subagent '%s' execution stopped after %v: %w", s.subagent.Name, timeout, executionCtx.Err())
 		s.subagent.supervisor.UpdateTaskStatus(taskID, "failed", "", errTimeout)
 		drainSubagentOutput(s.subagent.Output)

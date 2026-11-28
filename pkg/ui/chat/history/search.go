@@ -132,7 +132,7 @@ func (h *ChatHistory) scanSearchLocked(start, direction int, exhausted func()) {
 }
 
 func (h *ChatHistory) stepSearchLocked(scan *historySearchScan) {
-	if h.closed.Load() || h.searchScan != scan || !h.searchPending {
+	if h.closed.Load() || h.isNativeScroll() || h.searchScan != scan || !h.searchPending {
 		return
 	}
 	count := h.buffer.HistoryRowCount()

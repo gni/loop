@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 
-	"loop/pkg/db"
 	"loop/pkg/domain/message"
 	transport "loop/pkg/transport/http"
 )
@@ -223,11 +222,4 @@ func (geminiProtocol) handleEvent(s *nativeStreamState, data []byte) (bool, erro
 		s.complete = true
 	}
 	return false, nil
-}
-
-func signatureCallID(calls map[int]*db.ToolCall) string {
-	if len(calls) == 0 {
-		return ""
-	}
-	return calls[len(calls)-1].ID
 }

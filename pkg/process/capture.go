@@ -68,7 +68,19 @@ func StartCapture(cmd *exec.Cmd, stdout, stderr io.Writer) (wait func() error, e
 				case <-timer.C:
 					_ = outReader.Close()
 					_ = errReader.Close()
-					result = errors.Join(result, exec.ErrWaitDelay, <-copied)
+					result = errors.Join(result, exec.ErrWaitDelay)
+					grace := time.NewTimer(250 * time.Millisecond)
+					for remaining > 0 {
+						select {
+						case copyErr := <-copied:
+							result = errors.Join(result, copyErr)
+							remaining--
+						case <-grace.C:
+							remaining = 0
+						}
+					}
+					grace.Stop()
+					return
 				}
 			}
 		})

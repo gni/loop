@@ -20,10 +20,10 @@ func (r *LiveMarkdownRenderer) writeTableRune(ch rune, plain *strings.Builder) b
 	if ch != '\n' {
 		t.line.WriteRune(ch)
 		if t.line.Len() > maxMarkdownTableLineBytes {
-			r.flushTable(plain)
+			r.flushTable(plain, true)
 		} else if t.header != "" && !strings.ContainsRune(" |:-\t\r", ch) {
 			// A non-delimiter cannot confirm the buffered header.
-			r.flushTable(plain)
+			r.flushTable(plain, false)
 		}
 		return true
 	}
@@ -49,7 +49,8 @@ func (r *LiveMarkdownRenderer) writeTableRune(ch rune, plain *strings.Builder) b
 	}
 	header := t.header
 	r.table = liveMarkdownTable{}
-	r.replayMarkdown(header+"\n"+line+"\n", plain)
+	r.replayMarkdown(header+"\n", plain)
+	r.replayMarkdownRaw(line+"\n", plain)
 	return true
 }
 
@@ -63,6 +64,12 @@ func (r *LiveMarkdownRenderer) replayMarkdown(text string, plain *strings.Builde
 	defer func() { r.tablePassthrough = false }()
 	for _, ch := range text {
 		r.writeMarkdownRune(ch, plain)
+	}
+}
+
+func (r *LiveMarkdownRenderer) replayMarkdownRaw(text string, plain *strings.Builder) {
+	for _, ch := range text {
+		r.writeRune(ch, plain)
 	}
 }
 
@@ -80,7 +87,7 @@ func (r *LiveMarkdownRenderer) finishTable() {
 	r.atLineStart = newline
 }
 
-func (r *LiveMarkdownRenderer) flushTable(plain *strings.Builder) {
+func (r *LiveMarkdownRenderer) flushTable(plain *strings.Builder, final bool) {
 	t := &r.table
 	line, header, candidate := t.line.String(), t.header, t.candidate
 	t.line.Reset()
@@ -109,6 +116,10 @@ func (r *LiveMarkdownRenderer) flushTable(plain *strings.Builder) {
 		}
 		if header != "" {
 			r.replayMarkdown(header+"\n", plain)
+			if !final {
+				r.replayMarkdownRaw(line, plain)
+				return
+			}
 		}
 		r.replayMarkdown(line, plain)
 	}

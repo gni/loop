@@ -85,6 +85,9 @@ func NextGrapheme(s string) (cluster string, cellWidth int, size int) {
 			end += nsz
 			if end < len(s) {
 				joined, jsz := utf8.DecodeRuneInString(s[end:])
+				if unicode.IsControl(joined) || (joined == utf8.RuneError && jsz == 1) {
+					return s[:end], w, end
+				}
 				end += jsz
 				if w < 2 && (RuneWidth(joined) == 2 || isEmojiPresentationBase(joined)) {
 					w = 2

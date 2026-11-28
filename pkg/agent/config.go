@@ -129,15 +129,15 @@ func (a *Agent) applyConfig(input *config.Config, options configApplyOptions) er
 	previousClient := a.HTTPClient
 	a.HTTPClient = client
 	a.Config = next
-	if ui, ok := a.UI.(interface{ SetConfig(*config.Config) }); ok {
-		ui.SetConfig(next)
-	}
 	a.ensureGuided().SetEnabled(next.GuidedMode)
 	if a.FileObservations != nil {
 		a.FileObservations.SetDisabled(!next.FileObservationGuard)
 	}
 	a.syncOpenAIProviderLocked(next, true)
 	a.LLMProviderMu.Unlock()
+	if ui, ok := a.UI.(interface{ SetConfig(*config.Config) }); ok {
+		ui.SetConfig(next)
+	}
 	if previousClient != nil && previousClient != client {
 		previousClient.CloseIdleConnections()
 	}

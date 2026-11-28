@@ -297,10 +297,14 @@ func (mam *MultiAgentManager) spawnAgentWithSkillsFor(
 		ma.stateStore = store
 	}
 
-	if err := mam.LoadAgentState(ma); err != nil {
-		return fmt.Errorf("load saved state for agent '%s': %w", name, err)
-	}
-	if persistDef {
+	if !persistDef {
+		if err := mam.LoadAgentState(ma); err != nil {
+			return fmt.Errorf("load saved state for agent '%s': %w", name, err)
+		}
+	} else {
+		if ma.stateStore != nil {
+			_ = ma.stateStore.DeleteState(name)
+		}
 		if err := mam.saveAgentDef(ma); err != nil {
 			return fmt.Errorf("persist agent '%s': %w", name, err)
 		}

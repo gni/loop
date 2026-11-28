@@ -113,7 +113,7 @@ func splitReadOnlyShellSegments(s string) ([][]string, bool) {
 				i++
 				continue
 			}
-			if ch == '`' || (ch == '$' && i+1 < len(s) && s[i+1] == '(') {
+			if ch == '`' || (ch == '$' && i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{')) {
 				return nil, false
 			}
 			word.WriteByte(ch)
@@ -145,7 +145,7 @@ func splitReadOnlyShellSegments(s string) ([][]string, bool) {
 		case '`', '(', ')', '{', '}':
 			return nil, false
 		case '$':
-			if i+1 < len(s) && s[i+1] == '(' {
+			if i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{' || s[i+1] == '\'' || s[i+1] == '"') {
 				return nil, false
 			}
 			word.WriteByte(ch)
@@ -359,14 +359,22 @@ func isReadOnlySimpleCommand(args []string) bool {
 
 		switch name {
 		case "grep", "egrep", "fgrep", "ag", "ack",
-			"ls", "dir", "tree", "stat", "file", "wc", "du", "df", "pwd",
+			"ls", "dir", "stat", "file", "wc", "du", "df", "pwd",
 			"realpath", "readlink", "dirname", "basename", "which", "type",
 			"uname", "id", "whoami", "hostname", "date", "printenv",
-			"cat", "head", "tail", "nl", "tac", "rev", "cut", "tr", "uniq",
+			"cat", "head", "tail", "nl", "tac", "rev", "cut", "tr",
 			"comm", "diff", "cmp", "jq", "column", "fold", "fmt", "strings",
-			"hexdump", "od", "xxd", "md5sum", "sha1sum", "sha256sum", "sha512sum",
-			"cksum", "echo", "printf", "test", "[", "true", "false":
+			"hexdump", "od", "md5sum", "sha1sum", "sha256sum", "sha512sum",
+			"cksum", "echo", "test", "[", "true", "false":
 			return true
+		case "uniq":
+			return isReadOnlyUniq(args[1:])
+		case "xxd":
+			return isReadOnlyXXD(args[1:])
+		case "tree":
+			return isReadOnlyTree(args[1:])
+		case "printf":
+			return isReadOnlyPrintf(args[1:])
 		case "rg":
 			return isReadOnlyRG(args[1:])
 		case "sort":
@@ -436,6 +444,82 @@ func isReadOnlyFind(args []string) bool {
 	return true
 }
 
+func isReadOnlyUniq(args []string) bool {
+	positionals := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positionals += len(args) - i - 1
+			break
+		}
+		switch arg {
+		case "-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars", "--group", "--all-repeated":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			continue
+		}
+		positionals++
+	}
+	return positionals <= 1
+}
+
+func isReadOnlyXXD(args []string) bool {
+	positionals := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positionals += len(args) - i - 1
+			break
+		}
+		if arg == "-r" || arg == "--revert" {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsRune(arg[1:], 'r') {
+			return false
+		}
+		switch arg {
+		case "-c", "-cols", "-g", "-groupsize", "-l", "-len", "-n", "-o", "-s", "-seek", "-R":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			continue
+		}
+		positionals++
+	}
+	return positionals <= 1
+}
+
+func isReadOnlyTree(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return true
+		}
+		if arg == "-o" || arg == "--output" || strings.HasPrefix(arg, "--output=") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsRune(arg[1:], 'o') {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadOnlyPrintf(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return true
+		}
+		if strings.HasPrefix(arg, "-") {
+			return false
+		}
+		return true
+	}
+	return true
+}
+
 func isReadOnlyFD(args []string) bool {
 	for _, arg := range args {
 		if arg == "--" {
@@ -443,6 +527,9 @@ func isReadOnlyFD(args []string) bool {
 		}
 		if arg == "-x" || arg == "-X" || arg == "--exec" || arg == "--exec-batch" ||
 			strings.HasPrefix(arg, "--exec=") || strings.HasPrefix(arg, "--exec-batch=") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.ContainsAny(arg[1:], "xX") {
 			return false
 		}
 	}
@@ -585,6 +672,9 @@ func isReadOnlyGit(args []string) bool {
 				if strings.HasPrefix(a, "--set-upstream-to=") {
 					return false
 				}
+				if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "dDmMcCfu") {
+					return false
+				}
 				if strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--no-contains=") ||
 					strings.HasPrefix(a, "--merged=") || strings.HasPrefix(a, "--no-merged=") ||
 					strings.HasPrefix(a, "--points-at=") {
@@ -613,6 +703,9 @@ func isReadOnlyGit(args []string) bool {
 				listOrVerify = true
 			default:
 				if strings.HasPrefix(a, "--message=") || strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "--local-user=") {
+					return false
+				}
+				if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "asudfmF") {
 					return false
 				}
 				if !strings.HasPrefix(a, "-") {
@@ -649,8 +742,12 @@ func isReadOnlyGit(args []string) bool {
 		return hasReadFlag
 	case "symbolic-ref":
 		positionals := 0
-		for _, a := range rest {
-			if a == "-d" || a == "--delete" {
+		for j, a := range rest {
+			if a == "--" {
+				positionals += len(rest) - j - 1
+				break
+			}
+			if a == "-d" || a == "--delete" || (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsRune(a[1:], 'd')) {
 				return false
 			}
 			if !strings.HasPrefix(a, "-") {

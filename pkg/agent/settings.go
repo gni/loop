@@ -140,14 +140,20 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 		return fmt.Errorf("configuration update is unavailable")
 	}
 	a.LLMProviderMu.Lock()
-	defer a.LLMProviderMu.Unlock()
 	if a.Config == nil {
+		a.LLMProviderMu.Unlock()
 		return fmt.Errorf("configuration is unavailable")
 	}
 	if a.Lifetime != nil && a.Lifetime.Err() != nil {
-		return a.Lifetime.Err()
+		err := a.Lifetime.Err()
+		a.LLMProviderMu.Unlock()
+		return err
 	}
-	cfg := a.Config
+	cfg, err := config.Clone(a.Config)
+	if err != nil {
+		a.LLMProviderMu.Unlock()
+		return err
+	}
 	next := LiveSettings{
 		CollapseResults: cfg.CollapseResults,
 		ShowThinking:    cfg.ShowThinking,
@@ -160,6 +166,7 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 	if next.ReasoningEffort != cfg.ReasoningEffort {
 		effort, err := config.ParseReasoningEffort(next.ReasoningEffort)
 		if err != nil {
+			a.LLMProviderMu.Unlock()
 			return err
 		}
 		next.ReasoningEffort = effort
@@ -171,9 +178,15 @@ func (a *Agent) UpdateLiveSettings(change func(*LiveSettings)) error {
 	if next.GuidedMode {
 		cfg.AutoApprove, cfg.ParallelToolCalls = false, false
 	}
+	a.Config = cfg
 	a.ensureGuided().SetEnabled(next.GuidedMode)
 	if next.GuidedMode != prevGuided {
 		a.markSystemPromptDirty()
+	}
+	uiSink := a.UI
+	a.LLMProviderMu.Unlock()
+	if syncer, ok := uiSink.(interface{ SyncLiveConfig(*config.Config) }); ok {
+		syncer.SyncLiveConfig(cfg)
 	}
 	return nil
 }

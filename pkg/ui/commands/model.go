@@ -6,15 +6,19 @@ import (
 	"strings"
 
 	"loop/pkg/agent"
-	"loop/pkg/ui"
+	"loop/pkg/db"
+	"loop/pkg/ui/interceptor"
 	"loop/pkg/ui/style"
 )
 
 func handleModelCommand(
 	a *agent.Agent,
 	parts []string,
+	messages *[]db.Message,
 	theme *style.UITheme,
 	w io.Writer,
+	kiReader *interceptor.KeyInterceptorReader,
+	calcHistoryTokens func() (int, int, bool),
 ) {
 	next, err := a.Configuration()
 	if err != nil {
@@ -55,17 +59,14 @@ func handleModelCommand(
 		saveConfigUpdate(a, w)
 	}
 
-	if a.UI != nil {
-		ui.UpdateStatus(a.Config.Model, -1, -1, 0, a.GetStatusContextLimit(0), false, 0, a.CountActiveTasks(), a.Config.ShowTokens)
-	}
-	if theme != nil {
-		ui.DrawStatusBar(w, *theme)
-	}
-
 	providerName := a.Config.ActiveProvider
 	if providerName != "" {
 		fmt.Fprintf(w, "Updated model for provider '%s' to '%s'.\n", providerName, newModel)
 	} else {
 		fmt.Fprintf(w, "Updated model to '%s'.\n", newModel)
+	}
+
+	if theme != nil {
+		syncCommandStatus(a, messages, *theme, w, kiReader, calcHistoryTokens, false)
 	}
 }

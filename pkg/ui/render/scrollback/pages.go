@@ -303,6 +303,36 @@ func (b *Scrollback) FinishTurnLayout() {
 	b.base = max(0, len(b.rows)-1)
 }
 
+// adoptRows detaches any rows backed by a different archive (for example,
+// after live archive compaction while a background page was being built) so
+// closing the source page can never invalidate spliced rows.
+func (b *Scrollback) adoptRows(src []*scrollRow) []*scrollRow {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*scrollRow, len(src))
+	for i, r := range src {
+		if r == nil {
+			out[i] = &scrollRow{}
+			continue
+		}
+		if r.archive == nil || r.archive == b.archive {
+			out[i] = r
+			continue
+		}
+		cloned := *r
+		if cloned.text == "" && cloned.size > 0 {
+			cloned.text = r.archive.read(cloned.offset, cloned.size)
+		}
+		cloned.archive = nil
+		cloned.offset = 0
+		cloned.size = 0
+		cloned.cells = append([]scrollCell(nil), r.cells...)
+		out[i] = &cloned
+	}
+	return out
+}
+
 // SwapHistoryRange detaches the previous rows as an alternate layout. Both
 // layouts share the append-only disk cache; no formatting happens here.
 func (b *Scrollback) SwapHistoryRange(start, end int, page *Scrollback) (old *Scrollback, delta, padding int) {
@@ -312,10 +342,11 @@ func (b *Scrollback) SwapHistoryRange(start, end int, page *Scrollback) (old *Sc
 	old = b.NewHistoryPage()
 	old.rows = append([]*scrollRow(nil), b.rows[start:end]...)
 	old.base = max(0, len(old.rows)-1)
-	delta = len(page.rows) - (end - start)
+	adopted := b.adoptRows(page.rows)
+	delta = len(adopted) - (end - start)
 	rows := make([]*scrollRow, 0, len(b.rows)+delta)
 	rows = append(rows, b.rows[:start]...)
-	rows = append(rows, page.rows...)
+	rows = append(rows, adopted...)
 	rows = append(rows, b.rows[end:]...)
 	padding = max(0, b.Height-len(rows))
 	if padding > 0 {
@@ -327,6 +358,7 @@ func (b *Scrollback) SwapHistoryRange(start, end int, page *Scrollback) (old *Sc
 	}
 	b.rows = rows
 	b.base = max(0, len(rows)-b.Height)
+	b.trimMemory()
 	return old, delta, padding
 }
 
@@ -335,10 +367,11 @@ func (b *Scrollback) SwapHistoryRange(start, end int, page *Scrollback) (old *Sc
 func (b *Scrollback) InsertPrepared(at int, page *Scrollback) int {
 	b.releasePage()
 	at = min(max(0, at), len(b.rows))
-	count := len(page.rows)
+	adopted := b.adoptRows(page.rows)
+	count := len(adopted)
 	rows := make([]*scrollRow, 0, len(b.rows)+count)
 	rows = append(rows, b.rows[:at]...)
-	rows = append(rows, page.rows...)
+	rows = append(rows, adopted...)
 	rows = append(rows, b.rows[at:]...)
 	b.rows = rows
 	b.base = max(0, len(rows)-b.Height)

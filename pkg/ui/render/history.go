@@ -291,7 +291,9 @@ func PrintSessionHistory(
 			}
 
 			lowerContent := strings.ToLower(msg.Content)
-			isError := msg.IsError || strings.HasPrefix(lowerContent, "error:") || strings.Contains(lowerContent, "command failed")
+			isError := msg.IsError ||
+				(toolName == "bash" && strings.HasPrefix(msg.Content, "[Command Failed: ")) ||
+				(toolName != "read" && toolName != "grep" && strings.HasPrefix(lowerContent, "error:"))
 			if toolName == "task_state" && !isError && !task.ShowProgressNotice(msg.Content, argsJSON) {
 				continue
 			}

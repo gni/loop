@@ -87,6 +87,19 @@ func matchTaskID(targetID, itemID string, index int) bool {
 	return st == si || si == tgt || st == itm
 }
 
+func findExactTaskID(tasks []domaintool.TodoItem, targetID string) int {
+	trimmed := strings.TrimSpace(targetID)
+	if trimmed == "" {
+		return -1
+	}
+	for i, item := range tasks {
+		if strings.EqualFold(trimmed, strings.TrimSpace(item.ID)) {
+			return i
+		}
+	}
+	return -1
+}
+
 func findTaskIndex(tasks []domaintool.TodoItem, targetID string) (int, error) {
 	trimmed := strings.TrimSpace(targetID)
 	if trimmed == "" {
@@ -296,7 +309,7 @@ func (t *todoTool) applyActionObject(raw map[string]any, currentTasks []domainto
 			return nil, "", false, errors.New(domaintool.RuntimeMessage("todo_missing_description", "task description is required to add a task"))
 		}
 		if taskID != "" {
-			if matchedIdx, findErr := findTaskIndex(currentTasks, taskID); findErr == nil && matchedIdx != -1 {
+			if matchedIdx := findExactTaskID(currentTasks, taskID); matchedIdx != -1 {
 				currentTasks[matchedIdx].Task = taskDesc
 				if status != "" {
 					currentTasks[matchedIdx].Status = status
@@ -468,7 +481,7 @@ func appendTodoItems(existing, additions []domaintool.TodoItem) []domaintool.Tod
 	for _, add := range additions {
 		id := strings.TrimSpace(add.ID)
 		if id != "" {
-			if idx, err := findTaskIndex(merged, id); err == nil && idx != -1 {
+			if idx := findExactTaskID(merged, id); idx != -1 {
 				// Avoid colliding with an existing auto-generated ID when adding new lines.
 				if strings.HasPrefix(strings.ToLower(id), "task-") {
 					add.ID = nextTaskID(merged)

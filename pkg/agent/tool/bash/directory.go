@@ -171,17 +171,20 @@ func (t *bashTool) updatePersistedEnv(beforeEnv []string, afterEnv map[string]st
 		if prev, existed := before[k]; existed && prev == v {
 			continue
 		}
+		old, had := t.envVars[k]
+		if !had && len(t.envVars) >= maxPersistedEnvVars {
+			continue
+		}
+		candidateBytes := totalBytes + len(k) + len(v)
+		if had {
+			candidateBytes -= len(k) + len(old)
+		}
+		if candidateBytes > maxPersistedEnvBytes {
+			continue
+		}
 		delete(t.unsetVars, k)
-		if old, had := t.envVars[k]; had {
-			totalBytes -= len(k) + len(old)
-		} else if len(t.envVars) >= maxPersistedEnvVars {
-			continue
-		}
-		if totalBytes+len(k)+len(v) > maxPersistedEnvBytes {
-			continue
-		}
 		t.envVars[k] = v
-		totalBytes += len(k) + len(v)
+		totalBytes = candidateBytes
 	}
 	for k := range before {
 		if isEphemeralShellVar(k) {

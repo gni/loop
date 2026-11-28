@@ -600,13 +600,18 @@ func (p *JSONStreamParser) PrintStreamTitle(w io.Writer, theme style.UITheme) {
 		return
 	}
 	p.TitlePrinted = true
-	p.EnsureTrackingIndex()
-	p.ToolTitlePrinted[p.ActiveToolIndex] = true
-	p.ToolTitleLineNumbers[p.ActiveToolIndex] = GetNewlineCount(w)
+	if p.ActiveToolIndex >= 0 {
+		p.EnsureTrackingIndex()
+		p.ToolTitlePrinted[p.ActiveToolIndex] = true
+		p.ToolTitleLineNumbers[p.ActiveToolIndex] = GetNewlineCount(w)
+	}
 	fmt.Fprintln(w, p.formatCurrentTitle(w, theme))
 }
 
 func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UITheme) {
+	if p.ActiveToolIndex < 0 {
+		return
+	}
 	p.EnsureTrackingIndex()
 	if !p.TitlePrinted {
 		if p.CanPrintTitle() {
@@ -621,6 +626,9 @@ func (p *JSONStreamParser) UpdateStreamTitleWithPath(w io.Writer, theme style.UI
 }
 
 func (p *JSONStreamParser) EnsureTrackingIndex() {
+	if p.ActiveToolIndex < 0 {
+		return
+	}
 	for len(p.ToolTitleLineNumbers) <= p.ActiveToolIndex {
 		p.ToolTitleLineNumbers = append(p.ToolTitleLineNumbers, -1)
 	}
@@ -633,6 +641,9 @@ func (p *JSONStreamParser) EnsureTrackingIndex() {
 }
 
 func (p *JSONStreamParser) MarkBodyStreamed() {
+	if p.ActiveToolIndex < 0 {
+		return
+	}
 	p.EnsureTrackingIndex()
 	p.ToolBodyStreamed[p.ActiveToolIndex] = true
 }

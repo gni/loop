@@ -280,10 +280,18 @@ func (b *Scrollback) row() *scrollRow {
 }
 
 func (b *Scrollback) put(r rune) {
-	if b.y < 0 || b.y >= b.Height {
+	b.putCluster(string(r), style.RuneWidth(r))
+}
+
+func (b *Scrollback) putCluster(cluster string, w int) {
+	if b.y < 0 || b.y >= b.Height || cluster == "" {
 		return
 	}
-	w := style.RuneWidth(r)
+	first, sz := utf8.DecodeRuneInString(cluster)
+	if first < 32 || first == 127 || unicode.IsControl(first) {
+		return
+	}
+	extra := cluster[sz:]
 	if w == 0 {
 		line := b.row()
 		if line == nil {
@@ -297,7 +305,7 @@ func (b *Scrollback) put(r rune) {
 			col--
 		}
 		if col >= 0 {
-			line.cells[col].extra += string(r)
+			line.cells[col].extra += cluster
 			line.dirty = true
 		}
 		return
@@ -329,7 +337,7 @@ func (b *Scrollback) put(r rune) {
 	if cellSpan == 2 && b.x+1 < len(line.cells) && line.cells[b.x+1].span == 2 && b.x+2 < len(line.cells) {
 		line.cells[b.x+2] = scrollCell{}
 	}
-	line.cells[b.x] = scrollCell{r: r, sgr: b.sgr, span: cellSpan}
+	line.cells[b.x] = scrollCell{r: first, extra: extra, sgr: b.sgr, span: cellSpan}
 	if cellSpan == 2 && b.x+1 < len(line.cells) {
 		line.cells[b.x+1] = scrollCell{span: -1}
 	}
@@ -561,30 +569,56 @@ func (b *Scrollback) Write(data []byte) (int, error) {
 			i = end
 			continue
 		}
-		if !utf8.FullRune(data[i:]) {
-			b.pending = append(b.pending, data[i:]...)
+		if data[i] < 32 || data[i] == 127 {
+			r := rune(data[i])
+			i++
+			switch r {
+			case '\r':
+				b.x = 0
+				b.wrap = false
+			case '\n', '\v', '\f':
+				b.lf()
+			case '\b':
+				b.x = max(0, b.x-1)
+				b.wrap = false
+			case '\t':
+				end := min(b.Width, b.x+style.TabAdvance(b.x, style.DefaultTabWidth))
+				for b.x < end && !b.wrap {
+					b.putCluster(" ", 1)
+				}
+			}
+			continue
+		}
+		segEnd := i
+		for segEnd < len(data) && data[segEnd] >= 32 && data[segEnd] != 127 {
+			segEnd++
+		}
+		validEnd := segEnd
+		if segEnd == len(data) {
+			for back := 1; back <= 3 && back <= segEnd-i; back++ {
+				start := segEnd - back
+				if utf8.RuneStart(data[start]) {
+					if !utf8.FullRune(data[start:segEnd]) {
+						validEnd = start
+					}
+					break
+				}
+			}
+		}
+		if validEnd == i {
+			b.pending = append(b.pending, data[i:segEnd]...)
 			break
 		}
-		r, size := utf8.DecodeRune(data[i:])
-		i += size
-		switch r {
-		case '\r':
-			b.x = 0
-			b.wrap = false
-		case '\n', '\v', '\f':
-			b.lf()
-		case '\b':
-			b.x = max(0, b.x-1)
-			b.wrap = false
-		case '\t':
-			end := min(b.Width, b.x+style.TabAdvance(b.x, style.DefaultTabWidth))
-			for b.x < end && !b.wrap {
-				b.put(' ')
-			}
-		default:
-			if r >= 32 && r != 127 {
-				b.put(r)
-			}
+		seg := string(data[i:validEnd])
+		for j := 0; j < len(seg); {
+			cluster, cw, sz := style.NextGrapheme(seg[j:])
+			b.putCluster(cluster, cw)
+			j += sz
+		}
+		i = validEnd
+		if validEnd < segEnd {
+			b.pending = append(b.pending, data[validEnd:segEnd]...)
+			break
 		}
 	}
 	return written, b.Err()
@@ -674,6 +708,17 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 		b.base = max(0, len(rows)-b.Height)
 	}
 	if height < b.Height {
+		// First trim unused trailing blank rows strictly after anchor and tracked
+		// anchors so shrinking a partially filled viewport keeps top lines visible.
+		minKeep := anchor
+		for _, a := range anchors {
+			if a != nil && *a-1 > minKeep {
+				minKeep = *a - 1
+			}
+		}
+		for len(b.rows)-b.base > height && len(b.rows)-1 > minKeep && strings.TrimSpace(style.StripAnsi(b.rows[len(b.rows)-1].String())) == "" {
+			b.rows = b.rows[:len(b.rows)-1]
+		}
 		// Guard against simultaneous widen + shrink where len(b.rows) may be smaller
 		// than the old Height. Only advance base or trim blank rows while the active
 		// viewport still has more rows than the new height.
@@ -696,23 +741,28 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 		}
 	} else if height > b.Height {
 		delta := height - b.Height
-		at := min(b.base, len(b.rows))
-		padding := make([]*scrollRow, delta)
-		for i := range padding {
-			padding[i] = &scrollRow{}
-		}
-		b.rows = append(b.rows, padding...)
-		copy(b.rows[at+delta:], b.rows[at:len(b.rows)-delta])
-		copy(b.rows[at:], padding)
-		if anchor >= at {
-			anchor += delta
-		}
-		if top >= at {
-			top += delta
-		}
-		for _, a := range anchors {
-			if a != nil && *a >= at {
-				*a += delta
+		pull := min(delta, b.base)
+		b.base -= pull
+		rem := delta - pull
+		if rem > 0 {
+			at := min(b.base, len(b.rows))
+			padding := make([]*scrollRow, rem)
+			for i := range padding {
+				padding[i] = &scrollRow{}
+			}
+			b.rows = append(b.rows, padding...)
+			copy(b.rows[at+rem:], b.rows[at:len(b.rows)-rem])
+			copy(b.rows[at:], padding)
+			if anchor >= at {
+				anchor += rem
+			}
+			if top >= at {
+				top += rem
+			}
+			for _, a := range anchors {
+				if a != nil && *a >= at {
+					*a += rem
+				}
 			}
 		}
 	}
@@ -739,7 +789,7 @@ func (b *Scrollback) Resize(width, height, outputRow, outputCol, top int, anchor
 	}
 	b.savedX = min(width-1, max(0, b.savedX))
 	b.savedY = min(height-1, max(0, b.savedY))
-	return newRow, newCol, max(0, top)
+	return newRow, newCol, min(b.base, max(0, top))
 }
 
 // ReplaceRange is used only by an explicit semantic repaint, such as Ctrl+O.

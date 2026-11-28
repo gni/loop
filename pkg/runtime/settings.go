@@ -12,7 +12,7 @@ import (
 )
 
 type savedSettings struct {
-	Provider      string          `json:"provider"`
+	Provider      *string         `json:"provider"`
 	Model         string          `json:"model"`
 	Reasoning     string          `json:"reasoning"`
 	DisabledTools []string        `json:"disabled_tools"`
@@ -20,18 +20,19 @@ type savedSettings struct {
 	Todos         []tool.TodoItem `json:"todos"`
 }
 
-func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, error) {
-	todos, _, err := restoreSettingsFromPath(session.LeafPath(entries, ""), cfg, tools, keepSelection)
+func restoreSettingsFromEntries(entries []session.Record, cfg *config.Config, tools *[]string, keepSelection, keepDisabledTools bool) ([]tool.TodoItem, error) {
+	todos, _, err := restoreSettingsFromPath(session.LeafPath(entries, ""), cfg, tools, keepSelection, keepDisabledTools)
 	return todos, err
 }
 
-func restoreSettingsFromPath(path []session.Record, cfg *config.Config, tools *[]string, keepSelection bool) ([]tool.TodoItem, bool, error) {
+func restoreSettingsFromPath(path []session.Record, cfg *config.Config, tools *[]string, keepSelection, keepDisabledTools bool) ([]tool.TodoItem, bool, error) {
 	todos, err := restorePlan(path)
 	if err != nil {
 		return nil, false, err
 	}
 	var latest savedSettings
 	var provider, model string
+	providerExplicit := false
 	found := false
 	for _, entry := range path {
 		if entry.Type != "settings" {
@@ -44,10 +45,13 @@ func restoreSettingsFromPath(path []session.Record, cfg *config.Config, tools *[
 		found, latest = true, saved
 		// Older records may supply only one part of the provider selection.
 		// Resolve those fields without activating profiles that were replaced.
-		if saved.Provider != "" {
-			provider = saved.Provider
-			if defaultModel := cfg.Providers[provider].Model; defaultModel != "" {
-				model = defaultModel
+		if saved.Provider != nil {
+			providerExplicit = true
+			provider = *saved.Provider
+			if provider != "" {
+				if defaultModel := cfg.Providers[provider].Model; defaultModel != "" {
+					model = defaultModel
+				}
 			}
 		}
 		if saved.Model != "" {
@@ -62,12 +66,16 @@ func restoreSettingsFromPath(path []session.Record, cfg *config.Config, tools *[
 			if err := cfg.ActivateProvider(provider); err != nil {
 				return nil, false, err
 			}
+		} else if providerExplicit {
+			cfg.ActiveProvider = ""
 		}
 		if model != "" {
 			cfg.Model = model
 		}
 		cfg.ReasoningEffort = latest.Reasoning
-		cfg.DisabledTools = latest.DisabledTools
+		if !keepDisabledTools {
+			cfg.DisabledTools = latest.DisabledTools
+		}
 	}
 	if *tools == nil {
 		*tools = latest.Tools
@@ -118,7 +126,8 @@ func (s *Session) persistSettingsForContext(ctx context.Context, id string) erro
 	}
 	s.Agent.LLMProviderMu.Lock()
 	cfg := s.Agent.Config
-	saved := savedSettings{Provider: cfg.ActiveProvider, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, DisabledTools: slices.Clone(cfg.DisabledTools)}
+	activeProvider := cfg.ActiveProvider
+	saved := savedSettings{Provider: &activeProvider, Model: cfg.Model, Reasoning: cfg.ReasoningEffort, DisabledTools: slices.Clone(cfg.DisabledTools)}
 	s.Agent.LLMProviderMu.Unlock()
 	saved.Tools, saved.Todos = slices.Clone(s.options.Tools), s.Agent.GetTodos()
 	data, err := json.Marshal(saved)
@@ -148,4 +157,21 @@ func (s *Session) checkpointMessages(ctx context.Context) error {
 // Configuration returns an independent snapshot under the agent's config lock.
 func (s *Session) Configuration() (*config.Config, error) {
 	return s.Agent.Configuration()
+}
+
+// BaseConfiguration returns a configuration snapshot without package-injected
+// providers so replacement sessions can re-apply package resources without
+// triggering duplicate provider conflicts.
+func (s *Session) BaseConfiguration() (*config.Config, error) {
+	cfg, err := s.Configuration()
+	if err != nil || cfg == nil {
+		return cfg, err
+	}
+	s.mu.Lock()
+	loaded := s.loaded
+	s.mu.Unlock()
+	for name := range loaded.Providers {
+		delete(cfg.Providers, name)
+	}
+	return cfg, nil
 }

@@ -450,6 +450,10 @@ func LoadPromptTemplates(dir string) []PromptTemplate {
 		return nil
 	}
 
+	evalDir, err := filepath.EvalSymlinks(cleanDir)
+	if err != nil {
+		return nil
+	}
 	entries, err := os.ReadDir(cleanDir)
 	if err != nil {
 		return nil
@@ -469,24 +473,33 @@ func LoadPromptTemplates(dir string) []PromptTemplate {
 			continue
 		}
 		path := filepath.Join(cleanDir, e.Name())
-		info, infoErr := e.Info()
-		if infoErr == nil && prevFiles != nil {
+		resolved, evalErr := filepath.EvalSymlinks(path)
+		if evalErr != nil {
+			continue
+		}
+		rel, relErr := filepath.Rel(evalDir, resolved)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		info, infoErr := os.Stat(resolved)
+		if infoErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if prevFiles != nil {
 			if prev, ok := prevFiles[e.Name()]; ok && prev.modTime.Equal(info.ModTime()) && prev.size == info.Size() {
 				nextFiles[e.Name()] = prev
 				out = append(out, prev.template)
 				continue
 			}
 		}
-		raw, err := storage.ReadFile(path, 512<<10)
+		raw, err := storage.ReadFile(resolved, 512<<10)
 		if err != nil {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".md")
 		desc, body := parseTemplateFrontmatter(string(raw))
 		tpl := PromptTemplate{Name: name, Description: desc, Content: body, FilePath: path}
-		if infoErr == nil {
-			nextFiles[e.Name()] = cachedTemplateFile{modTime: info.ModTime(), size: info.Size(), template: tpl}
-		}
+		nextFiles[e.Name()] = cachedTemplateFile{modTime: info.ModTime(), size: info.Size(), template: tpl}
 		out = append(out, tpl)
 	}
 

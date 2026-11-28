@@ -46,7 +46,7 @@ func (s *Session) SelectBranch(ctx context.Context, entryID string) ([]db.Messag
 		return nil, err
 	}
 	tools := s.startupTools
-	todos, hasSettings, err := restoreSettingsFromPath(path, cfg, &tools, s.options.KeepSelection)
+	todos, hasSettings, err := restoreSettingsFromPath(path, cfg, &tools, s.options.KeepSelection, s.options.KeepDisabledTools)
 	if err != nil {
 		return nil, err
 	}

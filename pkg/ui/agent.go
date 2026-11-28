@@ -192,6 +192,22 @@ func (ui *AgentUIImpl) bashSyntaxColorEnabled() bool {
 	return ui.Config == nil || ui.Config.BashSyntaxColor
 }
 
+// SyncLiveConfig updates the UI's immutable config snapshot without touching
+// TerminalMu, so live keyboard/click toggles never deadlock or race with readers.
+func (ui *AgentUIImpl) SyncLiveConfig(cfg *config.Config) {
+	ui.StateMu.Lock()
+	ui.Config = cfg
+	if cfg != nil {
+		ui.Theme = style.ResolveConfiguredTheme(cfg.Theme, cfg.SyntaxTheme)
+		if canon := style.CanonicalThemeName(cfg.Theme); canon != "" {
+			ui.ActiveThemeName = canon
+		}
+		ui.CollapseResults = cfg.CollapseResults
+	}
+	ui.LastStatusBarText = ""
+	ui.StateMu.Unlock()
+}
+
 func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	ui.StateMu.Lock()
 	ui.Config = cfg
@@ -216,11 +232,13 @@ func (ui *AgentUIImpl) SetConfig(cfg *config.Config) {
 	}
 	ui.LastStatusBarText = ""
 	ui.StateMu.Unlock()
+	TerminalMu.Lock()
 	terminal.Default().SetMouseEnabled(!nativeScroll)
 	terminal.Default().SetMouseMotion(hoverEnabled)
 	if pp != nil {
-		pp.SetNativeScroll(nativeScroll)
+		pp.setNativeScrollLocked(nativeScroll)
 	}
+	TerminalMu.Unlock()
 }
 
 // SetActiveThemeName updates the canonical UI theme label displayed by prompt chrome

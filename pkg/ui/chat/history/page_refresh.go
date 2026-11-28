@@ -104,7 +104,7 @@ func (h *ChatHistory) refreshHistoryPage(job *historyPageJob, old *preparedHisto
 }
 
 func (h *ChatHistory) finishPreparedPageLocked(job *historyPageJob, source displayHistorySource, p *preparedHistoryPage) {
-	if h.closed.Load() || h.pageJob != job {
+	if h.closed.Load() || h.isNativeScroll() || h.pageJob != job {
 		if p.more && source != nil {
 			_ = source.Close()
 		}

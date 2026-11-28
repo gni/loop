@@ -189,13 +189,22 @@ func (t *bashTool) execute(ctx domaintool.AgentContext, arguments string, observ
 		bgCmd := normalized
 		if spawner, ok := ctx.(domaintool.BackgroundTaskSpawner); ok {
 			var bgEnv map[string]string
-			if persistentBash && len(t.envVars) > 0 {
-				bgEnv = make(map[string]string, len(t.envVars))
-				for k, v := range t.envVars {
-					bgEnv[k] = v
+			var bgUnset []string
+			if persistentBash {
+				if len(t.envVars) > 0 {
+					bgEnv = make(map[string]string, len(t.envVars))
+					for k, v := range t.envVars {
+						bgEnv[k] = v
+					}
+				}
+				if len(t.unsetVars) > 0 {
+					bgUnset = make([]string, 0, len(t.unsetVars))
+					for k := range t.unsetVars {
+						bgUnset = append(bgUnset, k)
+					}
 				}
 			}
-			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir, Environment: bgEnv})
+			id, err = spawner.SpawnTaskWithOptions(ctx.Context(), bgCmd, os.Stderr, domaintool.BackgroundTaskOptions{Directory: workDir, Environment: bgEnv, UnsetEnvironment: bgUnset})
 		} else {
 			if workDir != workspaceRoot {
 				bgCmd = "cd -- " + ShellQuote(workDir) + " && {\n" + bgCmd + "\n}"

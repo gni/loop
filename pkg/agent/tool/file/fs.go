@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -140,7 +141,11 @@ func commitFileMutation(ctx domaintool.AgentContext, safePath string, data []byt
 	if useAtomic {
 		err = AtomicWriteFile(safePath, data, perm)
 	} else {
-		err = os.WriteFile(safePath, data, perm)
+		if mkErr := os.MkdirAll(filepath.Dir(safePath), 0755); mkErr != nil {
+			err = fmt.Errorf("failed to create directory: %w", mkErr)
+		} else {
+			err = os.WriteFile(safePath, data, perm)
+		}
 	}
 	releaseRecovery()
 	if err != nil && !mutationCommitted(err, safePath) {
@@ -238,18 +243,37 @@ var (
 	fileLocksMu sync.Mutex
 )
 
+func canonicalLockKey(path string) string {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = filepath.Clean(path)
+	}
+	ancestor := absPath
+	for {
+		if resolved, errRes := filepath.EvalSymlinks(ancestor); errRes == nil && resolved != "" {
+			if rel, relErr := filepath.Rel(ancestor, absPath); relErr == nil {
+				absPath = filepath.Clean(filepath.Join(resolved, rel))
+			}
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+	}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		absPath = strings.ToLower(absPath)
+	}
+	return absPath
+}
+
 // LockPathContext allows queued file operations to stop before they own a path.
 func LockPathContext(ctx context.Context, path string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		absPath = path
-	}
-	if resolved, errRes := filepath.EvalSymlinks(absPath); errRes == nil && resolved != "" {
-		absPath = resolved
-	}
+	absPath := canonicalLockKey(path)
 	fileLocksMu.Lock()
 	entry, exists := fileLocks[absPath]
 	if !exists {

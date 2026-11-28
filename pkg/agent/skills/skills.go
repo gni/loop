@@ -68,14 +68,19 @@ func LoadFromDirsWithWarnings(warnings io.Writer, dirs ...string) ([]Skill, erro
 				fmt.Fprintf(warnings, "Warning: skipping skill %q: %v\n", path, err)
 				return
 			}
+			if !withinRoot(absDir, resolved) {
+				fmt.Fprintf(warnings, "Warning: skipping skill %q: escapes skills directory %q\n", path, absDir)
+				return
+			}
 			if visited[resolved] {
 				return
 			}
 			visited[resolved] = true
-			skill, ok := readSkill(path, warnings)
+			skill, ok := readSkill(resolved, warnings)
 			if !ok {
 				return
 			}
+			skill.Path = path
 			key := strings.ToLower(skill.Name)
 			if seen[key] {
 				fmt.Fprintf(warnings, "Warning: skipping skill %q: duplicate skill name %q\n", path, skill.Name)
@@ -90,7 +95,12 @@ func LoadFromDirsWithWarnings(warnings io.Writer, dirs ...string) ([]Skill, erro
 			}
 			isDir := entry.IsDir()
 			if entry.Type()&os.ModeSymlink != 0 {
-				info, err := os.Stat(path)
+				resolved, err := filepath.EvalSymlinks(path)
+				if err != nil || !withinRoot(absDir, resolved) {
+					fmt.Fprintf(warnings, "Warning: skipping skill link %q: escapes skills directory %q\n", path, absDir)
+					return nil
+				}
+				info, err := os.Stat(resolved)
 				if err != nil {
 					fmt.Fprintf(warnings, "Warning: skipping skill link %q: %v\n", path, err)
 					return nil

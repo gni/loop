@@ -38,12 +38,19 @@ func markdownTableCells(line string) ([]string, bool) {
 	for i := 0; i < len(line); i++ {
 		if line[i] == '\\' && i+1 < len(line) {
 			next := line[i+1]
-			if next == '|' && !inCode && !inParenMath && !inBracketMath && !inDollarMath && !inDoubleDollarMath {
+			if next == '|' && !inParenMath && !inBracketMath && !inDollarMath && !inDoubleDollarMath {
+				if inCode {
+					cell.WriteByte('\\')
+				}
 				cell.WriteByte('|')
 				i++
 				continue
 			}
-			if !inCode && !inDollarMath && !inDoubleDollarMath {
+			if inCode {
+				cell.WriteByte('\\')
+				continue
+			}
+			if !inDollarMath && !inDoubleDollarMath {
 				if next == '(' && !inBracketMath {
 					inParenMath = true
 				} else if next == ')' && inParenMath {

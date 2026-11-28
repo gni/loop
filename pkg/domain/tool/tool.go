@@ -139,8 +139,9 @@ type AgentContext interface {
 
 // BackgroundTaskOptions carries process settings without rewriting shell input.
 type BackgroundTaskOptions struct {
-	Directory   string
-	Environment map[string]string
+	Directory        string
+	Environment      map[string]string
+	UnsetEnvironment []string
 }
 
 // LiveOutputWriter allows streaming tools (such as bash) to stream output directly to terminal.

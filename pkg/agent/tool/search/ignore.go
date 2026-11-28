@@ -29,12 +29,12 @@ func ShouldSkipWalkEntry(path string, d fs.DirEntry, workspaceRoot string, gitIg
 		if filepath.Clean(path) == filepath.Clean(workspaceRoot) {
 			return true, nil
 		}
-		if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
+		if IsIgnoredDirName(name) || HasIgnoredComponentIn(path, workspaceRoot) || IsIgnoredByGitEntry(path, workspaceRoot, gitIgnorePatterns, true) {
 			return true, filepath.SkipDir
 		}
 		return true, nil
 	}
-	if IsIgnoredFileName(name) || IsIgnoredByGit(path, workspaceRoot, gitIgnorePatterns) {
+	if IsIgnoredFileName(name) || IsIgnoredByGitEntry(path, workspaceRoot, gitIgnorePatterns, false) {
 		return true, nil
 	}
 	return false, nil
@@ -97,25 +97,44 @@ func LoadGitIgnore(workspaceRoot string) []string {
 	return patterns
 }
 
-// expandBracePatterns expands a single level of {a,b,c} alternatives in a glob pattern.
+// expandBracePatterns expands {a,b,c} brace groups iteratively, capped to avoid
+// combinatorial blowup on crafted patterns.
 func expandBracePatterns(pattern string) []string {
-	openIdx := strings.IndexByte(pattern, '{')
-	if openIdx < 0 {
-		return []string{pattern}
+	const maxBraceExpansions = 64
+	current := []string{pattern}
+	for {
+		expandedAny := false
+		var next []string
+		for _, item := range current {
+			openIdx := strings.IndexByte(item, '{')
+			if openIdx < 0 {
+				next = append(next, item)
+				continue
+			}
+			closeIdx := strings.IndexByte(item[openIdx:], '}')
+			if closeIdx < 0 {
+				next = append(next, item)
+				continue
+			}
+			closeIdx += openIdx
+			prefix := item[:openIdx]
+			suffix := item[closeIdx+1:]
+			parts := strings.Split(item[openIdx+1:closeIdx], ",")
+			if len(next)+len(parts) > maxBraceExpansions {
+				next = append(next, item)
+				continue
+			}
+			expandedAny = true
+			for _, part := range parts {
+				next = append(next, prefix+strings.TrimSpace(part)+suffix)
+			}
+		}
+		current = next
+		if !expandedAny || len(current) >= maxBraceExpansions {
+			break
+		}
 	}
-	closeIdx := strings.IndexByte(pattern[openIdx:], '}')
-	if closeIdx < 0 {
-		return []string{pattern}
-	}
-	closeIdx += openIdx
-	prefix := pattern[:openIdx]
-	suffix := pattern[closeIdx+1:]
-	parts := strings.Split(pattern[openIdx+1:closeIdx], ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		out = append(out, prefix+strings.TrimSpace(part)+suffix)
-	}
-	return out
+	return current
 }
 
 // Track reachable path positions iteratively. Repeated ** segments must not
@@ -190,6 +209,13 @@ func MatchGlob(pattern, relPath, baseName string) bool {
 
 // IsIgnoredByGit checks if path matches any gitignore patterns, respecting negation rules.
 func IsIgnoredByGit(path string, workspaceRoot string, patterns []string) bool {
+	return IsIgnoredByGitEntry(path, workspaceRoot, patterns, false)
+}
+
+// IsIgnoredByGitEntry checks gitignore rules with knowledge of whether path is a directory,
+// so trailing-slash directory-only rules match directories (and their descendants) without
+// falsely ignoring regular files of the same name.
+func IsIgnoredByGitEntry(path string, workspaceRoot string, patterns []string, isDir bool) bool {
 	if len(patterns) == 0 {
 		return false
 	}
@@ -202,6 +228,11 @@ func IsIgnoredByGit(path string, workspaceRoot string, patterns []string) bool {
 		return false
 	}
 	base := filepath.Base(rel)
+	lowerRelSegs := strings.Split(strings.ToLower(rel), "/")
+	maxDirDepth := len(lowerRelSegs) - 1
+	if isDir {
+		maxDirDepth = len(lowerRelSegs)
+	}
 
 	ignored := false
 	for _, rawPat := range patterns {
@@ -227,16 +258,37 @@ func IsIgnoredByGit(path string, workspaceRoot string, patterns []string) bool {
 
 		matched := false
 		if isDirOnly {
-			if rooted {
-				matched = rel == cleanPat || strings.HasPrefix(rel, cleanPat+"/")
-			} else {
-				matched = rel == cleanPat ||
-					strings.HasPrefix(rel, cleanPat+"/") ||
-					strings.Contains(rel, "/"+cleanPat+"/") ||
-					strings.HasSuffix(rel, "/"+cleanPat)
+			if maxDirDepth > 0 {
+				lowerPat := strings.ToLower(cleanPat)
+				if rooted {
+					patSegs := strings.Split(lowerPat, "/")
+					for depth := 1; depth <= maxDirDepth; depth++ {
+						if matchPathSegments(patSegs, lowerRelSegs[:depth]) {
+							matched = true
+							break
+						}
+					}
+				} else if !strings.Contains(lowerPat, "/") {
+					for depth := 0; depth < maxDirDepth; depth++ {
+						if ok, _ := filepath.Match(lowerPat, lowerRelSegs[depth]); ok {
+							matched = true
+							break
+						}
+					}
+				} else {
+					patSegs := strings.Split(lowerPat, "/")
+					anyPrefix := append([]string{"**"}, patSegs...)
+					for depth := 1; depth <= maxDirDepth; depth++ {
+						prefixSegs := lowerRelSegs[:depth]
+						if matchPathSegments(patSegs, prefixSegs) || matchPathSegments(anyPrefix, prefixSegs) {
+							matched = true
+							break
+						}
+					}
+				}
 			}
 		} else if rooted {
-			matched = matchPathSegments(strings.Split(strings.ToLower(cleanPat), "/"), strings.Split(strings.ToLower(rel), "/"))
+			matched = matchPathSegments(strings.Split(strings.ToLower(cleanPat), "/"), lowerRelSegs)
 		} else {
 			matched = MatchGlob(cleanPat, rel, base)
 		}

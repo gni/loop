@@ -73,8 +73,25 @@ var providerSelectCmd = &cobra.Command{
 			return err
 		}
 		name := args[0]
+		if name == "default" {
+			if _, ok := cfg.Providers["default"]; ok {
+				if err := cfg.ActivateProvider("default"); err != nil {
+					return err
+				}
+				if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
+					return err
+				}
+				fmt.Println("Switched active provider to 'default'.")
+				return nil
+			}
+		}
 		if name == "none" || name == "default" {
+			defaults := config.DefaultConfig()
 			cfg.ActiveProvider = ""
+			cfg.Endpoint = defaults.Endpoint
+			cfg.APIKey = defaults.APIKey
+			cfg.Model = defaults.Model
+			cfg.Timeout = defaults.Timeout
 			if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 				return err
 			}
@@ -137,7 +154,27 @@ var providerRemoveCmd = &cobra.Command{
 
 		delete(cfg.Providers, name)
 		if cfg.ActiveProvider == name {
-			cfg.ActiveProvider = ""
+			if name != "default" {
+				if _, ok := cfg.Providers["default"]; ok {
+					if err := cfg.ActivateProvider("default"); err != nil {
+						return err
+					}
+				} else {
+					defaults := config.DefaultConfig()
+					cfg.ActiveProvider = ""
+					cfg.Endpoint = defaults.Endpoint
+					cfg.APIKey = defaults.APIKey
+					cfg.Model = defaults.Model
+					cfg.Timeout = defaults.Timeout
+				}
+			} else {
+				defaults := config.DefaultConfig()
+				cfg.ActiveProvider = ""
+				cfg.Endpoint = defaults.Endpoint
+				cfg.APIKey = defaults.APIKey
+				cfg.Model = defaults.Model
+				cfg.Timeout = defaults.Timeout
+			}
 		}
 		if err := config.SaveConfigContext(cmd.Context(), configPath, cfg); err != nil {
 			return err

@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"path/filepath"
 	"strings"
 
 	"loop/pkg/domain/ignore"
@@ -11,8 +12,12 @@ import (
 // builds and package managers can still execute installed dependencies.
 func WithScanDefaults(command, workspace string) string {
 	names := ignore.DirectoryNames()
+	scanRoot := workspace
+	if resolved, err := filepath.EvalSymlinks(workspace); err == nil && resolved != "" {
+		scanRoot = resolved
+	}
 	var prelude strings.Builder
-	prelude.WriteString("_loop_scan_root=" + ShellQuote(workspace) + "\n")
+	prelude.WriteString("_loop_scan_root=" + ShellQuote(scanRoot) + "\n")
 	prelude.WriteString("_loop_scan_allowed() {\n local resolved\n resolved=$(cd -- \"$1\" 2>/dev/null && pwd -P) || return 0\n [[ $resolved == \"$_loop_scan_root\" ]] && return 0\n resolved=${resolved#\"$_loop_scan_root\"/}\n case /${resolved,,}/ in\n")
 	for i, name := range names {
 		if i > 0 {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"loop/pkg/domain/message"
@@ -66,27 +67,35 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 
 	var startTime, firstTimestamp string
 	var cwd, displayName, parentSession string
-	var msgCount, baselineCount, totalTokens int
-	var baselineKnown bool
-	hasConversation := false
-	var previewBuilder, contextPreviewBuilder strings.Builder
-	var previewRunes, contextPreviewRunes int
-	var prompts []string
-	var lastPrompt string
-	seenPrompts := make(map[string]bool)
-	appendPrompt := func(msg message.Message, fromContext bool) {
+
+	type summaryNode struct {
+		id              string
+		parentID        string
+		recordType      string
+		timestamp       string
+		resetHistory    bool
+		msgCount        int
+		tokens          int
+		hasConversation bool
+		preview         string
+		prompts         []string
+	}
+
+	extractPrompt := func(msg message.Message) (string, bool) {
 		const manualPrefix = "[user manually executed"
 		if !msg.IsUserInput() || msg.IsShellContext() || len(msg.Content) >= len(manualPrefix) && strings.EqualFold(msg.Content[:len(manualPrefix)], manualPrefix) {
-			return
+			return "", false
 		}
 		text := strings.TrimSpace(msg.Content)
-		if text == "" || text == lastPrompt || fromContext && seenPrompts[text] {
-			return
+		if text == "" {
+			return "", false
 		}
-		prompts = append(prompts, text)
-		seenPrompts[text] = true
-		lastPrompt = text
+		return text, true
 	}
+
+	var nodes []summaryNode
+	ids := make(map[string]int)
+	prevID := ""
 
 	scanner := newJSONLScanner(contextReader{ctx, f})
 	lineNo := 0
@@ -114,67 +123,163 @@ func (s *JSONLStore) summarizeSessionLockedContext(ctx context.Context, sessionI
 		}
 		if record.Type == "name" {
 			displayName = record.Name
-			continue
 		}
-		if record.Type == "context" || record.Type == "compaction" {
-			contextMsgCount := 0
-			contextHasConversation := false
-			contextPreviewBuilder.Reset()
-			contextPreviewRunes = 0
+
+		node := summaryNode{
+			id:           record.ID,
+			parentID:     record.ParentID,
+			recordType:   record.Type,
+			timestamp:    record.Timestamp,
+			resetHistory: record.ResetHistory,
+		}
+		if node.id == "" {
+			node.id = "legacy-" + strconv.Itoa(len(nodes))
+			node.parentID = prevID
+			if node.recordType == "" {
+				node.recordType = "message"
+			}
+		}
+
+		switch record.Type {
+		case "context", "compaction":
+			var ctxPreview strings.Builder
+			var ctxPreviewRunes int
+			var ctxPrompts []string
+			seenCtx := make(map[string]bool)
 			for _, m := range record.Messages {
 				if isSkippedSlashRecord(m) || m.Role == "" || m.IsInternalContext() {
 					continue
 				}
-				contextMsgCount++
-				appendPrompt(m, true)
+				node.msgCount++
+				node.tokens += m.PromptTokens + m.CompletionTokens
+				if p, ok := extractPrompt(m); ok && !seenCtx[p] {
+					seenCtx[p] = true
+					ctxPrompts = append(ctxPrompts, p)
+				}
 				if isConversationMessage(m) {
-					contextHasConversation = true
+					node.hasConversation = true
 				}
 				if m.Content != "" {
-					appendPreviewSnippet(&contextPreviewBuilder, &contextPreviewRunes, m.Content)
+					appendPreviewSnippet(&ctxPreview, &ctxPreviewRunes, m.Content)
 				}
 			}
-			if msgCount == 0 && !baselineKnown || record.ResetHistory {
-				// Imported snapshots seed the visible transcript. Compaction
-				// preserves it; only an explicit history edit replaces it.
-				baselineCount, msgCount, baselineKnown = contextMsgCount, 0, true
-				hasConversation = contextHasConversation
-				previewBuilder.Reset()
-				previewBuilder.WriteString(contextPreviewBuilder.String())
-				previewRunes = contextPreviewRunes
+			node.preview = ctxPreview.String()
+			node.prompts = ctxPrompts
+		case "", "message":
+			if record.Message.Role != "" && !isSkippedSlashRecord(record.Message) && !record.Message.IsInternalContext() {
+				node.msgCount = 1
+				node.hasConversation = isConversationMessage(record.Message)
+				node.tokens = record.Message.PromptTokens + record.Message.CompletionTokens
+				if record.Message.Content != "" {
+					var b strings.Builder
+					var runes int
+					appendPreviewSnippet(&b, &runes, record.Message.Content)
+					node.preview = b.String()
+				}
+				if p, ok := extractPrompt(record.Message); ok {
+					node.prompts = []string{p}
+				}
 			}
-			if firstTimestamp == "" && record.Timestamp != "" {
-				firstTimestamp = record.Timestamp
-			}
-			continue
-		}
-		if record.Message.Role == "" || isSkippedSlashRecord(record.Message) {
-			continue
-		}
-		if record.Type == "prompt" {
-			continue
-		}
-		if record.Message.IsInternalContext() {
-			continue
 		}
 
-		if isConversationMessage(record.Message) {
-			hasConversation = true
+		ids[node.id] = len(nodes)
+		nodes = append(nodes, node)
+		if record.Type != "branch" {
+			prevID = node.id
 		}
-		msgCount++
-		if firstTimestamp == "" {
-			firstTimestamp = record.Timestamp
-		}
-		totalTokens += record.Message.PromptTokens + record.Message.CompletionTokens
-
-		if record.Message.Content != "" {
-			appendPreviewSnippet(&previewBuilder, &previewRunes, record.Message.Content)
-		}
-		appendPrompt(record.Message, false)
 	}
 
 	if scanner.Err() != nil || ctx.Err() != nil {
 		return cachedSummary{}, false
+	}
+
+	// Walk parent pointers from the active leaf back to the root, matching session.LeafPath.
+	var reverse []int
+	if len(nodes) > 0 {
+		seenNode := make(map[int]bool, len(nodes))
+		for cur := len(nodes) - 1; cur >= 0; {
+			if seenNode[cur] {
+				reverse = nil
+				break
+			}
+			seenNode[cur] = true
+			reverse = append(reverse, cur)
+			parent := nodes[cur].parentID
+			if parent == "" {
+				break
+			}
+			next, ok := ids[parent]
+			if !ok {
+				reverse = nil
+				break
+			}
+			cur = next
+		}
+	}
+
+	var msgCount, baselineCount, totalTokens int
+	var baselineKnown bool
+	hasConversation := false
+	var previewBuilder strings.Builder
+	var previewRunes int
+	var prompts []string
+	var lastPrompt string
+	seenPrompts := make(map[string]bool)
+	addPrompt := func(text string, fromContext bool) {
+		if text == "" || text == lastPrompt || (fromContext && seenPrompts[text]) {
+			return
+		}
+		prompts = append(prompts, text)
+		seenPrompts[text] = true
+		lastPrompt = text
+	}
+
+	for i := len(reverse) - 1; i >= 0; i-- {
+		n := nodes[reverse[i]]
+		switch n.recordType {
+		case "context", "compaction":
+			if (msgCount == 0 && !baselineKnown) || n.resetHistory {
+				baselineCount, msgCount, baselineKnown = n.msgCount, 0, true
+				hasConversation = n.hasConversation
+				previewBuilder.Reset()
+				previewRunes = 0
+				appendPreviewSnippet(&previewBuilder, &previewRunes, n.preview)
+				if n.resetHistory {
+					totalTokens = n.tokens
+					prompts = nil
+					lastPrompt = ""
+					clear(seenPrompts)
+				}
+				for _, p := range n.prompts {
+					addPrompt(p, true)
+				}
+			} else {
+				for _, p := range n.prompts {
+					addPrompt(p, true)
+				}
+			}
+			if firstTimestamp == "" && n.timestamp != "" {
+				firstTimestamp = n.timestamp
+			}
+		case "", "message":
+			if n.msgCount == 0 {
+				continue
+			}
+			if n.hasConversation {
+				hasConversation = true
+			}
+			msgCount += n.msgCount
+			if firstTimestamp == "" && n.timestamp != "" {
+				firstTimestamp = n.timestamp
+			}
+			totalTokens += n.tokens
+			if n.preview != "" {
+				appendPreviewSnippet(&previewBuilder, &previewRunes, n.preview)
+			}
+			for _, p := range n.prompts {
+				addPrompt(p, false)
+			}
+		}
 	}
 
 	effectiveCount := baselineCount + msgCount

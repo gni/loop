@@ -98,7 +98,8 @@ func (ki *KeyInterceptorReader) ConsumePendingThemeRefresh() bool {
 func (ki *KeyInterceptorReader) copyReadData(p, data []byte) int {
 	n := copy(p, data)
 	if n < len(data) {
-		ki.PasteRemaining = append([]byte(nil), data[n:]...)
+		overflow := append([]byte(nil), data[n:]...)
+		ki.PasteRemaining = append(overflow, ki.PasteRemaining...)
 	}
 	return n
 }
@@ -623,11 +624,9 @@ readInput:
 	if pasted {
 		return n, nil
 	}
-	n = ki.copyReadData(p, ki.normalizePromptEditKeys(p[:n]))
-
-	writeIdx := 0
-	for i := 0; i < n; i++ {
-		b := p[i]
+	normalized := ki.normalizePromptEditKeys(p[:n])
+	filtered := make([]byte, 0, len(normalized))
+	for _, b := range normalized {
 		switch b {
 		case 3:
 			if ki.Agent != nil {
@@ -643,8 +642,7 @@ readInput:
 					fmt.Fprintf(dest, "\n[stopped streaming %s]\n", streamingID)
 					if ki.IsAtMainPrompt.Load() {
 						ki.CtrlCInterrupted = true
-						p[writeIdx] = '\n'
-						writeIdx++
+						filtered = append(filtered, '\n')
 					}
 					continue
 				}
@@ -652,11 +650,10 @@ readInput:
 			}
 			if ki.IsAtMainPrompt.Load() {
 				ki.CtrlCInterrupted = true
-				p[writeIdx] = '\n'
+				filtered = append(filtered, '\n')
 			} else {
-				p[writeIdx] = b
+				filtered = append(filtered, b)
 			}
-			writeIdx++
 		case 7:
 			ki.HandleCtrlG()
 		case 15:
@@ -670,10 +667,9 @@ readInput:
 		case 26:
 			ki.ControlQueue("undo")
 		default:
-			p[writeIdx] = b
-			writeIdx++
+			filtered = append(filtered, b)
 		}
 	}
 
-	return writeIdx, nil
+	return ki.copyReadData(p, filtered), nil
 }

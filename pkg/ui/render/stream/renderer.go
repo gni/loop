@@ -120,6 +120,19 @@ func (sr *StreamRenderer) runBeforeWrite() {
 	}
 }
 
+func (sr *StreamRenderer) rehydrateLiveMarkdownLocked() {
+	rebuilt := markdown.NewLiveMarkdownRenderer(discardSizedWriter{width: markdown.RenderWidth(sr.w)}, sr.theme)
+	if len(sr.liveReplayEvents) > 0 {
+		last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
+		if last.kind == "text" {
+			rebuilt.Write(last.text)
+		}
+	}
+	rebuilt.SetWriter(sr.w)
+	sr.live = rebuilt
+	sr.lastEndedWithNewline = sr.live.EndedWithNewline()
+}
+
 // InvalidateTrackedRows is called after an external full-screen replay.
 // Old terminal row indexes are no longer valid, even though stream parsing
 // state and the already displayed content must continue unchanged.
@@ -143,14 +156,25 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 			last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
 			sr.reasoningEndedWithNewline = strings.HasSuffix(last.text, "\n")
 		}
+	} else if sr.markdownEnabled && !sr.liveReplayTextFlushed && len(sr.liveReplayEvents) > 0 && sr.liveReplayEvents[len(sr.liveReplayEvents)-1].kind == "text" {
+		sr.rehydrateLiveMarkdownLocked()
+	}
+	hasCompactRow := func(v *liveCallView) bool {
+		if v == nil || !v.headerShown || v.resultRecorded || v.completed || v.failed {
+			return false
+		}
+		if v.name == "edit" {
+			return sr.liveCollapse || v.editDiff == ""
+		}
+		return sr.liveCollapse && v.name == "write"
 	}
 	// Only the last unfinished compact call can still be updated. Its
 	// heading and progress row are the final two rows of the replay.
 	compactIndex := -1
-	if sr.liveCollapse && len(sr.liveReplayEvents) > 0 {
+	if len(sr.liveReplayEvents) > 0 {
 		last := sr.liveReplayEvents[len(sr.liveReplayEvents)-1]
 		if last.kind == "tool" {
-			if view := sr.liveCallViews[last.index]; view != nil && !view.completed {
+			if view := sr.liveCallViews[last.index]; hasCompactRow(view) {
 				compactIndex = last.index
 			}
 		}
@@ -159,10 +183,11 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 	clear(sr.writeResultLines)
 	for _, view := range sr.liveCallViews {
 		view.titleLine = -1
-		// A snapshot already shows the compact row for a collapsed call.
+		view.diffRendered = !sr.liveCollapse && view.name == "edit" && view.editDiff != "" && !view.resultRecorded
+		// A snapshot already shows the compact row for a compact call.
 		// Never print a second preview row on the next argument fragment.
 		view.compactLine = -1
-		if sr.liveCollapse && view.headerShown {
+		if hasCompactRow(view) {
 			view.compactLine = -2
 		}
 	}
@@ -183,7 +208,7 @@ func (sr *StreamRenderer) InvalidateTrackedRows() {
 		view.endsWithNewline = true
 		if view.name == "bash" {
 			sr.resyncLiveBashStateLocked(view)
-		} else if !sr.liveCollapse {
+		} else if view.name == "write" && !sr.liveCollapse {
 			content := view.fullContent.String()
 			view.bytes = view.receivedBytes
 			view.endsWithNewline = content == "" || strings.HasSuffix(content, "\n")

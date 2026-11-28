@@ -22,10 +22,10 @@ import (
 func IsHelpCommand(trimmed string) bool {
 	lower := strings.ToLower(strings.TrimSpace(trimmed))
 	switch lower {
-	case "help", "h", "?", "/help", "/commands", "/h", "/?":
+	case "help", "?", "/help", "/commands", "/h", "/?":
 		return true
 	default:
-		return strings.HasPrefix(lower, "help ") || strings.HasPrefix(lower, "/help ")
+		return strings.HasPrefix(lower, "/help ")
 	}
 }
 
@@ -128,6 +128,10 @@ func HandleSlashCommand(
 	isHelp := IsHelpCommand(trimmed)
 	if !strings.HasPrefix(trimmed, "/") && !isHelp {
 		return false, false
+	}
+	if isHelp {
+		render.RenderHelp(w, *theme)
+		return true, false
 	}
 
 	parts := strings.Fields(line)
@@ -234,7 +238,7 @@ func HandleSlashCommand(
 		handleThinkingCommand(a, parts, w)
 		return true, false
 	case "/model":
-		handleModelCommand(a, parts, theme, w)
+		handleModelCommand(a, parts, messages, theme, w, kiReader, calcHistoryTokens)
 		return true, false
 	case "/new":
 		handleSessionCommand(a, []string{"/session", "new"}, messages, currentSessionID, theme, w, kiReader, calcHistoryTokens)
@@ -315,7 +319,7 @@ func HandleSlashCommand(
 	case "/task_clear", "/taskclear":
 		handleTaskCommand(a, []string{"/task", "clear"}, theme, w, kiReader)
 		return true, false
-	case "/help", "/h", "/commands", "?", "/?", "help", "h":
+	case "/help", "/h", "/commands", "?", "/?", "help":
 		render.RenderHelp(w, *theme)
 		return true, false
 	case "/config", "/set":

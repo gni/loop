@@ -64,7 +64,7 @@ func GetUsageCostBreakdown(messages []db.Message, defaultModel string) []UsageCo
 			if key == "" {
 				key = "unknown"
 			}
-		case "toolResult", "system":
+		case "tool", "toolResult", "system":
 			if m.Usage == nil && m.PromptTokens+m.CompletionTokens+m.CacheReadTokens+m.CacheWriteTokens == 0 {
 				continue
 			}
@@ -100,13 +100,19 @@ func RenderStats(w io.Writer, msgs []db.Message, defaultModel string, tr *agent.
 	printUsageHeader(w, theme)
 
 	baseP, baseC := agent.CalculateHistoryTokens(msgs)
+	breakdown := GetUsageCostBreakdown(msgs, defaultModel)
+	totalCost := 0.0
+	for _, e := range breakdown {
+		totalCost += e.Cost
+	}
 	fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Base Agent (Main)"))
 	fmt.Fprintf(w, "    Prompt Tokens:      %s\n", valueStyle.Render(fmt.Sprintf("%d", baseP)))
 	fmt.Fprintf(w, "    Completion Tokens:  %s\n", valueStyle.Render(fmt.Sprintf("%d", baseC)))
-	fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(fmt.Sprintf("%d", baseP+baseC)))
+	fmt.Fprintf(w, "    Total Tokens:       %s\n", valueStyle.Render(fmt.Sprintf("%d", baseP+baseC)))
+	fmt.Fprintf(w, "    Total Cost (Est):   %s\n\n", valueStyle.Render(fmt.Sprintf("$%.4f", totalCost)))
 
 	fmt.Fprintf(w, "  %s:\n", titleStyle.Render("Cost Breakdown By Model"))
-	for _, e := range GetUsageCostBreakdown(msgs, defaultModel) {
+	for _, e := range breakdown {
 		key := style.TruncateCells(SanitizeTerminalText(e.Key), 24)
 		fmt.Fprintf(w, "    %s cost $%.4f  tokens %d\n", padRightCells(key, 24), e.Cost, e.Tokens)
 	}

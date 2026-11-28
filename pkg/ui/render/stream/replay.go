@@ -165,9 +165,15 @@ func (sr *StreamRenderer) ReplayActiveTurn(w io.Writer, collapsed bool, theme st
 					command = render.ExtractToolTarget(call.name, call.arguments)
 				}
 				fmt.Fprint(w, render.FormatBashCommandLineStyled(render.RenderToolSymbol(call.name, status, theme), command, theme, bashSyntaxColor))
-				hasTrailingNL := strings.HasSuffix(strings.ReplaceAll(command, "\r", "\n"), "\n") && strings.TrimSpace(command) != ""
+				norm := strings.ReplaceAll(strings.ReplaceAll(command, "\r\n", "\n"), "\r", "\n")
+				hasContent := strings.TrimSpace(norm) != ""
+				hasTrailingNL := hasContent && strings.HasSuffix(norm, "\n")
 				if !last || ev.index != activeCall || call.completed || hasTrailingNL {
 					fmt.Fprintln(w)
+				} else if hasContent {
+					if nl := strings.LastIndexByte(norm, '\n'); nl >= 0 && strings.TrimSpace(norm[nl+1:]) == "" {
+						fmt.Fprint(w, "\n  "+cleanBashCommandChunk(norm[nl+1:]))
+					}
 				}
 			} else {
 				fmt.Fprintln(w, render.FormatToolTitleForWidth(render.RenderToolSymbol(call.name, status, theme), call.name, path, theme, viewportWidth))

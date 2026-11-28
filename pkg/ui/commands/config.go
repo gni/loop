@@ -91,6 +91,7 @@ func handleConfigCommand(
 	if applyErr != nil {
 		notice += "\n" + applyErr.Error()
 	}
+	syncConfigTheme(a, theme, w, kiReader)
 	if previous.NativeScroll && !a.Config.NativeScroll {
 		if history := ui.GetUI().GetChatHistory(); history != nil && messages != nil {
 			history.SetNotice(notice)
@@ -124,9 +125,7 @@ func handleConfigCommand(
 	syncCommandStatus(a, messages, *theme, w, kiReader, calcHistoryTokens, true)
 }
 
-// redrawConfigIfNeeded redraws history only for settings that affect its appearance.
-// The active renderer is never modified mid-turn; subsequent turns use the new config.
-func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader, notice string, force bool) bool {
+func syncConfigTheme(a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader) {
 	live := a.LiveSettings()
 	ui.GetUI().SetActiveThemeName(live.Theme)
 	*theme = style.ResolveConfiguredTheme(live.Theme, live.SyntaxTheme)
@@ -136,6 +135,12 @@ func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.U
 			kiReader.MAM.SetOutput(w, *theme)
 		}
 	}
+}
+
+// redrawConfigIfNeeded redraws history only for settings that affect its appearance.
+// The active renderer is never modified mid-turn; subsequent turns use the new config.
+func redrawConfigIfNeeded(previous config.Config, a *agent.Agent, theme *style.UITheme, w io.Writer, kiReader *interceptor.KeyInterceptorReader, notice string, force bool) bool {
+	syncConfigTheme(a, theme, w, kiReader)
 	if kiReader == nil || (!force && !configAppearanceChanged(previous, *a.Config)) {
 		return false
 	}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"loop/pkg/agent"
 	"loop/pkg/config"
@@ -171,7 +172,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 					provPrefix := strings.TrimPrefix(filterPrefix, subCmd)
 					for _, pk := range providerKeys {
 						if strings.HasPrefix(pk, provPrefix) {
-							matches = append(matches, subCmd+pk)
+							matches = append(matches, pk)
 						}
 					}
 				} else {
@@ -226,7 +227,7 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 				}
 				if cmdPrefix == "/task " {
 					if sub, hasSub := firstMatchingPrefix(filterPrefix, "view ", "stream ", "kill ", "remove "); hasSub {
-						appendTaskIDs(sub, strings.TrimPrefix(filterPrefix, sub))
+						appendTaskIDs("", strings.TrimPrefix(filterPrefix, sub))
 					}
 					if len(matches) == 0 {
 						matches = matchPrefixWithSpace(
@@ -274,15 +275,15 @@ func autoCompleteCallback(line string, pos int, key rune, a *agent.Agent) (strin
 
 	commonPrefix := matches[0]
 	for _, m := range matches[1:] {
-		for i := 0; i < len(commonPrefix) && i < len(m); i++ {
-			if commonPrefix[i] != m[i] {
-				commonPrefix = commonPrefix[:i]
-				break
-			}
+		limit := min(len(commonPrefix), len(m))
+		i := 0
+		for i < limit && commonPrefix[i] == m[i] {
+			i++
 		}
-		if len(commonPrefix) > len(m) {
-			commonPrefix = m
+		for i > 0 && i < len(commonPrefix) && !utf8.RuneStart(commonPrefix[i]) {
+			i--
 		}
+		commonPrefix = commonPrefix[:i]
 	}
 
 	if len(commonPrefix) > len(wordToComplete) {

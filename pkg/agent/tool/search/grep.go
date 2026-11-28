@@ -255,7 +255,9 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 			return nil
 		}
 
-		fileLines := strings.Split(SanitizeUTF8(data), "\n")
+		_, textWithoutBOM := file.SplitBOM(data)
+		normalized := strings.ReplaceAll(SanitizeUTF8([]byte(textWithoutBOM)), "\r\n", "\n")
+		fileLines := strings.Split(normalized, "\n")
 		numLines := len(fileLines)
 
 		matchedIndices := make(map[int]bool)
@@ -357,13 +359,16 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				return cancelErr
 			}
 			if err != nil {
-				if errors.Is(err, os.ErrPermission) {
+				if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
 					if d != nil && d.IsDir() {
 						return filepath.SkipDir
 					}
 					return nil
 				}
 				return fmt.Errorf("walk search path %s: %w", path, err)
+			}
+			if d.Type()&fs.ModeSymlink != 0 {
+				return nil
 			}
 			if skip, skipErr := ShouldSkipWalkEntry(path, d, workspaceRoot, gitIgnorePatterns); skip {
 				return skipErr
@@ -376,7 +381,7 @@ func (t *grepTool) Execute(ctx domaintool.AgentContext, arguments string) (strin
 				}
 			}
 			if err := processFile(path); err != nil {
-				if errors.Is(err, os.ErrPermission) {
+				if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
 					return nil
 				}
 				return err

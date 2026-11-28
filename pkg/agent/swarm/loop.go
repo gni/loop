@@ -269,7 +269,6 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 	}()
 	renderedAgentName := style.NewStyle().Foreground(theme.Highlight).Bold(true).Render(ma.Name)
 
-	allowlist := ma.GetToolAllowlist()
 	var (
 		ncw                   *agent.NewlineCounterWriter
 		sr                    agent.StreamRenderer
@@ -293,6 +292,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 			}
 			if engine.ShouldRecap() {
 				msgs := sink.Messages()
+				allowlist := ma.GetToolAllowlist()
 				promptTokens, _ := ma.BaseAgent.GetGlobalTokens(msgs, allowlist)
 				totalCompletion := ma.BaseAgent.GetSessionTotalCompletionTokens(msgs)
 				effectiveLimit := ma.BaseAgent.GetEffectiveContextLimit(promptTokens)
@@ -313,6 +313,7 @@ func (ma *MultiAgent) executeLoop(ctx context.Context, w io.Writer, theme style.
 		},
 		Infer: func(ctx context.Context, iter int) (*db.Message, error) {
 			historyCopy := sink.Messages()
+			allowlist := ma.GetToolAllowlist()
 			if ma.BaseAgent != nil {
 				toolsForLog := ma.BaseAgent.Registry.GetAvailableTools(allowlist)
 				ma.BaseAgent.DebugLogLLMRequest("subagent:"+ma.Name, iter, runConfig.Model, runConfig.Endpoint, historyCopy, toolsForLog)

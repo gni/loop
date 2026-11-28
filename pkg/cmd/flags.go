@@ -36,6 +36,16 @@ var (
 	nostopIntervalFlag      int
 )
 
+func resolveWorkspaceTrust(cmd *cobra.Command, workspace string) bool {
+	if cmd != nil && cmd.Flags().Changed("trust") {
+		return trustProject
+	}
+	if ignoreProject {
+		return false
+	}
+	return config.WorkspaceTrusted(configPath, workspace)
+}
+
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if cmd.Flags().Changed("nostop") {
 		cfg.Nostop = config.NostopConfig{Mode: strings.ToLower(strings.TrimSpace(nostopModeFlag))}
@@ -53,6 +63,9 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	}
 	if cmd.Flags().Changed("yes") {
 		cfg.AutoApprove = autoYes
+		if autoYes {
+			cfg.GuidedMode = false
+		}
 	}
 	if cmd.Flags().Changed("guided") {
 		cfg.GuidedMode = guidedModeFlag
@@ -72,9 +85,14 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	}
 	if cmd.Flags().Changed("recap") {
 		cfg.RecapInterval = recapIntervalFlag
+		cfg.Recap = recapIntervalFlag > 0
 	}
 	if cmd.Flags().Changed("reasoning") {
-		cfg.ReasoningEffort = reasoningEffortFlag
+		if normalized, err := config.ParseReasoningEffort(reasoningEffortFlag); err == nil {
+			cfg.ReasoningEffort = normalized
+		} else {
+			cfg.ReasoningEffort = reasoningEffortFlag
+		}
 	}
 	if cmd.Flags().Changed("context-limit") {
 		cfg.ContextWindowLimit = contextLimitFlag

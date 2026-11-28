@@ -77,6 +77,13 @@ func (mam *MultiAgentManager) LoadAgentSkill(agentName string, skillName string)
 	}
 	ma.HistoryMu.Unlock()
 
+	updatedPrompt := ma.GetSystemPrompt()
+	ma.HistoryMu.Lock()
+	if len(ma.History) > 0 && ma.History[0].Role == "system" {
+		ma.History[0].Content = updatedPrompt
+	}
+	ma.HistoryMu.Unlock()
+
 	if err := mam.saveAgentDef(ma); err != nil {
 		return fmt.Errorf("save skills for subagent %q: %w", agentName, err)
 	}
@@ -115,6 +122,13 @@ func (mam *MultiAgentManager) ClearAgentSkills(agentName string) error {
 	status := "idle"
 	if ma.ActiveCancel != nil {
 		status = "running"
+	}
+	ma.HistoryMu.Unlock()
+
+	updatedPrompt := ma.GetSystemPrompt()
+	ma.HistoryMu.Lock()
+	if len(ma.History) > 0 && ma.History[0].Role == "system" {
+		ma.History[0].Content = updatedPrompt
 	}
 	ma.HistoryMu.Unlock()
 
